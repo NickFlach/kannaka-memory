@@ -1,0 +1,109 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::skip_link::SkipLink;
+use crate::wave::{compute_strength, WaveParams};
+
+/// A hypervector memory with wave-modulated dynamics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HyperMemory {
+    pub id: Uuid,
+    /// Hypervector representation (d=10,000)
+    pub vector: Vec<f32>,
+    /// Wave amplitude
+    pub amplitude: f32,
+    /// Wave frequency
+    pub frequency: f32,
+    /// Wave phase
+    pub phase: f32,
+    /// Exponential decay rate
+    pub decay_rate: f32,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Temporal layer (0=immediate, 1=day, 2=week, etc.)
+    pub layer_depth: u8,
+    /// Skip links to other memories
+    pub connections: Vec<SkipLink>,
+    /// Original text content (for debugging/migration)
+    pub content: String,
+}
+
+impl HyperMemory {
+    /// Create a new memory with default wave parameters.
+    pub fn new(vector: Vec<f32>, content: String) -> Self {
+        let wave = WaveParams::default();
+        Self {
+            id: Uuid::new_v4(),
+            vector,
+            amplitude: wave.amplitude,
+            frequency: wave.frequency,
+            phase: wave.phase,
+            decay_rate: wave.decay_rate,
+            created_at: Utc::now(),
+            layer_depth: 0,
+            connections: Vec::new(),
+            content,
+        }
+    }
+
+    fn wave_params(&self) -> WaveParams {
+        WaveParams {
+            amplitude: self.amplitude,
+            frequency: self.frequency,
+            phase: self.phase,
+            decay_rate: self.decay_rate,
+        }
+    }
+
+    /// Compute effective strength at a given time: S(t) = A·cos(2πft+φ)·e^(-λt)
+    pub fn effective_strength(&self, now: DateTime<Utc>) -> f32 {
+        let age = (now - self.created_at).num_milliseconds().max(0) as f64 / 1000.0;
+        compute_strength(&self.wave_params(), age)
+    }
+
+    /// Compute the effective vector: S(t) · h
+    pub fn effective_vector(&self, now: DateTime<Utc>) -> Vec<f32> {
+        let s = self.effective_strength(now);
+        self.vector.iter().map(|&x| x * s).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn effective_strength_diminishes() {
+        let mut mem = HyperMemory::new(vec![1.0; 100], "test".into());
+        mem.frequency = 0.0; // pure decay
+        mem.decay_rate = 0.01;
+        let t0 = mem.created_at;
+        let s0 = mem.effective_strength(t0);
+        let s1 = mem.effective_strength(t0 + Duration::seconds(100));
+        let s2 = mem.effective_strength(t0 + Duration::seconds(1000));
+        assert!(s0 > s1);
+        assert!(s1 > s2);
+    }
+
+    #[test]
+    fn effective_vector_scales_correctly() {
+        let mut mem = HyperMemory::new(vec![0.5; 10], "test".into());
+        mem.frequency = 0.0;
+        mem.decay_rate = 0.001;
+        let t0 = mem.created_at;
+        let ev = mem.effective_vector(t0);
+        // At t=0, S(0) = A·cos(φ)·e^0 = 1.0·1.0·1.0 = 1.0
+        for &x in &ev {
+            assert!((x - 0.5).abs() < 1e-5, "expected 0.5, got {}", x);
+        }
+
+        let later = t0 + Duration::seconds(500);
+        let ev2 = mem.effective_vector(later);
+        let s = mem.effective_strength(later);
+        for (i, &x) in ev2.iter().enumerate() {
+            assert!((x - 0.5 * s).abs() < 1e-4, "mismatch at index {}", i);
+        }
+    }
+}
