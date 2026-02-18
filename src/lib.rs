@@ -23,3 +23,4 @@ pub use memory::HyperMemory;
 pub use skip_link::SkipLink;
 pub use wave::{WaveParams, compute_strength, cosine_similarity, normalize};
 pub use store::MemoryStore;
+pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
