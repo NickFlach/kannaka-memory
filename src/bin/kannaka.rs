@@ -151,9 +151,11 @@ fn main() {
             match sys.migrate_from_sqlite(&db_path) {
                 Ok(report) => {
                     println!("Migration complete:");
-                    println!("  Rows read: {}", report.rows_read);
-                    println!("  Imported: {}", report.memories_imported);
-                    println!("  Skipped: {}", report.rows_skipped);
+                    println!("  Total migrated: {}", report.total_migrated);
+                    println!("  Working memory: {}", report.working_memory_count);
+                    println!("  Events: {}", report.events_count);
+                    println!("  Entities: {}", report.entities_count);
+                    println!("  Skip links: {}", report.skip_links_created);
                     println!("  Errors: {}", report.errors.len());
                 }
                 Err(e) => {
