@@ -9,7 +9,9 @@
 //! - Temporal layering for memory consolidation
 
 pub mod bridge;
+pub mod hnsw;
 pub mod migration;
+pub mod openclaw;
 pub mod codebook;
 pub mod consolidation;
 pub mod encoding;
@@ -32,3 +34,4 @@ pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, Ph
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
+pub use hnsw::{HnswIndex, HnswStore};
