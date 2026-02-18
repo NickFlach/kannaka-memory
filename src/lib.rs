@@ -26,3 +26,5 @@ pub use wave::{WaveParams, compute_strength, cosine_similarity, normalize};
 pub use store::{MemoryStore, InMemoryStore, MemoryEngine, StoreError, EngineError, QueryResult, phi_span_score};
 pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
+pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, PhiReport, ResonanceReport};
+pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
