@@ -4,6 +4,8 @@
 //! a `SimpleHashEncoder` for offline/testing use, and the `EncodingPipeline`
 //! that chains text encoding with codebook projection and HDC algebra.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
@@ -78,6 +80,137 @@ impl TextEncoder for SimpleHashEncoder {
 
     fn embedding_dim(&self) -> usize {
         self.dim
+    }
+}
+
+/// Calls an OpenAI-compatible HTTP embedding API.
+pub struct HttpEmbeddingEncoder {
+    api_url: String,
+    api_key: Option<String>,
+    model: String,
+    embedding_dim: usize,
+}
+
+impl HttpEmbeddingEncoder {
+    /// Create a new HTTP embedding encoder.
+    ///
+    /// `api_url` should be the base URL (e.g. `https://api.openai.com`).
+    /// The encoder will POST to `{api_url}/v1/embeddings`.
+    pub fn new(api_url: String, api_key: Option<String>, model: String, embedding_dim: usize) -> Self {
+        Self { api_url, api_key, model, embedding_dim }
+    }
+
+    /// Create an encoder configured for OpenAI's `text-embedding-3-small` (1536 dims).
+    pub fn openai_small(api_key: String) -> Self {
+        Self::new(
+            "https://api.openai.com".to_string(),
+            Some(api_key),
+            "text-embedding-3-small".to_string(),
+            1536,
+        )
+    }
+}
+
+impl TextEncoder for HttpEmbeddingEncoder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
+        if text.trim().is_empty() {
+            return Err(EncodingError::EmptyInput);
+        }
+
+        let url = format!("{}/v1/embeddings", self.api_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "input": text,
+            "model": &self.model,
+        });
+
+        let mut req = ureq::post(&url).set("Content-Type", "application/json");
+        if let Some(ref key) = self.api_key {
+            req = req.set("Authorization", &format!("Bearer {}", key));
+        }
+
+        let resp = req
+            .send_json(body)
+            .map_err(|e| EncodingError::Other(format!("HTTP request failed: {}", e)))?;
+
+        let json: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| EncodingError::Other(format!("failed to parse response: {}", e)))?;
+
+        let embedding = json["data"][0]["embedding"]
+            .as_array()
+            .ok_or_else(|| EncodingError::Other("missing embedding in response".to_string()))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect::<Vec<f32>>();
+
+        if embedding.len() != self.embedding_dim {
+            return Err(EncodingError::DimensionMismatch {
+                expected: self.embedding_dim,
+                got: embedding.len(),
+            });
+        }
+
+        Ok(embedding)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.embedding_dim
+    }
+}
+
+/// Wrapper that caches embeddings to avoid redundant API calls.
+pub struct CachedEncoder<E: TextEncoder> {
+    inner: E,
+    cache: std::sync::RwLock<HashMap<String, Vec<f32>>>,
+}
+
+impl<E: TextEncoder> CachedEncoder<E> {
+    pub fn new(inner: E) -> Self {
+        Self {
+            inner,
+            cache: std::sync::RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl<E: TextEncoder> TextEncoder for CachedEncoder<E> {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
+        let key = text.to_string();
+        if let Some(cached) = self.cache.read().unwrap().get(&key) {
+            return Ok(cached.clone());
+        }
+        let result = self.inner.embed(text)?;
+        self.cache.write().unwrap().insert(key, result.clone());
+        Ok(result)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.inner.embedding_dim()
+    }
+}
+
+/// Fallback chain: tries primary encoder, falls back on error.
+pub struct CompositeEncoder {
+    primary: Box<dyn TextEncoder>,
+    fallback: Box<dyn TextEncoder>,
+}
+
+impl CompositeEncoder {
+    pub fn new(primary: Box<dyn TextEncoder>, fallback: Box<dyn TextEncoder>) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+impl TextEncoder for CompositeEncoder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
+        match self.primary.embed(text) {
+            Ok(v) => Ok(v),
+            Err(_) => self.fallback.embed(text),
+        }
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.primary.embedding_dim()
     }
 }
 
@@ -228,6 +361,82 @@ mod tests {
         let pv = pipeline.permute(&v, 1);
         let sim = cosine_similarity(&v, &pv);
         assert!(sim < 0.5, "permuted vector should be dissimilar, sim={}", sim);
+    }
+
+    // --- Mock encoder that counts calls ---
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct CountingEncoder {
+        dim: usize,
+        call_count: Arc<AtomicUsize>,
+    }
+
+    impl CountingEncoder {
+        fn new(dim: usize) -> (Self, Arc<AtomicUsize>) {
+            let count = Arc::new(AtomicUsize::new(0));
+            (Self { dim, call_count: count.clone() }, count)
+        }
+    }
+
+    impl TextEncoder for CountingEncoder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, EncodingError> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![1.0; self.dim])
+        }
+        fn embedding_dim(&self) -> usize { self.dim }
+    }
+
+    struct FailingEncoder { dim: usize }
+    impl TextEncoder for FailingEncoder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, EncodingError> {
+            Err(EncodingError::Other("always fails".to_string()))
+        }
+        fn embedding_dim(&self) -> usize { self.dim }
+    }
+
+    #[test]
+    fn cached_encoder_second_call_uses_cache() {
+        let (enc, count) = CountingEncoder::new(64);
+        let cached = CachedEncoder::new(enc);
+        let _ = cached.embed("hello").unwrap();
+        let _ = cached.embed("hello").unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cached_encoder_different_texts_call_inner() {
+        let (enc, count) = CountingEncoder::new(64);
+        let cached = CachedEncoder::new(enc);
+        let _ = cached.embed("hello").unwrap();
+        let _ = cached.embed("world").unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn composite_uses_primary_when_available() {
+        let primary = SimpleHashEncoder::new(64, 1);
+        let fallback = SimpleHashEncoder::new(64, 2);
+        let composite = CompositeEncoder::new(Box::new(primary), Box::new(fallback));
+        // Should succeed via primary
+        let v = composite.embed("test").unwrap();
+        assert_eq!(v.len(), 64);
+    }
+
+    #[test]
+    fn composite_falls_back_on_primary_error() {
+        let primary = FailingEncoder { dim: 64 };
+        let fallback = SimpleHashEncoder::new(64, 42);
+        let composite = CompositeEncoder::new(Box::new(primary), Box::new(fallback));
+        let v = composite.embed("test").unwrap();
+        assert_eq!(v.len(), 64);
+    }
+
+    #[test]
+    fn http_encoder_construction() {
+        let enc = HttpEmbeddingEncoder::openai_small("test-key".to_string());
+        assert_eq!(enc.embedding_dim(), 1536);
+        assert_eq!(enc.model, "text-embedding-3-small");
     }
 
     #[test]

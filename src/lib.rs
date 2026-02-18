@@ -9,6 +9,7 @@
 //! - Temporal layering for memory consolidation
 
 pub mod bridge;
+pub mod migration;
 pub mod codebook;
 pub mod consolidation;
 pub mod encoding;
@@ -29,4 +30,5 @@ pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingErr
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
 pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
+pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
