@@ -15,6 +15,7 @@ use std::time::Instant;
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
+use crate::kuramoto::KuramotoSync;
 use crate::skip_link::SkipLink;
 use crate::store::MemoryEngine;
 use crate::wave::cosine_similarity;
@@ -45,6 +46,8 @@ pub struct ConsolidationReport {
     pub bundles_created: usize,
     pub memories_strengthened: usize,
     pub memories_pruned: usize,
+    pub clusters_synced: usize,
+    pub sync_order_improvement: f32,
     pub memories_transferred: usize,
     pub skip_links_created: usize,
     pub duration_ms: u64,
@@ -62,6 +65,8 @@ pub struct ConsolidationEngine {
     pub constructive_boost: f32,
     /// How much amplitude reduction from destructive interference
     pub destructive_penalty: f32,
+    /// Kuramoto synchronization parameters
+    pub kuramoto: KuramotoSync,
 }
 
 impl Default for ConsolidationEngine {
@@ -72,6 +77,7 @@ impl Default for ConsolidationEngine {
             prune_threshold: 0.05,
             constructive_boost: 0.3,
             destructive_penalty: 0.4,
+            kuramoto: KuramotoSync::default(),
         }
     }
 }
@@ -102,6 +108,11 @@ impl ConsolidationEngine {
 
         // Stage 4: STRENGTHEN — boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
+
+        // Stage 4.5: SYNC — Kuramoto phase synchronization
+        let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
+        report.clusters_synced = clusters_synced;
+        report.sync_order_improvement = order_improvement;
 
         // Stage 5: PRUNE — weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
@@ -232,6 +243,75 @@ impl ConsolidationEngine {
             }
         }
         count
+    }
+
+    /// Stage 4.5: Kuramoto phase synchronization on detected clusters.
+    fn stage_sync(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> (usize, f32) {
+        // Build similarity graph among working set and find connected components
+        let mems: Vec<Option<crate::memory::HyperMemory>> = working_set
+            .iter()
+            .map(|id| engine.store.get(id).ok().flatten().cloned())
+            .collect();
+
+        let n = mems.len();
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if let (Some(a), Some(b)) = (&mems[i], &mems[j]) {
+                    let sim = cosine_similarity(&a.vector, &b.vector);
+                    if sim > self.kuramoto.coupling_threshold {
+                        adj[i].push(j);
+                        adj[j].push(i);
+                    }
+                }
+            }
+        }
+
+        // Find connected components
+        let mut visited = vec![false; n];
+        let mut clusters_synced = 0usize;
+        let mut total_improvement = 0.0f32;
+
+        for start in 0..n {
+            if visited[start] || mems[start].is_none() {
+                continue;
+            }
+            let mut component = vec![start];
+            let mut queue = vec![start];
+            visited[start] = true;
+            while let Some(node) = queue.pop() {
+                for &nb in &adj[node] {
+                    if !visited[nb] {
+                        visited[nb] = true;
+                        component.push(nb);
+                        queue.push(nb);
+                    }
+                }
+            }
+            if component.len() < 2 {
+                continue;
+            }
+
+            // Clone memories for sync
+            let mut cluster_mems: Vec<crate::memory::HyperMemory> = component
+                .iter()
+                .filter_map(|&i| mems[i].clone())
+                .collect();
+            let mut refs: Vec<&mut crate::memory::HyperMemory> = cluster_mems.iter_mut().collect();
+            let report = self.kuramoto.sync_cluster(&mut refs);
+
+            // Write back phases
+            for m in &cluster_mems {
+                if let Ok(Some(stored)) = engine.store.get_mut(&m.id) {
+                    stored.phase = m.phase;
+                }
+            }
+
+            total_improvement += report.final_order - report.initial_order;
+            clusters_synced += 1;
+        }
+
+        (clusters_synced, total_improvement)
     }
 
     /// Stage 5: Prune destructive interference pairs.
