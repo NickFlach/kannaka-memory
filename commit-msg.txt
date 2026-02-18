@@ -1,8 +1,0 @@
-feat: HyperConnections — skip link creation, query expansion, φ-spans
-
-ADR-0002 Phase 2, Chunk 4: HyperConnections system.
-- Automatic skip link creation on similarity detection
-- Query expansion following skip connections
-- Link reinforcement on traversal, decay over time
-- φ-optimized span distribution (golden ratio coverage)
-- Test suite for connection topology
