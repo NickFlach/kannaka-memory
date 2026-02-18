@@ -14,6 +14,7 @@ pub mod consolidation;
 pub mod encoding;
 pub mod kuramoto;
 pub mod memory;
+pub mod persistence;
 pub mod skip_link;
 pub mod store;
 pub mod wave;
@@ -28,3 +29,4 @@ pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingErr
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
 pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
+pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};

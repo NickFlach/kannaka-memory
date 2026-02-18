@@ -46,6 +46,11 @@ impl Codebook {
         out
     }
 
+    /// Get the seed used to generate this codebook.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// Generate a random atomic hypervector (unit length) using the codebook's RNG lineage.
     pub fn random_vector(&self) -> Vec<f32> {
         // Use a derived seed so it's deterministic but different from matrix generation

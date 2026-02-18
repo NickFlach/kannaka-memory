@@ -97,6 +97,11 @@ impl EncodingPipeline {
         Self { encoder, codebook }
     }
 
+    /// Access the codebook.
+    pub fn codebook(&self) -> &Codebook {
+        &self.codebook
+    }
+
     /// Encode text to a unit-length hypervector (10K dims).
     pub fn encode_text(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
         let embedding = self.encoder.embed(text)?;
