@@ -238,6 +238,11 @@ impl KannakaMemorySystem {
         Ok(())
     }
 
+    /// Generate a full observability report.
+    pub fn observe(&self) -> crate::observe::SystemReport {
+        crate::observe::MemoryIntrospector::full_report(&self.engine, &self.bridge, &self.kuramoto)
+    }
+
     /// System statistics.
     pub fn stats(&self) -> SystemStats {
         let state = self.bridge.assess(&self.engine);

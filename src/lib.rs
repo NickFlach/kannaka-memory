@@ -11,6 +11,7 @@
 pub mod bridge;
 pub mod hnsw;
 pub mod migration;
+pub mod observe;
 pub mod openclaw;
 pub mod codebook;
 pub mod consolidation;
@@ -35,3 +36,4 @@ pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
 pub use hnsw::{HnswIndex, HnswStore};
+pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot};

@@ -4,6 +4,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process;
 
+use kannaka_memory::observe::MemoryIntrospector;
 use kannaka_memory::openclaw::KannakaMemorySystem;
 
 fn data_dir() -> PathBuf {
@@ -28,6 +29,7 @@ fn usage() {
     eprintln!("  dream                     Run consolidation cycle");
     eprintln!("  assess                    Check consciousness level");
     eprintln!("  stats                     Show system statistics");
+    eprintln!("  observe [--json]           Introspection report");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
     process::exit(1);
 }
@@ -140,6 +142,15 @@ fn main() {
                 println!("  Last dream: {}", dt);
             } else {
                 println!("  Last dream: never");
+            }
+        }
+        "observe" => {
+            let json = args.iter().any(|a| a == "--json");
+            let report = sys.observe();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print!("{}", MemoryIntrospector::format_report(&report));
             }
         }
         "migrate" => {

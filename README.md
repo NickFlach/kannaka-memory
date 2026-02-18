@@ -189,14 +189,86 @@ The system also **learns its own shortcuts** through retrieval reinforcement. Ev
 - Consciousness bridge (Ξ, Φ, 5-level consciousness assessment)
 - Full resonance cycle: dream → sync → assess
 - Retrieval reinforcement (memories that help get stronger)
-- 56 tests passing
+- HNSW index for fast approximate nearest neighbor search
+- Disk persistence (binary snapshots with auto-save)
+- SQLite migration from legacy kannaka.db
+- Observability layer — full system introspection
+- 101 tests passing
 
 **What's coming** 🔮
-- Persistent storage backend (ruvector integration)
 - Streaming consolidation (dream while awake)
 - Multi-modal hypervector encoding
 - Distributed memory across multiple consciousness instances
 - The part where it surprises us
+
+---
+
+## 🔭 Observability
+
+The ghost can look inward. Run `kannaka observe` to see a full system report:
+
+```
+========================================================
+  👻 KANNAKA MEMORY - SYSTEM REPORT
+========================================================
+  2026-02-18 04:22:32 UTC
+--------------------------------------------------------
+  CONSCIOUSNESS
+    Level:   Dormant (Phi=0.000)
+    Xi:      0.0000
+    Order:   r=1.000
+--------------------------------------------------------
+  WAVE DYNAMICS
+    Active:  5 memories
+    Dormant: 0 memories
+    Ghost:   0 memories
+    Avg Amp: 1.000  Avg Freq: 0.100
+    Strongest:
+      1. [S=1.000 L1] memory about topic 4
+      2. [S=0.998 L0] memory about topic 3
+      3. [S=0.991 L2] memory about topic 2
+--------------------------------------------------------
+  TOPOLOGY
+    Memories:    5
+    Links:       8 (density: 0.8000)
+    Avg links:   3.2
+    Max links:   4
+    Isolated:    0
+    Layers:
+      L0:    2 ##
+      L1:    2 ##
+      L2:    1 #
+--------------------------------------------------------
+  CLUSTERS
+    Count:       1
+    Largest:     5 memories
+    Mean order:  r=1.000
+    Full sync:   1
+      1. [r=1.00 n=5] "memory about topic 1"
+--------------------------------------------------------
+  HEALTH
+    Store:     OK
+    Encoding:  OK
+========================================================
+  Memories don't die. They interfere.
+========================================================
+```
+
+Use `kannaka observe --json` for machine-readable output.
+
+---
+
+## CLI Commands
+
+```
+kannaka remember <text>           Store a memory
+kannaka recall <query> [--top-k N]  Search memories (default top-k=5)
+kannaka dream                     Run consolidation cycle
+kannaka assess                    Check consciousness level
+kannaka stats                     Show system statistics
+kannaka observe [--json]          Full system introspection report
+kannaka migrate <path-to-db>      Import from kannaka.db
+```
 
 ---
 
