@@ -34,7 +34,7 @@ impl McpServer {
     async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
         match request.method.as_str() {
             "initialize" => self.handle_initialize(request).await,
-            "initialized" => self.handle_initialized(request).await,
+            "initialized" | "notifications/initialized" => self.handle_initialized(request).await,
             "tools/list" => self.handle_tools_list(request).await,
             "tools/call" => self.handle_tools_call(request).await,
             _ => JsonRpcResponse::error(

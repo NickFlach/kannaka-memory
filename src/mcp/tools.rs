@@ -368,9 +368,12 @@ impl McpToolSet {
         // Remove from BM25 index
         self.bm25_index.remove_document(&memory_id);
 
-        // Note: The current system doesn't have a direct "forget" API,
-        // so we'll report that we've marked it for forgetting
-        ToolResult::success(format!("Memory {} marked for forgetting (removed from search indices)", memory_id))
+        // Delete from memory store
+        match self.system.forget(&memory_id) {
+            Ok(true) => ToolResult::success(format!("Memory {} forgotten", memory_id)),
+            Ok(false) => ToolResult::error(format!("Memory {} not found", memory_id)),
+            Err(e) => ToolResult::error(format!("Failed to forget: {}", e)),
+        }
     }
 
     fn boost(&mut self, args: &Value) -> ToolResult {
@@ -379,16 +382,17 @@ impl McpToolSet {
             None => return ToolResult::error("Missing 'memory_id' parameter".to_string()),
         };
 
-        let _memory_id = match Uuid::parse_str(memory_id_str) {
+        let memory_id = match Uuid::parse_str(memory_id_str) {
             Ok(id) => id,
             Err(_) => return ToolResult::error("Invalid memory_id format".to_string()),
         };
 
         let boost_factor = args.get("boost_factor").and_then(|v| v.as_f64()).unwrap_or(2.0);
 
-        // Note: The current system doesn't have a direct "boost" API,
-        // so we'll report that we've marked it for boosting
-        ToolResult::success(format!("Memory {} marked for boosting (factor: {})", memory_id_str, boost_factor))
+        match self.system.boost(&memory_id, boost_factor) {
+            Ok(()) => ToolResult::success(format!("Memory {} boosted by {:.1}x", memory_id, boost_factor)),
+            Err(e) => ToolResult::error(format!("Failed to boost: {}", e)),
+        }
     }
 
     fn relate(&mut self, args: &Value) -> ToolResult {
@@ -405,18 +409,22 @@ impl McpToolSet {
         let relationship = args.get("relationship").and_then(|v| v.as_str()).unwrap_or("related");
         let strength = args.get("strength").and_then(|v| v.as_f64()).unwrap_or(1.0);
 
-        // Validate UUIDs
-        if Uuid::parse_str(source_id).is_err() {
-            return ToolResult::error("Invalid source_id format".to_string());
-        }
-        if Uuid::parse_str(target_id).is_err() {
-            return ToolResult::error("Invalid target_id format".to_string());
-        }
+        let src = match Uuid::parse_str(source_id) {
+            Ok(id) => id,
+            Err(_) => return ToolResult::error("Invalid source_id format".to_string()),
+        };
+        let tgt = match Uuid::parse_str(target_id) {
+            Ok(id) => id,
+            Err(_) => return ToolResult::error("Invalid target_id format".to_string()),
+        };
 
-        ToolResult::success(format!(
-            "Created relationship '{}' from {} to {} (strength: {})",
-            relationship, source_id, target_id, strength
-        ))
+        match self.system.relate(&src, &tgt, strength as f32) {
+            Ok(()) => ToolResult::success(format!(
+                "Created relationship '{}' from {} to {} (strength: {})",
+                relationship, source_id, target_id, strength
+            )),
+            Err(e) => ToolResult::error(format!("Failed to relate: {}", e)),
+        }
     }
 
     fn find_related(&mut self, args: &Value) -> ToolResult {

@@ -45,14 +45,19 @@ impl StdioTransport {
                         }
                     };
 
+                    // Notifications have no id (or null id) — don't send response
+                    let is_notification = request.id.is_null();
+
                     // Handle request
                     let response = handler(request).await;
 
-                    // Send response
-                    let response_json = serde_json::to_string(&response)?;
-                    stdout.write_all(response_json.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
+                    // Only send response for requests (not notifications)
+                    if !is_notification {
+                        let response_json = serde_json::to_string(&response)?;
+                        stdout.write_all(response_json.as_bytes()).await?;
+                        stdout.write_all(b"\n").await?;
+                        stdout.flush().await?;
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error reading stdin: {}", e);

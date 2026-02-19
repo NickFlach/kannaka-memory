@@ -415,6 +415,14 @@ impl MemoryEngine {
     pub fn get_memory(&self, id: &Uuid) -> Result<Option<&HyperMemory>, EngineError> {
         Ok(self.store.get(id)?)
     }
+
+    pub fn get_memory_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, EngineError> {
+        Ok(self.store.get_mut(id)?)
+    }
+
+    pub fn delete(&mut self, id: &Uuid) -> Result<bool, EngineError> {
+        Ok(self.store.delete(id)?)
+    }
 }
 
 // ---------------------------------------------------------------------------

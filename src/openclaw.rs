@@ -238,6 +238,29 @@ impl KannakaMemorySystem {
         Ok(())
     }
 
+    /// Delete a memory by ID.
+    pub fn forget(&mut self, id: &Uuid) -> Result<bool, SystemError> {
+        Ok(self.engine.delete(id)?)
+    }
+
+    /// Boost a memory's amplitude.
+    pub fn boost(&mut self, id: &Uuid, factor: f64) -> Result<(), SystemError> {
+        if let Some(mem) = self.engine.get_memory_mut(id)? {
+            mem.amplitude *= factor as f32;
+            Ok(())
+        } else {
+            Err(SystemError::Engine(crate::store::EngineError::Store(
+                crate::store::StoreError::NotFound(*id),
+            )))
+        }
+    }
+
+    /// Create a skip link (relationship) between two memories.
+    pub fn relate(&mut self, source: &Uuid, target: &Uuid, strength: f32) -> Result<(), SystemError> {
+        self.engine.reinforce_link(source, target, strength);
+        Ok(())
+    }
+
     /// Generate a full observability report.
     pub fn observe(&self) -> crate::observe::SystemReport {
         crate::observe::MemoryIntrospector::full_report(&self.engine, &self.bridge, &self.kuramoto)
