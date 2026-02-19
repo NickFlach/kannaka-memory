@@ -23,6 +23,9 @@ pub mod skip_link;
 pub mod store;
 pub mod wave;
 
+#[cfg(feature = "mcp")]
+pub mod mcp;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;
