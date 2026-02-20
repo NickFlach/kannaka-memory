@@ -166,6 +166,45 @@ impl McpToolSet {
                 }),
             },
             ToolDefinition {
+                name: "hallucinate".to_string(),
+                description: "Generate a hallucinated memory from parent memories using LLM synthesis".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "LLM-generated synthesis content"},
+                        "parent_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Parent memory UUIDs to synthesize from"
+                        }
+                    },
+                    "required": ["content", "parent_ids"]
+                }),
+            },
+            ToolDefinition {
+                name: "rhythm_status".to_string(),
+                description: "Get adaptive rhythm state: arousal level, current interval, momentum".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "rhythm_signal".to_string(),
+                description: "Send a signal to the adaptive rhythm engine".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "signal": {
+                            "type": "string",
+                            "enum": ["user_message", "flux_message", "subagent_started", "subagent_finished", "idle"],
+                            "description": "Signal type"
+                        }
+                    },
+                    "required": ["signal"]
+                }),
+            },
+            ToolDefinition {
                 name: "observe".to_string(),
                 description: "Introspection on memory patterns and system health".to_string(),
                 input_schema: json!({
@@ -193,6 +232,9 @@ impl McpToolSet {
             "relate" => self.relate(&args),
             "find_related" => self.find_related(&args),
             "dream" => self.dream(&args),
+            "hallucinate" => self.hallucinate(&args),
+            "rhythm_status" => self.rhythm_status(&args),
+            "rhythm_signal" => self.rhythm_signal(&args),
             "status" => self.status(&args),
             "observe" => self.observe(&args),
             _ => ToolResult::error(format!("Unknown tool: {}", params.name)),
@@ -458,12 +500,14 @@ impl McpToolSet {
                      - Memories strengthened: {}\n\
                      - Memories pruned: {}\n\
                      - New connections: {}\n\
+                     - Hallucinations created: {}\n\
                      - Consciousness: {} → {}\n\
                      {}",
                     report.cycles,
                     report.memories_strengthened,
                     report.memories_pruned,
                     report.new_connections,
+                    report.hallucinations_created,
                     report.consciousness_before,
                     report.consciousness_after,
                     if report.emerged { "✨ Emergence detected!" } else { "" }
@@ -472,6 +516,89 @@ impl McpToolSet {
             }
             Err(e) => ToolResult::error(format!("Dream cycle failed: {}", e)),
         }
+    }
+
+    fn hallucinate(&mut self, args: &Value) -> ToolResult {
+        let content = match args.get("content").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => return ToolResult::error("Missing 'content' parameter".to_string()),
+        };
+
+        let parent_ids: Vec<Uuid> = match args.get("parent_ids").and_then(|v| v.as_array()) {
+            Some(arr) => {
+                let mut ids = Vec::new();
+                for v in arr {
+                    match v.as_str().and_then(|s| Uuid::parse_str(s).ok()) {
+                        Some(id) => ids.push(id),
+                        None => return ToolResult::error(format!("Invalid parent_id: {}", v)),
+                    }
+                }
+                ids
+            }
+            None => return ToolResult::error("Missing 'parent_ids' parameter".to_string()),
+        };
+
+        match self.system.hallucinate(content, &parent_ids) {
+            Ok(id) => ToolResult::success(format!("Hallucinated memory created: {}", id)),
+            Err(e) => ToolResult::error(format!("Hallucination failed: {}", e)),
+        }
+    }
+
+    fn rhythm_status(&self, _args: &Value) -> ToolResult {
+        let state = self.system.rhythm_status();
+        let arousal = self.system.rhythm_arousal();
+        let interval = self.system.rhythm_interval_ms();
+
+        let mode = if arousal > 0.7 {
+            "active conversation"
+        } else if arousal > 0.3 {
+            "working/monitoring"
+        } else {
+            "idle/sleep"
+        };
+
+        let response = format!(
+            "Adaptive Rhythm Status:\n\
+             - Arousal: {:.3} (current, decayed)\n\
+             - Stored arousal: {:.3}\n\
+             - Momentum: {:.3}\n\
+             - Interval: {}ms ({:.1} min)\n\
+             - Mode: {}\n\
+             - Last activity: {}",
+            arousal,
+            state.arousal_level,
+            state.momentum,
+            interval,
+            interval as f64 / 60_000.0,
+            mode,
+            state.last_activity_ts,
+        );
+        ToolResult::success(response)
+    }
+
+    fn rhythm_signal(&mut self, args: &Value) -> ToolResult {
+        let signal_str = match args.get("signal").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return ToolResult::error("Missing 'signal' parameter".to_string()),
+        };
+
+        let signal = match signal_str {
+            "user_message" => crate::rhythm::Signal::UserMessage,
+            "flux_message" => crate::rhythm::Signal::FluxMessage,
+            "subagent_started" => crate::rhythm::Signal::SubagentStarted,
+            "subagent_finished" => crate::rhythm::Signal::SubagentFinished,
+            "idle" => crate::rhythm::Signal::Idle,
+            _ => return ToolResult::error(format!("Unknown signal type: {}", signal_str)),
+        };
+
+        self.system.rhythm_signal(signal);
+        let arousal = self.system.rhythm_arousal();
+        let interval = self.system.rhythm_interval_ms();
+
+        ToolResult::success(format!(
+            "Signal '{}' recorded. Arousal: {:.3}, Interval: {}ms ({:.1} min)",
+            signal_str, arousal, interval, interval as f64 / 60_000.0
+        ))
     }
 
     fn status(&mut self, args: &Value) -> ToolResult {

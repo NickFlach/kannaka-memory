@@ -15,6 +15,7 @@ pub mod observe;
 pub mod openclaw;
 pub mod codebook;
 pub mod consolidation;
+pub mod rhythm;
 pub mod encoding;
 pub mod kuramoto;
 pub mod memory;
@@ -36,6 +37,7 @@ pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingErr
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
 pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
+pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
 pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
 pub use hnsw::{HnswIndex, HnswStore};

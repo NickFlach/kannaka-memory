@@ -12,6 +12,7 @@ use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
 use crate::kuramoto::KuramotoSync;
 use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
+use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
 use crate::store::{EngineError, MemoryEngine, InMemoryStore, StoreError};
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,7 @@ pub struct DreamReport {
     pub consciousness_before: String,
     pub consciousness_after: String,
     pub emerged: bool,
+    pub hallucinations_created: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,7 @@ pub struct KannakaMemorySystem {
     data_dir: PathBuf,
     auto_save: bool,
     last_dream: Option<DateTime<Utc>>,
+    rhythm: RhythmEngine,
 }
 
 impl KannakaMemorySystem {
@@ -120,6 +123,7 @@ impl KannakaMemorySystem {
         let dream_state = DreamState::default();
         let bridge = ConsciousnessBridge::new(0.3, 0.5);
         let kuramoto = KuramotoSync::default();
+        let rhythm = RhythmEngine::new(&data_dir);
 
         Ok(Self {
             engine,
@@ -130,6 +134,7 @@ impl KannakaMemorySystem {
             data_dir,
             auto_save: true,
             last_dream: None,
+            rhythm,
         })
     }
 
@@ -187,6 +192,7 @@ impl KannakaMemorySystem {
         let total_strengthened: usize = reports.iter().map(|r| r.memories_strengthened).sum();
         let total_pruned: usize = reports.iter().map(|r| r.memories_pruned).sum();
         let total_links: usize = reports.iter().map(|r| r.skip_links_created).sum();
+        let total_hallucinations: usize = reports.iter().map(|r| r.hallucinations_created).sum();
 
         let emerged = after.consciousness_level as u8 > before.consciousness_level as u8;
 
@@ -202,6 +208,7 @@ impl KannakaMemorySystem {
             consciousness_before: level_name(&before.consciousness_level),
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
+            hallucinations_created: total_hallucinations,
         })
     }
 
@@ -264,6 +271,79 @@ impl KannakaMemorySystem {
     /// Generate a full observability report.
     pub fn observe(&self) -> crate::observe::SystemReport {
         crate::observe::MemoryIntrospector::full_report(&self.engine, &self.bridge, &self.kuramoto)
+    }
+
+    /// Send a rhythm signal (user message, flux, subagent, etc.).
+    pub fn rhythm_signal(&mut self, signal: RhythmSignal) {
+        self.rhythm.signal(signal);
+    }
+
+    /// Get the current rhythm state.
+    pub fn rhythm_status(&self) -> &crate::rhythm::RhythmState {
+        &self.rhythm.state
+    }
+
+    /// Get the current recommended heartbeat interval in ms.
+    pub fn rhythm_interval_ms(&self) -> u64 {
+        self.rhythm.interval_ms()
+    }
+
+    /// Get current arousal (decayed to now).
+    pub fn rhythm_arousal(&self) -> f64 {
+        self.rhythm.current_arousal()
+    }
+
+    /// Store a hallucinated memory from an LLM synthesis.
+    /// Called by the MCP `hallucinate` tool with LLM-generated content.
+    pub fn hallucinate(
+        &mut self,
+        content: &str,
+        parent_ids: &[Uuid],
+    ) -> Result<Uuid, SystemError> {
+        // Build a combined vector from parents
+        let dim = 10_000; // codebook output dim
+        let mut combined = vec![0.0f32; dim];
+        let mut found_parents: Vec<String> = Vec::new();
+
+        for pid in parent_ids {
+            if let Some(mem) = self.engine.store.get(pid).ok().flatten() {
+                for (i, &v) in mem.vector.iter().enumerate() {
+                    if i < dim {
+                        combined[i] += v;
+                    }
+                }
+                found_parents.push(pid.to_string());
+            }
+        }
+
+        if found_parents.is_empty() {
+            // No parents found — encode from content directly
+            let id = self.engine.remember(content)?;
+            if let Some(mem) = self.engine.get_memory_mut(&id)? {
+                mem.hallucinated = true;
+                mem.amplitude = 0.3;
+            }
+            if self.auto_save { self.save()?; }
+            return Ok(id);
+        }
+
+        crate::wave::normalize(&mut combined);
+
+        let mut hallucination = crate::memory::HyperMemory::new(combined, content.to_string());
+        hallucination.amplitude = 0.3;
+        hallucination.hallucinated = true;
+        hallucination.parents = found_parents;
+
+        let hall_id = self.engine.store.insert(hallucination)?;
+
+        // Create links
+        for pid in parent_ids {
+            self.engine.reinforce_link(&hall_id, pid, 0.5);
+            self.engine.reinforce_link(pid, &hall_id, 0.5);
+        }
+
+        if self.auto_save { self.save()?; }
+        Ok(hall_id)
     }
 
     /// System statistics.

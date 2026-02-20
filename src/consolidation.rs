@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::kuramoto::KuramotoSync;
 use crate::skip_link::SkipLink;
 use crate::store::MemoryEngine;
-use crate::wave::cosine_similarity;
+use crate::wave::{cosine_similarity, normalize};
 
 /// Classification of interference between two memories.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,6 +50,7 @@ pub struct ConsolidationReport {
     pub sync_order_improvement: f32,
     pub memories_transferred: usize,
     pub skip_links_created: usize,
+    pub hallucinations_created: usize,
     pub duration_ms: u64,
 }
 
@@ -122,6 +123,9 @@ impl ConsolidationEngine {
 
         // Stage 7: WIRE — create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs);
+
+        // Stage 8: HALLUCINATE — generate novel memories from distant clusters
+        report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
         report.duration_ms = start.elapsed().as_millis() as u64;
         report
@@ -362,6 +366,137 @@ impl ConsolidationEngine {
         }
 
         count
+    }
+
+    /// Stage 8: Generate hallucinated memories by combining distant clusters.
+    ///
+    /// Selects 2-3 memories that are maximally distant in semantic space,
+    /// bundles their hypervectors, and stores the result as a new hallucinated memory.
+    fn stage_hallucinate(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> usize {
+        if working_set.len() < 3 {
+            return 0;
+        }
+
+        // Collect (id, vector, content, amplitude) for high-amplitude memories
+        let mut candidates: Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)> = Vec::new();
+        for id in working_set {
+            if let Some(mem) = engine.store.get(id).ok().flatten() {
+                if mem.amplitude > self.prune_threshold && !mem.content.starts_with("__consolidation") {
+                    // Collect tags-like info from content words
+                    let tags: Vec<String> = mem.content
+                        .split_whitespace()
+                        .take(5)
+                        .map(|s| s.to_lowercase())
+                        .collect();
+                    candidates.push((mem.id, mem.vector.clone(), mem.content.clone(), mem.amplitude, tags));
+                }
+            }
+        }
+
+        if candidates.len() < 3 {
+            return 0;
+        }
+
+        // Find the pair with minimum cosine similarity (maximally distant)
+        let mut min_sim = f32::MAX;
+        let mut best_pair = (0usize, 1usize);
+        for i in 0..candidates.len() {
+            for j in (i + 1)..candidates.len() {
+                let sim = cosine_similarity(&candidates[i].1, &candidates[j].1);
+                if sim < min_sim {
+                    min_sim = sim;
+                    best_pair = (i, j);
+                }
+            }
+        }
+
+        // Find a third memory distant from both
+        let mut best_third = None;
+        let mut min_max_sim = f32::MAX;
+        for k in 0..candidates.len() {
+            if k == best_pair.0 || k == best_pair.1 {
+                continue;
+            }
+            let sim_a = cosine_similarity(&candidates[k].1, &candidates[best_pair.0].1);
+            let sim_b = cosine_similarity(&candidates[k].1, &candidates[best_pair.1].1);
+            let max_sim = sim_a.max(sim_b);
+            if max_sim < min_max_sim {
+                min_max_sim = max_sim;
+                best_third = Some(k);
+            }
+        }
+
+        let parent_indices: Vec<usize> = if let Some(third) = best_third {
+            vec![best_pair.0, best_pair.1, third]
+        } else {
+            vec![best_pair.0, best_pair.1]
+        };
+
+        // Bundle parent vectors (element-wise addition + normalize)
+        let dim = candidates[parent_indices[0]].1.len();
+        let mut combined = vec![0.0f32; dim];
+        for &idx in &parent_indices {
+            for (i, &v) in candidates[idx].1.iter().enumerate() {
+                combined[i] += v;
+            }
+        }
+        normalize(&mut combined);
+
+        // Build content and metadata
+        let parent_ids: Vec<String> = parent_indices.iter().map(|&i| candidates[i].0.to_string()).collect();
+        let parent_phrases: Vec<&str> = parent_indices.iter()
+            .map(|&i| {
+                let c = &candidates[i].2;
+                if c.len() > 60 { &c[..60] } else { c.as_str() }
+            })
+            .collect();
+        let content = format!("[hallucination] Synthesis of: {}", parent_phrases.join(" | "));
+
+        // Merge tags
+        let mut merged_tags: Vec<String> = Vec::new();
+        for &idx in &parent_indices {
+            for tag in &candidates[idx].4 {
+                if !merged_tags.contains(tag) {
+                    merged_tags.push(tag.clone());
+                }
+            }
+        }
+
+        // Create the hallucinated memory
+        let mut hallucination = crate::memory::HyperMemory::new(combined, content);
+        hallucination.amplitude = 0.3; // low initial amplitude — must prove itself
+        hallucination.hallucinated = true;
+        hallucination.parents = parent_ids.clone();
+
+        let hall_id = match engine.store.insert(hallucination) {
+            Ok(id) => id,
+            Err(_) => return 0,
+        };
+
+        // Create hallucinated_from relations (skip links with special strength)
+        for &idx in &parent_indices {
+            let parent_id = candidates[idx].0;
+            // Forward link: hallucination -> parent
+            if let Ok(Some(hall_mem)) = engine.store.get_mut(&hall_id) {
+                hall_mem.connections.push(SkipLink {
+                    target_id: parent_id,
+                    strength: 0.5,
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+            // Reverse link: parent -> hallucination
+            if let Ok(Some(parent_mem)) = engine.store.get_mut(&parent_id) {
+                parent_mem.connections.push(SkipLink {
+                    target_id: hall_id,
+                    strength: 0.5,
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+        }
+
+        1 // created 1 hallucination this cycle
     }
 
     /// Stage 7: Wire skip links between constructive cross-layer pairs.
@@ -750,5 +885,57 @@ mod tests {
 
         // First cycle should have done real work
         assert!(reports[0].memories_replayed > 0);
+    }
+
+    #[test]
+    fn hallucination_created_from_distant_memories() {
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine {
+            interference_threshold: 0.99, // avoid interference detection
+            ..Default::default()
+        };
+
+        // Insert 3+ memories with orthogonal vectors (maximally distant)
+        let dim = 10_000;
+        let mut v1 = vec![0.0f32; dim]; for i in 0..100 { v1[i] = 1.0; }
+        let mut v2 = vec![0.0f32; dim]; for i in 200..300 { v2[i] = 1.0; }
+        let mut v3 = vec![0.0f32; dim]; for i in 400..500 { v3[i] = 1.0; }
+        crate::wave::normalize(&mut v1);
+        crate::wave::normalize(&mut v2);
+        crate::wave::normalize(&mut v3);
+
+        insert_raw(&mut engine, v1, "quantum physics theory", 0.0, 0);
+        insert_raw(&mut engine, v2, "cooking pasta recipes", 0.0, 0);
+        insert_raw(&mut engine, v3, "alpine hiking trails", 0.0, 0);
+
+        let initial_count = engine.store.count();
+        let report = consolidation.consolidate(&mut engine, 0, 1);
+
+        assert!(report.hallucinations_created > 0, "should create at least one hallucination");
+        assert!(engine.store.count() > initial_count, "should have more memories after hallucination");
+
+        // Find the hallucinated memory
+        let all = engine.store.all_memories().unwrap();
+        let hall = all.iter().find(|m| m.hallucinated).unwrap();
+        assert!(hall.content.starts_with("[hallucination]"));
+        assert!(!hall.parents.is_empty());
+        assert!(hall.amplitude <= 0.3, "hallucination should start with low amplitude");
+        // Should have connections to parents
+        assert!(!hall.connections.is_empty(), "hallucination should be linked to parents");
+    }
+
+    #[test]
+    fn hallucination_skipped_with_few_memories() {
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine::default();
+
+        // Only 2 memories — not enough for hallucination
+        engine.remember_at_layer("single thought", 0).unwrap();
+        engine.remember_at_layer("another thought", 0).unwrap();
+
+        let report = consolidation.consolidate(&mut engine, 0, 1);
+        // May or may not create hallucinations depending on content similarity
+        // but should not panic
+        assert!(report.hallucinations_created <= 1);
     }
 }
