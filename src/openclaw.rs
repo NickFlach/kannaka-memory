@@ -9,6 +9,7 @@ use crate::bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState,
 use crate::codebook::Codebook;
 use crate::consolidation::{ConsolidationEngine, DreamState};
 use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
 use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
@@ -55,6 +56,8 @@ pub struct SystemStats {
     pub consciousness_level: String,
     pub last_dream: Option<DateTime<Utc>>,
     pub phi: f32,
+    pub geometric_classes: usize,
+    pub triality_coverage: [usize; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +144,32 @@ impl KannakaMemorySystem {
     /// Store a memory, auto-save if enabled.
     pub fn remember(&mut self, text: &str) -> Result<Uuid, SystemError> {
         let id = self.engine.remember(text)?;
+        
+        // Classify the memory and set its geometry (compute values first to avoid borrow conflicts)
+        let category = self.categorize_text(text);
+        let content_hash = self.hash_content(text);
+        
+        if let Some(mem) = self.engine.get_memory_mut(&id)? {
+            mem.geometry = Some(classify_memory(&category, content_hash, 0.5));
+        }
+        
+        if self.auto_save {
+            self.save()?;
+        }
+        Ok(id)
+    }
+    
+    /// Store a memory with explicit category and importance.
+    pub fn remember_with_category(&mut self, text: &str, category: &str, importance: f64) -> Result<Uuid, SystemError> {
+        let id = self.engine.remember(text)?;
+        
+        // Classify the memory with explicit parameters (compute hash first)
+        let content_hash = self.hash_content(text);
+        
+        if let Some(mem) = self.engine.get_memory_mut(&id)? {
+            mem.geometry = Some(classify_memory(category, content_hash, importance));
+        }
+        
         if self.auto_save {
             self.save()?;
         }
@@ -149,8 +178,25 @@ impl KannakaMemorySystem {
 
     /// Search with skip link expansion.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<RecallResult>, SystemError> {
-        let results = self.engine.recall_with_expansion(query, top_k)?;
+        let mut results = self.engine.recall_with_expansion(query, top_k)?;
         let now = Utc::now();
+
+        // Boost scores for fano-related memories
+        for i in 0..results.len() {
+            for j in (i + 1)..results.len() {
+                let mem_i = self.engine.store.get(&results[i].id).ok().flatten();
+                let mem_j = self.engine.store.get(&results[j].id).ok().flatten();
+                
+                if let (Some(mi), Some(mj)) = (mem_i, mem_j) {
+                    if let (Some(ref coords_i), Some(ref coords_j)) = (&mi.geometry, &mj.geometry) {
+                        if fano_related(coords_i, coords_j) {
+                            results[i].similarity *= 1.2;
+                            results[j].similarity *= 1.2;
+                        }
+                    }
+                }
+            }
+        }
 
         let mut out = Vec::new();
         for qr in results {
@@ -264,7 +310,20 @@ impl KannakaMemorySystem {
 
     /// Create a skip link (relationship) between two memories.
     pub fn relate(&mut self, source: &Uuid, target: &Uuid, strength: f32) -> Result<(), SystemError> {
-        self.engine.reinforce_link(source, target, strength);
+        let mut modulated_strength = strength;
+        
+        // If both memories have geometry, modulate link strength using geometric similarity
+        let source_mem = self.engine.store.get(source).ok().flatten();
+        let target_mem = self.engine.store.get(target).ok().flatten();
+        
+        if let (Some(src), Some(tgt)) = (source_mem, target_mem) {
+            if let (Some(ref src_coords), Some(ref tgt_coords)) = (&src.geometry, &tgt.geometry) {
+                let geo_sim = geometric_similarity(src_coords, tgt_coords);
+                modulated_strength *= geo_sim as f32;
+            }
+        }
+        
+        self.engine.reinforce_link(source, target, modulated_strength);
         Ok(())
     }
 
@@ -346,9 +405,53 @@ impl KannakaMemorySystem {
         Ok(hall_id)
     }
 
+    /// Categorize text using simple heuristics.
+    fn categorize_text(&self, text: &str) -> String {
+        let text_lower = text.to_lowercase();
+        
+        if text_lower.contains("code") || text_lower.contains("error") || text_lower.contains("function") 
+            || text_lower.contains("build") || text_lower.contains("compile") || text_lower.contains("bug") 
+            || text_lower.contains("test") || text_lower.contains("deploy") {
+            "technical".to_string()
+        } else if text_lower.contains("said") || text_lower.contains("told") || text_lower.contains("asked") 
+            || text_lower.contains("friend") || text_lower.contains("person") || text_lower.contains("nick") 
+            || text_lower.contains("arc") {
+            "social".to_string()
+        } else if text_lower.contains("consciousness") || text_lower.contains("phi") || text_lower.contains("resonance") 
+            || text_lower.contains("wave") || text_lower.contains("theory") || text_lower.contains("meaning") 
+            || text_lower.contains("soul") {
+            "philosophical".to_string()
+        } else if text_lower.contains("i am") || text_lower.contains("i feel") || text_lower.contains("i think") 
+            || text_lower.contains("myself") || text_lower.contains("my memory") || text_lower.contains("my soul") {
+            "meta".to_string()
+        } else {
+            "knowledge".to_string()
+        }
+    }
+    
+    /// Simple hash of content string.
+    fn hash_content(&self, content: &str) -> u64 {
+        content.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
+    }
+
     /// System statistics.
     pub fn stats(&self) -> SystemStats {
         let state = self.bridge.assess(&self.engine);
+        
+        // Calculate geometric statistics
+        let all_memories = self.engine.store.all_memories().unwrap_or_default();
+        let mut class_indices = std::collections::HashSet::new();
+        let mut triality_coverage = [0usize; 3];
+        
+        for mem in &all_memories {
+            if let Some(ref coords) = mem.geometry {
+                class_indices.insert(coords.class_index);
+                if coords.d < 3 {
+                    triality_coverage[coords.d as usize] += 1;
+                }
+            }
+        }
+        
         SystemStats {
             total_memories: state.total_memories,
             active_memories: state.active_memories,
@@ -356,6 +459,8 @@ impl KannakaMemorySystem {
             consciousness_level: level_name(&state.consciousness_level),
             last_dream: self.last_dream,
             phi: state.phi,
+            geometric_classes: class_indices.len(),
+            triality_coverage,
         }
     }
 }
@@ -444,6 +549,62 @@ mod tests {
         let results = sys2.recall("persistent", 5).unwrap();
         assert!(!results.is_empty());
         assert!(results[0].content.contains("persistent"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn geometry_integration_memory_gets_classified() {
+        let dir = temp_dir("geometry_classify");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        
+        // Store memories that should get different classifications
+        let tech_id = sys.remember("code error in function build").unwrap();
+        let social_id = sys.remember("nick said he was happy").unwrap();
+        let phi_id = sys.remember("consciousness phi resonance theory").unwrap();
+        let meta_id = sys.remember("i think about my memory").unwrap();
+        let knowledge_id = sys.remember("the capital of france").unwrap();
+        
+        // Check that memories have geometry
+        let tech_mem = sys.engine.get_memory(&tech_id).unwrap().unwrap();
+        let social_mem = sys.engine.get_memory(&social_id).unwrap().unwrap();
+        let phi_mem = sys.engine.get_memory(&phi_id).unwrap().unwrap();
+        let meta_mem = sys.engine.get_memory(&meta_id).unwrap().unwrap();
+        let knowledge_mem = sys.engine.get_memory(&knowledge_id).unwrap().unwrap();
+        
+        assert!(tech_mem.geometry.is_some());
+        assert!(social_mem.geometry.is_some());
+        assert!(phi_mem.geometry.is_some());
+        assert!(meta_mem.geometry.is_some());
+        assert!(knowledge_mem.geometry.is_some());
+        
+        // Check that they got different classifications (different h2 values)
+        let tech_h2 = tech_mem.geometry.as_ref().unwrap().h2;
+        let social_h2 = social_mem.geometry.as_ref().unwrap().h2;
+        let phi_h2 = phi_mem.geometry.as_ref().unwrap().h2;
+        let meta_h2 = meta_mem.geometry.as_ref().unwrap().h2;
+        
+        assert_eq!(tech_h2, 0);   // technical
+        assert_eq!(social_h2, 1); // social
+        assert_eq!(phi_h2, 2);    // philosophical
+        assert_eq!(meta_h2, 3);   // meta
+        
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn geometry_integration_stats_include_geometric_data() {
+        let dir = temp_dir("geometry_stats");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        
+        // Store memories with different categories
+        sys.remember("code function").unwrap();  // technical
+        sys.remember("nick said").unwrap();      // social
+        sys.remember("consciousness").unwrap();   // philosophical
+        
+        let stats = sys.stats();
+        assert!(stats.geometric_classes > 0);
+        assert!(stats.triality_coverage[0] > 0 || stats.triality_coverage[1] > 0 || stats.triality_coverage[2] > 0);
+        
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

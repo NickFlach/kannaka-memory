@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::geometry::MemoryCoordinates;
 use crate::skip_link::SkipLink;
 use crate::wave::{compute_strength, WaveParams};
 
@@ -33,6 +34,9 @@ pub struct HyperMemory {
     /// Parent memory IDs for hallucinated memories (lineage tracking)
     #[serde(default)]
     pub parents: Vec<String>,
+    /// Geometric coordinates in SGA space
+    #[serde(default)]
+    pub geometry: Option<MemoryCoordinates>,
 }
 
 impl HyperMemory {
@@ -52,6 +56,7 @@ impl HyperMemory {
             content,
             hallucinated: false,
             parents: Vec::new(),
+            geometry: None,
         }
     }
 

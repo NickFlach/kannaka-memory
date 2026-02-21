@@ -15,6 +15,7 @@ use std::time::Instant;
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
+use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
 use crate::skip_link::SkipLink;
 use crate::store::MemoryEngine;
@@ -499,9 +500,11 @@ impl ConsolidationEngine {
         1 // created 1 hallucination this cycle
     }
 
-    /// Stage 7: Wire skip links between constructive cross-layer pairs.
+    /// Stage 7: Wire skip links between constructive cross-layer pairs and Fano-related memories.
     fn stage_wire(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
+        
+        // Wire constructive cross-layer pairs
         for pair in pairs.iter().filter(|p| p.kind == Interference::Constructive) {
             // Check if they're at different layers
             let (layer_a, layer_b) = {
@@ -553,6 +556,54 @@ impl ConsolidationEngine {
             }
             count += 1;
         }
+        
+        // Wire Fano-related memories (NEW FEATURE)
+        let all_memories = engine.store.all_memories().unwrap_or_default();
+        
+        // Collect pairs for Fano-related linking (store IDs and necessary data to avoid borrowing issues)
+        let mut fano_pairs = Vec::new();
+        for i in 0..all_memories.len() {
+            for j in (i + 1)..all_memories.len() {
+                let mem_a = &all_memories[i];
+                let mem_b = &all_memories[j];
+                
+                if let (Some(ref coords_a), Some(ref coords_b)) = (&mem_a.geometry, &mem_b.geometry) {
+                    if fano_related(coords_a, coords_b) {
+                        // Check if link already exists
+                        let already_linked = mem_a.connections.iter().any(|l| l.target_id == mem_b.id) ||
+                                           mem_b.connections.iter().any(|l| l.target_id == mem_a.id);
+                        
+                        if !already_linked {
+                            let span = (mem_a.layer_depth as i16 - mem_b.layer_depth as i16).unsigned_abs() as u8;
+                            fano_pairs.push((mem_a.id, mem_b.id, span));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Now create the links using the collected pairs
+        for (id_a, id_b, span) in fano_pairs {
+            // Create bidirectional Fano links with strength 0.3
+            if let Some(mem_a_mut) = engine.store.get_mut(&id_a).ok().flatten() {
+                mem_a_mut.connections.push(SkipLink {
+                    target_id: id_b,
+                    strength: 0.3,
+                    resonance_key: Vec::new(),
+                    span,
+                });
+            }
+            if let Some(mem_b_mut) = engine.store.get_mut(&id_b).ok().flatten() {
+                mem_b_mut.connections.push(SkipLink {
+                    target_id: id_a,
+                    strength: 0.3,
+                    resonance_key: Vec::new(),
+                    span,
+                });
+            }
+            count += 1;
+        }
+        
         count
     }
 }

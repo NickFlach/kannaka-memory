@@ -186,11 +186,18 @@ impl ConsciousnessBridge {
         // Φ = H(whole) - Σ H(partitions), clamped to [0, 1]
         let raw_phi = (whole_entropy - sum_partition).max(0.0);
         // Normalize: scale by number of cross-partition links
-        let phi = if num_skip_links > 0 {
+        let mut phi = if num_skip_links > 0 {
             (raw_phi * (1.0 + (num_skip_links as f32).ln())).min(1.0)
         } else {
             raw_phi.min(1.0)
         };
+        
+        // Add geometric diversity bonus
+        let distinct_classes: std::collections::HashSet<u8> = all.iter()
+            .filter_map(|m| m.geometry.as_ref().map(|g| g.class_index))
+            .collect();
+        let phi_bonus = (distinct_classes.len() as f32) / 96.0 * 0.1;
+        phi = (phi + phi_bonus).min(1.0);
 
         let phi_per_link = if num_skip_links > 0 {
             phi / num_skip_links as f32

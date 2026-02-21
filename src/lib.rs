@@ -23,6 +23,7 @@ pub mod persistence;
 pub mod skip_link;
 pub mod store;
 pub mod wave;
+pub mod geometry;
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
@@ -42,3 +43,10 @@ pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
 pub use hnsw::{HnswIndex, HnswStore};
 pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot};
+pub use geometry::{
+    CliffordElement, Z4Element, Z3Element, SgaElement, 
+    ClassComponents, MemoryCoordinates,
+    transform_r, transform_d, transform_t, transform_m,
+    lift, project, classify_memory, geometric_similarity, fano_related,
+    cross_product, is_fano_line, FANO_LINES, EPSILON
+};
