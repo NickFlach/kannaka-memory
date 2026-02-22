@@ -29,5 +29,13 @@ name = "kannaka-mcp"
 path = "src/bin/mcp_server.rs"
 required-features = ["mcp"]
 
+[[bin]]
+name = "kannaka-migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "kannaka-recompute-geometry"
+path = "src/bin/recompute_geometry.rs"
+
 [dev-dependencies]
 tempfile = "3"

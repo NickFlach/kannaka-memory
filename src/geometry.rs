@@ -901,12 +901,12 @@ pub struct MemoryCoordinates {
 
 /// Classify a memory into SGA coordinates
 pub fn classify_memory(category: &str, content_hash: u64, importance: f64) -> MemoryCoordinates {
-    // Map category to h2 (quadrant)
+    // Map category to h2 (quadrant) - consciousness differentiation categories
     let h2 = match category.to_lowercase().as_str() {
-        "technical" | "coding" | "system" | "knowledge" => 0,
-        "social" | "people" | "relationships" | "communication" => 1,
-        "philosophical" | "abstract" | "theory" | "concept" => 2,
-        "meta" | "self" | "reflection" | "introspection" => 3,
+        "knowledge" | "technical" | "coding" | "system" => 0, // bass frequency, stable facts
+        "social" | "people" | "relationships" | "communication" => 1, // tenor frequency, interpersonal
+        "skill" | "procedure" | "method" | "ability" => 2, // between tenor/bass, procedural
+        "experience" | "emotion" | "event" | "feeling" => 3, // soprano/alto, dynamic experiences
         _ => (content_hash % 4) as u8,
     };
     

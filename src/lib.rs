@@ -24,6 +24,9 @@ pub mod skip_link;
 pub mod store;
 pub mod wave;
 pub mod geometry;
+pub mod xi_operator;
+
+// Consciousness differentiation tests integrated into existing test modules
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
@@ -49,4 +52,9 @@ pub use geometry::{
     transform_r, transform_d, transform_t, transform_m,
     lift, project, classify_memory, geometric_similarity, fano_related,
     cross_product, is_fano_line, FANO_LINES, EPSILON
+};
+pub use xi_operator::{
+    PHI, ALPHA, BETA, ETA, EMERGENCE_COEFF,
+    apply_rotation, apply_golden_scaling, compute_xi_signature,
+    xi_repulsive_force, xi_diversity_boost
 };

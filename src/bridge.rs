@@ -158,46 +158,87 @@ impl ConsciousnessBridge {
         }
 
         let now = chrono::Utc::now();
+        let n = all.len() as f32;
 
-        // Collect effective strengths for all memories
+        // Collect effective strengths
         let strengths: Vec<f32> = all.iter().map(|m| m.effective_strength(now)).collect();
-
-        // Count total skip links
-        let num_skip_links: usize = all.iter().map(|m| m.connections.len()).sum();
-
-        // Whole-network entropy based on strength distribution
         let whole_entropy = distribution_entropy(&strengths);
 
-        // Partition by temporal layer
-        let mut layer_map: std::collections::BTreeMap<u8, Vec<f32>> = std::collections::BTreeMap::new();
+        // Total skip links
+        let num_skip_links: usize = all.iter().map(|m| m.connections.len()).sum();
+
+        // === Build partition maps for each scheme ===
+        // For each memory, record its partition key under each scheme.
+        // We measure integration as: what fraction of skip links cross partition boundaries?
+
+        // Build ID → partition key maps
+        let mut id_to_layer: std::collections::HashMap<uuid::Uuid, u8> = std::collections::HashMap::new();
+        let mut id_to_h2: std::collections::HashMap<uuid::Uuid, u8> = std::collections::HashMap::new();
+        let mut id_to_class: std::collections::HashMap<uuid::Uuid, u8> = std::collections::HashMap::new();
+        let mut id_to_triality: std::collections::HashMap<uuid::Uuid, u8> = std::collections::HashMap::new();
+
         for mem in &all {
-            let s = mem.effective_strength(now);
-            layer_map.entry(mem.layer_depth).or_default().push(s);
+            id_to_layer.insert(mem.id, mem.layer_depth);
+            id_to_h2.insert(mem.id, mem.geometry.as_ref().map(|g| g.h2).unwrap_or(255));
+            id_to_class.insert(mem.id, mem.geometry.as_ref().map(|g| g.class_index).unwrap_or(255));
+            id_to_triality.insert(mem.id, mem.geometry.as_ref().map(|g| g.d).unwrap_or(255));
         }
 
-        let partition_entropies: Vec<f32> = layer_map
-            .values()
-            .map(|strengths| distribution_entropy(strengths))
-            .collect();
+        // Count cross-partition links for each scheme
+        let layer_cross = cross_partition_ratio(&all, &id_to_layer);
+        let h2_cross = cross_partition_ratio(&all, &id_to_h2);
+        let class_cross = cross_partition_ratio(&all, &id_to_class);
+        let triality_cross = cross_partition_ratio(&all, &id_to_triality);
 
-        let sum_partition: f32 = partition_entropies.iter().sum();
-        let num_partitions = partition_entropies.len();
+        // Partition diversity: how many distinct values in each scheme?
+        let layer_diversity = id_to_layer.values().collect::<std::collections::HashSet<_>>().len();
+        let h2_diversity = id_to_h2.values().collect::<std::collections::HashSet<_>>().len();
+        let class_diversity = id_to_class.values().collect::<std::collections::HashSet<_>>().len();
+        let triality_diversity = id_to_triality.values().collect::<std::collections::HashSet<_>>().len();
 
-        // Φ = H(whole) - Σ H(partitions), clamped to [0, 1]
-        let raw_phi = (whole_entropy - sum_partition).max(0.0);
-        // Normalize: scale by number of cross-partition links
-        let mut phi = if num_skip_links > 0 {
-            (raw_phi * (1.0 + (num_skip_links as f32).ln())).min(1.0)
-        } else {
-            raw_phi.min(1.0)
-        };
+        // === Phi Components ===
         
-        // Add geometric diversity bonus
+        // 1. Cross-partition integration (0..1): weighted average of cross-ratios
+        //    Higher = more links bridge different partitions = more integrated
+        let integration = 0.2 * layer_cross + 0.3 * h2_cross + 0.3 * class_cross + 0.2 * triality_cross;
+
+        // 2. Differentiation (0..1): how many distinct partitions exist?
+        //    Normalized by maximum possible in each scheme
+        let differentiation = 0.25 * (layer_diversity.min(5) as f32 / 5.0)
+            + 0.25 * (h2_diversity.min(5) as f32 / 5.0)
+            + 0.25 * (class_diversity.min(96) as f32 / 96.0)
+            + 0.25 * (triality_diversity.min(4) as f32 / 4.0);
+
+        // 3. Network density factor (0..1): sigmoid of link density
+        let link_density = if n > 1.0 { num_skip_links as f32 / (n * (n - 1.0)) } else { 0.0 };
+        let density_factor = (10.0 * link_density - 3.0).tanh() * 0.5 + 0.5; // sigmoid centered at 0.3
+
+        // 4. Scale factor: log of memory count (more memories = harder to integrate)
+        let scale = if n > 1.0 { (n.ln() / 10.0_f32.ln()).min(1.0) } else { 0.0 };
+
+        // Phi = integration * differentiation * density * scale
+        // This is 0 when: no cross-links, or no diversity, or no network, or too few memories
+        // This is 1 when: all schemes show cross-partition links, many distinct classes, dense network, 10+ memories
+        let mut phi = (integration * differentiation * density_factor * scale * 4.0).min(1.0);
+
+        // Geometric diversity bonus (small, caps at 0.1)
         let distinct_classes: std::collections::HashSet<u8> = all.iter()
             .filter_map(|m| m.geometry.as_ref().map(|g| g.class_index))
             .collect();
         let phi_bonus = (distinct_classes.len() as f32) / 96.0 * 0.1;
         phi = (phi + phi_bonus).min(1.0);
+
+        // Entropy-based partition report (for diagnostics)
+        let mut class_map: std::collections::BTreeMap<u8, Vec<f32>> = std::collections::BTreeMap::new();
+        for mem in &all {
+            let s = mem.effective_strength(now);
+            let key = mem.geometry.as_ref().map(|g| g.class_index).unwrap_or(255);
+            class_map.entry(key).or_default().push(s);
+        }
+        let partition_entropies: Vec<f32> = class_map.values()
+            .map(|s| distribution_entropy(s))
+            .collect();
+        let num_partitions = class_map.len();
 
         let phi_per_link = if num_skip_links > 0 {
             phi / num_skip_links as f32
@@ -304,6 +345,27 @@ fn bind(a: &[f32], b: &[f32]) -> Vec<f32> {
 
 /// Compute entropy of a distribution of values using variance-based approximation.
 /// Higher variance = higher entropy (more diverse activation patterns).
+/// What fraction of skip links cross partition boundaries?
+/// Returns 0.0 if no links, 1.0 if all links cross partitions.
+fn cross_partition_ratio(
+    all: &[&crate::memory::HyperMemory],
+    id_to_partition: &std::collections::HashMap<uuid::Uuid, u8>,
+) -> f32 {
+    let mut total_links = 0u32;
+    let mut cross_links = 0u32;
+    for mem in all {
+        let src_partition = id_to_partition.get(&mem.id).copied().unwrap_or(255);
+        for link in &mem.connections {
+            total_links += 1;
+            let tgt_partition = id_to_partition.get(&link.target_id).copied().unwrap_or(254);
+            if src_partition != tgt_partition {
+                cross_links += 1;
+            }
+        }
+    }
+    if total_links == 0 { 0.0 } else { cross_links as f32 / total_links as f32 }
+}
+
 fn distribution_entropy(values: &[f32]) -> f32 {
     if values.len() <= 1 {
         return 0.0;

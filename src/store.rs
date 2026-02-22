@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::encoding::{EncodingError, EncodingPipeline};
 use crate::memory::HyperMemory;
+use crate::xi_operator::{xi_diversity_boost, compute_xi_signature};
 use crate::skip_link::SkipLink;
 use crate::wave::cosine_similarity;
 
@@ -285,31 +286,51 @@ impl MemoryEngine {
         Ok(created_links)
     }
 
-    /// Encode a query and search with wave-modulated ranking.
+    /// Encode a query and search with wave-modulated ranking and Xi diversity boosting.
     pub fn recall(&self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
         let qvec = self.pipeline.encode_text(query)?;
+        let query_xi = compute_xi_signature(&qvec);
         let now = Utc::now();
         let raw = self.store.search(&qvec, self.store.count())?;
         let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
-        let wave_results = self.store.search_with_wave(&qvec, top_k, now)?;
+        let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?; // Get more candidates for diversity
 
         let results = wave_results
             .into_iter()
             .map(|(id, combined)| {
-                let similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                let effective_strength = if similarity.abs() > 1e-9 {
-                    combined / similarity
+                let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
+                
+                // Apply Xi diversity boosting
+                let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
+                    let mem_xi = if mem.xi_signature.is_empty() {
+                        // Compute on-the-fly for backward compatibility
+                        compute_xi_signature(&mem.vector)
+                    } else {
+                        mem.xi_signature.clone()
+                    };
+                    xi_diversity_boost(base_similarity, &query_xi, &mem_xi)
+                } else {
+                    base_similarity
+                };
+                
+                let effective_strength = if base_similarity.abs() > 1e-9 {
+                    combined / base_similarity
                 } else {
                     0.0
                 };
+                
                 QueryResult {
                     id,
-                    similarity,
+                    similarity: xi_boosted_similarity, // Use Xi-boosted similarity
                     effective_strength,
-                    combined_score: combined,
+                    combined_score: combined * (xi_boosted_similarity / base_similarity.max(1e-9)),
                 }
             })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .take(top_k) // Take only top_k after Xi boosting
             .collect();
+            
         Ok(results)
     }
 
@@ -320,6 +341,7 @@ impl MemoryEngine {
         top_k: usize,
     ) -> Result<Vec<QueryResult>, EngineError> {
         let qvec = self.pipeline.encode_text(query)?;
+        let query_xi = compute_xi_signature(&qvec);
         let now = Utc::now();
 
         // Step 1: Get initial candidates (top_k * 3)
@@ -359,21 +381,36 @@ impl MemoryEngine {
             self.reinforce_link(from_id, to_id, 0.05);
         }
 
-        // Step 4: Re-rank and return top_k
+        // Step 4: Re-rank with Xi diversity boosting and return top_k
         let mut results: Vec<QueryResult> = candidate_scores
             .into_iter()
             .map(|(id, combined_score)| {
-                let similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                let effective_strength = if similarity.abs() > 1e-9 {
-                    combined_score / similarity
+                let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
+                
+                // Apply Xi diversity boosting
+                let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
+                    let mem_xi = if mem.xi_signature.is_empty() {
+                        // Compute on-the-fly for backward compatibility
+                        compute_xi_signature(&mem.vector)
+                    } else {
+                        mem.xi_signature.clone()
+                    };
+                    xi_diversity_boost(base_similarity, &query_xi, &mem_xi)
+                } else {
+                    base_similarity
+                };
+                
+                let effective_strength = if base_similarity.abs() > 1e-9 {
+                    combined_score / base_similarity
                 } else {
                     0.0
                 };
+                
                 QueryResult {
                     id,
-                    similarity,
+                    similarity: xi_boosted_similarity,
                     effective_strength,
-                    combined_score,
+                    combined_score: combined_score * (xi_boosted_similarity / base_similarity.max(1e-9)),
                 }
             })
             .collect();

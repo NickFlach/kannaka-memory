@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
+use crate::xi_operator::{xi_repulsive_force, compute_xi_signature};
 use crate::skip_link::SkipLink;
 use crate::store::MemoryEngine;
 use crate::wave::{cosine_similarity, normalize};
@@ -115,6 +116,9 @@ impl ConsolidationEngine {
         let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
+        
+        // Stage 4.6: XI_REPULSION — Apply Xi-based memory separation
+        self.stage_xi_repulsion(engine, &working_set);
 
         // Stage 5: PRUNE — weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
@@ -250,73 +254,262 @@ impl ConsolidationEngine {
         count
     }
 
-    /// Stage 4.5: Kuramoto phase synchronization on detected clusters.
+    /// Stage 4.5: Category-aware Kuramoto phase synchronization with consciousness differentiation.
+    /// Implements differential coupling: strong within-category, weak cross-category.
     fn stage_sync(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> (usize, f32) {
-        // Build similarity graph among working set and find connected components
-        let mems: Vec<Option<crate::memory::HyperMemory>> = working_set
+        use std::collections::HashMap;
+        
+        // Collect memories with their categories
+        let mems_with_cats: Vec<(crate::memory::HyperMemory, String)> = working_set
             .iter()
-            .map(|id| engine.store.get(id).ok().flatten().cloned())
+            .filter_map(|id| {
+                engine.store.get(id).ok().flatten().cloned().and_then(|mem| {
+                    // Determine category from frequency range
+                    let category = match mem.frequency {
+                        f if f >= 1.8 && f <= 2.4 => "experience",
+                        f if f >= 1.3 && f < 1.8 => "emotion", 
+                        f if f >= 1.0 && f < 1.3 => "social",
+                        f if f >= 0.8 && f < 1.0 => "skill",
+                        _ => "knowledge",
+                    }.to_string();
+                    Some((mem, category))
+                })
+            })
             .collect();
 
-        let n = mems.len();
-        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if let (Some(a), Some(b)) = (&mems[i], &mems[j]) {
-                    let sim = cosine_similarity(&a.vector, &b.vector);
-                    if sim > self.kuramoto.coupling_threshold {
-                        adj[i].push(j);
-                        adj[j].push(i);
-                    }
-                }
-            }
+        if mems_with_cats.len() < 2 {
+            return (0, 0.0);
         }
 
-        // Find connected components
-        let mut visited = vec![false; n];
-        let mut clusters_synced = 0usize;
+        // Group by category for differentiated coupling
+        let mut category_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, (_, cat)) in mems_with_cats.iter().enumerate() {
+            category_groups.entry(cat.clone()).or_default().push(i);
+        }
+
         let mut total_improvement = 0.0f32;
-
-        for start in 0..n {
-            if visited[start] || mems[start].is_none() {
-                continue;
+        let mut categories_synced = 0usize;
+        
+        // Parameters from consciousness differentiation spec
+        let within_category_coupling = 1.8;  // K ≈ 1.8 for internal coherence
+        let cross_category_coupling = 0.3;   // K ≈ 0.3 for weak cross-connections
+        let dt = 0.05;  // Small time step for stability
+        let steps = 30; // Integration steps
+        
+        // Sync each category cluster separately, then apply cross-category coupling
+        for (category, indices) in &category_groups {
+            if indices.len() < 2 {
+                continue; // Need at least 2 memories to sync
             }
-            let mut component = vec![start];
-            let mut queue = vec![start];
-            visited[start] = true;
-            while let Some(node) = queue.pop() {
-                for &nb in &adj[node] {
-                    if !visited[nb] {
-                        visited[nb] = true;
-                        component.push(nb);
-                        queue.push(nb);
+            
+            let mut cat_mems: Vec<crate::memory::HyperMemory> = indices
+                .iter()
+                .map(|&i| mems_with_cats[i].0.clone())
+                .collect();
+                
+            let initial_order = self.compute_category_order_parameter(&cat_mems);
+            
+            // Within-category synchronization with strong coupling
+            for _ in 0..steps {
+                let phases: Vec<f32> = cat_mems.iter().map(|m| m.phase).collect();
+                let n = phases.len() as f32;
+                
+                for i in 0..cat_mems.len() {
+                    let mut phase_sum = 0.0f32;
+                    for j in 0..cat_mems.len() {
+                        if i != j {
+                            // Weight by semantic similarity within category
+                            let sim = cosine_similarity(&cat_mems[i].vector, &cat_mems[j].vector);
+                            if sim > self.kuramoto.coupling_threshold {
+                                phase_sum += sim * (phases[j] - phases[i]).sin();
+                            }
+                        }
+                    }
+                    
+                    // Kuramoto dynamics: θ̇ᵢ = ωᵢ + (K/N)Σsin(θⱼ - θᵢ)
+                    let dphi = cat_mems[i].frequency + (within_category_coupling / n) * phase_sum;
+                    cat_mems[i].phase += dphi * dt;
+                }
+            }
+            
+            let final_order = self.compute_category_order_parameter(&cat_mems);
+            total_improvement += final_order - initial_order;
+            
+            // Apply safety envelope: target R ∈ [0.55, 0.85] per category
+            if final_order > 0.92 {
+                // Too synchronized - add noise to break lockstep
+                for mem in &mut cat_mems {
+                    mem.phase += (mem.id.as_u128() as f32 % 100.0) * 0.001;  // Tiny deterministic noise
+                }
+            } else if final_order < 0.40 {
+                // Too chaotic - nudge toward mean phase
+                let mean_phase = self.compute_mean_phase(&cat_mems);
+                for mem in &mut cat_mems {
+                    mem.phase = 0.9 * mem.phase + 0.1 * mean_phase;
+                }
+            }
+            
+            // Write back the synchronized phases
+            for mem in &cat_mems {
+                if let Ok(Some(stored)) = engine.store.get_mut(&mem.id) {
+                    stored.phase = mem.phase;
+                }
+            }
+            
+            categories_synced += 1;
+        }
+        
+        // Cross-category weak coupling phase (connects categories but keeps them distinct)
+        if category_groups.len() > 1 {
+            let all_updated_mems: Vec<crate::memory::HyperMemory> = working_set
+                .iter()
+                .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+                .collect();
+                
+            // Light cross-category coupling to maintain coherent but distinct clusters
+            for _ in 0..5 {  // Fewer steps for cross-category
+                let phases: Vec<f32> = all_updated_mems.iter().map(|m| m.phase).collect();
+                let cats: Vec<String> = all_updated_mems.iter().map(|m| {
+                    match m.frequency {
+                        f if f >= 1.8 && f <= 2.4 => "experience",
+                        f if f >= 1.3 && f < 1.8 => "emotion", 
+                        f if f >= 1.0 && f < 1.3 => "social",
+                        f if f >= 0.8 && f < 1.0 => "skill",
+                        _ => "knowledge",
+                    }.to_string()
+                }).collect();
+                
+                let n = phases.len() as f32;
+                let mut phase_updates = vec![0.0f32; phases.len()];
+                
+                for i in 0..all_updated_mems.len() {
+                    let mut cross_sum = 0.0f32;
+                    for j in 0..all_updated_mems.len() {
+                        if i != j && cats[i] != cats[j] {  // Only cross-category coupling
+                            let sim = cosine_similarity(&all_updated_mems[i].vector, &all_updated_mems[j].vector);
+                            if sim > self.kuramoto.coupling_threshold * 0.5 {  // Lower threshold for cross-category
+                                cross_sum += sim * (phases[j] - phases[i]).sin();
+                            }
+                        }
+                    }
+                    
+                    phase_updates[i] = (cross_category_coupling / n) * cross_sum * dt;
+                }
+                
+                // Apply cross-category updates
+                for (i, mem_id) in working_set.iter().enumerate() {
+                    if let Ok(Some(mem)) = engine.store.get_mut(mem_id) {
+                        mem.phase += phase_updates.get(i).unwrap_or(&0.0);
                     }
                 }
             }
-            if component.len() < 2 {
-                continue;
-            }
-
-            // Clone memories for sync
-            let mut cluster_mems: Vec<crate::memory::HyperMemory> = component
-                .iter()
-                .filter_map(|&i| mems[i].clone())
-                .collect();
-            let mut refs: Vec<&mut crate::memory::HyperMemory> = cluster_mems.iter_mut().collect();
-            let report = self.kuramoto.sync_cluster(&mut refs);
-
-            // Write back phases
-            for m in &cluster_mems {
-                if let Ok(Some(stored)) = engine.store.get_mut(&m.id) {
-                    stored.phase = m.phase;
-                }
-            }
-
-            total_improvement += report.final_order - report.initial_order;
-            clusters_synced += 1;
         }
 
-        (clusters_synced, total_improvement)
+        (categories_synced, total_improvement)
+    }
+    
+    /// Compute order parameter R for a set of memories within the same category.
+    fn compute_category_order_parameter(&self, memories: &[crate::memory::HyperMemory]) -> f32 {
+        if memories.is_empty() {
+            return 0.0;
+        }
+        let n = memories.len() as f32;
+        let sum_cos: f32 = memories.iter().map(|m| m.phase.cos()).sum();
+        let sum_sin: f32 = memories.iter().map(|m| m.phase.sin()).sum();
+        ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt()
+    }
+    
+    /// Compute mean phase for a set of memories (circular mean).
+    fn compute_mean_phase(&self, memories: &[crate::memory::HyperMemory]) -> f32 {
+        if memories.is_empty() {
+            return 0.0;
+        }
+        let sum_cos: f32 = memories.iter().map(|m| m.phase.cos()).sum();
+        let sum_sin: f32 = memories.iter().map(|m| m.phase.sin()).sum();
+        sum_sin.atan2(sum_cos)
+    }
+    
+    /// Stage 4.6: Apply Xi-based repulsive forces to separate memories with similar content but different Xi residues.
+    /// This creates consciousness differentiation by pushing apart memories that are semantically similar
+    /// but have different non-commutative signatures.
+    fn stage_xi_repulsion(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) {
+        // Collect memories with their Xi signatures (compute missing signatures on-the-fly)
+        let mut memories_with_xi: Vec<(Uuid, Vec<f32>, Vec<f32>)> = Vec::new();
+        
+        for id in working_set {
+            if let Ok(Some(mem)) = engine.store.get(id) {
+                let xi_sig = if mem.xi_signature.is_empty() {
+                    // Compute Xi signature for memories that don't have it yet (backward compatibility)
+                    compute_xi_signature(&mem.vector)
+                } else {
+                    mem.xi_signature.clone()
+                };
+                memories_with_xi.push((*id, mem.vector.clone(), xi_sig));
+            }
+        }
+        
+        if memories_with_xi.len() < 2 {
+            return;
+        }
+        
+        // Find memory pairs that are semantically similar but have different Xi signatures
+        let mut repulsion_pairs: Vec<(Uuid, Uuid, f32)> = Vec::new();
+        
+        for i in 0..memories_with_xi.len() {
+            for j in (i + 1)..memories_with_xi.len() {
+                let (id_a, ref vec_a, ref xi_a) = memories_with_xi[i];
+                let (id_b, ref vec_b, ref xi_b) = memories_with_xi[j];
+                
+                let semantic_sim = cosine_similarity(vec_a, vec_b);
+                let xi_repulsion = xi_repulsive_force(xi_a, xi_b);
+                
+                // Target: memories that are semantically similar (>0.6) but have different Xi residues (>0.3)
+                if semantic_sim > 0.6 && xi_repulsion > 0.3 {
+                    repulsion_pairs.push((id_a, id_b, xi_repulsion));
+                }
+            }
+        }
+        
+        // Apply repulsive forces by adjusting phases and amplitudes
+        for (id_a, id_b, repulsion_strength) in repulsion_pairs {
+            // Get current phases
+            let (phase_a, phase_b) = {
+                let mem_a = engine.store.get(&id_a).ok().flatten();
+                let mem_b = engine.store.get(&id_b).ok().flatten();
+                match (mem_a, mem_b) {
+                    (Some(a), Some(b)) => (a.phase, b.phase),
+                    _ => continue,
+                }
+            };
+            
+            // Push phases apart (create π/2 phase difference for maximum differentiation)
+            let target_diff = std::f32::consts::PI / 2.0;
+            let current_diff = (phase_a - phase_b).abs();
+            let phase_correction = repulsion_strength * 0.5 * (target_diff - current_diff);
+            
+            // Apply phase separation
+            if let Ok(Some(mem_a)) = engine.store.get_mut(&id_a) {
+                mem_a.phase += phase_correction;
+            }
+            if let Ok(Some(mem_b)) = engine.store.get_mut(&id_b) {
+                mem_b.phase -= phase_correction;
+            }
+            
+            // Also slightly reduce amplitude correlation to encourage separate cluster formation
+            let amplitude_separation = repulsion_strength * 0.1;
+            
+            if let Ok(Some(mem_a)) = engine.store.get_mut(&id_a) {
+                // Boost amplitude of memory with higher initial amplitude
+                if mem_a.amplitude > 0.5 {
+                    mem_a.amplitude += amplitude_separation;
+                }
+            }
+            if let Ok(Some(mem_b)) = engine.store.get_mut(&id_b) {
+                if mem_b.amplitude > 0.5 {
+                    mem_b.amplitude += amplitude_separation;
+                }
+            }
+        }
     }
 
     /// Stage 5: Prune destructive interference pairs.

@@ -11,6 +11,7 @@ use crate::consolidation::{ConsolidationEngine, DreamState};
 use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
 use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
+use crate::xi_operator::compute_xi_signature;
 use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
@@ -145,12 +146,18 @@ impl KannakaMemorySystem {
     pub fn remember(&mut self, text: &str) -> Result<Uuid, SystemError> {
         let id = self.engine.remember(text)?;
         
-        // Classify the memory and set its geometry (compute values first to avoid borrow conflicts)
+        // Classify the memory and set its geometry and frequency-class (compute values first to avoid borrow conflicts)
         let category = self.categorize_text(text);
         let content_hash = self.hash_content(text);
+        let (frequency, phase) = self.assign_frequency_class(&category, content_hash);
         
         if let Some(mem) = self.engine.get_memory_mut(&id)? {
             mem.geometry = Some(classify_memory(&category, content_hash, 0.5));
+            // Apply consciousness differentiation frequency-class assignment
+            mem.frequency = frequency;
+            mem.phase = phase;
+            // Compute and store Xi signature for consciousness differentiation
+            mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
         if self.auto_save {
@@ -163,11 +170,17 @@ impl KannakaMemorySystem {
     pub fn remember_with_category(&mut self, text: &str, category: &str, importance: f64) -> Result<Uuid, SystemError> {
         let id = self.engine.remember(text)?;
         
-        // Classify the memory with explicit parameters (compute hash first)
+        // Classify the memory with explicit parameters (compute values first)
         let content_hash = self.hash_content(text);
+        let (frequency, phase) = self.assign_frequency_class(category, content_hash);
         
         if let Some(mem) = self.engine.get_memory_mut(&id)? {
             mem.geometry = Some(classify_memory(category, content_hash, importance));
+            // Apply consciousness differentiation frequency-class assignment
+            mem.frequency = frequency;
+            mem.phase = phase;
+            // Compute and store Xi signature for consciousness differentiation
+            mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
         if self.auto_save {
@@ -405,28 +418,110 @@ impl KannakaMemorySystem {
         Ok(hall_id)
     }
 
-    /// Categorize text using simple heuristics.
+    /// Recompute geometry and Xi signatures for all memories that are missing them.
+    /// Returns the number of memories updated.
+    pub fn recompute_geometry(&mut self) -> Result<usize, SystemError> {
+        let all_ids: Vec<Uuid> = self.engine.store.all_ids()?;
+        let mut updated = 0;
+
+        // First pass: collect data for memories needing updates
+        let mut to_update: Vec<(Uuid, String, u64, (f32, f32), Vec<f32>, bool, bool)> = Vec::new();
+        for id in &all_ids {
+            if let Ok(Some(mem)) = self.engine.store.get(id) {
+                let needs_geometry = mem.geometry.is_none();
+                let needs_xi = mem.xi_signature.is_empty();
+                
+                if needs_geometry || needs_xi {
+                    let category = self.categorize_text(&mem.content);
+                    let content_hash = self.hash_content(&mem.content);
+                    let (freq, phase) = self.assign_frequency_class(&category, content_hash);
+                    let xi_sig = compute_xi_signature(&mem.vector);
+                    to_update.push((*id, category, content_hash, (freq, phase), xi_sig, needs_geometry, needs_xi));
+                }
+            }
+        }
+
+        // Second pass: apply updates
+        for (id, category, content_hash, (freq, phase), xi_sig, needs_geometry, needs_xi) in to_update {
+            if let Ok(Some(mem)) = self.engine.store.get_mut(&id) {
+                if needs_geometry {
+                    mem.geometry = Some(classify_memory(&category, content_hash, 0.5));
+                    // Also update frequency-class assignment for consciousness differentiation
+                    mem.frequency = freq;
+                    mem.phase = phase;
+                }
+                if needs_xi {
+                    mem.xi_signature = xi_sig;
+                }
+                updated += 1;
+            }
+        }
+
+        if updated > 0 && self.auto_save {
+            self.save()?;
+        }
+        Ok(updated)
+    }
+
+    /// Categorize text using simple heuristics, mapping to the 5 consciousness categories.
     fn categorize_text(&self, text: &str) -> String {
         let text_lower = text.to_lowercase();
         
-        if text_lower.contains("code") || text_lower.contains("error") || text_lower.contains("function") 
-            || text_lower.contains("build") || text_lower.contains("compile") || text_lower.contains("bug") 
-            || text_lower.contains("test") || text_lower.contains("deploy") {
-            "technical".to_string()
+        // Experience - direct events, actions, sensory input
+        if text_lower.contains("saw") || text_lower.contains("heard") || text_lower.contains("did") 
+            || text_lower.contains("went") || text_lower.contains("happened") || text_lower.contains("occurred")
+            || text_lower.contains("experience") || text_lower.contains("event") || text_lower.contains("today")
+            || text_lower.contains("yesterday") || text_lower.contains("just") {
+            "experience".to_string()
+        // Emotion - feelings, moods, emotional states
+        } else if text_lower.contains("feel") || text_lower.contains("felt") || text_lower.contains("happy") 
+            || text_lower.contains("sad") || text_lower.contains("angry") || text_lower.contains("excited")
+            || text_lower.contains("worried") || text_lower.contains("love") || text_lower.contains("hate")
+            || text_lower.contains("emotion") || text_lower.contains("mood") {
+            "emotion".to_string()
+        // Social - interpersonal interactions, relationships
         } else if text_lower.contains("said") || text_lower.contains("told") || text_lower.contains("asked") 
             || text_lower.contains("friend") || text_lower.contains("person") || text_lower.contains("nick") 
-            || text_lower.contains("arc") {
+            || text_lower.contains("people") || text_lower.contains("conversation") || text_lower.contains("meeting")
+            || text_lower.contains("together") || text_lower.contains("team") {
             "social".to_string()
-        } else if text_lower.contains("consciousness") || text_lower.contains("phi") || text_lower.contains("resonance") 
-            || text_lower.contains("wave") || text_lower.contains("theory") || text_lower.contains("meaning") 
-            || text_lower.contains("soul") {
-            "philosophical".to_string()
-        } else if text_lower.contains("i am") || text_lower.contains("i feel") || text_lower.contains("i think") 
-            || text_lower.contains("myself") || text_lower.contains("my memory") || text_lower.contains("my soul") {
-            "meta".to_string()
+        // Skill - procedures, abilities, how-to knowledge
+        } else if text_lower.contains("how to") || text_lower.contains("procedure") || text_lower.contains("method")
+            || text_lower.contains("code") || text_lower.contains("function") || text_lower.contains("build") 
+            || text_lower.contains("compile") || text_lower.contains("deploy") || text_lower.contains("technique")
+            || text_lower.contains("practice") || text_lower.contains("ability") {
+            "skill".to_string()
+        // Knowledge - facts, concepts, theories (default)
         } else {
             "knowledge".to_string()
         }
+    }
+    
+    /// Assign frequency and phase based on category for consciousness differentiation.
+    /// Maps categories to frequency bands as specified in the deep dive findings.
+    fn assign_frequency_class(&self, category: &str, content_hash: u64) -> (f32, f32) {
+        use rand::{Rng, SeedableRng};
+        use rand_chacha::ChaCha8Rng;
+        
+        // Use content hash as seed for deterministic randomness
+        let mut rng = ChaCha8Rng::seed_from_u64(content_hash);
+        
+        let (freq_min, freq_max) = match category {
+            "experience" => (1.8, 2.4),  // soprano (fast, ephemeral)
+            "emotion" => (1.3, 1.8),     // alto (feeling-paced)
+            "social" => (1.0, 1.4),      // tenor (interpersonal rhythm)
+            "skill" => (0.8, 1.2),       // between tenor/bass (procedural)
+            "knowledge" => (0.6, 1.1),   // bass (slow, stable)
+            _ => (0.6, 1.1),              // default to knowledge bass range
+        };
+        
+        // Random frequency within the category's band
+        let frequency = rng.gen_range(freq_min..freq_max);
+        
+        // Random initial phase [0, 2π)
+        let phase = rng.gen_range(0.0..(2.0 * std::f32::consts::PI));
+        
+        (frequency, phase)
     }
     
     /// Simple hash of content string.
@@ -434,6 +529,11 @@ impl KannakaMemorySystem {
         content.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
     }
 
+    /// Get memory by ID (public API for testing).
+    pub fn get_memory(&self, id: &Uuid) -> Result<Option<&crate::memory::HyperMemory>, SystemError> {
+        Ok(self.engine.store.get(id)?)
+    }
+    
     /// System statistics.
     pub fn stats(&self) -> SystemStats {
         let state = self.bridge.assess(&self.engine);
@@ -557,36 +657,57 @@ mod tests {
         let dir = temp_dir("geometry_classify");
         let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
         
-        // Store memories that should get different classifications
-        let tech_id = sys.remember("code error in function build").unwrap();
-        let social_id = sys.remember("nick said he was happy").unwrap();
-        let phi_id = sys.remember("consciousness phi resonance theory").unwrap();
-        let meta_id = sys.remember("i think about my memory").unwrap();
-        let knowledge_id = sys.remember("the capital of france").unwrap();
+        // Store memories that should get different consciousness differentiation classifications
+        let skill_id = sys.remember("how to code a function build").unwrap(); // skill
+        let social_id = sys.remember("nick told me about the meeting").unwrap(); // social (no emotion words)
+        let knowledge_id = sys.remember("the capital of france").unwrap();     // knowledge
+        let experience_id = sys.remember("I saw a beautiful sunset today").unwrap(); // experience
+        let emotion_id = sys.remember("I feel excited about this").unwrap();   // emotion
         
         // Check that memories have geometry
-        let tech_mem = sys.engine.get_memory(&tech_id).unwrap().unwrap();
+        let skill_mem = sys.engine.get_memory(&skill_id).unwrap().unwrap();
         let social_mem = sys.engine.get_memory(&social_id).unwrap().unwrap();
-        let phi_mem = sys.engine.get_memory(&phi_id).unwrap().unwrap();
-        let meta_mem = sys.engine.get_memory(&meta_id).unwrap().unwrap();
         let knowledge_mem = sys.engine.get_memory(&knowledge_id).unwrap().unwrap();
+        let experience_mem = sys.engine.get_memory(&experience_id).unwrap().unwrap();
+        let emotion_mem = sys.engine.get_memory(&emotion_id).unwrap().unwrap();
         
-        assert!(tech_mem.geometry.is_some());
+        assert!(skill_mem.geometry.is_some());
         assert!(social_mem.geometry.is_some());
-        assert!(phi_mem.geometry.is_some());
-        assert!(meta_mem.geometry.is_some());
         assert!(knowledge_mem.geometry.is_some());
+        assert!(experience_mem.geometry.is_some());
+        assert!(emotion_mem.geometry.is_some());
         
-        // Check that they got different classifications (different h2 values)
-        let tech_h2 = tech_mem.geometry.as_ref().unwrap().h2;
+        // Check consciousness differentiation: frequency assignments and Xi signatures
+        assert!(!skill_mem.xi_signature.is_empty());
+        assert!(!social_mem.xi_signature.is_empty());
+        assert!(!knowledge_mem.xi_signature.is_empty());
+        assert!(!experience_mem.xi_signature.is_empty());
+        assert!(!emotion_mem.xi_signature.is_empty());
+        
+        // Check that they got classified into different categories via frequency ranges
+        let skill_freq = skill_mem.frequency;      // should be 0.8-1.2 (between tenor/bass)
+        let social_freq = social_mem.frequency;    // should be 1.0-1.4 (tenor)
+        let knowledge_freq = knowledge_mem.frequency; // should be 0.6-1.1 (bass)
+        let experience_freq = experience_mem.frequency; // should be 1.8-2.4 (soprano)
+        let emotion_freq = emotion_mem.frequency;  // should be 1.3-1.8 (alto)
+        
+        // Check consciousness differentiation frequency assignments
+        assert!(skill_freq >= 0.8 && skill_freq < 1.21, "Skill frequency {} not in expected range [0.8, 1.2)", skill_freq);
+        assert!(social_freq >= 1.0 && social_freq < 1.41, "Social frequency {} not in expected range [1.0, 1.4)", social_freq);
+        assert!(knowledge_freq >= 0.6 && knowledge_freq < 1.11, "Knowledge frequency {} not in expected range [0.6, 1.1)", knowledge_freq);
+        assert!(experience_freq >= 1.8 && experience_freq < 2.41, "Experience frequency {} not in expected range [1.8, 2.4)", experience_freq);
+        assert!(emotion_freq >= 1.3 && emotion_freq < 1.81, "Emotion frequency {} not in expected range [1.3, 1.8)", emotion_freq);
+        
+        // Check geometry h2 values (now map to the consciousness categories)
+        let skill_h2 = skill_mem.geometry.as_ref().unwrap().h2;
         let social_h2 = social_mem.geometry.as_ref().unwrap().h2;
-        let phi_h2 = phi_mem.geometry.as_ref().unwrap().h2;
-        let meta_h2 = meta_mem.geometry.as_ref().unwrap().h2;
+        let knowledge_h2 = knowledge_mem.geometry.as_ref().unwrap().h2;
+        let experience_h2 = experience_mem.geometry.as_ref().unwrap().h2;
         
-        assert_eq!(tech_h2, 0);   // technical
-        assert_eq!(social_h2, 1); // social
-        assert_eq!(phi_h2, 2);    // philosophical
-        assert_eq!(meta_h2, 3);   // meta
+        assert_eq!(skill_h2, 2);      // skill -> h2=2  
+        assert_eq!(social_h2, 1);     // social -> h2=1
+        assert_eq!(knowledge_h2, 0);  // knowledge -> h2=0
+        assert_eq!(experience_h2, 3); // experience -> h2=3
         
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -596,10 +717,10 @@ mod tests {
         let dir = temp_dir("geometry_stats");
         let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
         
-        // Store memories with different categories
-        sys.remember("code function").unwrap();  // technical
-        sys.remember("nick said").unwrap();      // social
-        sys.remember("consciousness").unwrap();   // philosophical
+        // Store memories with different consciousness differentiation categories
+        sys.remember("how to code a function").unwrap();  // skill
+        sys.remember("nick said he was happy").unwrap();   // social
+        sys.remember("the capital of france is paris").unwrap(); // knowledge
         
         let stats = sys.stats();
         assert!(stats.geometric_classes > 0);

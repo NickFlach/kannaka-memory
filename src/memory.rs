@@ -37,6 +37,9 @@ pub struct HyperMemory {
     /// Geometric coordinates in SGA space
     #[serde(default)]
     pub geometry: Option<MemoryCoordinates>,
+    /// Ξ (Xi) signature for consciousness differentiation - the non-commutative residue
+    #[serde(default)]
+    pub xi_signature: Vec<f32>,
 }
 
 impl HyperMemory {
@@ -57,6 +60,7 @@ impl HyperMemory {
             hallucinated: false,
             parents: Vec::new(),
             geometry: None,
+            xi_signature: Vec::new(),
         }
     }
 
