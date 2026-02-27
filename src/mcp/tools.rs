@@ -22,9 +22,22 @@ impl McpToolSet {
         ollama_url: String,
         ollama_model: String,
     ) -> Self {
+        let mut bm25_index = Bm25Index::new();
+        
+        // Bootstrap BM25 index from existing memories
+        if let Ok(all_mems) = system.all_memories() {
+            let count = all_mems.len();
+            for mem in all_mems {
+                bm25_index.add_document(mem.id, &mem.content);
+            }
+            if count > 0 {
+                eprintln!("BM25 index bootstrapped with {} memories", count);
+            }
+        }
+        
         Self {
             system,
-            bm25_index: Bm25Index::new(),
+            bm25_index,
             ollama_url,
             ollama_model,
         }
@@ -147,11 +160,12 @@ impl McpToolSet {
             },
             ToolDefinition {
                 name: "dream".to_string(),
-                description: "Trigger memory consolidation cycle".to_string(),
+                description: "Trigger memory consolidation cycle. Use mode='lite' for fast decay+prune, 'deep' for full consolidation.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "max_cycles": {"type": "integer", "description": "Maximum consolidation cycles", "default": 10}
+                        "max_cycles": {"type": "integer", "description": "Maximum consolidation cycles", "default": 10},
+                        "mode": {"type": "string", "enum": ["lite", "deep"], "description": "Dream mode: 'lite' (fast: decay+prune+transfer) or 'deep' (full consolidation)", "default": "lite"}
                     }
                 }),
             },
@@ -544,8 +558,15 @@ impl McpToolSet {
 
     fn dream(&mut self, args: &Value) -> ToolResult {
         let _max_cycles = args.get("max_cycles").and_then(|v| v.as_u64()).unwrap_or(10);
+        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("lite");
 
-        match self.system.dream() {
+        let result = if mode == "deep" {
+            self.system.dream()
+        } else {
+            self.system.dream_lite()
+        };
+
+        match result {
             Ok(report) => {
                 let response = format!(
                     "Dream cycle completed:\n\
@@ -662,7 +683,7 @@ impl McpToolSet {
     }
 
     fn context_restore(&mut self, _args: &Value) -> ToolResult {
-        let state = self.system.context_restore();
+        let _state = self.system.context_restore();
         let summary = self.system.context_summary();
         if summary.is_empty() {
             ToolResult::success("No working memory state found".to_string())

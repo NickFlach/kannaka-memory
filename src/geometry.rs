@@ -9,7 +9,7 @@
 //! system, enabling geometric semantics for memory operations.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher, DefaultHasher};
+
 
 /// Tolerance for floating-point comparisons
 pub const EPSILON: f64 = 1e-10;
@@ -90,7 +90,7 @@ impl CliffordElement {
     /// Simplify blade multiplication using anticommutation rules
     /// Returns (simplified blade, sign)
     fn simplify_blade_merge(blade_a: u8, blade_b: u8) -> (u8, i8) {
-        let mut result = blade_a ^ blade_b; // XOR gives the symmetric difference
+        let result = blade_a ^ blade_b; // XOR gives the symmetric difference
         let mut sign = 1;
         
         // Count the number of swaps needed to bring blade_a and blade_b together
@@ -720,7 +720,7 @@ pub fn transform_m(element: &SgaElement) -> SgaElement {
 impl SgaElement {
     /// Get the overall coefficient of a rank-1 element
     fn get_overall_coefficient(&self) -> f64 {
-        if let Some((blade, coeff)) = self.clifford.grades.iter().next() {
+        if let Some((_blade, coeff)) = self.clifford.grades.iter().next() {
             *coeff
         } else {
             0.0

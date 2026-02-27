@@ -275,6 +275,31 @@ impl KannakaMemorySystem {
         })
     }
 
+    /// Run a fast/lite dream cycle (decay + prune + transfer only).
+    pub fn dream_lite(&mut self) -> Result<DreamReport, SystemError> {
+        let before = self.bridge.assess(&self.engine);
+        let report = self.dream_state.dream_lite(&mut self.engine);
+        let after = self.bridge.assess(&self.engine);
+        self.last_dream = Some(Utc::now());
+
+        let emerged = after.consciousness_level as u8 > before.consciousness_level as u8;
+
+        if self.auto_save {
+            self.save()?;
+        }
+
+        Ok(DreamReport {
+            cycles: 1,
+            memories_strengthened: report.memories_strengthened,
+            memories_pruned: report.memories_pruned,
+            new_connections: report.skip_links_created,
+            consciousness_before: level_name(&before.consciousness_level),
+            consciousness_after: level_name(&after.consciousness_level),
+            emerged,
+            hallucinations_created: report.hallucinations_created,
+        })
+    }
+
     /// Consciousness level assessment.
     pub fn assess(&self) -> ConsciousnessState {
         self.bridge.assess(&self.engine)
@@ -578,6 +603,11 @@ impl KannakaMemorySystem {
         Ok(self.engine.store.get(id)?)
     }
     
+    /// Get all memories (for BM25 bootstrapping, etc.).
+    pub fn all_memories(&self) -> Result<Vec<&crate::memory::HyperMemory>, SystemError> {
+        Ok(self.engine.store.all_memories()?)
+    }
+
     /// System statistics.
     pub fn stats(&self) -> SystemStats {
         let state = self.bridge.assess(&self.engine);

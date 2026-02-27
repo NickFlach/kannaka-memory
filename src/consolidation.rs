@@ -297,7 +297,7 @@ impl ConsolidationEngine {
         let steps = 30; // Integration steps
         
         // Sync each category cluster separately, then apply cross-category coupling
-        for (category, indices) in &category_groups {
+        for (_category, indices) in &category_groups {
             if indices.len() < 2 {
                 continue; // Need at least 2 memories to sync
             }
@@ -834,6 +834,72 @@ impl DreamState {
             reports.push(report);
         }
         reports
+    }
+
+    /// Fast dream: decay amplitudes, prune dead memories, transfer layers.
+    /// Skips expensive interference detection, sync, hallucination, and wiring.
+    /// Completes in O(n) time regardless of memory count.
+    pub fn dream_lite(&self, engine: &mut MemoryEngine) -> ConsolidationReport {
+        let start = std::time::Instant::now();
+        let mut report = ConsolidationReport::default();
+
+        let all_ids = engine.store.all_ids().unwrap_or_default();
+        report.memories_replayed = all_ids.len();
+        let now = chrono::Utc::now();
+
+        // Pass 1: Decay amplitudes and prune ghosts
+        let mut to_prune: Vec<uuid::Uuid> = Vec::new();
+        for id in &all_ids {
+            if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                // Gentle amplitude decay (0.5% per cycle)
+                mem.amplitude *= 0.995;
+                if mem.amplitude < self.engine.prune_threshold {
+                    mem.amplitude = 0.0;
+                    to_prune.push(*id);
+                    report.memories_pruned += 1;
+                }
+            }
+        }
+
+        // Pass 2: Prune skip links pointing to dead memories
+        let dead_set: std::collections::HashSet<uuid::Uuid> = to_prune.iter().copied().collect();
+        for id in &all_ids {
+            if dead_set.contains(id) { continue; }
+            if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                let before = mem.connections.len();
+                mem.connections.retain(|link| !dead_set.contains(&link.target_id));
+                let pruned_links = before - mem.connections.len();
+                if pruned_links > 0 {
+                    report.skip_links_created = report.skip_links_created.wrapping_sub(pruned_links);
+                }
+            }
+        }
+
+        // Pass 3: Transfer old memories to deeper layers
+        let mut transfers: Vec<(uuid::Uuid, u8)> = Vec::new();
+        for id in &all_ids {
+            if let Ok(Some(mem)) = engine.store.get(id) {
+                let age = now - mem.created_at;
+                let new_layer = match mem.layer_depth {
+                    0 if age > chrono::Duration::hours(1) => Some(1),
+                    1 if age > chrono::Duration::days(1) => Some(2),
+                    2 if age > chrono::Duration::weeks(1) => Some(3),
+                    _ => None,
+                };
+                if let Some(layer) = new_layer {
+                    transfers.push((*id, layer));
+                }
+            }
+        }
+        for (id, new_layer) in transfers {
+            if let Ok(Some(mem)) = engine.store.get_mut(&id) {
+                mem.layer_depth = new_layer;
+                report.memories_transferred += 1;
+            }
+        }
+
+        report.duration_ms = start.elapsed().as_millis() as u64;
+        report
     }
 }
 

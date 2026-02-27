@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
-use crate::store::{MemoryEngine, MemoryStore};
+use crate::store::MemoryEngine;
 
 // ---------------------------------------------------------------------------
 // Types
