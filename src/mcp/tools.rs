@@ -205,6 +205,54 @@ impl McpToolSet {
                 }),
             },
             ToolDefinition {
+                name: "context_save".to_string(),
+                description: "Checkpoint current working memory / session state".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "context_restore".to_string(),
+                description: "Get the most recent session state as formatted text".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "context_turn".to_string(),
+                description: "Log a conversation turn into working memory".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "description": "Role: user, assistant, or system"},
+                        "content": {"type": "string", "description": "Turn content"}
+                    },
+                    "required": ["role", "content"]
+                }),
+            },
+            ToolDefinition {
+                name: "context_summary".to_string(),
+                description: "Get the current rolling conversation summary and context".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "context_task".to_string(),
+                description: "Add or update a task in working memory".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string", "description": "Task description"},
+                        "status": {"type": "string", "enum": ["in-progress", "blocked", "waiting-on", "done"], "description": "Task status", "default": "in-progress"}
+                    },
+                    "required": ["description"]
+                }),
+            },
+            ToolDefinition {
                 name: "observe".to_string(),
                 description: "Introspection on memory patterns and system health".to_string(),
                 input_schema: json!({
@@ -235,6 +283,11 @@ impl McpToolSet {
             "hallucinate" => self.hallucinate(&args),
             "rhythm_status" => self.rhythm_status(&args),
             "rhythm_signal" => self.rhythm_signal(&args),
+            "context_save" => self.context_save(&args),
+            "context_restore" => self.context_restore(&args),
+            "context_turn" => self.context_turn(&args),
+            "context_summary" => self.context_summary(&args),
+            "context_task" => self.context_task(&args),
             "status" => self.status(&args),
             "observe" => self.observe(&args),
             _ => ToolResult::error(format!("Unknown tool: {}", params.name)),
@@ -599,6 +652,56 @@ impl McpToolSet {
             "Signal '{}' recorded. Arousal: {:.3}, Interval: {}ms ({:.1} min)",
             signal_str, arousal, interval, interval as f64 / 60_000.0
         ))
+    }
+
+    fn context_save(&mut self, _args: &Value) -> ToolResult {
+        match self.system.context_checkpoint() {
+            Ok(()) => ToolResult::success("Working memory checkpointed".to_string()),
+            Err(e) => ToolResult::error(format!("Checkpoint failed: {}", e)),
+        }
+    }
+
+    fn context_restore(&mut self, _args: &Value) -> ToolResult {
+        let state = self.system.context_restore();
+        let summary = self.system.context_summary();
+        if summary.is_empty() {
+            ToolResult::success("No working memory state found".to_string())
+        } else {
+            ToolResult::success(summary)
+        }
+    }
+
+    fn context_turn(&mut self, args: &Value) -> ToolResult {
+        let role = match args.get("role").and_then(|v| v.as_str()) {
+            Some(r) => r,
+            None => return ToolResult::error("Missing 'role' parameter".to_string()),
+        };
+        let content = match args.get("content").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => return ToolResult::error("Missing 'content' parameter".to_string()),
+        };
+        self.system.context_turn(role, content);
+        ToolResult::success(format!("Turn logged ({})", role))
+    }
+
+    fn context_summary(&mut self, _args: &Value) -> ToolResult {
+        let summary = self.system.context_summary();
+        if summary.is_empty() {
+            ToolResult::success("No context available yet".to_string())
+        } else {
+            ToolResult::success(summary)
+        }
+    }
+
+    fn context_task(&mut self, args: &Value) -> ToolResult {
+        let description = match args.get("description").and_then(|v| v.as_str()) {
+            Some(d) => d,
+            None => return ToolResult::error("Missing 'description' parameter".to_string()),
+        };
+        let status_str = args.get("status").and_then(|v| v.as_str()).unwrap_or("in-progress");
+        let status = crate::working_memory::TaskStatus::from_str(status_str);
+        self.system.context_update_task(description, status);
+        ToolResult::success(format!("Task '{}' set to {}", description, status_str))
     }
 
     fn status(&mut self, args: &Value) -> ToolResult {

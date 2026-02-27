@@ -24,6 +24,7 @@ pub mod skip_link;
 pub mod store;
 pub mod wave;
 pub mod geometry;
+pub mod working_memory;
 pub mod xi_operator;
 
 // Consciousness differentiation tests integrated into existing test modules
@@ -46,6 +47,7 @@ pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
 pub use hnsw::{HnswIndex, HnswStore};
 pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot};
+pub use working_memory::{WorkingMemory, ConversationTurn, SessionState, TaskItem, TaskStatus};
 pub use geometry::{
     CliffordElement, Z4Element, Z3Element, SgaElement, 
     ClassComponents, MemoryCoordinates,

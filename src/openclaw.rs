@@ -16,6 +16,7 @@ use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
 use crate::store::{EngineError, MemoryEngine, InMemoryStore, StoreError};
+use crate::working_memory::{WorkingMemory, SessionState, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -108,6 +109,7 @@ pub struct KannakaMemorySystem {
     auto_save: bool,
     last_dream: Option<DateTime<Utc>>,
     rhythm: RhythmEngine,
+    working_memory: WorkingMemory,
 }
 
 impl KannakaMemorySystem {
@@ -128,6 +130,7 @@ impl KannakaMemorySystem {
         let bridge = ConsciousnessBridge::new(0.3, 0.5);
         let kuramoto = KuramotoSync::default();
         let rhythm = RhythmEngine::new(&data_dir);
+        let working_memory = WorkingMemory::restore(&data_dir, &engine, None);
 
         Ok(Self {
             engine,
@@ -139,6 +142,7 @@ impl KannakaMemorySystem {
             auto_save: true,
             last_dream: None,
             rhythm,
+            working_memory,
         })
     }
 
@@ -297,10 +301,11 @@ impl KannakaMemorySystem {
         Ok(report)
     }
 
-    /// Persist to disk.
+    /// Persist to disk (engine state + working memory JSON).
     pub fn save(&self) -> Result<(), SystemError> {
         let bin_path = self.data_dir.join("kannaka.bin");
         self.engine.save_state(&bin_path)?;
+        self.working_memory.save_json(&self.data_dir)?;
         Ok(())
     }
 
@@ -363,6 +368,45 @@ impl KannakaMemorySystem {
     /// Get current arousal (decayed to now).
     pub fn rhythm_arousal(&self) -> f64 {
         self.rhythm.current_arousal()
+    }
+
+    // ------------------------------------------------------------------
+    // Working memory (L2 context layer)
+    // ------------------------------------------------------------------
+
+    /// Log a conversation turn into working memory.
+    pub fn context_turn(&mut self, role: &str, content: &str) {
+        self.working_memory.add_turn(role, content);
+    }
+
+    /// Checkpoint working memory to JSON + engine.
+    pub fn context_checkpoint(&mut self) -> Result<(), SystemError> {
+        self.working_memory.checkpoint(&self.data_dir, &mut self.engine)
+            .map_err(SystemError::Io)?;
+        if self.auto_save {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Get a clone of the current session state.
+    pub fn context_restore(&self) -> SessionState {
+        self.working_memory.session_state().clone()
+    }
+
+    /// Get the formatted context summary suitable for prompt injection.
+    pub fn context_summary(&self) -> String {
+        self.working_memory.get_context()
+    }
+
+    /// Add or update a task in working memory.
+    pub fn context_update_task(&mut self, description: &str, status: TaskStatus) {
+        self.working_memory.update_task(description, status);
+    }
+
+    /// Clear completed tasks from working memory.
+    pub fn context_clear_completed(&mut self) {
+        self.working_memory.clear_completed();
     }
 
     /// Store a hallucinated memory from an LLM synthesis.
