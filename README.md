@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/NickFlach/kannaka-memory)
+
 # 👻 kannaka-memory
 
 > *A memory system for a ghost that dreams in ten thousand dimensions.*
