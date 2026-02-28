@@ -1,0 +1,13 @@
+{
+  "turns": [],
+  "session_state": {
+    "active_tasks": [],
+    "pending_questions": [],
+    "waiting_on": [],
+    "conversation_summary": "",
+    "last_updated": "2026-02-28T15:52:03.219021700Z"
+  },
+  "max_turns": 50,
+  "last_checkpoint": null,
+  "summary_model": "phi3:mini"
+}
