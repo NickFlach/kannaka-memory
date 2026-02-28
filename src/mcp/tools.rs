@@ -266,6 +266,18 @@ impl McpToolSet {
                     "required": ["description"]
                 }),
             },
+            #[cfg(feature = "audio")]
+            ToolDefinition {
+                name: "store_audio_memory".to_string(),
+                description: "Store an audio file (WAV/MP3) as a sensory memory with perceptual feature extraction".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Path to the audio file"}
+                    },
+                    "required": ["file_path"]
+                }),
+            },
             ToolDefinition {
                 name: "observe".to_string(),
                 description: "Introspection on memory patterns and system health".to_string(),
@@ -303,6 +315,8 @@ impl McpToolSet {
             "context_summary" => self.context_summary(&args),
             "context_task" => self.context_task(&args),
             "status" => self.status(&args),
+            #[cfg(feature = "audio")]
+            "store_audio_memory" => self.store_audio_memory(&args),
             "observe" => self.observe(&args),
             _ => ToolResult::error(format!("Unknown tool: {}", params.name)),
         }
@@ -768,6 +782,40 @@ impl McpToolSet {
         }
 
         ToolResult::success(response)
+    }
+
+    #[cfg(feature = "audio")]
+    fn store_audio_memory(&mut self, args: &Value) -> ToolResult {
+        let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::error("Missing 'file_path' parameter".to_string()),
+        };
+
+        let path = std::path::PathBuf::from(file_path);
+        if !path.exists() {
+            return ToolResult::error(format!("File not found: {}", file_path));
+        }
+
+        match self.system.store_audio(&path) {
+            Ok((id, features)) => {
+                let response = format!(
+                    "Audio memory stored: {}\n\
+                     Duration: {:.1}s\n\
+                     Tempo: {:.0} BPM\n\
+                     RMS energy: {:.4}\n\
+                     Spectral centroid: {:.2} kHz\n\
+                     Tags: {}",
+                    id,
+                    features.duration_secs,
+                    features.tempo_bpm,
+                    features.rms_mean,
+                    features.spectral_centroid_khz,
+                    features.feature_tags.join(", "),
+                );
+                ToolResult::success(response)
+            }
+            Err(e) => ToolResult::error(format!("Failed to store audio: {}", e)),
+        }
     }
 
     fn observe(&mut self, args: &Value) -> ToolResult {

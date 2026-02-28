@@ -31,6 +31,8 @@ fn usage() {
     eprintln!("  stats                     Show system statistics");
     eprintln!("  observe [--json]           Introspection report");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
+    #[cfg(feature = "audio")]
+    eprintln!("  hear <file>               Store an audio file as a sensory memory");
     process::exit(1);
 }
 
@@ -168,6 +170,34 @@ fn main() {
                     println!("  Entities: {}", report.entities_count);
                     println!("  Skip links: {}", report.skip_links_created);
                     println!("  Errors: {}", report.errors.len());
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        #[cfg(feature = "audio")]
+        "hear" => {
+            if args.len() < 3 {
+                eprintln!("Usage: kannaka hear <audio-file>");
+                process::exit(1);
+            }
+            let path = std::path::PathBuf::from(&args[2]);
+            if !path.exists() {
+                eprintln!("File not found: {}", path.display());
+                process::exit(1);
+            }
+            match sys.store_audio(&path) {
+                Ok((id, features)) => {
+                    println!("Heard: {id}");
+                    println!("  Duration: {:.1}s", features.duration_secs);
+                    println!("  Tempo: {:.0} BPM", features.tempo_bpm);
+                    println!("  RMS: {:.4}", features.rms_mean);
+                    println!("  Centroid: {:.2} kHz", features.spectral_centroid_khz);
+                    if !features.feature_tags.is_empty() {
+                        println!("  Tags: {}", features.feature_tags.join(", "));
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");

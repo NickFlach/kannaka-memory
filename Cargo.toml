@@ -20,9 +20,15 @@ tokio = { version = "1", features = ["full"], optional = true }
 async-trait = { version = "0.1", optional = true }
 lazy_static = "1.4"
 
+# Audio perception (optional)
+symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"], optional = true }
+rustfft = { version = "6", optional = true }
+rubato = { version = "0.15", optional = true }
+
 [features]
 default = []
 mcp = ["tokio", "async-trait"]
+audio = ["symphonia", "rustfft", "rubato"]
 
 [[bin]]
 name = "kannaka-mcp"

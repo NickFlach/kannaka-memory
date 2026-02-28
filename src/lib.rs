@@ -32,6 +32,9 @@ pub mod xi_operator;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
+#[cfg(feature = "audio")]
+pub mod ear;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;

@@ -598,6 +598,34 @@ impl KannakaMemorySystem {
         content.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
     }
 
+    /// Store an audio file as a sensory memory.
+    ///
+    /// Decodes the audio, extracts perceptual features, projects through
+    /// the audio codebook, and stores with sensory metadata.
+    #[cfg(feature = "audio")]
+    pub fn store_audio(&mut self, path: &Path) -> Result<(Uuid, crate::ear::AudioFeatures), SystemError> {
+        use crate::ear::AudioPipeline;
+
+        let pipeline = AudioPipeline::new();
+        let (mut mem, features) = pipeline
+            .encode_file(path)
+            .map_err(|e| SystemError::Engine(EngineError::Encoding(
+                crate::encoding::EncodingError::Other(e.to_string()),
+            )))?;
+
+        // Set sensory-specific geometry
+        let content_hash = self.hash_content(&mem.content);
+        mem.geometry = Some(classify_memory("experience", content_hash, 0.6));
+
+        let id = self.engine.store.insert(mem)?;
+
+        if self.auto_save {
+            self.save()?;
+        }
+
+        Ok((id, features))
+    }
+
     /// Get memory by ID (public API for testing).
     pub fn get_memory(&self, id: &Uuid) -> Result<Option<&crate::memory::HyperMemory>, SystemError> {
         Ok(self.engine.store.get(id)?)
