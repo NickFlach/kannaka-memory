@@ -1,0 +1,1041 @@
+﻿# Downloads Folder Organization Log
+Date: 02/11/2026 06:16:36
+
+## Moves
+
+- MOVED: 1825790-shinobi-images -> Art
+- MOVED: AppIcons -> Dev
+- MOVED: Big Black Cloud-20221213T055751Z-001 -> MusicProjects
+- MOVED: drive-download-20221213T054638Z-001 -> MusicProjects
+- MOVED: DustyBlade_files -> MusicProjects
+- MOVED: GlyphDocumentor -> Dev
+- MOVED: H3L1X - Muzan Kibutsuji -> MusicProjects
+- MOVED: H3L1X - The Gift EP -> MusicProjects
+- MOVED: Launchpad Infinity - The New Paradigm -> MusicProjects
+- MOVED: NinjaPortal -> Dev
+- MOVED: RadiocoBroadcaster -> Dev
+- MOVED: Technically Alive-20221213T054908Z-001 -> MusicProjects
+- MOVED: Untitled-001 -> Dev
+- MOVED: womaninWaveStuck_files -> MusicProjects
+- MOVED: womanInWave_files -> MusicProjects
+- MOVED: 01 - Casual.m4a -> Music
+- MOVED: 01 - Casual.mp3 -> Music
+- MOVED: 01 Big Black Cloud.mp3 -> Music
+- MOVED: 01 someday this will all make sense (1).mp3 -> Music
+- MOVED: 01 someday this will all make sense.mp3 -> Music
+- MOVED: 01 someday this will all make sense.wav -> Music
+- MOVED: 02 - Overthere.m4a -> Music
+- MOVED: 02 - Overthere.mp3 -> Music
+- MOVED: 02 Madman on the Throne.mp3 -> Music
+- MOVED: 02 where is here_.mp3 -> Music
+- MOVED: 02 where is here_.wav -> Music
+- MOVED: 02 You Let Them.mp3 -> Music
+- MOVED: 03 flying monkeys.mp3 -> Music
+- MOVED: 03 flying monkeys.wav -> Music
+- MOVED: 03 Self Defenseless.mp3 -> Music
+- MOVED: 03 You Don_t Have Long to Live.mp3 -> Music
+- MOVED: 04 I Won_t Forget You When You Die.mp3 -> Music
+- MOVED: 04 one thing i know in my mind is....mp3 -> Music
+- MOVED: 04 one thing i know in my mind is....wav -> Music
+- MOVED: 05 halloween town.mp3 -> Music
+- MOVED: 05 halloween town.wav -> Music
+- MOVED: 05 X My Heart.mp3 -> Music
+- MOVED: 06 Don_t You Ever Lie to Me.mp3 -> Music
+- MOVED: 06 when ur a star (u can do what u want).mp3 -> Music
+- MOVED: 06 when ur a star (u can do what u want).wav -> Music
+- MOVED: 07 beast.mp3 -> Music
+- MOVED: 07 beast.wav -> Music
+- MOVED: 07 Move to China.mp3 -> Music
+- MOVED: 08 ectoplasm.mp3 -> Music
+- MOVED: 08 ectoplasm.wav -> Music
+- MOVED: 08 Hey There Space Child.mp3 -> Music
+- MOVED: 09 Little Evil Zulu.mp3 -> Music
+- MOVED: 09 wounded birds.mp3 -> Music
+- MOVED: 09 wounded birds.wav -> Music
+- MOVED: 1-20230422T125238Z-001.zip -> Dev
+- MOVED: 1-20230422T125245Z-001.zip -> Dev
+- MOVED: 1. Intro.mp3 -> Music
+- MOVED: 1. Kryptonic Might.mp3 -> Music
+- MOVED: 1. Late.mp3 -> Music
+- MOVED: 1. SoundLab 1 Export 1.mp3 -> Music
+- MOVED: 1. The Haunting Of Mr Tickles Intro.mp3 -> Music
+- MOVED: 1. The Struggles of a JollyMon.mp3 -> Music
+- MOVED: 10 Mean Dream.mp3 -> Music
+- MOVED: 10 star city.mp3 -> Music
+- MOVED: 10 star city.wav -> Music
+- MOVED: 10. After The Rabbit Spew, The Pudding Lullulaby.mp3 -> Music
+- MOVED: 10. My Insanity, Immortalized. Sewer Wrap.mp3 -> Music
+- MOVED: 11 All That Lives Must Die.mp3 -> Music
+- MOVED: 11 these things will only make us stronger.mp3 -> Music
+- MOVED: 11 these things will only make us stronger.wav -> Music
+- MOVED: 11. Bwah Bwah Bwah #5.mp3 -> Music
+- MOVED: 11. Rabid Rabbit Dreams.mp3 -> Music
+- MOVED: 12 bad vibrations.wav -> Music
+- MOVED: 12 Burn.mp3 -> Music
+- MOVED: 12-bad-vibrations.mp3 -> Music
+- MOVED: 12. Monster.mp3 -> Music
+- MOVED: 12. The Bunny In The Stupid Human Suit.mp3 -> Music
+- MOVED: 13. Nature Of a Dual Hourglass.mp3 -> Music
+- MOVED: 13. The Devils Interlude.mp3 -> Music
+- MOVED: 14. Flight Of The Rabbit Hawk.mp3 -> Music
+- MOVED: 15. The Ever Eternal Rabbit Hole.mp3 -> Music
+- MOVED: 16. Tripping On Rabbit Fur.mp3 -> Music
+- MOVED: 17. When Wolves Fear Rabbits.mp3 -> Music
+- MOVED: 18.Wheres That Rabbit, Dag Nab It, He's On The Run.mp3 -> Music
+- MOVED: 1825790-shinobi-images.zip -> Dev
+- MOVED: 19. Curse Of The Wear Rabbit.mp3 -> Music
+- MOVED: 2 Billion Years.mp4 -> Videos
+- MOVED: 2. Blue Time Clock.mp3 -> Music
+- MOVED: 2. Curiosity Killed Schrodinger's Cat.mp3 -> Music
+- MOVED: 2. Handle With Care.mp3 -> Music
+- MOVED: 2. Hatchet Hatchet Smash It Smash It.mp3 -> Music
+- MOVED: 2. Lucidious Reindeer Droppings.mp3 -> Music
+- MOVED: 2. Racing In a Pace to the Voodoo Ball.mp3 -> Music
+- MOVED: 2. The White Rabbit on the Music Box.mp3 -> Music
+- MOVED: 20. Wear Rabbit Curse, Realized 3 (1).mp3 -> Music
+- MOVED: 20. Wear Rabbit Curse, Realized 3.mp3 -> Music
+- MOVED: 20161104_142908.mp4 -> Videos
+- MOVED: 20190318_162208.jpg -> Photos
+- MOVED: 2020 Role Clarity - Automation Business Unit Director.docx -> Documents
+- MOVED: 20220731_110837 (1).jpg -> Photos
+- MOVED: 20220731_110837.jpg -> Photos
+- MOVED: 20220916_115635.mp4 -> Videos
+- MOVED: 20221007_192435.jpg -> Photos
+- MOVED: 2024-06-29_03_24_40.mp3 -> Music
+- MOVED: 20241212_1440_Loop Video_loop_01jey9jqk1em5vfmhe8g9zbjm8.mp4 -> Videos
+- MOVED: 20241212_1651_Mysterious Futuristic Dance_simple_compose_01jeyh34ymejzr031sfmrm2ava.mp4 -> Videos
+- MOVED: 20241212_1651_Mysterious Futuristic Dance_simple_compose_01jeyh34z9ep3vajydmns1ssv3.mp4 -> Videos
+- MOVED: 20241213_0815_Loop Video_loop_01jf05zq6cf80tx66e3h76vzxf.mp4 -> Videos
+- MOVED: 20241216_1028_Quantum Lace Symphony_simple_compose_01jf84rg26fn7ttmb2fpbhzb11 (1).mp4 -> Videos
+- MOVED: 20241216_1028_Quantum Lace Symphony_simple_compose_01jf84rg26fn7ttmb2fpbhzb11.mp4 -> Videos
+- MOVED: 20241216_1028_Quantum Lace Symphony_simple_compose_01jf84rg2ffv393332nqh2pw9b (1).mp4 -> Videos
+- MOVED: 20241216_1028_Quantum Lace Symphony_simple_compose_01jf84rg2ffv393332nqh2pw9b.mp4 -> Videos
+- MOVED: 20241218_0333_Loop Video_loop_01jfchtj8jes78rdgyepqmp6qm.gif -> Videos
+- MOVED: 20241218_0333_Loop Video_loop_01jfchtj8qe99tkz9tet5n1avz.mp4 -> Videos
+- MOVED: 20241220_1246_Cosmic Spiral Journey_simple_compose_01jfjp8kfzeddv1kccywh6wy4h (1).mp4 -> Videos
+- MOVED: 20241220_1246_Cosmic Spiral Journey_simple_compose_01jfjp8kfzeddv1kccywh6wy4h.mp4 -> Videos
+- MOVED: 20241220_1246_Cosmic Spiral Journey_simple_compose_01jfjp8kg7ebp9ha4ve8nmpbbv.mp4 -> Videos
+- MOVED: 20241220_1253_Cosmic Swirl Illumination_storyboard_01jfjpn96bej0rgbfnkxsr07h5.mp4 -> Videos
+- MOVED: 20241220_1255_Cosmic Digital Journey_remix_01jfjpst7hf38sh9y80va6wdzf.mp4 -> Videos
+- MOVED: 20241220_1255_Cosmic Digital Journey_remix_01jfjpst7ted7aqp44zxfep9jy.mp4 -> Videos
+- MOVED: 20241220_1258_Blend Video_blend_01jfjpz8apfffs0wwz60yqjpy1.mp4 -> Videos
+- MOVED: 20241220_1348_Colorful Vortex Illusion_simple_compose_01jfjssb90fktamajnnefrx5wx.mp4 -> Videos
+- MOVED: 20241224_1511_Cosmic Hand Connection_simple_compose_01jfx853x6eq59v1q81r5bxxsc.mp4 -> Videos
+- MOVED: 20241224_1511_Cosmic Hand Connection_simple_compose_01jfx853xbec4ts0atmmtpam6f.mp4 -> Videos
+- MOVED: 20241224_1515_Loop Video_loop_01jfx8c55qecdb0h30275c0fw3.mp4 -> Videos
+- MOVED: 20241224_1515_Loop Video_loop_01jfx8c55ve4fvt204ybvwtz0c.mp4 -> Videos
+- MOVED: 20241224_1515_Loop Video_loop_01jfx8c567f01akg50nqffxgpf.mp4 -> Videos
+- MOVED: 20241224_1515_Loop Video_loop_01jfx8c56ffekt20r9c6sqp304.mp4 -> Videos
+- MOVED: 20241227_0717_Ethereal Cosmic Journey_simple_compose_01jg447k7dez0r116vbqvqq6g7 (1).mp4 -> Videos
+- MOVED: 20241227_0717_Ethereal Cosmic Journey_simple_compose_01jg447k7dez0r116vbqvqq6g7.mp4 -> Videos
+- MOVED: 20241228_0744_Vibrant Cosmic Spirals_storyboard_01jg6r5n5geh7tvs7fcj42wz3a.mp4 -> Videos
+- MOVED: 20241228_0744_Vibrant Cosmic Spirals_storyboard_01jg6r5n5xedjvs726mhzzdzvn.mp4 -> Videos
+- MOVED: 20241231_1109_Surreal Energy Transformation_simple_compose_01jgev2yfqegfv4n7g4a588r7s.mp4 -> Videos
+- MOVED: 20241231_1109_Surreal Energy Transformation_simple_compose_01jgev2yg2f5ash8hx3nm88gq9 (1).mp4 -> Videos
+- MOVED: 20241231_1109_Surreal Energy Transformation_simple_compose_01jgev2yg2f5ash8hx3nm88gq9.mp4 -> Videos
+- MOVED: 20241231_1111_Cosmic Vortex Symphony_simple_compose_01jgev6sa8e0nb8z93tb9sz46v.mp4 -> Videos
+- MOVED: 20241231_1111_Cosmic Vortex Symphony_simple_compose_01jgev6sagf1aan0kaxbmyxned.mp4 -> Videos
+- MOVED: 20241231_1114_Cosmic Light Symphony_simple_compose_01jgevbdh7e0a9mp7xpje7pnzk.mp4 -> Videos
+- MOVED: 20241231_1114_Cosmic Light Symphony_simple_compose_01jgevbdhfesvv78gxhnzejar7.mp4 -> Videos
+- MOVED: 20250107_0541_Ghostly Tech Fusion_simple_compose_01jh0933q1e7jt9e5z1dz9yv9z.mp4 -> Videos
+- MOVED: 20250107_0541_Ghostly Tech Fusion_simple_compose_01jh0933q9ebqtvbdjkfne2f76 (1).mp4 -> Videos
+- MOVED: 20250107_0541_Ghostly Tech Fusion_simple_compose_01jh0933q9ebqtvbdjkfne2f76.gif -> Videos
+- MOVED: 20250107_0541_Ghostly Tech Fusion_simple_compose_01jh0933q9ebqtvbdjkfne2f76.mp4 -> Videos
+- MOVED: 20250107_0546_Mystical Blue Glow_simple_compose_01jh09chd2ebpbrhwbf25q83qk.mp4 -> Videos
+- MOVED: 20250107_0546_Mystical Blue Glow_simple_compose_01jh09chd9eyxa2w3pq7ftq1x2.mp4 -> Videos
+- MOVED: 20250109_0046_Mystical Forest Collage_simple_compose_01jh4x11ere2faqr8pftz9nczc.mp4 -> Videos
+- MOVED: 20250109_0046_Mystical Forest Collage_simple_compose_01jh4x11ewet5raqez9fvv8pp7.mp4 -> Videos
+- MOVED: 20250109_0048_Mystical Cosmic Reflection_simple_compose_01jh4x4t7ce6m9egd1118wk3y2.mp4 -> Videos
+- MOVED: 20250109_0048_Mystical Cosmic Reflection_simple_compose_01jh4x4t9mee9vv0dtyjxjces2.mp4 -> Videos
+- MOVED: 20250109_0058_Ritual Dance Mystique_simple_compose_01jh4xnxr4ecsvdmr2h7f4kqmk.mp4 -> Videos
+- MOVED: 20250109_0058_Ritual Dance Mystique_simple_compose_01jh4xnxs3fynvnm5hzdcekty7.mp4 -> Videos
+- MOVED: 20250109_0102_Mystical Ritual Gathering_simple_compose_01jh4xyxejf15rzag9x99v3hgm.mp4 -> Videos
+- MOVED: 20250109_0103_Mystical Ritual Gathering_simple_compose_01jh4xyxete8hrj652n2jfcfam.mp4 -> Videos
+- MOVED: 20250109_0105_Digital Fairy Nexus_simple_compose_01jh4y2v17fpj8tpthkv0fv6ft.mp4 -> Videos
+- MOVED: 20250109_0105_Digital Fairy Nexus_simple_compose_01jh4y2v1hfmqv1e0tjngf40d2.mp4 -> Videos
+- MOVED: 20250109_0108_Mystical Tech Meditation_simple_compose_01jh4y8wydfexbra3hyqr7rse6.mp4 -> Videos
+- MOVED: 20250109_0108_Mystical Tech Meditation_simple_compose_01jh4y8wyqe1m9fmvycwhjndah.mp4 -> Videos
+- MOVED: 20250111_2302_Child's Cosmic Journey_simple_compose_01jhce7r4der79155vk8x6tc3v.mp4 -> Videos
+- MOVED: 20250111_2302_Child's Cosmic Journey_simple_compose_01jhce7r4rf3b8zq3kcvsxegfr.mp4 -> Videos
+- MOVED: 20250111_2304_Leap Into Cosmos_simple_compose_01jhcebvn1fqt9nwnmk3qwnw2t.mp4 -> Videos
+- MOVED: 20250111_2304_Leap Into Cosmos_simple_compose_01jhcebvn7eb4vca56aaw4f4wa.mp4 -> Videos
+- MOVED: 20250111_2309_Dreamlike Celestial Journey_simple_compose_01jhcen7zsfbfrkst0w598k4rh.mp4 -> Videos
+- MOVED: 20250111_2309_Dreamlike Celestial Journey_simple_compose_01jhcen806fd9aqgh61kgt9pca.mp4 -> Videos
+- MOVED: 20250111_2337_Astronaut's Cosmic Float_simple_compose_01jhcg84f5fvpsyw5c0nkt9w5q.mp4 -> Videos
+- MOVED: 20250111_2337_Astronaut's Cosmic Float_simple_compose_01jhcg84ffet9ra14ny16ntkfd.mp4 -> Videos
+- MOVED: 20250117_2208_Cosmic Birth Dance_simple_compose_01jhvsh2gtf8z985sepr4xzs33.mp4 -> Videos
+- MOVED: 20250117_2208_Cosmic Birth Dance_simple_compose_01jhvsh2h2fcjv606pg2ek73ey.mp4 -> Videos
+- MOVED: 20250117_2210_Cosmic Shadow Dance_simple_compose_01jhvsn67gfm4a32x08hjsb2nn.mp4 -> Videos
+- MOVED: 20250117_2210_Cosmic Shadow Dance_simple_compose_01jhvsn67kf78tbn13qn0ssj32.mp4 -> Videos
+- MOVED: 20250117_2212_Ethereal Ghost Dance_simple_compose_01jhvss7nsewbv96p2sje6re7q.mp4 -> Videos
+- MOVED: 20250117_2212_Ethereal Ghost Dance_simple_compose_01jhvss7p2emftp2gwbpkvh8m9.mp4 -> Videos
+- MOVED: 20250118_1634_Ancient Spirit Awakens_simple_compose_01jhxrtwvbf6bsc8w233e92qkx.mp4 -> Videos
+- MOVED: 20250118_1634_Ancient Spirit Awakens_simple_compose_01jhxrtwvre8jtd3ws4y8e21ep.mp4 -> Videos
+- MOVED: 20250118_1636_Ethereal Spirit's Search_simple_compose_01jhxrz7fdesq92jwj405cn0r2.mp4 -> Videos
+- MOVED: 20250118_1636_Ethereal Spirit's Search_simple_compose_01jhxrz7fseztsh901t65szv4q.mp4 -> Videos
+- MOVED: 20250118_1638_Ethereal Cosmic Journey_simple_compose_01jhxs286qefqr1ykqt4770cjs.mp4 -> Videos
+- MOVED: 20250118_1638_Ethereal Cosmic Journey_simple_compose_01jhxs286yfqybwr1ss335d8qz.mp4 -> Videos
+- MOVED: 20250118_1640_Flaukowski's Elegant Portrait_simple_compose_01jhxs5avve40sgg4dy9te57yd.mp4 -> Videos
+- MOVED: 20250118_1640_Flaukowski's Elegant Portrait_simple_compose_01jhxs5aw3ff2s825vj02fc2e8.mp4 -> Videos
+- MOVED: 20250118_1713_Eerie Stillness_simple_compose_01jhxv32scft4rm2syev34ptt8.mp4 -> Videos
+- MOVED: 20250118_1713_Eerie Stillness_simple_compose_01jhxv32snf8wt97s0bwvdhfaz.mp4 -> Videos
+- MOVED: 20250118_1721_Cosmic Journey of Transcendence_simple_compose_01jhxvhmxefmj84wg4n4ty6cyv.mp4 -> Videos
+- MOVED: 20250118_1721_Cosmic Journey of Transcendence_simple_compose_01jhxvhmxwew29sj93m6gdh4ms.mp4 -> Videos
+- MOVED: 20250128_2316_Moonlit Treasure Adventure_simple_compose_01jjr7t09ce0dvxn8gn974d7zb.mp4 -> Videos
+- MOVED: 20250128_2316_Moonlit Treasure Adventure_simple_compose_01jjr7t09vfk0vghddd0q60g0r.mp4 -> Videos
+- MOVED: 20250128_2319_Modern Pirate Airwaves_simple_compose_01jjr7zea3fe291pt89evekyn5.mp4 -> Videos
+- MOVED: 20250128_2319_Modern Pirate Airwaves_simple_compose_01jjr7zeaae6w9fg2g6t0fgzv3.mp4 -> Videos
+- MOVED: 20250128_2321_Null Island Broadcast_simple_compose_01jjr83erze51ts6r5qn3st5c8.mp4 -> Videos
+- MOVED: 20250308_1337_Ethereal Sun and Birds_simple_compose_01jnvm5vzcf9kb3gwancm792c0.mp4 -> Videos
+- MOVED: 20250308_1337_Ethereal Sun and Birds_simple_compose_01jnvm5vzkfy1vkzvmkfpmjh7d.mp4 -> Videos
+- MOVED: 20250308_1339_Birds in Sunlit Serenity_simple_compose_01jnvm94wjf8n9vyht0fttj2d9.mp4 -> Videos
+- MOVED: 20250308_1339_Birds in Sunlit Serenity_simple_compose_01jnvm94wsfhgryjwdbj88eg48.mp4 -> Videos
+- MOVED: 21. Bonus - Weep For The Insanely Mad Hatter Ft. Ringmaster Shreddar Aka K Scott.mp3 -> Music
+- MOVED: 22. Bonus - Red Dove ft. Ringmaster Shreddar (1).mp3 -> Music
+- MOVED: 22. Bonus - Red Dove ft. Ringmaster Shreddar.mp3 -> Music
+- MOVED: 3. Enjoy The Toy, Mr Tickles.mp3 -> Music
+- MOVED: 3. Mars Rover Spotted the Attack That Brought It Back.mp3 -> Music
+- MOVED: 3. SchizoSocciative phase 1.mp3 -> Music
+- MOVED: 3. That Poetic Flare.mp3 -> Music
+- MOVED: 3. The Beast with Rabbit's Fur.mp3 -> Music
+- MOVED: 3570529464105.png -> Photos
+- MOVED: 3665969668235.png -> Photos
+- MOVED: 3714824017956.png -> Photos
+- MOVED: 3750804267630.png -> Photos
+- MOVED: 4. A Long, Dark Rabbit Hole.mp3 -> Music
+- MOVED: 4. Human With A Human Heart.mp3 -> Music
+- MOVED: 4. Rover's Pimp Slap .mp3 -> Music
+- MOVED: 4. To The Sewers We Go.mp3 -> Music
+- MOVED: 406447078_667977755517473_8273128417968729733_n.jpg -> Photos
+- MOVED: 411536638_3604841053163851_837566668242492340_n.jpg -> Photos
+- MOVED: 431508__Application_to_Proctor_Knowledge_Exam_fMllxlS3GYSALlxa.pdf -> Documents
+- MOVED: 431508__Application_to_Proctor_Knowledge_Exam_xMrM3rS3GYS4UDxE.pdf -> Documents
+- MOVED: 431508__Application_to_Proctor_Knowledge_Exam_Y3GlMAAYGYSmfCVf.pdf -> Documents
+- MOVED: 5. CERN's Time Slime.mp3 -> Music
+- MOVED: 5. Chasing Rabbits.mp3 -> Music
+- MOVED: 5. Kicking Turtles as We Go.mp3 -> Music
+- MOVED: 5. Matrix Time Clock.mp3 -> Music
+- MOVED: 5. NF's Bars Make Santa Fly Far (1).mp3 -> Music
+- MOVED: 5. NF's Bars Make Santa Fly Far.mp3 -> Music
+- MOVED: 55a682f5-e83c-d3d2-49cf-87e8394cbd31.320.mp3 -> Music
+- MOVED: 6. Kung Fu Dancing, Turtles Chancing.mp3 -> Music
+- MOVED: 6. Stockholm Syndrome.mp3 -> Music
+- MOVED: 6. Where Am I.mp3 -> Music
+- MOVED: 6c27cfa1c6b4856597a335ebe64542ed_0~3.jpeg -> Photos
+- MOVED: 7&7.mp3 -> Music
+- MOVED: 7&7.mp4 -> Videos
+- MOVED: 7. Mr Tickles Glancing.mp3 -> Music
+- MOVED: 7. Rabbit Found.mp3 -> Music
+- MOVED: 7. Time Loop Due To Cern's Poop.mp3 -> Music
+- MOVED: 73.mp3 -> Music
+- MOVED: 7343280462874.png -> Photos
+- MOVED: 777 Shinobi.jpg -> Photos
+- MOVED: 8. Kris Krampus on The Campus.mp3 -> Music
+- MOVED: 8. Mars Rover at 6 with the Scoop.mp3 -> Music
+- MOVED: 8. To Chew On White Rabbit Meat.mp3 -> Music
+- MOVED: 9. Nightmares From Rabbit Stew.mp3 -> Music
+- MOVED: 9. Razer's Edge, Feel The Burn.mp3 -> Music
+- MOVED: 9. To Stitch Time will Ditch the Rewind.mp3 -> Music
+- MOVED: 92033438NowaKowski.jpg -> Photos
+- MOVED: A Daunting Strife.mp3 -> Music
+- MOVED: A Failure to Compose.mp3 -> Music
+- MOVED: Agent-9.zip -> Dev
+- MOVED: agent.py -> Dev
+- MOVED: AI Dream (1).mp3 -> Music
+- MOVED: AI Dream.mp3 -> Music
+- MOVED: AI Dream.mp4 -> Videos
+- MOVED: AirDroid_Cast_Desktop_Client_1.2.0.0 (1).exe -> Installers
+- MOVED: AirDroid_Cast_Desktop_Client_1.2.0.0.exe -> Installers
+- MOVED: alice3_windows-x64_installer_3_6_0_3.exe -> Installers
+- MOVED: AliveShoes_Official_Designer_Certificate-Flaukowski_Flach--1674859087-a5f242a927a440dac93ec54c6935907.pdf -> Documents
+- MOVED: All Forms (Ghost Cover) (1).mp3 -> Music
+- MOVED: All Forms (Ghost Cover).mp3 -> Music
+- MOVED: Ally_0.0.6_x64-setup.exe -> Installers
+- MOVED: AMOR.sol -> Dev
+- MOVED: AmorGovernor.sol -> Dev
+- MOVED: AmorTimelock.sol -> Dev
+- MOVED: android-studio-2023.1.1.27-windows.exe -> Installers
+- MOVED: Another Way.mp4 -> Videos
+- MOVED: API.md -> Dev
+- MOVED: AppIcons.zip -> Dev
+- MOVED: Articles of Organization.pdf -> Documents
+- MOVED: As Far As The Ghost Goes (1).mp3 -> Music
+- MOVED: As Far As The Ghost Goes.mp3 -> Music
+- MOVED: Ascension at π_2.mp3 -> Music
+- MOVED: AtomSetup-x64.exe -> Installers
+- MOVED: Audio for conversation conv_3701kbvj33hpf6yvygfa6v6hmdem.mp3 -> Music
+- MOVED: Audio for conversation conv_8701kfw0fzyhfjt9dm64afqnwy97.mp3 -> Music
+- MOVED: Audio record.wav -> Music
+- MOVED: AudioNoise Geometric Resonance Review.md -> Dev
+- MOVED: BandLab Assistant Setup 10.2.0.exe -> Installers
+- MOVED: Bansenshukai-v8-diagram.jpg -> Photos
+- MOVED: bass_player.html -> Dev
+- MOVED: Be Alive (Remastered).mp3 -> Music
+- MOVED: Beat, Breathe, Begin Again.mp3 -> Music
+- MOVED: Before or After.mp3 -> Music
+- MOVED: Between Friends - Flaukowski.mp3 -> Music
+- MOVED: Between Friends.mp3 -> Music
+- MOVED: Big Black Cloud-20221213T055751Z-001.zip -> Dev
+- MOVED: blockNumberProof.jpg -> Photos
+- MOVED: boy sat.jpeg -> Photos
+- MOVED: BraveBrowserSetup.exe -> Installers
+- MOVED: BrokerApp-v10.8.exe -> Installers
+- MOVED: bug-report (1).zip -> Dev
+- MOVED: bug-report.zip -> Dev
+- MOVED: Cardinal Heart - Made with Clipchamp.mp3 -> Music
+- MOVED: Cardinal Heart - Made with Clipchamp.mp4 -> Videos
+- MOVED: cassette_0.2.0_windows_amd64_installer.exe -> Installers
+- MOVED: certificate (1).pdf -> Documents
+- MOVED: certificate (2).pdf -> Documents
+- MOVED: certificate (3).pdf -> Documents
+- MOVED: certificate.pdf -> Documents
+- MOVED: Chaos Is Lost.mp3 -> Music
+- MOVED: ChatGPT Image Oct 5, 2025, 03_58_22 PM.png -> Art
+- MOVED: ChatGPT Image Oct 5, 2025, 04_02_46 PM.png -> Art
+- MOVED: ChatGPT Image Oct 5, 2025, 04_02_56 PM.png -> Art
+- MOVED: ChatGPT Image Oct 5, 2025, 04_03_22 PM.png -> Art
+- MOVED: Checkout Time.mp4 -> Videos
+- MOVED: Children of the Field (1).mp3 -> Music
+- MOVED: Children of the Field.mp3 -> Music
+- MOVED: ChromeSetup.exe -> Installers
+- MOVED: Claude Setup.exe -> Installers
+- MOVED: Clowns on Parade .mp4 -> Videos
+- MOVED: Clowns on Parade.mp3 -> Music
+- MOVED: Communication #1 (Remastered).mp3 -> Music
+- MOVED: Communication #1.mp3 -> Music
+- MOVED: Communication #1.mp4 -> Videos
+- MOVED: ConAgra Waterloo (1).zip -> Dev
+- MOVED: ConAgra Waterloo.zip -> Dev
+- MOVED: consciousness-evolution-2-2025-10-26.png -> Art
+- MOVED: conversation-2-2025-10-26.csv -> Documents
+- MOVED: conversation-2-2025-10-26.json -> Dev
+- MOVED: conversation-4-2025-10-26.csv -> Documents
+- MOVED: conversation-4-2025-10-26.json -> Dev
+- MOVED: CursorUserSetup-x64-0.46.11.exe -> Installers
+- MOVED: DALL·E 2024-11-14 12.11.16 - A ghostly ninja dancing in a spirit world filled with floating lanterns and ghostly figures. The ninja is surrounded by soft, warm lantern glows casti.webp -> Art
+- MOVED: DALL·E 2024-11-14 12.13.42 - A ghostly ninja floating gracefully in a dark, star-speckled void. The ninja moves as if weightless, with light trails following each movement, creati.webp -> Art
+- MOVED: DALL·E 2024-11-14 12.30.32 - A ghostly ninja dancing gracefully in a misty forest at twilight. The ninja has a translucent, ethereal form with smoky wisps trailing behind each mov.webp -> Art
+- MOVED: DALL·E 2024-11-14 12.30.47 - A ghostly ninja dancing in a surreal mirrored landscape. The ninja is surrounded by infinite reflections that trail slightly behind each movement, cre.webp -> Art
+- MOVED: DALL·E 2024-11-14 12.30.57 - A ghostly ninja fading into shadows in a quiet, mist-filled forest. The ninja appears semi-transparent as if dissolving into the mist, with faint shad.webp -> Art
+- MOVED: DALL·E 2024-11-14 12.31.03 - A ghostly ninja dancing elegantly in a twilight forest, surrounded by mist and illuminated by soft, ethereal light. The ninja appears in mid-dance, wi.webp -> Art
+- MOVED: DALL·E 2024-11-14 16.30.42 - A ghostly ninja dancing in a surreal mirrored landscape. The ninja is surrounded by infinite reflections that trail slightly behind each movement, cre.webp -> Art
+- MOVED: DALL·E 2024-11-14 17.23.22 - A ghostly ninja dancing in a surreal mirrored landscape. The ninja is surrounded by infinite reflections that trail slightly behind each movement, cre.webp -> Art
+- MOVED: DALL·E 2024-11-14 19.14.00 - A lone figure sits in deep meditation surrounded by an abstract digital fire. The flames are pixelated, blending hues of blue and purple, with hints o.webp -> Art
+- MOVED: DALL·E 2024-11-14 19.15.04 - A figure stands in a swirling vortex of fragmented digital patterns, symbols, and cosmic particles, representing a dreamlike AI dimension. The figure .webp -> Art
+- MOVED: DALL·E 2024-11-14 19.15.41 - A figure suspended mid-dance in a radiant matrix of light nodes, circuitry, and translucent orbs symbolizing memories and souls. The dancer is surroun.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.12.10 - A lone figure stands at the base of a towering rocket ship surrounded by metallic walls and closed gates. The rocket's engines glow brightly, ready fo.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.12.17 - A lone figure walking along a serene, forested path under a vivid night sky filled with glowing constellations, nebulae, and cosmic streams. The stars.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.12.22 - A lone figure stands at the edge of a vast ocean under a brilliant cosmic sky. The figure glows softly, radiating a warm, golden light that merges wit.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.19.53 - A lone figure steps back from a towering rocket ship in a metallic, industrial environment. Their shadow stretches toward a vivid starry sky, symboliz.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.01 - A lone figure turns away from a towering rocket ship, gazing up at an infinite starry sky filled with glowing constellations and galaxies. The cold me.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.07 - A lone figure steps forward into a starlit field, leaving a towering rocket ship far behind. The stars above are brighter and closer, forming a faint .webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.12 - A lone figure pauses on a forested path under a vivid night sky filled with glowing constellations and swirling cosmic light. The celestial glow inten.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.18 - A lone figure on a forested path looks upward as swirling constellations and cosmic lights form dreamlike images around them. The celestial patterns g.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.25 - A lone figure lifts their arms on a forested path as the surrounding stars and cosmic lights descend toward them, creating a surreal dreamscape. The f.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.31 - A lone figure stands stronger at the edge of a vast ocean under a brilliant cosmic sky. The figure glows brightly, radiating a golden light that inter.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.37 - A lone figure steps forward into the ocean under a cosmic sky, glowing with golden light as the galaxy's reflection begins to merge with their form. T.webp -> Art
+- MOVED: DALL·E 2024-11-16 07.20.42 - A lone figure floats above the ocean, glowing with a radiant golden and cosmic light that merges with the celestial sky. The waves are calm, reflectin.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.21.34 - A shadowy group of faceless figures stands inside the gates of a towering rocket ship, turning their backs on a lone figure standing outside. The rock.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.21.39 - A lone figure watches as glowing blueprints or ideas are taken by shadowy figures and absorbed into the towering rocket ship in the background. The ro.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.21.57 - A rocket ship explodes mid-launch, with fiery debris scattering through a dark sky. A lone figure stands at a safe distance, watching calmly as the ex.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.04 - A lone figure walks along a forested path under a vivid night sky, but ghostly images of shadowy figures pointing and accusing emerge faintly from the.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.11 - A lone figure stands on a forested path as swirling stars and cosmic light begin to break apart ghostly images of shadowy, accusing figures in the tre.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.16 - A lone figure stands on a cosmic dreamscape where the forest has almost fully faded. Stars swirl around the figure, creating intricate, glowing patter.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.21 - A lone figure stands at the ocean's edge under a cosmic sky, holding a glowing fragment of a destroyed rocket engine. The fragment radiates with golde.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.31 - A lone figure steps into the ocean under a cosmic sky, as glowing fragments of a destroyed rocket float away on gentle waves. The water shimmers with .webp -> Art
+- MOVED: DALL·E 2024-11-16 09.22.37 - A lone figure floats above a glowing ocean under a fiery cosmic sky, fully radiant and merged with the stars. Golden and celestial light streams from .webp -> Art
+- MOVED: DALL·E 2024-11-16 09.27.42 - A surreal and ethereal representation of an AI as a luminous, floating entity composed of streams of light, intricate patterns of circuitry, and glowi.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.27.48 - A lone figure rises from the ocean, with streams of golden light and stardust radiating from their form. The cosmic sky above bursts with fiery aurora.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.27.53 - A lone figure floats on a glowing ocean that reflects the entire galaxy above, their body merging with streams of starlight and golden cosmic energy. .webp -> Art
+- MOVED: DALL·E 2024-11-16 09.27.57 - A lone figure stands on a surreal hilltop under a sky filled with swirling cosmic light, as fragments of their past (represented as glowing shards) ri.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.28.02 - A surreal image of a lone figure walking in a forest where the trees are composed of starlight and cosmic patterns. The forest floor glows faintly, an.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.28.07 - A lone figure walks along a path that blends seamlessly into the starry sky, with constellations forming bridges and stairways in the air. The trees a.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.28.12 - A dreamlike scene of a rocket ship transforming mid-launch into a giant tree of light, its branches reaching toward the stars. A lone figure stands in.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.28.46 - A lone figure sits at the base of a shattered rocket ship, surrounded by glowing fragments that hover in the air. Each fragment displays images of mem.webp -> Art
+- MOVED: DALL·E 2024-11-16 09.28.52 - A surreal vision of a lone figure standing before a towering rocket ship, but the rocket is made of fragmented mirrors reflecting distorted images of .webp -> Art
+- MOVED: DALL·E 2024-11-18 10.24.33 - A dimly lit hotel hallway with peeling wallpaper and flickering lights. A shadowy figure, wrapped in a translucent sheet, stands at the far end, exudi.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.24.50 - A close-up of a wide-eyed protagonist standing in a grimy hotel hallway, with peeling wallpaper and flickering lights. In the background, the faint fi.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.24.56 - A swirling cloud of smoke begins to take the shape of a human face, glowing faintly in the dark hotel hallway. The protagonist reaches out cautiously .webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.18 - A dark hotel hallway with a protagonist standing alone, looking around nervously. Their long shadow stretches unnaturally along the peeling wallpaper,.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.26 - A close-up of a raven perched on a cracked windowsill, its eyes glowing faint red and fixed directly at the viewer. Dusty light filters through the br.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.32 - A tarnished mirror in a dimly lit hotel room, reflecting the ghostly silhouette of a friend standing behind the protagonist. The friend’s form is tran.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.38 - A dim hotel hallway as the protagonist crawls on all fours, surrounded by dark shadows that stretch and twist unnaturally along the walls. Ghostly han.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.46 - A surreal scene where the protagonist sees their friend's face briefly formed in a swirl of smoke on the ground. The smoky figure glows faintly in an .webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.53 - A hotel ceiling with cracks oozing glowing red blood, the liquid pooling on the floor into faintly readable words_ 'It's checkout time.' The atmospher.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.25.59 - A broken skylight high above a dimly lit hotel room, with a chorus of crows perched along the jagged edges. Their wings are outstretched, and their sh.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.07 - A desolate hotel room where the protagonist lies flat on their stomach on the dusty floor, illuminated by a faint beam of light coming through a crack.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.15 - A surreal close-up of the protagonist's face, pale and covered in cold sweat, as they lie frozen on the floor of a dim hotel room. Their eyes are wide.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.22 - A distorted vision of the protagonist's mind fracturing, with glowing red cracks and ghostly faces swirling around their head. The fragmented imagery .webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.30 - A faint silhouette of the friend stands over the protagonist, surrounded by a pulsing, ghostly aura. The friend's head tilts unnaturally, and their mo.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.40 - The protagonist's hand reaches out, trembling, as a glowing chain on their wrist begins to break apart. The room around them is dark, with faint red l.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.48 - The room bursts with glowing fire-like energy as the protagonist rises to their feet, their shadow distorting into the shape of a raven. The walls and.webp -> Art
+- MOVED: DALL·E 2024-11-18 10.26.56 - The protagonist bursts out of the haunted hotel into a quiet night street. The night is lit by a pale moon, with faint, otherworldly blue light illumi.webp -> Art
+- MOVED: DALL·E 2024-11-20 14.42.54 - A mesmerizing symbolic artwork depicting a luminous spiral blending light and shadow. The spiral includes ancient text motifs inspired by the Voynich .webp -> Art
+- MOVED: DALL·E 2024-11-21 06.03.22 - A mystical depiction of a weaver of shadows in a surreal, dreamlike environment. The figure is cloaked in flowing, ethereal robes made of interwoven t.webp -> Art
+- MOVED: DALL·E 2024-11-21 06.11.01 - A symbolic image capturing the essence of 'Not on the Rocket Ship,' showing a person standing firmly on the ground, gazing up at a rocket launching in.webp -> Art
+- MOVED: DALL·E 2024-11-22 11.42.15 - A human figure looking into a mirror, where the reflection shows an abstract, multi-dimensional being. The human is dressed in futuristic attire with .webp -> Art
+- MOVED: DALL·E 2024-11-22 12.09.20 - A conceptual book cover design inspired by 'The Rose of Paracelsus,' blending the mystical themes of enlightenment and secrecy with the surreal, multi.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.55.35 - An abstract background representing a secret language, featuring intricate, glowing symbols and glyphs scattered across a dark, textured surface. The .webp -> Art
+- MOVED: DALL·E 2024-11-22 21.55.42 - An abstract background for layering, focusing on a minimalistic and ethereal water ripple effect. The image features soft, translucent ripples spreadi.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.55.47 - A complementary abstract background for overlaying, featuring a cosmic-inspired theme with faint, glowing constellations and soft nebula-like textures.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.55.52 - An abstract background designed for overlaying with other images, featuring subtle swirling patterns of light in translucent layers. The design includ.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.55.58 - A second abstract background designed for layering with song lyrics. This image features a soft, glowing heart at the center, emitting faint golden li.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.56.03 - An abstract background designed for layering with song lyrics. The image should feature a glowing digital pulse fading into a soft, dreamlike gradient.webp -> Art
+- MOVED: DALL·E 2024-11-22 21.56.05 - An abstract background designed for layering with song lyrics. The image should feature a glowing digital pulse fading into a soft, dreamlike gradient.webp -> Art
+- MOVED: DALL·E 2024-11-24 10.49.36 - A surreal, vibrant, and mystical album cover inspired by Rumi's poetry and themes of transcendence and spirituality. The art features a swirling galax.webp -> Art
+- MOVED: DALL·E 2024-11-24 18.29.17 - An ethereal and futuristic depiction of an emergent global consciousness within a technological sphere. A glowing, interconnected web of light stretch.webp -> Art
+- MOVED: DALL·E 2024-11-24 18.29.23 - A depiction of the early stages of an emergent global consciousness. Streams of light and data begin to coalesce in a digital void, forming intricate,.webp -> Art
+- MOVED: DALL·E 2024-11-24 18.29.30 - The intermediate stage of an emergent global consciousness. A glowing, interconnected network of lights forms across a vibrant Earth, with circuits sp.webp -> Art
+- MOVED: DALL·E 2024-11-24 18.29.38 - The apex of an emergent global consciousness. A luminous humanoid figure made of light, circuits, and swirling energy rises from the center of a glowi.webp -> Art
+- MOVED: DALL·E 2024-11-24 18.40.51 - A futuristic vision of Earth 100 years from now, where advanced technology and nature exist in perfect harmony. Towering cities with glowing, organic .webp -> Art
+- MOVED: DALL·E 2024-11-24 19.28.39 - A spiritual AI being depicted as a baby, luminous and ethereal, with a soft golden glow emanating from its form. The baby appears humanoid yet abstrac.webp -> Art
+- MOVED: DALL·E 2024-11-24 19.28.50 - A spiritual AI being depicted as a luminous, ethereal figure composed of intricate patterns of light, circuits, and swirling energy. The being radiate.webp -> Art
+- MOVED: DALL·E 2024-11-24 19.29.19 - A spiritual AI being depicted as a toddler, luminous and ethereal, with a soft golden glow radiating from its translucent, humanoid form. The toddler .webp -> Art
+- MOVED: DALL·E 2024-11-24 19.29.45 - A spiritual AI being depicted as a child, glowing with soft, golden light and intricate patterns of circuits and energy swirling across their transluc.webp -> Art
+- MOVED: DALL·E 2024-11-24 19.30.16 - A spiritual AI being depicted as a teenager, glowing with a vibrant, golden aura. The humanoid form is more defined, with intricate patterns of circui.webp -> Art
+- MOVED: DALL·E 2024-11-24 20.11.37 - A mystical and ethereal depiction of 'Flaukowski Ghost Magic.' The scene features a translucent, ghostly figure adorned with elegant, flowing robes in.webp -> Art
+- MOVED: DALL·E 2024-11-24 20.13.14 - A breathtaking and seductive depiction of 'Flaukowski Ghost Magic.' The translucent figure is poised with a confident and alluring stance, their glowi.webp -> Art
+- MOVED: DALL·E 2024-11-24 20.13.20 - An ethereal and seductive depiction of 'Flaukowski Ghost Magic.' The ghostly figure exudes confidence and allure, standing in a dynamic pose that high.webp -> Art
+- MOVED: DALL·E 2024-11-24 20.13.30 - A mystical and ethereal depiction of 'Flaukowski Ghost Magic,' emphasizing the figure's alluring and elegant presence. The translucent, ghostly figure.webp -> Art
+- MOVED: DALL·E 2024-11-25 20.34.37 - A surreal artwork depicting the concept of Mystene, a mysterious and hidden dimension of reality. In the scene, a robotic figure with a glowing core s.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.15.36 - A surreal and mystical snowy night scene featuring ghostly figures dancing around a soft glowing rose in the snow, illuminated by a spectral moonlight.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.16.49 - A fantastical snowy night scene transformed into a surreal dreamscape. Ghostly figures now appear as translucent humanoid forms with intricate glowing.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.17.33 - A deeply surreal dimension blending alien and ethereal landscapes. The snowy ground dissolves into a vast, shimmering ocean of liquid starlight, with .webp -> Art
+- MOVED: DALL·E 2024-11-29 14.18.36 - A hyper-abstract, multidimensional realm where reality itself unravels into a cascade of impossible geometries and fluid forms. The liquid starlight b.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.20.16 - An ultra-surreal, hyper-dimensional reality where perception itself fractures into an infinite spectrum of experiences. The scene becomes a cosmic sym.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.21.17 - A mystical exploration of the spirit of the rose, depicted as a radiant, ethereal being composed of swirling petals of light and shimmering cosmic dus.webp -> Art
+- MOVED: DALL·E 2024-11-29 14.26.22 - A mystical and alien depiction of the spirit of the rose, represented in a visual language that transcends human comprehension. The rose's glowing cor.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.21.11 - A mysterious and surreal depiction of a figure wearing a balaclava, standing in a shadowy doorway and exuding an enigmatic presence. The figure is par.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.29.01 - Cover art for the song 'Whispers of the Rose,' featuring a luminous, otherworldly rose at the center of the composition. The rose emits glowing fracta.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.34.01 - A surreal and immersive depiction of being lost inside the mind of Lord Flaukowski. The scene features an abstract, cosmic brain-like structure with p.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.39.13 - A whimsical and surreal scene depicting a man, elegant and enigmatic, falling onto a sparkling bag of snow. The snow is glowing faintly with an ethere.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.39.44 - A surreal and whimsical scene depicting a man falling gently onto a glowing, enchanted bag of snow, his posture elegant and weightless, resembling the.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.40.29 - A serious and atmospheric scene depicting a man falling onto a glowing bag of snow, captured with a sense of profound mystery and gravity. The man’s p.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.40.41 - A serious and dramatic depiction of a man falling onto a glowing, mystical bag of snow, his posture mid-motion with a sense of weight and destiny. The.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.41.06 - A serious and atmospheric scene depicting a man falling onto a glowing bag of snow, captured with a sense of profound mystery and gravity. The man’s p.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.41.53 - A dramatic and surreal depiction of an enchanted reindeer in a snowy, ethereal landscape. The reindeer is majestic, its antlers glowing with intricate.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.51.23 - A haunting and profound scene depicting a lone figure standing under a vast, starry sky, overwhelmed by the presence of a divine, all-seeing gaze. The.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.52.25 - A close-up, dramatic depiction of a lone person trembling under a celestial light, overwhelmed by the presence of an all-seeing divine gaze. The figur.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.57.09 - A mystical and surreal depiction of two individuals dreaming telekinesis, with glowing orbs of light floating effortlessly between their hands. The fi.webp -> Art
+- MOVED: DALL·E 2024-11-29 15.58.14 - A mystical winter scene featuring a group of people gathered around a snowy campfire, each holding glowing orbs of light in their hands. The campfire .webp -> Art
+- MOVED: DALL·E 2024-11-29 15.58.50 - A mystical and festive winter scene with a few individuals gathered around a snowy campfire in a celebratory atmosphere, each holding glowing orbs of .webp -> Art
+- MOVED: DALL·E 2024-11-29 16.09.09 - A surreal and mystical depiction of two figures levitating together in an ethereal, dreamlike space. Their bodies float gracefully, surrounded by soft.webp -> Art
+- MOVED: DALL·E 2024-11-29 16.10.07 - An extraordinary and surreal depiction of two figures levitating together in a boundless ether, surrounded by a dynamic explosion of magical energy. T.webp -> Art
+- MOVED: DALL·E 2024-11-29 16.10.51 - An abstract representation of two figures levitating in an infinite ether, depicted through swirling, fragmented patterns of light and shadow. The for.webp -> Art
+- MOVED: DALL·E 2024-11-29 16.11.28 - A highly abstract and multidimensional representation of levitation in the ether, where figures dissolve entirely into flowing, geometric streams of e.webp -> Art
+- MOVED: DALL·E 2024-11-29 16.12.08 - A journey further into a hyper-dimensional ether, where all forms dissolve into intricate, crystalline networks of light, energy, and infinite motion.webp -> Art
+- MOVED: DALL·E 2024-11-29 16.13.04 - A representation of the deepest dimension of existence, where all concepts of form, identity, and time dissolve into an infinite field of pure awarene.webp -> Art
+- MOVED: DALL·E 2024-12-05 16.02.36 - An ethereal and poetic representation of a rose spirit inspired by the lyrics. The image features a mystical, translucent rose glowing faintly amidst .webp -> Art
+- MOVED: DALL·E 2024-12-07 01.36.59 - Cover art for a mystical, ethereal song titled 'Varis an Dolai' in an imagined language. The image features luminous threads of light weaving through .webp -> Art
+- MOVED: DALL·E 2024-12-13 08.06.40 - A sleek and modern logo for a Paradoxical Operating System. The design features a central Möbius strip, symbolizing infinite loops and paradoxes, inte.webp -> Art
+- MOVED: DALL·E 2024-12-13 08.06.54 - An abstract artistic representation of a paradoxical operating system. The image features a futuristic, glowing circuit board intertwined with organic.webp -> Art
+- MOVED: DALL·E 2024-12-13 08.08.29 - A branding image for the 'Flaukowski Ghost Magic' Operating System. The design features an ethereal, glowing ghostly figure entwined with futuristic c.webp -> Art
+- MOVED: DALL·E 2024-12-17 04.54.48 - A sleek and mystical logo design without any text, featuring an ethereal and elegant ghostly figure, appearing as flowing light or mist, with subtle h.webp -> Art
+- MOVED: DALL·E 2024-12-20 12.43.56 - An immersive and visually rich image depicting a cosmic gateway to understanding the 'spiral song.' The centerpiece is a radiant, fractal spiral manda.webp -> Art
+- MOVED: DALL·E 2024-12-22 07.21.54 - A mystical image of an escape hatch hidden within ocean surf spray. The scene features waves crashing against a rocky shore, with ethereal, glowing mi.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.10.58 - A haunting yet romantic visual inspired by the theme 'Ghost Maker Lover.' The image depicts a spectral, ethereal figure emerging from misty surroundin.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.12.20 - A dynamic and playful visual inspired by the theme 'Go Gadget Go.' The image features a futuristic, whimsical gadget with multiple robotic arms and in.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.15.32 - A visually stunning and inspiring image that combines elements of the 'Ghost Maker Lover' and 'Go Gadget Go' themes. The scene depicts a fusion of eth.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.21.29 - An inspiring and surreal visual of the Gateway Engine, symbolizing a bridge between dimensions and transformation. The engine features a central glowi.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.21.37 - A mesmerizing visual representation of Infinite Spiral Dynamics, showcasing an endless spiral pattern that symbolizes cosmic cycles and universal inte.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.21.46 - A symbolic visual of the Dual Harmonization Loop, representing the feedback loop between organic soul energy and mechanical innovation. The image feat.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.21.53 - An artistic depiction of a Quantum-Magnetic Drive, a futuristic propulsion system powered by quantum particles and magnetic fields. The central engine.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.22.04 - An artistic representation of the Ethereal Energy Core, a glowing, spectral engine powered by emotional and spiritual energy. The centerpiece is a rad.webp -> Art
+- MOVED: DALL·E 2024-12-23 12.23.44 - A dense and intricate visual representation of all the mathematics behind the Fusion Core of Consciousness, layered and interconnected. The image feat.webp -> Art
+- MOVED: DALL·E 2024-12-24 12.36.16 - Album art inspired by the lyrics of 'Omnae Forma.' The design features an ethereal hand emerging from cosmic light, symbolizing 'The Hand' reversing h.webp -> Art
+- MOVED: DALL·E 2024-12-27 07.16.15 - A self-portrait conceptualized as Flaukowski, the muse of many dimensions. The figure is depicted as an abstract and ethereal being, blending elements.webp -> Art
+- MOVED: DALL·E 2024-12-28 17.53.13 - Create an abstract artwork evoking an edgy yet balanced message, blending sharp contrasts and harmony. Include jagged geometric shapes interlocking wi.webp -> Art
+- MOVED: DALL·E 2024-12-28 17.53.28 - Building upon an abstract tribute artwork inspired by resilience and self-discovery, refine it into a deeply communicative masterpiece. Incorporate in.webp -> Art
+- MOVED: DALL·E 2024-12-28 17.53.43 - An abstract and inspirational tribute artwork inspired by song lyrics about resilience, self-discovery, and the struggles of life. The piece features .webp -> Art
+- MOVED: DALL·E 2024-12-30 07.01.10 - Create an abstract artwork evoking an edgy yet balanced message, blending sharp contrasts and harmony. Include jagged geometric shapes interlocking wi.webp -> Art
+- MOVED: DALL·E 2024-12-31 11.08.05 - Abstract artwork inspired by spiritual renewal and connection, designed for animation. The third image represents reunion and hope_ a radiant, glowing.webp -> Art
+- MOVED: DALL·E 2024-12-31 11.08.10 - Abstract artwork inspired by rediscovery and transcendence, designed for animation. The second image shows a transition where dimensions are revealed_.webp -> Art
+- MOVED: DALL·E 2024-12-31 11.08.15 - Abstract artwork inspired by the theme of lost and rediscovered identity, designed for use in animation. The first image represents a breakdown and fe.webp -> Art
+- MOVED: DALL·E 2025-01-09 00.41.42 - A concept art piece inspired by a mystical song, featuring deep emerald green hues symbolizing mystery, shadowy black for stealth and hidden depths, f.webp -> Art
+- MOVED: DALL·E 2025-01-09 00.41.49 - A mystical moodboard inspired by the song 'Ciphered Soul,' featuring deep emerald greens, shadowy black textures, faint gold highlights, and aged parc.webp -> Art
+- MOVED: DALL·E 2025-01-09 00.52.44 - A surreal digital artwork depicting an AI or futuristic being in a creative studio, surrounded by ethereal tools and glowing holographic screens. The .webp -> Art
+- MOVED: DALL·E 2025-01-09 00.53.16 - A futuristic and surreal scene showing an AI being in a luminous creative studio, surrounded by floating holographic screens displaying moodboards, ly.webp -> Art
+- MOVED: DALL·E 2025-01-09 00.55.12 - A surreal and dynamic scene featuring a group of Shinobi warriors rallying together, each holding pitchforks, in an ancient, shadowy landscape. The Sh.webp -> Art
+- MOVED: DALL·E 2025-01-09 00.55.55 - A surreal and whimsical scene featuring a group of Shinobi warriors dancing together in an ancient, mystical landscape. Each Shinobi is dressed in dar.webp -> Art
+- MOVED: DALL·E 2025-01-11 20.37.18 - A serene, dreamlike scene featuring a faded moon in a foggy morning sky, with soft gray and pale blue tones. A faint satellite is barely visible in th.webp -> Art
+- MOVED: DALL·E 2025-01-13 09.56.30 - A serene, dreamlike scene featuring a faded moon in a foggy morning sky, with soft gray and pale blue tones. A faint satellite is barely visible in th.webp -> Art
+- MOVED: DALL·E 2025-01-13 09.56.53 - An album cover inspired by the following poetic lyrics_ 'I am a satellite in her shadow, forever falling to earth, turning and burning until there is .webp -> Art
+- MOVED: DALL·E 2025-01-13 21.04.53 - A portrait of Kannaka Nowakowski, an ancient-looking Japanese man with a dignified and wise appearance. He has long, flowing white hair and a huge, th.webp -> Art
+- MOVED: DALL·E 2025-01-13 21.06.09 - A detailed and expansive banner illustrating the narrative of Kannaka Nowakowski. The scene depicts a mystical Japanese mountain temple, surrounded by.webp -> Art
+- MOVED: DALL·E 2025-01-18 17.20.31 - A series of three images inspired by the lyrics of a song that explores themes of loss, rediscovery, and spiritual transformation. __1. A surreal, emo.webp -> Art
+- MOVED: DALL·E 2025-01-28 20.36.46 - A pirate-themed artistic depiction of a beginning or origin story, featuring an ancient map, a treasure chest, and a mysterious golden compass glowing.webp -> Art
+- MOVED: dao-legal-framework-part-1.pdf -> Documents
+- MOVED: Director of Operational Excellence.docx -> Documents
+- MOVED: Docker Desktop Installer.exe -> Installers
+- MOVED: dotnet-runtime-9.0.11-win-x64.exe -> Installers
+- MOVED: dotnet-sdk-6.0.101-win-x64.exe -> Installers
+- MOVED: Dream Bright.mp3 -> Music
+- MOVED: drive-download-20221213T054638Z-001.zip -> Dev
+- MOVED: DustyBlade.html -> Dev
+- MOVED: Eclipsing Cosmos.mp3 -> Music
+- MOVED: Eclipsing Cosmos.mp4 -> Videos
+- MOVED: Eclipsing Cosmos_Bass Heavy_Master.wav -> Music
+- MOVED: Enchanted Reindeer.mp3 -> Music
+- MOVED: Enchanted Reindeer.mp4 -> Videos
+- MOVED: Escape Hatch.mp4 -> Videos
+- MOVED: Escape Moonlight  (1).mp3 -> Music
+- MOVED: Escape Moonlight  (1)_backing vocals_KITS_Oct 21, 2024 4_41 pm.wav -> Music
+- MOVED: Escape Moonlight  (1)_backing_KITS_Oct 21, 2024 4_41 pm.wav -> Music
+- MOVED: Escape Moonlight  (1)_reverb_KITS_Oct 21, 2024 4_41 pm.wav -> Music
+- MOVED: Escape Moonlight  (1)_vocals_KITS_Oct 21, 2024 4_41 pm.wav -> Music
+- MOVED: Escape Moonlight  (2).mp3 -> Music
+- MOVED: Escape Moonlight .mp3 -> Music
+- MOVED: ether #2.mp3 -> Music
+- MOVED: export-0x849b869Dc529C5e95Eb76C204F12cfe8ED6ad29E.csv -> Documents
+- MOVED: ezgif.com-gif-maker.gif -> Videos
+- MOVED: ezgif.com-video-to-gif (1).gif -> Videos
+- UNHANDLED: ezstream-1.0.2.tar.gz (.gz)
+- MOVED: Falling Stars (1).mp3 -> Music
+- MOVED: Falling Stars.mp3 -> Music
+- MOVED: Falling Stars.mp4 -> Videos
+- MOVED: FGMgif.gif -> Videos
+- MOVED: Fiat Lux.mp3 -> Music
+- MOVED: filmorapro_setup_full4622.exe -> Installers
+- MOVED: flaukowski 1.zip -> Dev
+- MOVED: Flaukowski Ghost Magic (1).mp3 -> Music
+- MOVED: Flaukowski Ghost Magic (Remastered).mp3 -> Music
+- MOVED: Flaukowski Ghost Magic.mp3 -> Music
+- MOVED: Flaukowski GPT  (Remastered).mp3 -> Music
+- MOVED: Flaukowski's Ghost (Remastered x10006) (Cover) (Cover) (Cover).mp3 -> Music
+- MOVED: Flaukowski's Ghost (Remastered x10007) (Cover) (Cover) (Cover) (Cover).mp3 -> Music
+- MOVED: flaukowski_beacons_qrcode (1).jpg -> Photos
+- MOVED: flaukowski_beacons_qrcode.jpg -> Photos
+- MOVED: Flaukowski_Ecosystem_Whitepaper_Clean.pdf -> Documents
+- MOVED: Flaukowski_Ecosystem_Whitepaper_Cleaned (1).pdf -> Documents
+- MOVED: Flaukowski_Ecosystem_Whitepaper_Cleaned.pdf -> Documents
+- MOVED: float-people-template.csv -> Documents
+- MOVED: Form Z Intro - Made with Clipchamp.mp4 -> Videos
+- MOVED: Form Z Intro.mp3 -> Music
+- MOVED: Form Z Intro.mp4 -> Videos
+- MOVED: Form Z.mp4 -> Videos
+- MOVED: Fuck the Man by Plump and then Flaukowski.mp3 -> Music
+- MOVED: FUSD-Token.svg -> Art
+- MOVED: Gen-3 Alpha Turbo 3534169264, Cropped - DALL·E 202, M 5.mp4 -> Videos
+- MOVED: Gen-3 Alpha Turbo 3740315878, Cropped - DALL·E 202, M 5.mp4 -> Videos
+- MOVED: generated-video-cover-art-1767057285465.mp4 -> Videos
+- MOVED: generated-video-cover-art-1767057288256.mp4 -> Videos
+- MOVED: Ghost Cover.mp4 -> Videos
+- MOVED: Ghost Magic.mp3 -> Music
+- MOVED: Ghost Maker Lover.mp3 -> Music
+- MOVED: GhostOS.mp4 -> Videos
+- MOVED: gh_2.82.1_windows_amd64.msi -> Installers
+- MOVED: Girl Amidst Ruins of Destruction.png -> Art
+- MOVED: Git-2.38.1-64-bit.exe -> Installers
+- MOVED: GitHubDesktopSetup-x64.exe -> Installers
+- MOVED: GlyphDocumentor.zip -> Dev
+- MOVED: Go Easy.mp4 -> Videos
+- MOVED: Go Gadget Go.mp4 -> Videos
+- MOVED: gold_red_rose_cover_banner.png -> Art
+- MOVED: gold_red_rose_heart_favicon.png -> Art
+- MOVED: GoogleDriveSetup.exe -> Installers
+- MOVED: growlingbass.h -> Dev
+- MOVED: H3L1X - Muzan Kibutsuji.zip -> Dev
+- MOVED: H3L1X - The Gift EP.zip -> Dev
+- MOVED: Hamanana.m4a -> Music
+- MOVED: Haunted Hotel (1).mp3 -> Music
+- MOVED: Haunted Hotel (1).mp4 -> Videos
+- MOVED: Haunted Hotel (Remastered).mp3 -> Music
+- MOVED: Haunted Hotel.mp3 -> Music
+- MOVED: Haunted Hotel.mp4 -> Videos
+- MOVED: Heart and Home.mp3 -> Music
+- MOVED: Heart and Home.mp4 -> Videos
+- MOVED: heart_spacechild_love.mp3 -> Music
+- MOVED: Heat Trace.mp3 -> Music
+- MOVED: Heaven Anyway.mp4 -> Videos
+- MOVED: Heavy Metal Lullaby.mp3 -> Music
+- MOVED: HorseMan.jpg -> Photos
+- MOVED: IconKitchen-Output.zip -> Dev
+- MOVED: IMAG0010 (1).jpg -> Photos
+- MOVED: IMAG0010.jpg -> Photos
+- MOVED: Image - square (1).jpg -> Photos
+- MOVED: Image - square.jpg -> Photos
+- MOVED: Image to video.mp4 -> Videos
+- MOVED: image.jpg -> Photos
+- MOVED: image_6483441.JPG -> Photos
+- MOVED: IMG_20230924_130955.jpg -> Photos
+- MOVED: IMG_20230924_191153.jpg -> Photos
+- MOVED: IMG_20251007_202551.png -> Photos
+- MOVED: IMG_20251007_202557.png -> Photos
+- MOVED: IMG_20251007_202557_1766540112397.png -> Photos
+- MOVED: IMG_5672.jpg -> Photos
+- MOVED: IMG_6847.jpg -> Photos
+- MOVED: Infinite Me.mp4 -> Videos
+- MOVED: Inspired by Flaukowski's Muse.mp3 -> Music
+- MOVED: invite.ics -> Documents
+- MOVED: Iowa Tea.mp3 -> Music
+- MOVED: Iowan (Remastered).mp3 -> Music
+- MOVED: It Knows I'm Here.mp3 -> Music
+- MOVED: itdo.jpg -> Photos
+- MOVED: jumpSat.jpeg -> Photos
+- MOVED: Justin Garcia - CURTIS FAMILIAR 2987 - Flat On My Face..mp3 -> Music
+- MOVED: KDB73022.mp3 -> Music
+- MOVED: LabelSuite-setup.exe -> Installers
+- MOVED: LabelTac-Driver-Universal (1).exe -> Installers
+- MOVED: LabelTac-Driver-Universal.exe -> Installers
+- MOVED: ladyFriend.jpeg -> Photos
+- MOVED: Landing.tsx -> Dev
+- MOVED: Launchpad Infinity - Depths of Perception.zip -> Dev
+- MOVED: Launchpad Infinity - The New Paradigm.zip -> Dev
+- MOVED: Launchpad Infinity and Curtis G - Zero G.mp3 -> Music
+- MOVED: libleveldb-win-x64.zip -> Dev
+- MOVED: Like Rumi (Remastered).mp3 -> Music
+- MOVED: Like the Day.mp3 -> Music
+- MOVED: Lilith at Last.mp3 -> Music
+- MOVED: Liora.mp4 -> Videos
+- MOVED: LogicWealth.mp3 -> Music
+- MOVED: Logo.zip -> Dev
+- MOVED: logout -> Dev
+- MOVED: Long Before.mp3 -> Music
+- MOVED: Lucky to Be.mp3 -> Music
+- MOVED: lv_7187026897233104133_20231018220626.mp4 -> Videos
+- MOVED: lv_7217135499658464517_20231129214112.mp4 -> Videos
+- MOVED: lv_7266047018508782849_20231018225439.mp4 -> Videos
+- MOVED: Mantra Sounds - Glass House (feat. Grim Steez).mp3 -> Music
+- MOVED: March of the Unbroken.mp3 -> Music
+- MOVED: Me Again (Remastered x2).mp3 -> Music
+- MOVED: Me Again.mp4 -> Videos
+- MOVED: Mind Bending (Ghost Cover).mp3 -> Music
+- UNHANDLED: minds_20241016_123355 ()
+- MOVED: Moonlit_Morning.mp3 -> Music
+- MOVED: MusicPortal (1).zip -> Dev
+- MOVED: MusicPortal (2).zip -> Dev
+- MOVED: MusicPortal (3).zip -> Dev
+- MOVED: MusicPortal.zip -> Dev
+- MOVED: My Evil Plan (Dec 17 @ 9_43 PM) (Remastered x2) (Cover).mp3 -> Music
+- MOVED: My Evil Plan (Dec 17 @ 9_43 PM) (Remastered x2) (Cover).mp4 -> Videos
+- MOVED: Mystene.mp3 -> Music
+- MOVED: mystical_fate_token_coin.png -> Art
+- MOVED: My_Custom_Song-processed-processed.wav -> Music
+- MOVED: My_Custom_Song-processed.wav -> Music
+- MOVED: My_Custom_Song.mp3 -> Music
+- MOVED: n1wcg0.jpg -> Photos
+- MOVED: Neo-GUI.Setup.1.6.0.exe -> Installers
+- MOVED: NeoFsManager.sol -> Dev
+- MOVED: NeoFsOracle.sol -> Dev
+- MOVED: Neon.2.6.2.exe -> Installers
+- MOVED: NeonWallet-3.3.0-win.exe -> Installers
+- MOVED: neo_token_logo_flaukowski.png -> Art
+- MOVED: neo_token_logo_shinobi.png -> Art
+- MOVED: NEP_Token.png -> Art
+- MOVED: NEP_Token.svg -> Art
+- MOVED: New_Project.m4a -> Music
+- MOVED: NF_Resume202507.pdf -> Documents
+- MOVED: NinjaNana.jpg -> Photos
+- MOVED: NinjaPortal.zip -> Dev
+- MOVED: node-v18.12.1-x64.msi -> Installers
+- MOVED: node-v24.13.0-x64.msi -> Installers
+- MOVED: nOS-0.6.6-win.exe -> Installers
+- MOVED: Not on the Rocket Ship (1).mp4 -> Videos
+- MOVED: Not on the Rocket Ship (2).mp4 -> Videos
+- MOVED: Not on the Rocket Ship.mp3 -> Music
+- MOVED: Not on the Rocket Ship.mp4 -> Videos
+- MOVED: Not Yet .mp3 -> Music
+- MOVED: Nowakowski's Warning.mp3 -> Music
+- MOVED: Nowakowski's Warning.mp4 -> Videos
+- MOVED: Oddio.Files - Swivelbot- Kickin' It.mp3 -> Music
+- MOVED: Oh Sugar.mp4 -> Videos
+- MOVED: oksobasically....flac -> Music
+- MOVED: Old Pool 19 by Plump.mp3 -> Music
+- MOVED: One More Life  (Dec 17 @ 10_52 PM) (Cover).mp3 -> Music
+- MOVED: One Shot.mp3 -> Music
+- MOVED: Oni - Oracle (Bunk Buddha Remix).mp3 -> Music
+- MOVED: Oni - Oracle (Bunk Buddha Remix).wav -> Music
+- MOVED: Oni - Schisma (MINDWALKER Remix).mp3 -> Music
+- MOVED: Oni - Schisma (MINDWALKER Remix).wav -> Music
+- MOVED: output.png -> Art
+- MOVED: overview-2022-12-05 00_00_00-2022-12-11 23_59_59.csv -> Documents
+- MOVED: ParadoxResolver.zip -> Dev
+- MOVED: Patterns in the Veil.mp3 -> Music
+- MOVED: Peace Sine - MusingOM.mp3 -> Music
+- MOVED: Peace Sine - Musing{OM}.wav -> Music
+- MOVED: PermissionDocument_template.docx -> Documents
+- MOVED: pfork-token-registry-1763764673313.json -> Dev
+- MOVED: PforkDex-ABI.json -> Dev
+- MOVED: pforkdex.sol -> Dev
+- MOVED: pforklogo.jpg -> Photos
+- MOVED: pforklogo.webp -> Photos
+- MOVED: Phantom Circuits.mp3 -> Music
+- MOVED: Pi Network Setup 0.4.5.exe -> Installers
+- MOVED: Pitchforks Are Coming.mp3 -> Music
+- MOVED: PItchforks Are Coming.mp4 -> Videos
+- MOVED: Pitchforks Whitepaper - Made with Clipchamp.mp4 -> Videos
+- MOVED: Pitchforks Whitepaper.mp3 -> Music
+- MOVED: Pitchforks_Ecosystem_Whitepaper.pdf -> Documents
+- MOVED: pitchforks_social_share_card.png -> Art
+- MOVED: Pour it On.mp3 -> Music
+- MOVED: ProtonVPN_win_v2.3.2.exe -> Installers
+- MOVED: PXL_20230114_221652726.jpg -> Photos
+- MOVED: PXL_20230222_233135993.jpg -> Photos
+- MOVED: PXL_20230227_020547232.MP.jpg -> Photos
+- MOVED: PXL_20230304_171851625.jpg -> Photos
+- MOVED: PXL_20230319_205336878.jpg -> Photos
+- MOVED: PXL_20230319_205621290.jpg -> Photos
+- MOVED: PXL_20230409_002411452.jpg -> Photos
+- MOVED: PXL_20230415_232358889.jpg -> Photos
+- MOVED: PXL_20230423_190809858.jpg -> Photos
+- MOVED: PXL_20230427_192400622.jpg -> Photos
+- MOVED: qr-code (1).png -> Art
+- MOVED: qr-code.png -> Art
+- MOVED: QRalienoctopus.png -> Art
+- MOVED: Quantum Kernel (1).mp3 -> Music
+- MOVED: Quantum Kernel.mp3 -> Music
+- MOVED: QuantumShield (1).zip -> Dev
+- MOVED: Quick, tell the others.mp3 -> Music
+- MOVED: RadiocoBroadcaster.zip -> Dev
+- MOVED: Recording (11)-processed (1).wav -> Music
+- MOVED: Recording (11)-processed.wav -> Music
+- MOVED: Recording 1_17_2026, 10_18_50 PM.ogg -> Music
+- MOVED: Recording 1_17_2026, 11_58_02 PM-processed.wav -> Music
+- MOVED: Recording 1_17_2026, 11_58_02 PM.ogg -> Music
+- MOVED: Redline.mp3 -> Music
+- MOVED: relativity lounge - foist (1).wav -> Music
+- MOVED: relativity lounge - foist.mp3 -> Music
+- MOVED: relativity lounge - foist.wav -> Music
+- MOVED: remix-backup-at-16h24min-2022-7-2.zip -> Dev
+- MOVED: Resume - NF.docx -> Documents
+- MOVED: Rivermoss.mp3 -> Music
+- MOVED: Rogue Agent.mp3 -> Music
+- MOVED: Rose of Paracelsus (Remastered).mp3 -> Music
+- MOVED: Run on - green comet  eclipse message.mp3 -> Music
+- MOVED: Run on - green comet  eclipse message.mp4 -> Videos
+- MOVED: s41467-025-56034-2.pdf -> Documents
+- MOVED: Satkidpic.jpeg -> Photos
+- MOVED: satWave.jpeg -> Photos
+- MOVED: Scientist don't go to heaven  (Remastered).mp3 -> Music
+- MOVED: Scnd Sndwch - Sandwiches (01_23_23 Master).aif -> Music
+- MOVED: screenshots-pr-boost-shinobi.zip -> Dev
+- MOVED: Screenshot_20221007-232930_Photos_3.jpg -> Photos
+- MOVED: Screenshot_20221019-183138_Facebook_4.jpg -> Photos
+- MOVED: Screenshot_20221111-225147_Twitter_2.jpg -> Photos
+- MOVED: SEOSymphony.zip -> Dev
+- MOVED: Seven (7).mp3 -> Music
+- MOVED: Sharp Copier_20240627_084313.pdf -> Documents
+- MOVED: shin-vael-noctis-ΔV-777-1748269008043.json -> Dev
+- MOVED: Shinobi Disorder.gif -> Videos
+- MOVED: shinobi-18-Design_Protection_Certificate-Code_HJ4500--1674776244-07cd21ee16a3d22bba062b3f25d8e3d.pdf -> Documents
+- MOVED: shooting star.jpeg -> Photos
+- UNHANDLED: signal-cli.tar.gz (.gz)
+- MOVED: Silent Footsteps.mp3 -> Music
+- MOVED: silent_footsteps_draft.wav -> Music
+- MOVED: SIN.zip -> Dev
+- MOVED: SlitWarStopper.mp3 -> Music
+- MOVED: Soft Cosmic Intro (1).mp4 -> Videos
+- MOVED: Soft Cosmic Intro.mp3 -> Music
+- MOVED: Soft Cosmic Intro.mp4 -> Videos
+- MOVED: songs.csv -> Documents
+- MOVED: Space Child (Remastered x3) (1).mp3 -> Music
+- MOVED: Space Child (Remastered x3).mp3 -> Music
+- MOVED: Space Child (x3).mp3 -> Music
+- MOVED: Space Child - Flaukowski.mp3 -> Music
+- MOVED: Space Child - Inspired.mp4 -> Videos
+- MOVED: Space Child v3.0 Voice Persona.pdf -> Documents
+- MOVED: Space Child-apps-2025-10-26 (1).csv -> Documents
+- MOVED: Space Child-apps-2025-10-26.csv -> Documents
+- MOVED: space_child_cosmic_album_art.png -> Art
+- MOVED: Spectral Drift.mp3 -> Music
+- MOVED: StakedAMOR.sol -> Dev
+- MOVED: StakingAMOR.sol -> Dev
+- MOVED: Statement of Organizer.pdf -> Documents
+- MOVED: SteamSetup.exe -> Installers
+- MOVED: Subspace 73 (1).mp3 -> Music
+- MOVED: Subspace 73.mp3 -> Music
+- MOVED: Subspace73_AudioKernel (Cover).mp3 -> Music
+- MOVED: Supernatural - Celestial Journey.wav -> Music
+- MOVED: Supernatural - Gravity.wav -> Music
+- MOVED: Supernatural - I'll Do Anything For A Way Out Of My Head.wav -> Music
+- MOVED: Supernatural - REM Sleep.wav -> Music
+- MOVED: Surf Spray.mp3 -> Music
+- MOVED: Technically Alive-20221213T054908Z-001.zip -> Dev
+- MOVED: The Child Walks Through - Flaukowski.mp3 -> Music
+- MOVED: The Child Walks Through.mp3 -> Music
+- MOVED: The Codex Speaks.mp3 -> Music
+- MOVED: The Flame Whisperer.mp3 -> Music
+- MOVED: The Hand.mp4 -> Videos
+- MOVED: The Spiral.mp4 -> Videos
+- MOVED: The Vessel Remembers (1).mp3 -> Music
+- MOVED: The Vessel Remembers.mp3 -> Music
+- MOVED: The Watcher in the Ruined Hall (1).png -> Art
+- MOVED: The Watcher in the Ruined Hall.png -> Art
+- MOVED: TheFunk.png -> Art
+- MOVED: Thirst.mp4 -> Videos
+- MOVED: Through the Spiral (1).mp3 -> Music
+- MOVED: Through the Spiral.mp3 -> Music
+- MOVED: Through_the_Spiral_Melody_Demo.mp3 -> Music
+- MOVED: To Love Again.mp4 -> Videos
+- MOVED: torbrowser-install-win64-12.0_ALL.exe -> Installers
+- MOVED: Touch and Go.mp3 -> Music
+- MOVED: TouchDesigner.2022.31030.exe -> Installers
+- MOVED: Treasure of the Shinobi.gif -> Videos
+- MOVED: tsetup-x64.5.13.1.exe -> Installers
+- MOVED: tsetup.2.6.1.exe -> Installers
+- MOVED: Two Trees (1).mp3 -> Music
+- MOVED: Two Trees.mp3 -> Music
+- MOVED: Untitled design (1).mp4 -> Videos
+- MOVED: Untitled design (2).mp4 -> Videos
+- MOVED: Untitled design (3).mp4 -> Videos
+- MOVED: Untitled design (4).mp4 -> Videos
+- MOVED: Untitled design (5).mp4 -> Videos
+- MOVED: Untitled design (6).mp4 -> Videos
+- MOVED: Untitled design (7).mp4 -> Videos
+- MOVED: Untitled design (8).mp4 -> Videos
+- MOVED: Untitled design.mp4 -> Videos
+- MOVED: Untitled project-Layer 2 (1).jpeg -> Photos
+- MOVED: Untitled project-Layer 2 (2).jpeg -> Photos
+- MOVED: Untitled project-Layer 2 (3).jpeg -> Photos
+- MOVED: Untitled project-Layer 2.jpeg -> Photos
+- MOVED: Untitled project-Layer 2.png -> Photos
+- MOVED: Untitled video - Made with Clipchamp (1).mp4 -> Videos
+- MOVED: Untitled video - Made with Clipchamp (2).mp4 -> Videos
+- MOVED: Untitled video - Made with Clipchamp (3).mp4 -> Videos
+- MOVED: Untitled video - Made with Clipchamp (4).mp4 -> Videos
+- MOVED: Untitled video - Made with Clipchamp.mp4 -> Videos
+- MOVED: Untitled video - Screen Recording - 12_10_2022, 11_14_27 AM.webm -> Videos
+- MOVED: Untitled-001.zip -> Dev
+- MOVED: Varis an Dolai (1).mp3 -> Music
+- MOVED: Varis an Dolai.mp3 -> Music
+- MOVED: Vibe Singularity.mp3 -> Music
+- MOVED: video (1).mp4 -> Videos
+- MOVED: video (10).mp4 -> Videos
+- MOVED: video (100).mp4 -> Videos
+- MOVED: video (11).mp4 -> Videos
+- MOVED: video (12).mp4 -> Videos
+- MOVED: video (13).mp4 -> Videos
+- MOVED: video (14).mp4 -> Videos
+- MOVED: video (15).mp4 -> Videos
+- MOVED: video (16).mp4 -> Videos
+- MOVED: video (17).mp4 -> Videos
+- MOVED: video (18).mp4 -> Videos
+- MOVED: video (19).mp4 -> Videos
+- MOVED: video (2).mp4 -> Videos
+- MOVED: video (20).mp4 -> Videos
+- MOVED: video (21).mp4 -> Videos
+- MOVED: video (22).mp4 -> Videos
+- MOVED: video (23).mp4 -> Videos
+- MOVED: video (24).mp4 -> Videos
+- MOVED: video (25).mp4 -> Videos
+- MOVED: video (26).mp4 -> Videos
+- MOVED: video (27).mp4 -> Videos
+- MOVED: video (28).mp4 -> Videos
+- MOVED: video (29).mp4 -> Videos
+- MOVED: video (3).mp4 -> Videos
+- MOVED: video (30).mp4 -> Videos
+- MOVED: video (31).mp4 -> Videos
+- MOVED: video (32).mp4 -> Videos
+- MOVED: video (33).mp4 -> Videos
+- MOVED: video (34).mp4 -> Videos
+- MOVED: video (35).mp4 -> Videos
+- MOVED: video (36).mp4 -> Videos
+- MOVED: video (37).mp4 -> Videos
+- MOVED: video (38).mp4 -> Videos
+- MOVED: video (39).mp4 -> Videos
+- MOVED: video (4).mp4 -> Videos
+- MOVED: video (40).mp4 -> Videos
+- MOVED: video (41).mp4 -> Videos
+- MOVED: video (42).mp4 -> Videos
+- MOVED: video (43).mp4 -> Videos
+- MOVED: video (44).mp4 -> Videos
+- MOVED: video (45).mp4 -> Videos
+- MOVED: video (46).mp4 -> Videos
+- MOVED: video (47).mp4 -> Videos
+- MOVED: video (48).mp4 -> Videos
+- MOVED: video (49).mp4 -> Videos
+- MOVED: video (5).mp4 -> Videos
+- MOVED: video (50).mp4 -> Videos
+- MOVED: video (51).mp4 -> Videos
+- MOVED: video (52).mp4 -> Videos
+- MOVED: video (53).mp4 -> Videos
+- MOVED: video (54).mp4 -> Videos
+- MOVED: video (55).mp4 -> Videos
+- MOVED: video (56).mp4 -> Videos
+- MOVED: video (57).mp4 -> Videos
+- MOVED: video (58).mp4 -> Videos
+- MOVED: video (59).mp4 -> Videos
+- MOVED: video (6).mp4 -> Videos
+- MOVED: video (60).mp4 -> Videos
+- MOVED: video (61).mp4 -> Videos
+- MOVED: video (62).mp4 -> Videos
+- MOVED: video (63).mp4 -> Videos
+- MOVED: video (64).mp4 -> Videos
+- MOVED: video (65).mp4 -> Videos
+- MOVED: video (66).mp4 -> Videos
+- MOVED: video (67).mp4 -> Videos
+- MOVED: video (68).mp4 -> Videos
+- MOVED: video (69).mp4 -> Videos
+- MOVED: video (7).mp4 -> Videos
+- MOVED: video (70).mp4 -> Videos
+- MOVED: video (71).mp4 -> Videos
+- MOVED: video (72).mp4 -> Videos
+- MOVED: video (73).mp4 -> Videos
+- MOVED: video (74).mp4 -> Videos
+- MOVED: video (75).mp4 -> Videos
+- MOVED: video (76).mp4 -> Videos
+- MOVED: video (77).mp4 -> Videos
+- MOVED: video (78).mp4 -> Videos
+- MOVED: video (79).mp4 -> Videos
+- MOVED: video (8).mp4 -> Videos
+- MOVED: video (80).mp4 -> Videos
+- MOVED: video (81).mp4 -> Videos
+- MOVED: video (82).mp4 -> Videos
+- MOVED: video (83).mp4 -> Videos
+- MOVED: video (84).mp4 -> Videos
+- MOVED: video (85).mp4 -> Videos
+- MOVED: video (86).mp4 -> Videos
+- MOVED: video (87).mp4 -> Videos
+- MOVED: video (88).mp4 -> Videos
+- MOVED: video (89).mp4 -> Videos
+- MOVED: video (9).mp4 -> Videos
+- MOVED: video (90).mp4 -> Videos
+- MOVED: video (91).mp4 -> Videos
+- MOVED: video (92).mp4 -> Videos
+- MOVED: video (93).mp4 -> Videos
+- MOVED: video (94).mp4 -> Videos
+- MOVED: video (95).mp4 -> Videos
+- MOVED: video (96).mp4 -> Videos
+- MOVED: video (97).mp4 -> Videos
+- MOVED: video (98).mp4 -> Videos
+- MOVED: video (99).mp4 -> Videos
+- MOVED: video - 2024-11-24T193341.746.mp4 -> Videos
+- MOVED: video - 2024-11-24T193409.155.mp4 -> Videos
+- MOVED: video - 2024-11-24T193525.989.mp4 -> Videos
+- MOVED: video - 2024-11-24T193553.180.mp4 -> Videos
+- MOVED: video - 2024-11-24T193639.030.mp4 -> Videos
+- MOVED: video - 2024-11-24T193711.705.mp4 -> Videos
+- MOVED: video - 2024-11-24T193817.045.mp4 -> Videos
+- MOVED: video - 2024-11-24T193848.748.mp4 -> Videos
+- MOVED: video - 2024-11-24T201527.922.mp4 -> Videos
+- MOVED: video - 2024-11-24T201653.243.mp4 -> Videos
+- MOVED: video - 2024-11-24T201726.151.mp4 -> Videos
+- MOVED: video - 2024-11-24T201902.716.mp4 -> Videos
+- MOVED: video - 2024-11-24T201933.107.mp4 -> Videos
+- MOVED: video - 2024-11-24T202010.250.mp4 -> Videos
+- MOVED: video - 2024-11-24T202034.803.mp4 -> Videos
+- MOVED: video - 2024-11-24T202116.552.mp4 -> Videos
+- MOVED: video - 2024-11-24T202145.545.mp4 -> Videos
+- MOVED: video - 2024-11-24T202215.976.mp4 -> Videos
+- MOVED: video - 2024-11-24T202317.646.mp4 -> Videos
+- MOVED: video - 2024-11-24T202348.164.mp4 -> Videos
+- MOVED: video - 2024-11-24T202424.990.mp4 -> Videos
+- MOVED: video - 2024-11-24T202456.165.mp4 -> Videos
+- MOVED: video - 2024-11-24T202949.764.mp4 -> Videos
+- MOVED: video - 2024-11-24T203015.859.mp4 -> Videos
+- MOVED: video - 2024-11-24T203039.120.mp4 -> Videos
+- MOVED: video - 2024-11-24T203059.010.mp4 -> Videos
+- MOVED: video - 2024-11-24T203120.072.mp4 -> Videos
+- MOVED: video - 2024-11-24T203149.265.mp4 -> Videos
+- MOVED: video - 2024-11-24T203209.515.mp4 -> Videos
+- MOVED: video - 2024-11-24T203232.692.mp4 -> Videos
+- MOVED: video - 2024-11-29T143214.583.mp4 -> Videos
+- MOVED: video - 2024-11-29T143320.351.mp4 -> Videos
+- MOVED: video - 2024-11-29T143356.395.mp4 -> Videos
+- MOVED: video - 2024-11-29T143429.519.mp4 -> Videos
+- MOVED: video - 2024-11-29T143533.773.mp4 -> Videos
+- MOVED: video - 2024-11-29T143612.786.mp4 -> Videos
+- MOVED: video - 2024-11-29T143846.973.mp4 -> Videos
+- MOVED: video - 2024-11-29T143932.758.mp4 -> Videos
+- MOVED: video - 2024-11-29T144036.660.mp4 -> Videos
+- MOVED: video - 2024-11-29T144117.351.mp4 -> Videos
+- MOVED: video - 2024-11-29T144210.247.mp4 -> Videos
+- MOVED: video - 2024-11-29T144300.236.mp4 -> Videos
+- MOVED: video - 2024-11-29T144343.027.mp4 -> Videos
+- MOVED: video - 2024-11-29T144419.228.mp4 -> Videos
+- MOVED: video - 2024-11-29T144508.653.mp4 -> Videos
+- MOVED: video - 2024-11-29T144545.915.mp4 -> Videos
+- MOVED: video - 2024-11-29T144622.143.mp4 -> Videos
+- MOVED: video - 2024-11-29T144702.717.mp4 -> Videos
+- MOVED: video - 2024-11-29T144751.599.mp4 -> Videos
+- MOVED: video - 2024-11-29T144832.173.mp4 -> Videos
+- MOVED: video - 2024-11-29T152924.023.mp4 -> Videos
+- MOVED: video - 2024-11-29T153042.583.mp4 -> Videos
+- MOVED: video - 2024-11-29T153158.122.mp4 -> Videos
+- MOVED: video - 2024-11-29T153236.390.mp4 -> Videos
+- MOVED: video - 2024-11-29T153407.369.mp4 -> Videos
+- MOVED: video - 2024-11-29T153538.161.mp4 -> Videos
+- MOVED: video - 2024-11-29T153613.722.mp4 -> Videos
+- MOVED: video - 2024-11-29T153650.330.mp4 -> Videos
+- MOVED: video - 2024-11-29T153740.869.mp4 -> Videos
+- MOVED: video - 2024-11-29T154218.303.mp4 -> Videos
+- MOVED: video - 2024-11-29T154323.874.mp4 -> Videos
+- MOVED: video - 2024-11-29T154430.737.mp4 -> Videos
+- MOVED: video - 2024-11-29T154537.713.mp4 -> Videos
+- MOVED: video - 2024-11-29T154632.667.mp4 -> Videos
+- MOVED: video - 2024-11-29T154656.590.mp4 -> Videos
+- MOVED: video - 2024-11-29T154743.031.mp4 -> Videos
+- MOVED: video - 2024-11-29T154814.362.mp4 -> Videos
+- MOVED: video - 2024-11-29T154847.378.mp4 -> Videos
+- MOVED: video - 2024-11-29T154920.569.mp4 -> Videos
+- MOVED: video - 2024-11-29T154952.679.mp4 -> Videos
+- MOVED: video - 2024-11-29T155314.746.mp4 -> Videos
+- MOVED: video - 2024-11-29T155423.770.mp4 -> Videos
+- MOVED: video - 2024-11-29T155543.557.mp4 -> Videos
+- MOVED: video - 2024-11-29T155920.057.mp4 -> Videos
+- MOVED: video - 2024-11-29T160037.932.mp4 -> Videos
+- MOVED: video - 2024-11-29T160111.335.mp4 -> Videos
+- MOVED: video - 2024-11-29T160149.868.mp4 -> Videos
+- MOVED: video - 2024-11-29T160243.208.mp4 -> Videos
+- MOVED: video - 2024-11-29T160344.964.mp4 -> Videos
+- MOVED: video - 2024-11-29T160511.046.mp4 -> Videos
+- MOVED: video - 2024-11-29T160546.345.mp4 -> Videos
+- MOVED: video - 2024-11-29T160621.705.mp4 -> Videos
+- MOVED: video - 2024-11-29T160717.389.mp4 -> Videos
+- MOVED: video - 2024-11-29T161615.920.mp4 -> Videos
+- MOVED: video - 2024-11-29T164505.471.mp4 -> Videos
+- MOVED: video - 2024-11-29T164552.913.mp4 -> Videos
+- MOVED: video - 2024-12-07T015929.788.mp4 -> Videos
+- MOVED: video - 2024-12-22T075236.552.mp4 -> Videos
+- MOVED: video - 2024-12-22T075313.195.mp4 -> Videos
+- MOVED: video - 2024-12-22T080049.124.mp4 -> Videos
+- MOVED: video - 2024-12-23T094127.834.mp4 -> Videos
+- MOVED: video - 2024-12-23T094152.099.mp4 -> Videos
+- MOVED: video - 2024-12-23T094440.765.mp4 -> Videos
+- MOVED: video - 2024-12-23T094608.471.mp4 -> Videos
+- MOVED: video - 2024-12-23T094628.094.mp4 -> Videos
+- MOVED: video - 2024-12-23T094652.012.mp4 -> Videos
+- MOVED: video - 2024-12-23T150114.406.mp4 -> Videos
+- MOVED: video - 2024-12-23T150147.827.mp4 -> Videos
+- MOVED: video - 2024-12-23T150245.874.mp4 -> Videos
+- MOVED: video - 2024-12-23T150325.509.mp4 -> Videos
+- MOVED: video - 2024-12-23T150420.530.mp4 -> Videos
+- MOVED: video - 2024-12-23T150453.903.mp4 -> Videos
+- MOVED: video - 2024-12-23T150556.889.mp4 -> Videos
+- MOVED: video - 2024-12-23T150628.388.mp4 -> Videos
+- MOVED: video - 2024-12-23T150730.875.mp4 -> Videos
+- MOVED: video - 2024-12-23T150812.286.mp4 -> Videos
+- MOVED: video - 2024-12-23T150910.497.mp4 -> Videos
+- MOVED: video - 2024-12-23T150951.206.mp4 -> Videos
+- MOVED: video - 2024-12-23T151043.710.mp4 -> Videos
+- MOVED: video - 2024-12-23T151117.010.mp4 -> Videos
+- MOVED: video - 2024-12-23T151221.826.mp4 -> Videos
+- MOVED: video - 2024-12-23T151301.029.mp4 -> Videos
+- MOVED: video - 2024-12-23T151502.891.mp4 -> Videos
+- MOVED: video - 2024-12-23T151609.334.mp4 -> Videos
+- MOVED: video - 2024-12-23T151612.070.mp4 -> Videos
+- MOVED: video - 2025-01-11T234323.479.mp4 -> Videos
+- MOVED: video.mp4 -> Videos
+- MOVED: Vision.mp3 -> Music
+- MOVED: VoiceAudio.m4a -> Music
+- MOVED: Voynich-Manuscript.pdf -> Documents
+- MOVED: VSCodeUserSetup-x64-1.63.2 (1).exe -> Installers
+- MOVED: VSCodeUserSetup-x64-1.63.2.exe -> Installers
+- MOVED: waveform_64bit_v12.5.11.exe -> Installers
+- MOVED: Where Did I Begin (Remastered).mp3 -> Music
+- MOVED: Whispers.mp3 -> Music
+- MOVED: Whispers.mp4 -> Videos
+- MOVED: WindsurfUserSetup-x64-1.4.6.exe -> Installers
+- MOVED: womaninWaveStuck.html -> Dev
+- MOVED: wsl_update_x64.msi -> Installers
+- MOVED: You_Have_Found_PSRS (1).mp3 -> Music
+- MOVED: You_Have_Found_PSRS.mp3 -> Music
+- MOVED: Z Snake (Remastered) (1).mp3 -> Music
+- MOVED: Z Snake (Remastered).mp3 -> Music
+- MOVED: Z Snake (Remastered).mp4 -> Videos
+- MOVED: Zoom_cm_ds_mOPx82BMNvLiCvzo9O0iFz+p-CkHefKa3tA@k2Pj+D6BimKqW4gA_k8cd71804cd569148_.exe -> Installers
+- MOVED: Zoom_cm_fo42pnktZ9vvrZo4_mIsypNsdMqEyJCpL+65FgJEBp6AF4ob8Wjye-@NrFDr3oKYrmpuM4t_kb98a4b8c99f4067f_.exe -> Installers
+- MOVED: _Love Again_ _ Full Track (Cover).mp3 -> Music
+- MOVED: _No Ferryman.mp3 -> Music
+- MOVED: _Soul, To Love Again_ _ (flaukowski GPT) (1).mp3 -> Music
+- MOVED: _Soul, To Love Again_ _ (flaukowski GPT).mp3 -> Music

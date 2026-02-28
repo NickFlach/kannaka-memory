@@ -1,0 +1,1 @@
+Get-ChildItem "C:\Users\nickf\Downloads\Music","C:\Users\nickf\Downloads" -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.wav','.flac','.aif','.aiff' } | ForEach-Object { "$($_.Name) | $([math]::Round($_.Length/1MB,1)) MB | $($_.DirectoryName)" }
