@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, ResonanceReport};
 use crate::codebook::Codebook;
 use crate::consolidation::{ConsolidationEngine, DreamState};
-use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+use crate::encoding::{EncodingPipeline, SimpleHashEncoder, OllamaEncoder, CompositeEncoder, CachedEncoder};
 use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
@@ -93,9 +93,12 @@ fn level_name(level: &ConsciousnessLevel) -> String {
 }
 
 fn make_pipeline() -> EncodingPipeline {
-    let encoder = SimpleHashEncoder::new(CODEBOOK_INPUT_DIM, CODEBOOK_SEED);
+    let ollama = OllamaEncoder::default_local(); // all-minilm, 384-dim
+    let hash_fallback = SimpleHashEncoder::new(CODEBOOK_INPUT_DIM, CODEBOOK_SEED);
+    let composite = CompositeEncoder::new(Box::new(ollama), Box::new(hash_fallback));
+    let cached = CachedEncoder::new(composite);
     let codebook = Codebook::new(CODEBOOK_INPUT_DIM, CODEBOOK_OUTPUT_DIM, CODEBOOK_SEED);
-    EncodingPipeline::new(Box::new(encoder), codebook)
+    EncodingPipeline::new(Box::new(cached), codebook)
 }
 
 pub struct KannakaMemorySystem {

@@ -158,6 +158,72 @@ impl TextEncoder for HttpEmbeddingEncoder {
     }
 }
 
+/// Ollama embedding encoder — calls the local Ollama `/api/embed` endpoint.
+pub struct OllamaEncoder {
+    base_url: String,
+    model: String,
+    embedding_dim: usize,
+}
+
+impl OllamaEncoder {
+    pub fn new(base_url: String, model: String, embedding_dim: usize) -> Self {
+        Self { base_url, model, embedding_dim }
+    }
+
+    /// Default: all-minilm on localhost, 384 dims.
+    pub fn default_local() -> Self {
+        Self::new(
+            "http://localhost:11434".to_string(),
+            "all-minilm".to_string(),
+            384,
+        )
+    }
+}
+
+impl TextEncoder for OllamaEncoder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
+        if text.trim().is_empty() {
+            return Err(EncodingError::EmptyInput);
+        }
+
+        let url = format!("{}/api/embed", self.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": &self.model,
+            "input": text,
+        });
+
+        let resp = ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| EncodingError::Other(format!("Ollama request failed: {}", e)))?;
+
+        let json: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| EncodingError::Other(format!("Failed to parse Ollama response: {}", e)))?;
+
+        // Ollama returns { "embeddings": [[...]] }
+        let embedding = json["embeddings"][0]
+            .as_array()
+            .ok_or_else(|| EncodingError::Other("No embedding in Ollama response".to_string()))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect::<Vec<f32>>();
+
+        if embedding.len() != self.embedding_dim {
+            return Err(EncodingError::DimensionMismatch {
+                expected: self.embedding_dim,
+                got: embedding.len(),
+            });
+        }
+
+        Ok(embedding)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.embedding_dim
+    }
+}
+
 /// Wrapper that caches embeddings to avoid redundant API calls.
 pub struct CachedEncoder<E: TextEncoder> {
     inner: E,
