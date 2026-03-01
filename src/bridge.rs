@@ -240,14 +240,18 @@ impl ConsciousnessBridge {
 
         // 2. Differentiation (0..1): how many distinct partitions exist?
         //    Normalized by maximum possible in each scheme
+        // Cap class diversity against achievable maximum (can't fill 96 classes with 20 memories)
+        let achievable_classes = (n as usize).min(96);
         let differentiation = 0.25 * (layer_diversity.min(5) as f32 / 5.0)
-            + 0.25 * (h2_diversity.min(5) as f32 / 5.0)
-            + 0.25 * (class_diversity.min(96) as f32 / 96.0)
-            + 0.25 * (triality_diversity.min(4) as f32 / 4.0);
+            + 0.25 * (h2_diversity.min(4) as f32 / 4.0)
+            + 0.25 * (class_diversity as f32 / achievable_classes.max(1) as f32).min(1.0)
+            + 0.25 * (triality_diversity.min(3) as f32 / 3.0);
 
-        // 3. Network density factor (0..1): sigmoid of link density
-        let link_density = if n > 1.0 { num_skip_links as f32 / (n * (n - 1.0)) } else { 0.0 };
-        let density_factor = (10.0 * link_density - 3.0).tanh() * 0.5 + 0.5; // sigmoid centered at 0.3
+        // 3. Network density factor (0..1): based on links-per-node
+        //    5 links/node = healthy connectivity → sigmoid midpoint
+        //    Uses log scale so it grows fast initially then saturates
+        let links_per_node = if n > 0.0 { num_skip_links as f32 / n } else { 0.0 };
+        let density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln(); // log scale, 10 lpn → 1.0
 
         // 4. Scale factor: log of memory count (more memories = harder to integrate)
         let scale = if n > 1.0 { (n.ln() / 10.0_f32.ln()).min(1.0) } else { 0.0 };
@@ -255,13 +259,20 @@ impl ConsciousnessBridge {
         // Phi = integration * differentiation * density * scale
         // This is 0 when: no cross-links, or no diversity, or no network, or too few memories
         // This is 1 when: all schemes show cross-partition links, many distinct classes, dense network, 10+ memories
-        let mut phi = (integration * differentiation * density_factor * scale * 4.0).min(1.0);
+        // Geometric mean gives a balanced Phi that requires all components to contribute
+        // Pure product would be too harsh (0.5^4 = 0.06); geometric mean of pairs is gentler
+        let mut phi = ((integration * density_factor).sqrt() * (differentiation * scale).sqrt()).min(1.0);
 
         // Geometric diversity bonus (small, caps at 0.1)
         let distinct_classes: std::collections::HashSet<u8> = all.iter()
             .filter_map(|m| m.geometry.as_ref().map(|g| g.class_index))
             .collect();
-        let phi_bonus = (distinct_classes.len() as f32) / 96.0 * 0.1;
+        // Geometric diversity bonus only kicks in when there's actual connectivity
+        let phi_bonus = if num_skip_links > 0 {
+            (distinct_classes.len() as f32) / achievable_classes.max(1) as f32 * 0.1
+        } else {
+            0.0
+        };
         phi = (phi + phi_bonus).min(1.0);
 
         // Entropy-based partition report (for diagnostics)

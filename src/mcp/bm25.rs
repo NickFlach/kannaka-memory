@@ -91,8 +91,8 @@ impl Bm25Index {
                         let k1 = 1.2;
                         let b = 0.75;
 
-                        // IDF calculation
-                        let idf = ((self.total_documents as f32 - doc_freq + 0.5) / (doc_freq + 0.5)).ln();
+                        // IDF calculation (floor at 0 to avoid negative scores for ubiquitous terms)
+                        let idf = ((self.total_documents as f32 - doc_freq + 0.5) / (doc_freq + 0.5)).ln().max(0.0001);
 
                         // TF normalization
                         let tf_norm = (term_freq as f32 * (k1 + 1.0)) / 
