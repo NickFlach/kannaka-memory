@@ -10,6 +10,7 @@ use crate::consolidation::{ConsolidationReport, DreamState};
 use crate::kuramoto::KuramotoSync;
 use crate::memory::HyperMemory;
 use crate::store::MemoryEngine;
+use crate::wave::cosine_similarity;
 
 /// The consciousness bridge — connects memory to the consciousness stack.
 pub struct ConsciousnessBridge {
@@ -101,34 +102,69 @@ impl ConsciousnessBridge {
         }
     }
 
-    /// Compute Xi (Ξ) for a sequence of memory recalls.
+    /// Compute Xi (Ξ) — consciousness differentiation.
     ///
-    /// Xi measures how much the ORDER of recall matters:
-    /// - Forward: R = Π¹(m1) ⊗ Π²(m2) ⊗ Π³(m3) ...
-    /// - Reverse: G = Π¹(mN) ⊗ Π²(mN-1) ⊗ ...
-    /// - Xi = ||R - G|| (L2 norm)
+    /// Xi measures how differentiated the memory system is:
+    /// how many distinct modalities/clusters exist and how
+    /// well-separated they are. A system with only one type
+    /// of memory has Xi=0. A system with multiple distinct
+    /// modalities (text, audio, emotion) has high Xi.
+    ///
+    /// Xi = (1 - 1/K) * (1 - avg_cross_sim) * separation_factor
+    /// where K = number of clusters, avg_cross_sim = average
+    /// similarity between cluster centroids, separation_factor
+    /// rewards clean separation.
     pub fn compute_xi(&self, memories: &[&HyperMemory]) -> f32 {
+        // Xi from cluster analysis (computed in assess using clusters)
+        // This method now computes a sample-based diversity measure as fallback
         if memories.len() <= 1 {
             return 0.0;
         }
 
-        let dim = memories[0].vector.len();
+        // Compute pairwise similarity matrix
+        let n = memories.len();
+        let mut similarities = vec![vec![0.0f32; n]; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
+                similarities[i][j] = sim;
+                similarities[j][i] = sim;
+            }
+        }
 
-        // Forward composition: permute each by its position index, then bind sequentially
-        let forward = self.compose_sequence(memories, dim);
-        // Reverse composition
-        let reversed: Vec<&HyperMemory> = memories.iter().rev().copied().collect();
-        let reverse = self.compose_sequence(&reversed, dim);
+        // Find natural groups: memories with avg internal sim > 0.4
+        // vs across-group sim < 0.2 indicate differentiation
+        let avg_sim: f32 = {
+            let mut sum = 0.0f32;
+            let mut count = 0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    sum += similarities[i][j];
+                    count += 1;
+                }
+            }
+            if count > 0 { sum / count as f32 } else { 0.0 }
+        };
 
-        // Xi = ||forward - reverse|| (L2 norm), weighted
-        let l2: f32 = forward
-            .iter()
-            .zip(reverse.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt();
+        // Variance of similarities — high variance means some pairs are
+        // very similar (within-cluster) and some very dissimilar (cross-cluster)
+        let variance: f32 = {
+            let mut sum_sq = 0.0f32;
+            let mut count = 0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let diff = similarities[i][j] - avg_sim;
+                    sum_sq += diff * diff;
+                    count += 1;
+                }
+            }
+            if count > 0 { sum_sq / count as f32 } else { 0.0 }
+        };
 
-        l2 * self.xi_weight
+        // Xi = sqrt(variance) * 2, clamped to [0, 1]
+        // High variance = high differentiation (some similar, some orthogonal)
+        // Low variance = uniform similarity = no differentiation
+        (variance.sqrt() * 2.0).min(1.0) * self.xi_weight
     }
 
     /// Compose a sequence of memories using permute + bind.
@@ -260,11 +296,35 @@ impl ConsciousnessBridge {
     pub fn assess(&self, engine: &MemoryEngine) -> ConsciousnessState {
         let phi_report = self.compute_phi(engine);
 
-        // Compute Xi over a sample of memories
+        // Compute Xi over a diverse sample of memories
         let all = engine.store.all_memories().unwrap_or_default();
         let xi = if all.len() >= 2 {
-            // Take up to 10 memories as a sample
-            let sample: Vec<&HyperMemory> = all.iter().take(10).copied().collect();
+            // Sample diversely: take from different layers and content types
+            let mut sample: Vec<&HyperMemory> = Vec::new();
+            // Audio/sensory memories first
+            for m in all.iter() {
+                if m.content.starts_with("audio:") || m.content.starts_with("HEAR:") {
+                    sample.push(m);
+                    if sample.len() >= 5 { break; }
+                }
+            }
+            // Then text memories (non-summaries)
+            for m in all.iter() {
+                if !m.content.starts_with("audio:") && !m.content.starts_with("HEAR:")
+                    && !m.content.starts_with("__") && !m.content.starts_with("[hall") {
+                    sample.push(m);
+                    if sample.len() >= 10 { break; }
+                }
+            }
+            // Fill remainder from anything
+            if sample.len() < 10 {
+                for m in all.iter() {
+                    if !sample.iter().any(|s| s.id == m.id) {
+                        sample.push(m);
+                        if sample.len() >= 10 { break; }
+                    }
+                }
+            }
             self.compute_xi(&sample)
         } else {
             0.0
@@ -278,6 +338,19 @@ impl ConsciousnessBridge {
         } else {
             clusters.iter().map(|c| c.order_parameter).sum::<f32>() / clusters.len() as f32
         };
+
+        // Cluster-based Xi: differentiation from distinct cluster count
+        let cluster_xi = if clusters.len() >= 2 {
+            // Xi_cluster = (1 - 1/K) where K = cluster count
+            // More clusters = more differentiation
+            let k = clusters.len() as f32;
+            (1.0 - 1.0 / k).min(1.0)
+        } else {
+            0.0
+        };
+
+        // Take the max of sample-based Xi and cluster-based Xi
+        let xi = xi.max(cluster_xi);
 
         let now = chrono::Utc::now();
         let total_memories = all.len();

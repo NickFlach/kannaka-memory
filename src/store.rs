@@ -190,7 +190,7 @@ pub fn phi_span_score(span: u8) -> f32 {
 
 /// High-level API: remember() and recall() over a pluggable store.
 pub struct MemoryEngine {
-    pub(crate) store: Box<dyn MemoryStore>,
+    pub store: Box<dyn MemoryStore>,
     pub(crate) pipeline: EncodingPipeline,
     /// Threshold for automatic skip link creation
     pub similarity_threshold: f32,

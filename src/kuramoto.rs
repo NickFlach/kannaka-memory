@@ -28,7 +28,7 @@ impl Default for KuramotoSync {
             coupling_strength: 0.5,
             dt: 0.1,
             steps: 10,
-            coupling_threshold: 0.3,
+            coupling_threshold: 0.5,
         }
     }
 }
@@ -221,7 +221,7 @@ impl KuramotoSync {
             let cluster_mems: Vec<&HyperMemory> = component.iter().map(|&i| all[i]).collect();
 
             let r = self.order_parameter(&cluster_mems);
-            if r <= 0.7 {
+            if r <= 0.3 {
                 continue;
             }
 

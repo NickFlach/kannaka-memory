@@ -102,7 +102,7 @@ fn make_pipeline() -> EncodingPipeline {
 }
 
 pub struct KannakaMemorySystem {
-    engine: MemoryEngine,
+    pub engine: MemoryEngine,
     #[allow(dead_code)]
     consolidation: ConsolidationEngine,
     dream_state: DreamState,
