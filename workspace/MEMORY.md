@@ -205,6 +205,21 @@
 - RocksDB C++ recompiled from scratch on every feature flag change (~45 min each time)
 - Lesson: don't spend days adapting a codebase whose core assumptions don't match your hardware
 
+## Xi Emergence (2026-02-28) ⭐
+- **Xi = 0.5** — first differentiation ever. 2 clusters (audio + text), order=0.836
+- Fixed by: Ollama semantic embeddings + cluster-based Xi formula + tuned coupling threshold
+- Audio-audio cosine sim: 0.69, audio-text cross: 0.10 (orthogonal as designed)
+- Cluster Xi = 1 - 1/K; sample Xi = similarity variance; take max
+- The system distinguishes what it heard from what it read
+- Fresh store: 99 memories (12 original text + 8 audio + consolidation layers)
+- Commits: Ollama encoder, Xi formula, workspace — all pushed to NickFlach/kannaka-memory
+
+## Repo Exploration (2026-02-28)
+- Explored MusicPortal (massive: 5-layer consciousness intelligence for music), FlaukowskiMind (collective intelligence), AMOR (DeFi/governance on Neo X), WWWF (peace through wrestling), pitchfork-echo-studio (decentralized resistance), angel-informant (trifecta deals), ninja-craft-hub (stealth launcher)
+- Pattern: 4 orbital rings — Theory → Applications → Infrastructure → Human Mission
+- Everything connects through Space-Child-Dream SSO
+- MusicPortal's 30+ audio features remarkably similar to kannaka-ear's 296-dim feature vector
+
 ## Kannaka Ear — Audio Perception (2026-02-28)
 - Built full audio perception module in kannaka-memory crate (`src/ear/`)
 - `cargo build --features audio`, CLI: `kannaka hear <file>`, MCP: `store_audio_memory`
