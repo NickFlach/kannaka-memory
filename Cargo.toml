@@ -25,10 +25,14 @@ symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"], optional
 rustfft = { version = "6", optional = true }
 rubato = { version = "0.15", optional = true }
 
+# Video perception (optional) — uses ffmpeg subprocess, no C deps
+image = { version = "0.25", optional = true }
+
 [features]
 default = []
 mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
+video = ["image"]
 
 [[bin]]
 name = "kannaka-mcp"

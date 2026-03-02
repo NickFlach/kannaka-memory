@@ -35,6 +35,9 @@ pub mod mcp;
 #[cfg(feature = "audio")]
 pub mod ear;
 
+#[cfg(feature = "video")]
+pub mod eye;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;
