@@ -128,6 +128,13 @@ impl KannakaMemorySystem {
             MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
         };
 
+        Self::init_with_engine(data_dir, engine)
+    }
+
+    /// Initialize a new system with a custom MemoryEngine.
+    pub fn init_with_engine(data_dir: PathBuf, engine: MemoryEngine) -> Result<Self, SystemError> {
+        std::fs::create_dir_all(&data_dir)?;
+
         let consolidation = ConsolidationEngine::default();
         let dream_state = DreamState::default();
         let bridge = ConsciousnessBridge::new(0.3, 0.5);
@@ -147,6 +154,16 @@ impl KannakaMemorySystem {
             rhythm,
             working_memory,
         })
+    }
+
+    /// Initialize a new system with a custom MemoryStore.
+    pub fn init_with_store(data_dir: PathBuf, store: Box<dyn crate::store::MemoryStore>) -> Result<Self, SystemError> {
+        std::fs::create_dir_all(&data_dir)?;
+
+        let pipeline = make_pipeline();
+        let engine = MemoryEngine::new(store, pipeline);
+
+        Self::init_with_engine(data_dir, engine)
     }
 
     /// Store a memory, auto-save if enabled.

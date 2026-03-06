@@ -28,11 +28,15 @@ rubato = { version = "0.15", optional = true }
 # Video perception (optional) — uses ffmpeg subprocess, no C deps
 image = { version = "0.25", optional = true }
 
+# Dolt database support (optional)
+mysql = { version = "25", optional = true }
+
 [features]
 default = []
 mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
+dolt = ["mysql"]
 
 [[bin]]
 name = "kannaka-mcp"

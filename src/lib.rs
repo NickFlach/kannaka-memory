@@ -38,6 +38,9 @@ pub mod ear;
 #[cfg(feature = "video")]
 pub mod eye;
 
+#[cfg(feature = "dolt")]
+pub mod dolt;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;
@@ -66,3 +69,6 @@ pub use xi_operator::{
     apply_rotation, apply_golden_scaling, compute_xi_signature,
     xi_repulsive_force, xi_diversity_boost
 };
+
+#[cfg(feature = "dolt")]
+pub use dolt::DoltMemoryStore;

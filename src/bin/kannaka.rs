@@ -7,6 +7,9 @@ use std::process;
 use kannaka_memory::observe::MemoryIntrospector;
 use kannaka_memory::openclaw::KannakaMemorySystem;
 
+#[cfg(feature = "dolt")]
+use kannaka_memory::{DoltMemoryStore, MemoryStore};
+
 fn data_dir() -> PathBuf {
     env::var("KANNAKA_DATA_DIR")
         .map(PathBuf::from)
@@ -20,8 +23,29 @@ fn dirs_or_default() -> PathBuf {
     PathBuf::from(".kannaka")
 }
 
+#[cfg(feature = "dolt")]
+fn init_with_dolt(data_dir: PathBuf) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
+    use mysql::*;
+    
+    // Create MySQL connection pool to Dolt server on port 3307
+    let url = "mysql://root@localhost:3307/kannaka_memory";
+    let pool = Pool::new(url)?;
+    
+    // Create DoltMemoryStore
+    let store = DoltMemoryStore::new(pool)?;
+    eprintln!("DoltMemoryStore initialized with {} memories", store.count());
+    
+    // Create the KannakaMemorySystem with custom store
+    KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
 fn usage() {
-    eprintln!("Usage: kannaka <command> [args]");
+    eprintln!("Usage: kannaka [--dolt] <command> [args]");
+    eprintln!();
+    eprintln!("Flags:");
+    #[cfg(feature = "dolt")]
+    eprintln!("  --dolt                    Use Dolt database backend (port 3307)");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  remember <text>           Store a memory");
@@ -42,7 +66,54 @@ fn main() {
         usage();
     }
 
+    // Parse global flags
+    let use_dolt;
+    let command_start;
+    
+    // Check for --dolt flag
+    #[cfg(feature = "dolt")]
+    {
+        if args.len() > 1 && args[1] == "--dolt" {
+            use_dolt = true;
+            command_start = 2;
+            if args.len() < 3 {
+                usage();
+            }
+        } else {
+            use_dolt = false;
+            command_start = 1;
+        }
+    }
+    
+    #[cfg(not(feature = "dolt"))]
+    {
+        use_dolt = false;
+        command_start = 1;
+    }
+
     let dir = data_dir();
+    
+    #[cfg(feature = "dolt")]
+    let mut sys = if use_dolt {
+        // Initialize with Dolt backend
+        match init_with_dolt(dir) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to initialize with Dolt: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        match KannakaMemorySystem::init(dir) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to initialize: {e}");
+                process::exit(1);
+            }
+        }
+    };
+
+    #[cfg(not(feature = "dolt"))]
     let mut sys = match KannakaMemorySystem::init(dir) {
         Ok(s) => s,
         Err(e) => {
@@ -51,13 +122,13 @@ fn main() {
         }
     };
 
-    match args[1].as_str() {
+    match args[command_start].as_str() {
         "remember" => {
-            if args.len() < 3 {
+            if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka remember <text>");
                 process::exit(1);
             }
-            let text = args[2..].join(" ");
+            let text = args[command_start + 1..].join(" ");
             match sys.remember(&text) {
                 Ok(id) => println!("Remembered: {id}"),
                 Err(e) => {
@@ -67,13 +138,13 @@ fn main() {
             }
         }
         "recall" => {
-            if args.len() < 3 {
+            if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka recall <query> [--top-k N]");
                 process::exit(1);
             }
             let mut top_k = 5usize;
             let mut query_parts = Vec::new();
-            let mut i = 2;
+            let mut i = command_start + 1;
             while i < args.len() {
                 if args[i] == "--top-k" && i + 1 < args.len() {
                     top_k = args[i + 1].parse().unwrap_or(5);
@@ -156,11 +227,11 @@ fn main() {
             }
         }
         "migrate" => {
-            if args.len() < 3 {
+            if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka migrate <path-to-kannaka.db>");
                 process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(&args[command_start + 1]);
             match sys.migrate_from_sqlite(&db_path) {
                 Ok(report) => {
                     println!("Migration complete:");
@@ -179,11 +250,11 @@ fn main() {
         }
         #[cfg(feature = "audio")]
         "hear" => {
-            if args.len() < 3 {
+            if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka hear <audio-file>");
                 process::exit(1);
             }
-            let path = std::path::PathBuf::from(&args[2]);
+            let path = std::path::PathBuf::from(&args[command_start + 1]);
             if !path.exists() {
                 eprintln!("File not found: {}", path.display());
                 process::exit(1);
