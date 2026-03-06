@@ -1,0 +1,16 @@
+{
+  "name": "kannaka-memory-migration",
+  "version": "1.0.0",
+  "description": "Migration tools for kannaka-memory to Dolt database",
+  "scripts": {
+    "migrate": "node migrate-to-dolt.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.6.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "author": "Kannaka",
+  "license": "MIT"
+}
