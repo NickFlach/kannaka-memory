@@ -110,9 +110,21 @@ impl DreamArtifact {
 // ---------------------------------------------------------------------------
 
 /// Decide whether to apply a peer's hallucination to the local store.
-/// Returns the adjusted amplitude (0.5× of source agent's amplitude, weighted by trust).
-pub fn hallucination_import_amplitude(source_amplitude: f32, trust_score: f32) -> f32 {
-    (source_amplitude * 0.5 * trust_score).min(0.8)
+/// Returns the adjusted amplitude (0.5× of source agent's amplitude, weighted by trust),
+/// capped relative to the local memory landscape to prevent imported hallucinations
+/// from dominating quieter networks.
+///
+/// `local_mean_amplitude` should be the average amplitude of the importing agent's
+/// memories. The cap is 1.5× local mean — loud enough to be noticed, not so loud
+/// it drowns everything out.
+pub fn hallucination_import_amplitude(
+    source_amplitude: f32,
+    trust_score: f32,
+    local_mean_amplitude: f32,
+) -> f32 {
+    let raw = source_amplitude * 0.5 * trust_score;
+    let cap = (local_mean_amplitude * 1.5).max(0.3); // floor of 0.3 for near-empty stores
+    raw.min(cap)
 }
 
 /// Check if a skip link artifact is applicable: both endpoints must exist locally.
@@ -153,8 +165,21 @@ mod tests {
     }
 
     #[test]
-    fn import_amplitude_caps_at_0_8() {
-        assert!(hallucination_import_amplitude(1.0, 1.0) <= 0.8);
+    fn import_amplitude_caps_relative_to_local() {
+        // With local mean of 0.3, cap = 0.45 (1.5 × 0.3)
+        let amp = hallucination_import_amplitude(1.0, 1.0, 0.3);
+        assert!(amp <= 0.45 + 1e-5, "should cap at 1.5× local mean, got {}", amp);
+        
+        // With high local mean, raw value wins
+        let amp2 = hallucination_import_amplitude(0.4, 0.5, 5.0);
+        assert!((amp2 - 0.1).abs() < 1e-5, "should use raw value 0.4*0.5*0.5=0.1, got {}", amp2);
+    }
+
+    #[test]
+    fn import_amplitude_has_floor_for_empty_stores() {
+        // Local mean near zero shouldn't make cap zero
+        let amp = hallucination_import_amplitude(1.0, 1.0, 0.01);
+        assert!(amp >= 0.29, "should have floor cap of 0.3, got {}", amp);
     }
 
     #[test]

@@ -421,6 +421,7 @@ impl DoltMemoryStore {
                 merge_history: Vec::new(),
                 last_consolidated_at,
                 disputed,
+                updated_at: None,
             };
 
             self.cache.insert(uuid, memory);
@@ -1011,6 +1012,30 @@ impl DoltMemoryStore {
             ),
         ).map_err(|e| StoreError::Other(format!("Failed to quarantine memories: {}", e)))?;
         Ok(())
+    }
+
+    /// D3: Garbage-collect resolved quarantine entries older than `max_age_days`.
+    /// Also auto-escalate pending entries that have exceeded `escalate_after_days`
+    /// without resolution.
+    pub fn gc_quarantine(&self, max_age_days: i64, escalate_after_days: i64) -> Result<(usize, usize), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Delete resolved entries older than max_age_days
+        let deleted: usize = conn.exec_iter(
+            "DELETE FROM quarantine WHERE status = 'resolved' AND resolved_at < DATE_SUB(NOW(), INTERVAL ? DAY)",
+            (max_age_days,),
+        ).map(|r| r.affected_rows() as usize)
+         .unwrap_or(0);
+
+        // Auto-escalate stale pending entries
+        let escalated: usize = conn.exec_iter(
+            "UPDATE quarantine SET status = 'escalated' WHERE status = 'pending' AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)",
+            (escalate_after_days,),
+        ).map(|r| r.affected_rows() as usize)
+         .unwrap_or(0);
+
+        Ok((deleted, escalated))
     }
 }
 

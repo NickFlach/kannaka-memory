@@ -853,9 +853,15 @@ impl ConsolidationEngine {
     /// Phase 7 (ADR-0011): Incremental consolidation — only process memories that changed
     /// since the last dream cycle, plus any memories that have never been consolidated.
     ///
-    /// Skips the REPLAY of unchanged memories; still runs the full 8-stage pipeline on
-    /// the filtered working set. Expected 5-10x speedup for steady-state dreams where
-    /// only a handful of memories changed since the last run.
+    /// A memory is included if:
+    ///   - It has never been consolidated (`last_consolidated_at` is None), OR
+    ///   - It was modified after its last consolidation (`updated_at > last_consolidated_at`)
+    ///
+    /// The `since` parameter is a fallback for memories without `updated_at` timestamps
+    /// (pre-ADR-0011 memories): if `last_consolidated_at < since`, include them.
+    ///
+    /// Expected 5-10x speedup for steady-state dreams where only a handful of memories
+    /// changed since the last run.
     pub fn consolidate_incremental(
         &self,
         engine: &mut MemoryEngine,
@@ -866,14 +872,26 @@ impl ConsolidationEngine {
         let start = Instant::now();
         let mut report = ConsolidationReport::default();
 
-        // Filter to memories modified (or never consolidated) since the cutoff
+        // Filter to memories that need reconsolidation
         let working_set: Vec<Uuid> = {
             let all = engine.store.all_memories().unwrap_or_default();
             all.iter()
                 .filter(|m| {
-                    m.layer_depth >= min_layer
-                        && m.layer_depth <= max_layer
-                        && m.last_consolidated_at.map_or(true, |t| t < since)
+                    if m.layer_depth < min_layer || m.layer_depth > max_layer {
+                        return false;
+                    }
+                    match m.last_consolidated_at {
+                        // Never consolidated — always include
+                        None => true,
+                        Some(consolidated_at) => {
+                            // Include if modified after last consolidation
+                            m.updated_at.map_or(
+                                // No updated_at (legacy): use since as fallback
+                                consolidated_at < since,
+                                |updated| updated > consolidated_at,
+                            )
+                        }
+                    }
                 })
                 .map(|m| m.id)
                 .collect()

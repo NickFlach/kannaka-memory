@@ -126,8 +126,11 @@ impl AgentTrustStore {
     /// - social:      14 days
     /// - skill:       21 days
     pub fn recency_factor(age_days: f64, half_life_days: f64) -> f32 {
-        let exponent = -(age_days / half_life_days) * std::f64::consts::LN_2;
-        exponent.exp() as f32
+        // Clamp age to non-negative to prevent clock skew (cross-agent, Mars time zones)
+        // from producing recency > 1.0
+        let clamped_age = age_days.max(0.0);
+        let exponent = -(clamped_age / half_life_days) * std::f64::consts::LN_2;
+        (exponent.exp() as f32).min(1.0)
     }
 
     /// Category-specific half-life in days.
@@ -212,5 +215,13 @@ mod tests {
         let f1 = AgentTrustStore::recency_factor(30.0, 30.0);
         assert!((f0 - 1.0).abs() < 1e-5);
         assert!((f1 - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn recency_factor_clamps_negative_age() {
+        // Clock skew: memory appears to be from the future
+        let f = AgentTrustStore::recency_factor(-5.0, 30.0);
+        assert!(f <= 1.0, "negative age should not produce recency > 1.0, got {}", f);
+        assert!((f - 1.0).abs() < 1e-5, "negative age should clamp to recency 1.0");
     }
 }

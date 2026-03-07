@@ -82,6 +82,10 @@ pub struct HyperMemory {
     /// Whether this memory has unresolved destructive interference with another agent's memory
     #[serde(default)]
     pub disputed: bool,
+    /// Last time any field was mutated (amplitude, phase, vector, metadata).
+    /// Used by incremental dreaming to identify changed memories.
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl HyperMemory {
@@ -108,7 +112,13 @@ impl HyperMemory {
             merge_history: Vec::new(),
             last_consolidated_at: None,
             disputed: false,
+            updated_at: None,
         }
+    }
+
+    /// Mark this memory as modified (stamps `updated_at`).
+    pub fn touch(&mut self) {
+        self.updated_at = Some(Utc::now());
     }
 
     fn wave_params(&self) -> WaveParams {

@@ -122,6 +122,7 @@ impl From<HyperMemoryV2> for HyperMemory {
             merge_history: Vec::new(),
             last_consolidated_at: None,
             disputed: false,
+            updated_at: None,
         }
     }
 }
@@ -185,6 +186,7 @@ impl From<HyperMemoryV1> for HyperMemory {
             merge_history: Vec::new(),
             last_consolidated_at: None,
             disputed: false,
+            updated_at: None,
         }
     }
 }

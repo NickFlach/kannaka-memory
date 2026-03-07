@@ -198,21 +198,7 @@ impl KannakaMemorySystem {
             mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
-        // ADR-0011: publish Flux event (best-effort)
-        if let Some(ref publisher) = self.flux {
-            let amplitude = self.engine.store.get(&id)
-                .ok().flatten().map(|m| m.amplitude).unwrap_or(0.5);
-            let _ = publisher.publish(FluxEventPayload::MemoryStored {
-                memory_id: id.to_string(),
-                category: category.clone(),
-                tags: Vec::new(),
-                amplitude,
-                glyph_signature: None,
-                summary: text.chars().take(120).collect(),
-                branch: publisher.branch_name(),
-                sync_version: 0,
-            });
-        }
+        self.flux_publish_memory(&id, &category, text);
 
         if self.auto_save {
             self.save()?;
@@ -237,21 +223,7 @@ impl KannakaMemorySystem {
             mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
-        // ADR-0011: publish Flux event (best-effort)
-        if let Some(ref publisher) = self.flux {
-            let amplitude = self.engine.store.get(&id)
-                .ok().flatten().map(|m| m.amplitude).unwrap_or(0.5);
-            let _ = publisher.publish(FluxEventPayload::MemoryStored {
-                memory_id: id.to_string(),
-                category: category.to_string(),
-                tags: Vec::new(),
-                amplitude,
-                glyph_signature: None,
-                summary: text.chars().take(120).collect(),
-                branch: publisher.branch_name(),
-                sync_version: 0,
-            });
-        }
+        self.flux_publish_memory(&id, category, text);
 
         if self.auto_save {
             self.save()?;
@@ -769,6 +741,26 @@ impl KannakaMemorySystem {
         }
         
         Ok((id, glyph))
+    }
+
+    /// ADR-0011: Publish a memory.stored event to Flux (best-effort, fire-and-forget).
+    fn flux_publish_memory(&self, id: &Uuid, category: &str, text: &str) {
+        if let Some(ref publisher) = self.flux {
+            let (amplitude, sync_version) = self.engine.store.get(id)
+                .ok().flatten()
+                .map(|m| (m.amplitude, m.sync_version))
+                .unwrap_or((0.5, 0));
+            let _ = publisher.publish(FluxEventPayload::MemoryStored {
+                memory_id: id.to_string(),
+                category: category.to_string(),
+                tags: Vec::new(),
+                amplitude,
+                glyph_signature: None,
+                summary: text.chars().take(120).collect(),
+                branch: publisher.branch_name(),
+                sync_version,
+            });
+        }
     }
 
     /// ADR-0011: Configure the Flux publisher explicitly.

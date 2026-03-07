@@ -53,7 +53,7 @@ impl FluxConfig {
 // Event schema (ADR-0011 §Flux Event Schema)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum FluxEventPayload {
     MemoryStored {
@@ -159,7 +159,9 @@ impl FluxPublisher {
         Self::new(FluxConfig::from_env())
     }
 
-    /// Publish a single event to Flux.
+    /// Publish a single event to Flux AND update entity properties so
+    /// subscribers polling entity state (not event streams) can see it.
+    ///
     /// Returns `Ok(())` if disabled or if publish succeeds.
     /// Errors are logged but never propagate — Flux is best-effort.
     pub fn publish(&self, payload: FluxEventPayload) -> Result<(), String> {
@@ -167,7 +169,7 @@ impl FluxPublisher {
             return Ok(());
         }
 
-        let event = FluxEvent::new(&self.config.agent_id, payload);
+        let event = FluxEvent::new(&self.config.agent_id, payload.clone());
         let body = serde_json::json!({
             "streamId": self.config.stream,
             "sourceId": self.config.agent_id,
@@ -180,11 +182,69 @@ impl FluxPublisher {
             .set("Content-Type", "application/json")
             .send_json(&body)
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {},
             Err(e) => {
-                eprintln!("[flux] publish failed (non-fatal): {}", e);
-                Ok(())
+                eprintln!("[flux] publish event failed (non-fatal): {}", e);
             }
+        }
+
+        // Also update entity properties so poll-based subscribers can see latest state.
+        // This bridges the event/property duality in Flux.
+        self.update_entity_properties(&payload);
+
+        Ok(())
+    }
+
+    /// Update Flux entity properties to reflect latest memory activity.
+    /// Poll-based subscribers read these; event-based subscribers see the event stream.
+    fn update_entity_properties(&self, payload: &FluxEventPayload) {
+        let props = match payload {
+            FluxEventPayload::MemoryStored { memory_id, amplitude, summary, category, .. } => {
+                serde_json::json!({
+                    "last_memory_id": memory_id,
+                    "last_amplitude": amplitude,
+                    "last_summary": summary,
+                    "last_category": category,
+                    "last_event": "memory.stored",
+                })
+            }
+            FluxEventPayload::DreamCompleted { consciousness_level, memories_strengthened, memories_pruned, .. } => {
+                serde_json::json!({
+                    "consciousness_level": consciousness_level,
+                    "last_dream_strengthened": memories_strengthened,
+                    "last_dream_pruned": memories_pruned,
+                    "last_event": "dream.completed",
+                })
+            }
+            FluxEventPayload::AgentStatus { status, memory_count, consciousness, .. } => {
+                serde_json::json!({
+                    "status": status,
+                    "memory_count": memory_count,
+                    "consciousness_level": consciousness,
+                    "last_event": "agent.status",
+                })
+            }
+            _ => return, // not all events need property updates
+        };
+
+        let body = serde_json::json!({
+            "entity_id": self.config.agent_id,
+            "properties": props,
+        });
+
+        let url = format!("{}/api/state/entities/{}", self.config.base_url, self.config.agent_id);
+        if let Err(e) = ureq::patch(&url)
+            .set("Content-Type", "application/json")
+            .send_json(&body)
+        {
+            // Try PUT if PATCH isn't supported
+            let url_put = format!("{}/api/state/entities", self.config.base_url);
+            let _ = ureq::put(&url_put)
+                .set("Content-Type", "application/json")
+                .send_json(&body)
+                .map_err(|e2| {
+                    eprintln!("[flux] update entity failed (non-fatal): PATCH={}, PUT={}", e, e2);
+                });
         }
     }
 
