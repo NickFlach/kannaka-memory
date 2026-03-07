@@ -1,13 +1,15 @@
 //! Memory consolidation engine — the dreaming/sleep layer.
 //!
-//! Processes memories through 7 stages mimicking human sleep consolidation:
-//! 1. REPLAY — re-activate recent memories
+//! Processes memories through 9 stages mimicking human sleep consolidation:
+//! 1. REPLAY — collect working set of memories in layer range
 //! 2. DETECT — find interference patterns
 //! 3. BUNDLE — create summary hypervectors
 //! 4. STRENGTHEN — boost constructive interference pairs
-//! 5. PRUNE — weaken destructive interference pairs
-//! 6. TRANSFER — move memories to deeper temporal layers
-//! 7. WIRE — create new skip links from consolidation discoveries
+//! 5. SYNC — Kuramoto phase synchronization
+//! 6. XI_REPULSION — Apply Xi-based memory separation
+//! 7. PRUNE — weaken destructive interference pairs
+//! 8. TRANSFER — move memories to deeper temporal layers
+//! 9. WIRE — create new skip links from consolidation discoveries
 
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -155,6 +157,8 @@ impl ConsolidationEngine {
 
         // Number of nearest neighbors to query per memory.
         // Higher = more thorough but slower. 32 catches most interference pairs.
+        // Request k_neighbors+1 because the store returns the query memory itself as
+        // the top hit (similarity=1.0); the self-result is filtered below.
         let k_neighbors: usize = 32.min(working_set.len().saturating_sub(1));
         if k_neighbors == 0 {
             return Vec::new();
@@ -169,8 +173,8 @@ impl ConsolidationEngine {
                 None => continue,
             };
 
-            // Query store (HNSW-backed) for approximate nearest neighbors
-            let neighbors = match engine.store.search(&vec_a, k_neighbors) {
+            // Request k_neighbors+1 to ensure real neighbors aren't displaced by self
+            let neighbors = match engine.store.search(&vec_a, k_neighbors + 1) {
                 Ok(n) => n,
                 Err(_) => continue,
             };
@@ -241,7 +245,7 @@ impl ConsolidationEngine {
                 summary,
                 format!("__consolidation_summary_layer_{}", layer),
             );
-            summary_mem.layer_depth = layer + 1;
+            summary_mem.layer_depth = layer.saturating_add(1);
 
             if engine.store.insert(summary_mem).is_ok() {
                 bundles_created += 1;
@@ -389,15 +393,16 @@ impl ConsolidationEngine {
         
         // Cross-category weak coupling phase (connects categories but keeps them distinct)
         if category_groups.len() > 1 {
-            let all_updated_mems: Vec<crate::memory::HyperMemory> = working_set
+            // Collect (id, memory) pairs so index i always refers to the same (id, mem)
+            let all_updated_mems: Vec<(uuid::Uuid, crate::memory::HyperMemory)> = working_set
                 .iter()
-                .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+                .filter_map(|id| engine.store.get(id).ok().flatten().cloned().map(|mem| (*id, mem)))
                 .collect();
                 
             // Light cross-category coupling to maintain coherent but distinct clusters
             for _ in 0..5 {  // Fewer steps for cross-category
-                let phases: Vec<f32> = all_updated_mems.iter().map(|m| m.phase).collect();
-                let cats: Vec<String> = all_updated_mems.iter().map(|m| {
+                let phases: Vec<f32> = all_updated_mems.iter().map(|(_, m)| m.phase).collect();
+                let cats: Vec<String> = all_updated_mems.iter().map(|(_, m)| {
                     match m.frequency {
                         f if f >= 1.8 && f <= 2.4 => "experience",
                         f if f >= 1.3 && f < 1.8 => "emotion", 
@@ -414,7 +419,7 @@ impl ConsolidationEngine {
                     let mut cross_sum = 0.0f32;
                     for j in 0..all_updated_mems.len() {
                         if i != j && cats[i] != cats[j] {  // Only cross-category coupling
-                            let sim = cosine_similarity(&all_updated_mems[i].vector, &all_updated_mems[j].vector);
+                            let sim = cosine_similarity(&all_updated_mems[i].1.vector, &all_updated_mems[j].1.vector);
                             if sim > self.kuramoto.coupling_threshold * 0.5 {  // Lower threshold for cross-category
                                 cross_sum += sim * (phases[j] - phases[i]).sin();
                             }
@@ -424,10 +429,10 @@ impl ConsolidationEngine {
                     phase_updates[i] = (cross_category_coupling / n) * cross_sum * dt;
                 }
                 
-                // Apply cross-category updates
-                for (i, mem_id) in working_set.iter().enumerate() {
+                // Apply cross-category updates — use the same index as all_updated_mems, not working_set
+                for (i, (mem_id, _)) in all_updated_mems.iter().enumerate() {
                     if let Ok(Some(mem)) = engine.store.get_mut(mem_id) {
-                        mem.phase += phase_updates.get(i).unwrap_or(&0.0);
+                        mem.phase += phase_updates[i];
                     }
                 }
             }
@@ -894,12 +899,7 @@ impl DreamState {
         for id in &all_ids {
             if dead_set.contains(id) { continue; }
             if let Ok(Some(mem)) = engine.store.get_mut(id) {
-                let before = mem.connections.len();
                 mem.connections.retain(|link| !dead_set.contains(&link.target_id));
-                let pruned_links = before - mem.connections.len();
-                if pruned_links > 0 {
-                    report.skip_links_created = report.skip_links_created.wrapping_sub(pruned_links);
-                }
             }
         }
 

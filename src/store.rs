@@ -295,7 +295,7 @@ impl MemoryEngine {
         let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
         let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?; // Get more candidates for diversity
 
-        let results = wave_results
+        let mut results = wave_results
             .into_iter()
             .map(|(id, combined)| {
                 let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
@@ -321,15 +321,20 @@ impl MemoryEngine {
                 
                 QueryResult {
                     id,
-                    similarity: xi_boosted_similarity, // Use Xi-boosted similarity
+                    similarity: xi_boosted_similarity,
                     effective_strength,
                     combined_score: combined * (xi_boosted_similarity / base_similarity.max(1e-9)),
                 }
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .take(top_k) // Take only top_k after Xi boosting
-            .collect();
+            .collect::<Vec<_>>();
+
+        // Re-sort by combined_score after Xi diversity boost may have changed relative ordering
+        results.sort_by(|a, b| {
+            b.combined_score
+                .partial_cmp(&a.combined_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
             
         Ok(results)
     }

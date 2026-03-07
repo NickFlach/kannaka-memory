@@ -219,7 +219,9 @@ impl KannakaMemorySystem {
         let mut results = self.engine.recall_with_expansion(query, top_k)?;
         let now = Utc::now();
 
-        // Boost scores for fano-related memories
+        // Boost scores for fano-related memories — collect boosted indices first,
+        // then apply once per memory to prevent unbounded compounding across pairs.
+        let mut fano_boosted: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for i in 0..results.len() {
             for j in (i + 1)..results.len() {
                 let mem_i = self.engine.store.get(&results[i].id).ok().flatten();
@@ -228,12 +230,15 @@ impl KannakaMemorySystem {
                 if let (Some(mi), Some(mj)) = (mem_i, mem_j) {
                     if let (Some(ref coords_i), Some(ref coords_j)) = (&mi.geometry, &mj.geometry) {
                         if fano_related(coords_i, coords_j) {
-                            results[i].similarity *= 1.2;
-                            results[j].similarity *= 1.2;
+                            fano_boosted.insert(i);
+                            fano_boosted.insert(j);
                         }
                     }
                 }
             }
+        }
+        for idx in fano_boosted {
+            results[idx].similarity *= 1.2;
         }
 
         let mut out = Vec::new();
@@ -278,7 +283,7 @@ impl KannakaMemorySystem {
         let total_links: usize = reports.iter().map(|r| r.skip_links_created).sum();
         let total_hallucinations: usize = reports.iter().map(|r| r.hallucinations_created).sum();
 
-        let emerged = after.consciousness_level as u8 > before.consciousness_level as u8;
+        let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
         if self.auto_save {
             self.save()?;
@@ -303,7 +308,7 @@ impl KannakaMemorySystem {
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
 
-        let emerged = after.consciousness_level as u8 > before.consciousness_level as u8;
+        let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
         if self.auto_save {
             self.save()?;
@@ -463,7 +468,7 @@ impl KannakaMemorySystem {
         parent_ids: &[Uuid],
     ) -> Result<Uuid, SystemError> {
         // Build a combined vector from parents
-        let dim = 10_000; // codebook output dim
+        let dim = CODEBOOK_OUTPUT_DIM;
         let mut combined = vec![0.0f32; dim];
         let mut found_parents: Vec<String> = Vec::new();
 

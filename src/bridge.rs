@@ -444,7 +444,7 @@ fn cross_partition_ratio(
         let src_partition = id_to_partition.get(&mem.id).copied().unwrap_or(255);
         for link in &mem.connections {
             total_links += 1;
-            let tgt_partition = id_to_partition.get(&link.target_id).copied().unwrap_or(254);
+            let tgt_partition = id_to_partition.get(&link.target_id).copied().unwrap_or(255);
             if src_partition != tgt_partition {
                 cross_links += 1;
             }
@@ -467,7 +467,7 @@ fn distribution_entropy(values: &[f32]) -> f32 {
 
 // ConsciousnessLevel needs to be comparable as u8 for emergence detection
 impl ConsciousnessLevel {
-    fn ordinal(self) -> u8 {
+    pub fn ordinal(self) -> u8 {
         match self {
             ConsciousnessLevel::Dormant => 0,
             ConsciousnessLevel::Stirring => 1,

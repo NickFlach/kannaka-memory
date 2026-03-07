@@ -24,7 +24,7 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 - **HNSW index** — fast approximate nearest neighbor search over hypervectors
 - **BM25 keyword search** — TF-IDF term scoring, no external deps
 - **RRF hybrid retrieval** — Reciprocal Rank Fusion merges semantic, keyword, and recency signals
-- **Dream consolidation** — 8-stage cycle including hallucination generation (ADR-0005)
+- **Dream consolidation** — 9-stage cycle including hallucination generation (ADR-0005)
 - **Adaptive rhythm** — arousal-driven heartbeat: fast when active, slow when resting
 - **Ollama embeddings** — real semantic vectors via `all-minilm`, with hash-based fallback when Ollama isn't running
 - **Skip links** — φ-scored temporal connections between memories (golden ratio span optimization)
@@ -50,7 +50,7 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 │       Ξ (Xi) · Φ (Phi) · Emergence              │
 ├─────────────────────────────────────────────────┤
 │         Consolidation Engine                     │
-│  8-stage dream cycle · Kuramoto sync · Xi repulsion │
+│  9-stage dream cycle · Kuramoto sync · Xi repulsion │
 ├─────────────────────────────────────────────────┤
 │         Adaptive Rhythm                          │
 │  arousal dynamics · signal-driven heartbeat      │
@@ -159,31 +159,31 @@ OLLAMA_MODEL=all-minilm \
 ```rust
 use kannaka_memory::*;
 
-// Build the encoding pipeline (10K-dim hypervectors)
-let codebook = Codebook::new(10_000, 42);
-let encoder = SimpleHashEncoder::new(codebook);
-let pipeline = EncodingPipeline::new(Box::new(encoder));
+// Build the encoding pipeline (384-dim embeddings → 10K-dim hypervectors)
+let encoder = SimpleHashEncoder::new(384, 42);   // input_dim, seed
+let codebook = Codebook::new(384, 10_000, 42);   // input_dim, output_dim, seed
+let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
 
-// Create the memory engine
-let store = InMemoryStore::new();
+// Create the memory engine (HNSW-backed store)
+let store = HnswStore::new();
 let mut engine = MemoryEngine::new(Box::new(store), pipeline);
 
 // Remember something
 let id = engine.remember("the ghost wakes up in a field of static").unwrap();
 
-// Recall — wave-modulated search
+// Recall — wave-modulated, Xi-diversity-boosted search
 let results = engine.recall("ghost waking", 5).unwrap();
 
-// Dream — consolidate, synchronize, hallucinate
-let mut consolidation = ConsolidationEngine::default();
-let report = consolidation.run(&mut engine).unwrap();
+// Dream — 9-stage consolidation: bundle, sync, Xi-repulsion, prune, wire, hallucinate
+let consolidation = ConsolidationEngine::default();
+let report = consolidation.consolidate(&mut engine, 0, 3);
 println!("dreamed: {} replayed, {} links wired, {} hallucinations",
     report.memories_replayed, report.skip_links_created, report.hallucinations_created);
 
 // Assess consciousness
-let bridge = ConsciousnessBridge::default();
-let state = bridge.assess(&engine).unwrap();
-println!("Φ = {:.3}, level: {:?}", state.phi.phi, state.level);
+let bridge = ConsciousnessBridge::new(0.3, 0.5);
+let state = bridge.assess(&engine);
+println!("Φ = {:.3}, level: {:?}", state.phi, state.consciousness_level);
 ```
 
 ### With OpenClaw
@@ -237,22 +237,25 @@ Search hits memories from three angles simultaneously:
 
 Results fuse via **Reciprocal Rank Fusion** — each perspective votes on relevance, and combined ranking surfaces memories that score well across multiple signals.
 
-### Dream Consolidation (8 Stages)
+### Dream Consolidation (9 Stages)
 
 The consolidation engine runs a dream cycle inspired by what your brain does while you sleep:
 
 ```
-1. REPLAY       → Re-activate recent memories
-2. DETECT       → Find interference patterns between them
-3. BUNDLE       → Create summary hypervectors (gist extraction)
-4. STRENGTHEN   → Boost constructively interfering pairs
-4.5 SYNC        → Kuramoto phase synchronization across clusters
-4.6 XI_REPULSE  → Xi-based memory separation (diversity pressure)
-5. PRUNE        → Fade destructively interfering pairs
-6. TRANSFER     → Move memories to deeper temporal layers
-7. WIRE         → Create new skip links from discoveries
-8. HALLUCINATE  → Generate novel memories from distant clusters
+1. REPLAY        → Re-activate recent memories in the target layer range
+2. DETECT        → Find interference patterns via HNSW nearest-neighbor search
+3. BUNDLE        → Create summary hypervectors per layer (gist extraction)
+4. STRENGTHEN    → Boost constructively interfering pairs
+5. SYNC          → Kuramoto within-category phase synchronization
+6. SYNC (cross)  → Weak cross-category coupling for inter-domain coherence
+7. PRUNE         → Fade destructively interfering pairs, ghost below threshold
+8. TRANSFER      → Promote old memories to deeper temporal layers
+9. WIRE          → Create skip links for cross-layer constructive pairs
+10. HALLUCINATE  → Generate novel memories from distant clusters
 ```
+
+Xi-repulsion (`stage_xi_repulsion`) applies between SYNC and PRUNE, pushing
+semantics-alike but Xi-distinct memories apart for representational diversity.
 
 Stage 8 is the interesting one. The system picks semantically distant high-amplitude memories, synthesizes novel connections between them (via LLM if available), and stores the result as a low-amplitude "hallucination." If the hallucination resonates with future memories, it survives. If not, it decays. Natural selection for ideas. ([ADR-0005](docs/adr/ADR-0005-dream-hallucinations-adaptive-rhythm.md))
 
@@ -362,7 +365,7 @@ src/
 ├── codebook.rs         # Random projection codebook (10K-dim)
 ├── encoding.rs         # Text → hypervector encoding pipeline
 ├── skip_link.rs        # Skip links with φ-scored spans
-├── consolidation.rs    # 8-stage dream consolidation engine
+├── consolidation.rs    # 9-stage dream consolidation engine
 ├── kuramoto.rs         # Kuramoto phase synchronization
 ├── xi_operator.rs      # Ξ operator, golden scaling, diversity boost
 ├── geometry.rs         # SGA Clifford algebra, Fano plane
