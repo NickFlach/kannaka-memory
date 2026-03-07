@@ -130,9 +130,14 @@ function toMysqlDatetime(value) {
     return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-/** JSON-encode a float array for storage in LONGTEXT */
+/** Encode a float array as base64 Float32Array for compact storage */
 function encodeVector(vector) {
-    return JSON.stringify(vector);
+    if (!vector || vector.length === 0) return null;
+    const buf = Buffer.alloc(vector.length * 4);
+    for (let i = 0; i < vector.length; i++) {
+        buf.writeFloatLE(vector[i], i * 4);
+    }
+    return buf.toString('base64');
 }
 
 /** RFC-4122 v4 UUID generator (no external deps) */

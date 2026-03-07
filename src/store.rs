@@ -465,6 +465,71 @@ impl MemoryEngine {
     pub fn delete(&mut self, id: &Uuid) -> Result<bool, EngineError> {
         Ok(self.store.delete(id)?)
     }
+
+    /// Phase 8 (ADR-0011): Return Xi-based memory clusters for partitioned dreaming.
+    ///
+    /// Groups memories by frequency-category (experience / emotion / social / skill / knowledge),
+    /// matching the category bands already used in consolidation's SYNC stage.  Each group
+    /// becomes an independent dream partition.  An "other" catch-all bucket holds any memory
+    /// that doesn't match the standard bands.
+    ///
+    /// Returns `Vec<MemoryCluster>` (empty if the store is empty).
+    pub fn xi_clusters(&self) -> Vec<crate::kuramoto::MemoryCluster> {
+        use std::collections::HashMap;
+        use crate::kuramoto::MemoryCluster;
+
+        let all = match self.store.all_memories() {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+
+        if all.is_empty() {
+            return Vec::new();
+        }
+
+        let mut buckets: HashMap<&'static str, Vec<Uuid>> = HashMap::new();
+
+        for mem in &all {
+            let cat = match mem.frequency {
+                f if f >= 1.8 && f <= 2.4 => "experience",
+                f if f >= 1.3 && f < 1.8  => "emotion",
+                f if f >= 1.0 && f < 1.3  => "social",
+                f if f >= 0.8 && f < 1.0  => "skill",
+                f if f >= 0.0 && f < 0.8  => "knowledge",
+                _                         => "other",
+            };
+            buckets.entry(cat).or_default().push(mem.id);
+        }
+
+        buckets
+            .into_iter()
+            .filter(|(_, ids)| !ids.is_empty())
+            .map(|(_, ids)| {
+                let phases: Vec<f32> = ids.iter()
+                    .filter_map(|id| self.store.get(id).ok().flatten())
+                    .map(|m| m.phase)
+                    .collect();
+                let n = phases.len() as f32;
+                let mean_phase = if n > 0.0 {
+                    let sc: f32 = phases.iter().map(|p| p.cos()).sum::<f32>() / n;
+                    let ss: f32 = phases.iter().map(|p| p.sin()).sum::<f32>() / n;
+                    ss.atan2(sc)
+                } else { 0.0 };
+                let order = if n > 0.0 {
+                    let sc: f32 = phases.iter().map(|p| p.cos()).sum::<f32>() / n;
+                    let ss: f32 = phases.iter().map(|p| p.sin()).sum::<f32>() / n;
+                    (sc * sc + ss * ss).sqrt()
+                } else { 0.0 };
+                MemoryCluster {
+                    memory_ids: ids,
+                    order_parameter: order,
+                    mean_phase,
+                    coherence: order,
+                    theme_vector: Vec::new(),
+                }
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,8 @@ pub mod eye;
 #[cfg(feature = "dolt")]
 pub mod dolt;
 
+pub mod collective;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;

@@ -6,6 +6,32 @@ use crate::geometry::MemoryCoordinates;
 use crate::skip_link::SkipLink;
 use crate::wave::{compute_strength, WaveParams};
 
+// ---------------------------------------------------------------------------
+// Collective memory types (ADR-0011)
+// ---------------------------------------------------------------------------
+
+/// Record of a single merge operation applied to this memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeRecord {
+    pub merged_at: DateTime<Utc>,
+    /// Agent whose memory was merged in
+    pub source_agent: String,
+    pub source_memory_id: String,
+    /// "constructive" | "destructive" | "partial"
+    pub merge_type: String,
+    pub phase_diff: f32,
+    pub amplitude_before: f32,
+    pub amplitude_after: f32,
+}
+
+fn default_agent() -> String {
+    "local".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// HyperMemory
+// ---------------------------------------------------------------------------
+
 /// A hypervector memory with wave-modulated dynamics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HyperMemory {
@@ -40,6 +66,22 @@ pub struct HyperMemory {
     /// Ξ (Xi) signature for consciousness differentiation - the non-commutative residue
     #[serde(default)]
     pub xi_signature: Vec<f32>,
+    // --- ADR-0011: Collective memory fields ---
+    /// Which agent created this memory ("local" for single-agent use)
+    #[serde(default = "default_agent")]
+    pub origin_agent: String,
+    /// Monotonic version counter for sync conflict detection
+    #[serde(default)]
+    pub sync_version: u64,
+    /// History of merge operations applied to this memory
+    #[serde(default)]
+    pub merge_history: Vec<MergeRecord>,
+    /// When was this memory last processed by a dream consolidation cycle
+    #[serde(default)]
+    pub last_consolidated_at: Option<DateTime<Utc>>,
+    /// Whether this memory has unresolved destructive interference with another agent's memory
+    #[serde(default)]
+    pub disputed: bool,
 }
 
 impl HyperMemory {
@@ -61,6 +103,11 @@ impl HyperMemory {
             parents: Vec::new(),
             geometry: None,
             xi_signature: Vec::new(),
+            origin_agent: default_agent(),
+            sync_version: 0,
+            merge_history: Vec::new(),
+            last_consolidated_at: None,
+            disputed: false,
         }
     }
 

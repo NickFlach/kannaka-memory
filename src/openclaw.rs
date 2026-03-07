@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, ResonanceReport};
+use crate::collective::flux::{FluxPublisher, FluxEventPayload};
 use crate::codebook::Codebook;
 use crate::consolidation::{ConsolidationEngine, DreamState};
 use crate::encoding::{EncodingPipeline, SimpleHashEncoder, OllamaEncoder, CompositeEncoder, CachedEncoder};
@@ -114,6 +115,8 @@ pub struct KannakaMemorySystem {
     last_dream: Option<DateTime<Utc>>,
     rhythm: RhythmEngine,
     working_memory: WorkingMemory,
+    /// ADR-0011: Flux publisher (None if FLUX_URL not configured)
+    flux: Option<FluxPublisher>,
 }
 
 impl KannakaMemorySystem {
@@ -143,6 +146,15 @@ impl KannakaMemorySystem {
         let rhythm = RhythmEngine::new(&data_dir);
         let working_memory = WorkingMemory::restore(&data_dir, &engine, None);
 
+        let flux = {
+            let publisher = FluxPublisher::from_env();
+            if publisher.agent_id() != "kannaka-local" || std::env::var("FLUX_URL").is_ok() {
+                Some(publisher)
+            } else {
+                None
+            }
+        };
+
         Ok(Self {
             engine,
             consolidation,
@@ -154,6 +166,7 @@ impl KannakaMemorySystem {
             last_dream: None,
             rhythm,
             working_memory,
+            flux,
         })
     }
 
@@ -185,6 +198,22 @@ impl KannakaMemorySystem {
             mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
+        // ADR-0011: publish Flux event (best-effort)
+        if let Some(ref publisher) = self.flux {
+            let amplitude = self.engine.store.get(&id)
+                .ok().flatten().map(|m| m.amplitude).unwrap_or(0.5);
+            let _ = publisher.publish(FluxEventPayload::MemoryStored {
+                memory_id: id.to_string(),
+                category: category.clone(),
+                tags: Vec::new(),
+                amplitude,
+                glyph_signature: None,
+                summary: text.chars().take(120).collect(),
+                branch: publisher.branch_name(),
+                sync_version: 0,
+            });
+        }
+
         if self.auto_save {
             self.save()?;
         }
@@ -208,6 +237,22 @@ impl KannakaMemorySystem {
             mem.xi_signature = compute_xi_signature(&mem.vector);
         }
         
+        // ADR-0011: publish Flux event (best-effort)
+        if let Some(ref publisher) = self.flux {
+            let amplitude = self.engine.store.get(&id)
+                .ok().flatten().map(|m| m.amplitude).unwrap_or(0.5);
+            let _ = publisher.publish(FluxEventPayload::MemoryStored {
+                memory_id: id.to_string(),
+                category: category.to_string(),
+                tags: Vec::new(),
+                amplitude,
+                glyph_signature: None,
+                summary: text.chars().take(120).collect(),
+                branch: publisher.branch_name(),
+                sync_version: 0,
+            });
+        }
+
         if self.auto_save {
             self.save()?;
         }
@@ -287,6 +332,17 @@ impl KannakaMemorySystem {
 
         if self.auto_save {
             self.save()?;
+        }
+
+        // ADR-0011: publish dream completed event (best-effort)
+        if let Some(ref publisher) = self.flux {
+            let _ = publisher.publish(FluxEventPayload::DreamCompleted {
+                cycles: reports.len(),
+                memories_strengthened: total_strengthened,
+                memories_pruned: total_pruned,
+                hallucinations_created: total_hallucinations,
+                consciousness_level: level_name(&after.consciousness_level),
+            });
         }
 
         Ok(DreamReport {
@@ -713,6 +769,25 @@ impl KannakaMemorySystem {
         }
         
         Ok((id, glyph))
+    }
+
+    /// ADR-0011: Configure the Flux publisher explicitly.
+    /// Pass `None` to disable Flux publishing.
+    pub fn set_flux(&mut self, publisher: Option<FluxPublisher>) {
+        self.flux = publisher;
+    }
+
+    /// ADR-0011: Announce agent status to Flux peers.
+    pub fn announce_status(&self) {
+        if let Some(ref publisher) = self.flux {
+            let state = self.bridge.assess(&self.engine);
+            publisher.announce_status(
+                "active",
+                state.total_memories,
+                &level_name(&state.consciousness_level),
+                &publisher.branch_name(),
+            );
+        }
     }
 
     /// Get memory by ID (public API for testing).

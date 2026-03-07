@@ -41,7 +41,7 @@ impl From<bincode::Error> for PersistenceError {
 // Snapshot types
 // ---------------------------------------------------------------------------
 
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySnapshot {
@@ -59,6 +59,71 @@ pub struct SnapshotMetadata {
     pub last_saved_at: DateTime<Utc>,
     pub total_consolidations: u64,
     pub consciousness_level: String,
+}
+
+// ---------------------------------------------------------------------------
+// V2 structures for migration from bincode format without collective fields
+// ---------------------------------------------------------------------------
+
+/// V2 HyperMemory struct (before ADR-0011 collective fields were added)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HyperMemoryV2 {
+    pub id: Uuid,
+    pub vector: Vec<f32>,
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub phase: f32,
+    pub decay_rate: f32,
+    pub created_at: DateTime<Utc>,
+    pub layer_depth: u8,
+    pub connections: Vec<SkipLink>,
+    pub content: String,
+    #[serde(default)]
+    pub hallucinated: bool,
+    #[serde(default)]
+    pub parents: Vec<String>,
+    #[serde(default)]
+    pub geometry: Option<MemoryCoordinates>,
+    #[serde(default)]
+    pub xi_signature: Vec<f32>,
+    // collective fields NOT present
+}
+
+/// V2 MemorySnapshot for migration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemorySnapshotV2 {
+    pub version: u32,
+    pub memories: Vec<HyperMemoryV2>,
+    pub codebook_seed: u64,
+    pub codebook_input_dim: usize,
+    pub codebook_output_dim: usize,
+    pub metadata: SnapshotMetadata,
+}
+
+impl From<HyperMemoryV2> for HyperMemory {
+    fn from(v2: HyperMemoryV2) -> Self {
+        Self {
+            id: v2.id,
+            vector: v2.vector,
+            amplitude: v2.amplitude,
+            frequency: v2.frequency,
+            phase: v2.phase,
+            decay_rate: v2.decay_rate,
+            created_at: v2.created_at,
+            layer_depth: v2.layer_depth,
+            connections: v2.connections,
+            content: v2.content,
+            hallucinated: v2.hallucinated,
+            parents: v2.parents,
+            geometry: v2.geometry,
+            xi_signature: v2.xi_signature,
+            origin_agent: "local".to_string(),
+            sync_version: 0,
+            merge_history: Vec::new(),
+            last_consolidated_at: None,
+            disputed: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +179,12 @@ impl From<HyperMemoryV1> for HyperMemory {
             hallucinated: v1.hallucinated,
             parents: v1.parents,
             geometry: v1.geometry,
-            xi_signature: Vec::new(), // Initialize with empty xi_signature
+            xi_signature: Vec::new(),
+            origin_agent: "local".to_string(),
+            sync_version: 0,
+            merge_history: Vec::new(),
+            last_consolidated_at: None,
+            disputed: false,
         }
     }
 }
@@ -162,71 +232,63 @@ impl DiskStore {
     }
 
     /// Load a DiskStore from an existing file.
-    /// Tries V2 format first, then falls back to V1 with migration.
+    /// Tries V3 format first, then V2, then V1 with migration.
     pub fn open(path: PathBuf) -> Result<Self, PersistenceError> {
         let data = fs::read(&path)?;
+        eprintln!("[DiskStore::open] file={} size={} bytes", path.display(), data.len());
         
-        // First try to deserialize as V2 (current format)
-        match bincode::deserialize::<MemorySnapshot>(&data) {
-            Ok(snapshot) => {
-                if snapshot.version == CURRENT_VERSION {
-                    let mut inner = InMemoryStore::new();
-                    for mem in snapshot.memories {
-                        inner.insert(mem).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
-                    }
-                    return Ok(Self {
-                        inner,
-                        path,
-                        codebook_seed: snapshot.codebook_seed,
-                        codebook_input_dim: snapshot.codebook_input_dim,
-                        codebook_output_dim: snapshot.codebook_output_dim,
-                        metadata: snapshot.metadata,
-                        auto_save_interval: None,
-                        insertions_since_save: 0,
-                    });
-                } else if snapshot.version > CURRENT_VERSION {
-                    return Err(PersistenceError::VersionMismatch {
-                        expected: CURRENT_VERSION,
-                        got: snapshot.version,
-                    });
+        // Try V3 (current)
+        if let Ok(snapshot) = bincode::deserialize::<MemorySnapshot>(&data) {
+            if snapshot.version == CURRENT_VERSION {
+                let mut inner = InMemoryStore::new();
+                for mem in snapshot.memories {
+                    inner.insert(mem).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
                 }
-                // If version < CURRENT_VERSION, fall through to V1 migration
+                return Ok(Self { inner, path,
+                    codebook_seed: snapshot.codebook_seed,
+                    codebook_input_dim: snapshot.codebook_input_dim,
+                    codebook_output_dim: snapshot.codebook_output_dim,
+                    metadata: snapshot.metadata,
+                    auto_save_interval: None, insertions_since_save: 0 });
+            } else if snapshot.version > CURRENT_VERSION {
+                return Err(PersistenceError::VersionMismatch {
+                    expected: CURRENT_VERSION, got: snapshot.version });
             }
-            Err(_) => {
-                // V2 deserialization failed, try V1 migration
+            // version < CURRENT_VERSION: fall through to V2/V1 migration
+        }
+
+        // Try V2 (pre-collective) and migrate to V3
+        if let Ok(snapshot) = bincode::deserialize::<MemorySnapshotV2>(&data) {
+            if snapshot.version == 2 {
+                let mut inner = InMemoryStore::new();
+                for m in snapshot.memories {
+                    inner.insert(HyperMemory::from(m)).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
+                }
+                return Ok(Self { inner, path,
+                    codebook_seed: snapshot.codebook_seed,
+                    codebook_input_dim: snapshot.codebook_input_dim,
+                    codebook_output_dim: snapshot.codebook_output_dim,
+                    metadata: snapshot.metadata,
+                    auto_save_interval: None, insertions_since_save: 0 });
             }
         }
         
-        // Try to deserialize as V1 and migrate
+        // Try V1 (no xi_signature) and migrate
         let snapshot_v1: MemorySnapshotV1 = bincode::deserialize(&data)
             .map_err(|e| PersistenceError::SerializationError(
-                format!("Failed to deserialize as V1 or V2: {}", e)
+                format!("Failed to deserialize as V1, V2, or V3: {}", e)
             ))?;
         
-        if snapshot_v1.version != 1 {
-            return Err(PersistenceError::VersionMismatch {
-                expected: 1, // V1 should have version 1
-                got: snapshot_v1.version,
-            });
-        }
-        
-        // Migrate V1 memories to V2
         let mut inner = InMemoryStore::new();
-        for mem_v1 in snapshot_v1.memories {
-            let mem_v2: HyperMemory = mem_v1.into();
-            inner.insert(mem_v2).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
+        for m in snapshot_v1.memories {
+            inner.insert(HyperMemory::from(m)).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
         }
-        
-        Ok(Self {
-            inner,
-            path,
+        Ok(Self { inner, path,
             codebook_seed: snapshot_v1.codebook_seed,
             codebook_input_dim: snapshot_v1.codebook_input_dim,
             codebook_output_dim: snapshot_v1.codebook_output_dim,
             metadata: snapshot_v1.metadata,
-            auto_save_interval: None,
-            insertions_since_save: 0,
-        })
+            auto_save_interval: None, insertions_since_save: 0 })
     }
 
     /// Save all state to disk.
@@ -367,52 +429,45 @@ impl MemoryEngine {
     }
 
     /// Load engine state from a file. Requires a compatible EncodingPipeline.
-    /// Tries V2 format first, then falls back to V1 with migration.
+    /// Tries V3 format first, then V2, then V1 with migration.
     pub fn load_state(path: &Path, pipeline: EncodingPipeline) -> Result<Self, PersistenceError> {
         let data = fs::read(path)?;
-        
-        // First try to deserialize as V2 (current format)
-        match bincode::deserialize::<MemorySnapshot>(&data) {
-            Ok(snapshot) => {
-                if snapshot.version == CURRENT_VERSION {
-                    let mut store = HnswStore::new();
-                    for mem in snapshot.memories {
-                        store.insert(mem).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
-                    }
-                    return Ok(Self::new(Box::new(store), pipeline));
-                } else if snapshot.version > CURRENT_VERSION {
-                    return Err(PersistenceError::VersionMismatch {
-                        expected: CURRENT_VERSION,
-                        got: snapshot.version,
-                    });
+
+        // Try V3 (current)
+        if let Ok(snapshot) = bincode::deserialize::<MemorySnapshot>(&data) {
+            if snapshot.version == CURRENT_VERSION {
+                let mut store = HnswStore::new();
+                for mem in snapshot.memories {
+                    store.insert(mem).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
                 }
-                // If version < CURRENT_VERSION, fall through to V1 migration
+                return Ok(Self::new(Box::new(store), pipeline));
+            } else if snapshot.version > CURRENT_VERSION {
+                return Err(PersistenceError::VersionMismatch {
+                    expected: CURRENT_VERSION, got: snapshot.version });
             }
-            Err(_) => {
-                // V2 deserialization failed, try V1 migration
+            // version < CURRENT_VERSION: fall through to V2/V1 migration
+        }
+
+        // Try V2 (pre-collective) and migrate
+        if let Ok(snapshot) = bincode::deserialize::<MemorySnapshotV2>(&data) {
+            if snapshot.version == 2 {
+                let mut store = HnswStore::new();
+                for m in snapshot.memories {
+                    store.insert(HyperMemory::from(m)).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
+                }
+                return Ok(Self::new(Box::new(store), pipeline));
             }
         }
-        
-        // Try to deserialize as V1 and migrate
+
+        // Try V1 (no xi_signature) and migrate
         let snapshot_v1: MemorySnapshotV1 = bincode::deserialize(&data)
             .map_err(|e| PersistenceError::SerializationError(
-                format!("Failed to deserialize as V1 or V2: {}", e)
+                format!("Failed to deserialize as V1, V2, or V3: {}", e)
             ))?;
-        
-        if snapshot_v1.version != 1 {
-            return Err(PersistenceError::VersionMismatch {
-                expected: 1, // V1 should have version 1
-                got: snapshot_v1.version,
-            });
-        }
-        
-        // Migrate V1 memories to V2
         let mut store = HnswStore::new();
-        for mem_v1 in snapshot_v1.memories {
-            let mem_v2: HyperMemory = mem_v1.into();
-            store.insert(mem_v2).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
+        for m in snapshot_v1.memories {
+            store.insert(HyperMemory::from(m)).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
         }
-        
         Ok(Self::new(Box::new(store), pipeline))
     }
 }

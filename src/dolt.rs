@@ -290,6 +290,12 @@ impl DoltMemoryStore {
             conn.query("SELECT id, parents, vector_data, xi_signature, geometry FROM memories")
             .map_err(|e| StoreError::Other(format!("Failed to query memories extended: {}", e)))?;
 
+        // ADR-0011: collective fields — query separately so older databases (pre-migration)
+        // degrade gracefully to defaults rather than failing on missing columns.
+        let memories_collective: Vec<(String, Option<String>, Option<u64>, Option<String>, Option<bool>)> = 
+            conn.query("SELECT id, origin_agent, sync_version, last_consolidated_at, disputed FROM memories")
+            .unwrap_or_default();
+
         // Load skip links
         let skip_links: Vec<(String, String, f32, String)> = 
             conn.query("SELECT source_id, target_id, weight, link_type FROM skip_links")
@@ -329,6 +335,17 @@ impl DoltMemoryStore {
         let mut extended_data: HashMap<String, (Option<String>, String, Option<String>, Option<String>)> = HashMap::new();
         for (id, parents_json, vector_json, xi_signature_json, geometry_json) in memories_extended {
             extended_data.insert(id, (parents_json, vector_json, xi_signature_json, geometry_json));
+        }
+
+        // ADR-0011: lookup map for collective data (all fields Optional — backward compat)
+        let mut collective_data: HashMap<String, (String, u64, Option<String>, bool)> = HashMap::new();
+        for (id, origin_agent, sync_version, last_consolidated_at_str, disputed) in memories_collective {
+            collective_data.insert(id, (
+                origin_agent.unwrap_or_else(|| "local".to_string()),
+                sync_version.unwrap_or(0),
+                last_consolidated_at_str,
+                disputed.unwrap_or(false),
+            ));
         }
 
         // Process memories and add to cache
@@ -374,6 +391,16 @@ impl DoltMemoryStore {
             // Get skip links for this memory
             let connections = skip_links_map.remove(&uuid).unwrap_or_default();
 
+            // ADR-0011: extract collective fields
+            let (origin_agent, sync_version, last_consolidated_at_str, disputed) =
+                collective_data.remove(&id)
+                    .unwrap_or_else(|| ("local".to_string(), 0, None, false));
+            let last_consolidated_at = if let Some(ref s) = last_consolidated_at_str {
+                parse_dolt_datetime(s).ok()
+            } else {
+                None
+            };
+
             let memory = HyperMemory {
                 id: uuid,
                 vector,
@@ -389,6 +416,11 @@ impl DoltMemoryStore {
                 parents,
                 geometry,
                 xi_signature,
+                origin_agent,
+                sync_version,
+                merge_history: Vec::new(),
+                last_consolidated_at,
+                disputed,
             };
 
             self.cache.insert(uuid, memory);
@@ -448,6 +480,18 @@ impl DoltMemoryStore {
             r"UPDATE memories SET parents = ?, vector_data = ?, xi_signature = ?, geometry = ? WHERE id = ?",
             (&parents_json, &vector_json, &xi_signature_json, &geometry_json, &memory.id.to_string())
         ).map_err(|e| StoreError::Other(format!("Failed to update memory extended: {}", e)))?;
+
+        // ADR-0011: update collective fields (no-op on pre-migration databases)
+        let merge_history_json = if memory.merge_history.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&memory.merge_history).ok()
+        };
+        let last_consolidated_str = memory.last_consolidated_at.as_ref().map(format_dolt_datetime);
+        let _ = conn.exec_drop(
+            r"UPDATE memories SET origin_agent = ?, sync_version = ?, merge_history = ?, last_consolidated_at = ?, disputed = ? WHERE id = ?",
+            (&memory.origin_agent, memory.sync_version, &merge_history_json, &last_consolidated_str, memory.disputed, &memory.id.to_string())
+        );
 
         // Delete existing skip links for this memory
         conn.exec_drop(
@@ -833,6 +877,140 @@ impl DoltMemoryStore {
     /// Get pending changes count.
     pub fn pending_changes(&self) -> usize {
         self.pending_changes
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0011: Collective memory tables
+    // -----------------------------------------------------------------------
+
+    /// Create the three collective-memory tables if they do not already exist.
+    ///
+    /// Safe to call on an existing database — all statements use `CREATE TABLE IF NOT EXISTS`.
+    /// Mirrors `migrations/0011-collective-memory.sql` but executable from Rust code.
+    pub fn create_collective_tables(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id          VARCHAR(36)  NOT NULL PRIMARY KEY,
+                event_type  VARCHAR(32)  NOT NULL,
+                agent_id    VARCHAR(64)  NOT NULL,
+                memory_id   VARCHAR(36)  DEFAULT NULL,
+                metadata    JSON         DEFAULT NULL,
+                created_at  DATETIME(6)  NOT NULL,
+                synced_at   DATETIME(6)  DEFAULT NULL,
+                INDEX idx_agent_time (agent_id, created_at),
+                INDEX idx_memory     (memory_id),
+                INDEX idx_event_type (event_type)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create sync_events: {}", e)))?;
+
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS agents (
+                agent_id        VARCHAR(64)  NOT NULL PRIMARY KEY,
+                display_name    VARCHAR(128) DEFAULT NULL,
+                trust_score     FLOAT        NOT NULL DEFAULT 0.5,
+                last_sync       DATETIME(6)  DEFAULT NULL,
+                branch_name     VARCHAR(128) DEFAULT NULL,
+                flux_entity     VARCHAR(64)  DEFAULT NULL,
+                embedding_model VARCHAR(64)  DEFAULT NULL,
+                capabilities    JSON         DEFAULT NULL,
+                created_at      DATETIME(6)  NOT NULL
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create agents: {}", e)))?;
+
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS quarantine (
+                id            VARCHAR(36)  NOT NULL PRIMARY KEY,
+                memory_id_a   VARCHAR(36)  NOT NULL,
+                memory_id_b   VARCHAR(36)  NOT NULL,
+                agent_a       VARCHAR(64)  NOT NULL,
+                agent_b       VARCHAR(64)  NOT NULL,
+                similarity    FLOAT        NOT NULL,
+                phase_diff    FLOAT        NOT NULL,
+                dispute_count INT          NOT NULL DEFAULT 1,
+                status        VARCHAR(16)  NOT NULL DEFAULT 'pending',
+                resolution    JSON         DEFAULT NULL,
+                created_at    DATETIME(6)  NOT NULL,
+                resolved_at   DATETIME(6)  DEFAULT NULL,
+                INDEX idx_status   (status),
+                INDEX idx_memory_a (memory_id_a),
+                INDEX idx_memory_b (memory_id_b)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create quarantine: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Insert a row into `sync_events` (fire-and-forget — errors are logged, not fatal).
+    pub fn log_sync_event(
+        &self,
+        event_type: &str,
+        agent_id: &str,
+        memory_id: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+    ) {
+        let id = Uuid::new_v4().to_string();
+        let now = format_dolt_datetime(&chrono::Utc::now());
+        let meta_json = metadata.and_then(|v| serde_json::to_string(v).ok());
+
+        let result = self.pool.get_conn().and_then(|mut conn| {
+            conn.exec_drop(
+                "INSERT INTO sync_events (id, event_type, agent_id, memory_id, metadata, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                (&id, event_type, agent_id, memory_id, &meta_json, &now),
+            )
+        });
+        if let Err(e) = result {
+            eprintln!("[dolt] log_sync_event failed (non-fatal): {}", e);
+        }
+    }
+
+    /// Insert or update an agent record in the `agents` table.
+    pub fn upsert_agent(
+        &self,
+        agent_id: &str,
+        display_name: Option<&str>,
+        trust_score: f32,
+        branch_name: Option<&str>,
+        flux_entity: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let now = format_dolt_datetime(&chrono::Utc::now());
+        conn.exec_drop(
+            "INSERT INTO agents (agent_id, display_name, trust_score, branch_name, flux_entity, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+               display_name = VALUES(display_name), trust_score = VALUES(trust_score), \
+               branch_name = VALUES(branch_name), flux_entity = VALUES(flux_entity), \
+               last_sync = ?",
+            (agent_id, display_name, trust_score, branch_name, flux_entity, &now, &now),
+        ).map_err(|e| StoreError::Other(format!("Failed to upsert agent: {}", e)))?;
+        Ok(())
+    }
+
+    /// Insert a quarantine entry for a disputed memory pair.
+    pub fn quarantine_memories(
+        &self,
+        entry: &crate::collective::QuarantineEntry,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let now = format_dolt_datetime(&chrono::Utc::now());
+        conn.exec_drop(
+            "INSERT INTO quarantine (id, memory_id_a, memory_id_b, agent_a, agent_b, similarity, phase_diff, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.id.to_string(),
+                entry.memory_id_a.to_string(),
+                entry.memory_id_b.to_string(),
+                &entry.agent_a,
+                &entry.agent_b,
+                entry.similarity,
+                entry.phase_diff,
+                &now,
+            ),
+        ).map_err(|e| StoreError::Other(format!("Failed to quarantine memories: {}", e)))?;
+        Ok(())
     }
 }
 

@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 rand = "0.8"
+rayon = { version = "1", optional = true }
 rand_chacha = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +39,7 @@ audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
 dolt = ["mysql"]
 glyph = []
+collective = ["rayon"]
 
 [[bin]]
 name = "kannaka-mcp"
