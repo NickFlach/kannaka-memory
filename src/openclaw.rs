@@ -683,8 +683,20 @@ impl KannakaMemorySystem {
         );
         
         let content_hash = self.hash_content(&content);
-        // Use fold amplitudes as the memory vector (padded/truncated to standard dim)
-        let vector: Vec<f32> = glyph.fold_amplitudes.iter().map(|&a| a as f32).collect();
+        // Use fold amplitudes as the memory vector, padded to 10,000 dims for compatibility
+        let mut vector: Vec<f32> = glyph.fold_amplitudes.iter().map(|&a| a as f32).collect();
+        // Tile the glyph pattern to fill the hypervector space (like a visual texture)
+        let target_dim = 10_000;
+        if vector.len() < target_dim {
+            let pattern = vector.clone();
+            while vector.len() < target_dim {
+                let i = vector.len();
+                // Phase-shift each repetition slightly for richer interference
+                let phase = (i / pattern.len()) as f32 * 0.1;
+                vector.push(pattern[i % pattern.len()] + phase);
+            }
+            vector.truncate(target_dim);
+        }
         let mut mem = HyperMemory::new(vector, content);
         mem.geometry = Some(classify_memory("experience", content_hash, 0.7));
         
