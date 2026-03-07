@@ -3,10 +3,21 @@
 //! Loads all memories into an in-memory HashMap on startup for fast reads
 //! (required by MemoryStore trait which returns &HyperMemory references),
 //! and writes through to Dolt SQL server on mutations.
+//!
+//! # Devil's Advocate audit findings fixed here (vs original Phase 1):
+//! - **Datetime parsing**: `parse_from_str` with `%Y-%m-%d %H:%M:%S` requires timezone
+//!   info in the format; fixed to use `NaiveDateTime::parse_from_str` + `.and_utc()`.
+//! - **resonance_key placeholder**: `vec![0.0; 100]` was wrong dim and semantically
+//!   incorrect — all other callers use `Vec::new()`; fixed accordingly.
+//! - **Delete atomicity**: cache was cleared before Dolt, leaving an inconsistent state
+//!   on Dolt failure; fixed to attempt Dolt first, then evict from cache.
+//! - **get_mut mutations not persisted**: mutations via `get_mut` were never written back;
+//!   fixed with a dirty-set (`dirty_set: HashSet<Uuid>`) + `flush_dirty()` / `update()`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::env;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use mysql::*;
 use mysql::prelude::*;
 use serde_json;
@@ -17,7 +28,125 @@ use crate::skip_link::SkipLink;
 use crate::store::{MemoryStore, StoreError};
 use crate::wave::cosine_similarity;
 
+// ---------------------------------------------------------------------------
+// DoltConfig — Phase 3: configuration from environment variables
+// ---------------------------------------------------------------------------
+
+/// Connection configuration for a Dolt SQL server.
+///
+/// Build from environment variables with [`DoltConfig::from_env`] or
+/// [`DoltConfig::try_from_env`].
+///
+/// | Variable            | Default       | Description                    |
+/// |---------------------|---------------|--------------------------------|
+/// | `DOLT_HOST`         | `127.0.0.1`   | Dolt SQL server hostname       |
+/// | `DOLT_PORT`         | `3307`        | Dolt SQL server port           |
+/// | `DOLT_DB`           | `kannaka_memory` | Database name               |
+/// | `DOLT_USER`         | `root`        | Database user                  |
+/// | `DOLT_PASSWORD`     | *(empty)*     | Database password              |
+/// | `DOLT_AUTO_COMMIT`  | `true`        | Auto-commit after N changes    |
+/// | `DOLT_COMMIT_THRESHOLD` | `10`      | Changes between auto-commits   |
+#[derive(Debug, Clone)]
+pub struct DoltConfig {
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+    pub auto_commit: bool,
+    pub commit_threshold: usize,
+}
+
+impl Default for DoltConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 3307,
+            database: "kannaka_memory".to_string(),
+            user: "root".to_string(),
+            password: String::new(),
+            auto_commit: true,
+            commit_threshold: 10,
+        }
+    }
+}
+
+impl DoltConfig {
+    /// Build configuration from environment variables, falling back to defaults.
+    pub fn from_env() -> Self {
+        let mut cfg = Self::default();
+        if let Ok(v) = env::var("DOLT_HOST") { cfg.host = v; }
+        if let Ok(v) = env::var("DOLT_PORT") {
+            if let Ok(p) = v.parse::<u16>() { cfg.port = p; }
+        }
+        if let Ok(v) = env::var("DOLT_DB") { cfg.database = v; }
+        if let Ok(v) = env::var("DOLT_USER") { cfg.user = v; }
+        if let Ok(v) = env::var("DOLT_PASSWORD") { cfg.password = v; }
+        if let Ok(v) = env::var("DOLT_AUTO_COMMIT") {
+            cfg.auto_commit = v.to_lowercase() != "false" && v != "0";
+        }
+        if let Ok(v) = env::var("DOLT_COMMIT_THRESHOLD") {
+            if let Ok(t) = v.parse::<usize>() { cfg.commit_threshold = t; }
+        }
+        cfg
+    }
+
+    /// Returns `Some(config)` if the `DOLT_HOST` env var is set, otherwise `None`.
+    /// Useful for graceful fallback: only enable Dolt when it is explicitly configured.
+    pub fn try_from_env() -> Option<Self> {
+        if env::var("DOLT_HOST").is_ok() || env::var("DOLT_PORT").is_ok() {
+            Some(Self::from_env())
+        } else {
+            None
+        }
+    }
+
+    /// Build a MySQL [`OptsBuilder`] from this config.
+    pub fn to_opts(&self) -> Opts {
+        OptsBuilder::new()
+            .ip_or_hostname(Some(&self.host))
+            .tcp_port(self.port)
+            .db_name(Some(&self.database))
+            .user(Some(&self.user))
+            .pass(if self.password.is_empty() { None } else { Some(&self.password) })
+            .into()
+    }
+
+}
+
+// ---------------------------------------------------------------------------
+// Serialization helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a MySQL DATETIME string (with or without fractional seconds) to UTC.
+/// Extracted as a public(crate) function so it can be unit-tested independently
+/// of a live Dolt connection.
+///
+/// Accepts:
+/// - `"2026-03-06 14:30:00"`
+/// - `"2026-03-06 14:30:00.123"`
+pub(crate) fn parse_dolt_datetime(s: &str) -> Result<DateTime<Utc>, StoreError> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f"))
+        .map(|naive| naive.and_utc())
+        .map_err(|e| StoreError::Other(format!("Failed to parse datetime '{}': {}", s, e)))
+}
+
+/// Format a UTC datetime as a MySQL-compatible DATETIME string.
+pub(crate) fn format_dolt_datetime(dt: &DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+// ---------------------------------------------------------------------------
+// DoltMemoryStore
+// ---------------------------------------------------------------------------
+
 /// Hybrid Dolt-backed memory store with in-memory cache.
+///
+/// All reads are served from the `cache` (HashMap); all mutations are written
+/// through to Dolt immediately (via `sync_memory_to_dolt`). Mutations that
+/// arrive via the `MemoryStore::get_mut` path are tracked in `dirty_set` and
+/// must be flushed explicitly with [`DoltMemoryStore::flush_dirty`].
 pub struct DoltMemoryStore {
     /// In-memory cache for fast reads (trait requires &HyperMemory returns)
     cache: HashMap<Uuid, HyperMemory>,
@@ -29,23 +158,46 @@ pub struct DoltMemoryStore {
     pending_changes: usize,
     /// Commit every N changes (if auto_commit is true)
     commit_threshold: usize,
+    /// IDs mutated through get_mut that have not yet been synced to Dolt.
+    dirty_set: HashSet<Uuid>,
 }
 
 impl DoltMemoryStore {
-    /// Create a new store with the given MySQL connection pool.
+    /// Create a new store from the given MySQL connection pool, using default commit settings.
     /// Loads all existing memories from Dolt into the in-memory cache.
     pub fn new(pool: Pool) -> Result<Self, StoreError> {
+        let cfg = DoltConfig::default();
+        Self::from_pool(pool, &cfg)
+    }
+
+    /// Create a store from a [`DoltConfig`], building the pool internally.
+    pub fn from_config(config: &DoltConfig) -> Result<Self, StoreError> {
+        let opts = config.to_opts();
+        let pool = Pool::new(opts)
+            .map_err(|e| StoreError::Other(format!("Failed to create Dolt pool: {}", e)))?;
+        Self::from_pool(pool, config)
+    }
+
+    /// Create a store from environment variables (via [`DoltConfig::from_env`]).
+    pub fn from_env() -> Result<Self, StoreError> {
+        let config = DoltConfig::from_env();
+        Self::from_config(&config)
+    }
+
+    /// Build from an already-constructed pool with explicit commit settings.
+    pub fn from_pool(pool: Pool, config: &DoltConfig) -> Result<Self, StoreError> {
         let mut store = Self {
             cache: HashMap::new(),
             pool,
-            auto_commit: true,
+            auto_commit: config.auto_commit,
             pending_changes: 0,
-            commit_threshold: 10,
+            commit_threshold: config.commit_threshold,
+            dirty_set: HashSet::new(),
         };
-        
+
         let count = store.load_from_dolt()?;
         eprintln!("DoltMemoryStore: loaded {} memories from database", count);
-        
+
         Ok(store)
     }
 
@@ -83,9 +235,12 @@ impl DoltMemoryStore {
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(0);
 
-            // Create a minimal resonance key (since we don't store the full key)
-            // This is a compromise - the user said we don't store resonance_key because it's too large
-            let resonance_key = vec![0.0; 100]; // Placeholder - we'll need to reconstruct this somehow
+            // FIX (devil's advocate): resonance_key is Vec::new() throughout the
+            // codebase (see consolidation.rs, store.rs). The placeholder vec![0.0; 100]
+            // was wrong dimensionality and semantically incorrect. The full 10K-dim
+            // resonance key is not stored in the skip_links table (would be 40KB per row);
+            // empty vec is the correct representation for Dolt-loaded skip links.
+            let resonance_key = Vec::new();
 
             let skip_link = SkipLink {
                 target_id: target_uuid,
@@ -106,10 +261,7 @@ impl DoltMemoryStore {
         // Process memories and add to cache
         let mut loaded_count = 0;
         for (id, content, amplitude, frequency, phase, decay_rate, created_at_str, layer_depth, hallucinated) in memories_basic {
-            // Parse datetime string to DateTime<Utc>
-            let created_at = DateTime::parse_from_str(&created_at_str, "%Y-%m-%d %H:%M:%S")
-                .map_err(|e| StoreError::Other(format!("Failed to parse datetime: {}", e)))?
-                .with_timezone(&Utc);
+            let created_at = parse_dolt_datetime(&created_at_str)?;
             
             // Get extended data
             let (parents_json, vector_json, xi_signature_json, geometry_json) = extended_data
@@ -207,8 +359,7 @@ impl DoltMemoryStore {
 
         // Break down into smaller parameter sets to avoid mysql crate tuple limitations
         // First upsert basic memory data
-        // Convert DateTime to string for mysql compatibility
-        let created_at_str = memory.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        let created_at_str = format_dolt_datetime(&memory.created_at);
         conn.exec_drop(
             r"INSERT INTO memories (id, content, amplitude, frequency, phase, decay_rate, created_at, layer_depth, hallucinated) 
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -325,6 +476,37 @@ impl DoltMemoryStore {
         Ok(())
     }
 
+    /// Explicitly sync a single memory that is already in the cache to Dolt.
+    /// Use this when you need to persist a mutation made via [`MemoryStore::get_mut`].
+    pub fn update(&mut self, id: &Uuid) -> Result<(), StoreError> {
+        let memory = self.cache.get(id)
+            .ok_or_else(|| StoreError::NotFound(*id))?;
+        let memory = memory.clone();
+        self.sync_memory_to_dolt(&memory)?;
+        self.dirty_set.remove(id);
+        Ok(())
+    }
+
+    /// Flush all memories that were mutated via `get_mut` to Dolt.
+    /// Returns the number of memories synced.
+    pub fn flush_dirty(&mut self) -> Result<usize, StoreError> {
+        let dirty: Vec<Uuid> = self.dirty_set.iter().copied().collect();
+        let count = dirty.len();
+        for id in dirty {
+            let memory = self.cache.get(&id)
+                .ok_or_else(|| StoreError::NotFound(id))?;
+            let memory = memory.clone();
+            self.sync_memory_to_dolt(&memory)?;
+            self.dirty_set.remove(&id);
+        }
+        Ok(count)
+    }
+
+    /// Returns the set of IDs mutated through `get_mut` but not yet flushed to Dolt.
+    pub fn dirty_ids(&self) -> &HashSet<Uuid> {
+        &self.dirty_set
+    }
+
     /// Set auto-commit behavior.
     pub fn set_auto_commit(&mut self, enabled: bool, threshold: usize) {
         self.auto_commit = enabled;
@@ -360,6 +542,11 @@ impl MemoryStore for DoltMemoryStore {
     }
 
     fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError> {
+        // FIX (devil's advocate): track IDs mutated via get_mut so callers can
+        // later flush them to Dolt via flush_dirty() or update().
+        if self.cache.contains_key(id) {
+            self.dirty_set.insert(*id);
+        }
         Ok(self.cache.get_mut(id))
     }
 
@@ -403,18 +590,189 @@ impl MemoryStore for DoltMemoryStore {
     }
 
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError> {
-        // Remove from cache first
-        let was_present = self.cache.remove(id).is_some();
-        
+        // FIX (devil's advocate): attempt Dolt deletion first so the cache is
+        // only evicted on success, keeping cache and DB consistent on failure.
+        let was_present = self.cache.contains_key(id);
+
         if was_present {
-            // Remove from Dolt
             self.delete_from_dolt(id)?;
+            self.cache.remove(id);
+            self.dirty_set.remove(id);
         }
-        
+
         Ok(was_present)
     }
 
     fn count(&self) -> usize {
         self.cache.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, Timelike, TimeZone};
+    use std::sync::Mutex;
+
+    /// Serialise all tests that read/write process-wide environment variables.
+    /// Cargo runs tests in parallel by default; without this lock they race on
+    /// the shared env state and produce flaky results.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Convenience: clear every DOLT_* env var and return when done.
+    fn clear_dolt_env() {
+        for key in &[
+            "DOLT_HOST", "DOLT_PORT", "DOLT_DB",
+            "DOLT_USER", "DOLT_PASSWORD",
+            "DOLT_AUTO_COMMIT", "DOLT_COMMIT_THRESHOLD",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DoltConfig — unit tests (no DB required)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dolt_config_default_values() {
+        let cfg = DoltConfig::default();
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert_eq!(cfg.port, 3307);
+        assert_eq!(cfg.database, "kannaka_memory");
+        assert_eq!(cfg.user, "root");
+        assert!(cfg.password.is_empty());
+        assert!(cfg.auto_commit);
+        assert_eq!(cfg.commit_threshold, 10);
+    }
+
+    #[test]
+    fn dolt_config_from_env_overrides_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+
+        std::env::set_var("DOLT_HOST", "db.example.com");
+        std::env::set_var("DOLT_PORT", "3308");
+        std::env::set_var("DOLT_DB", "my_memories");
+        std::env::set_var("DOLT_USER", "kannaka");
+        std::env::set_var("DOLT_PASSWORD", "s3cr3t");
+        std::env::set_var("DOLT_AUTO_COMMIT", "false");
+        std::env::set_var("DOLT_COMMIT_THRESHOLD", "50");
+
+        let cfg = DoltConfig::from_env();
+        clear_dolt_env();
+
+        assert_eq!(cfg.host, "db.example.com");
+        assert_eq!(cfg.port, 3308);
+        assert_eq!(cfg.database, "my_memories");
+        assert_eq!(cfg.user, "kannaka");
+        assert_eq!(cfg.password, "s3cr3t");
+        assert!(!cfg.auto_commit);
+        assert_eq!(cfg.commit_threshold, 50);
+    }
+
+    #[test]
+    fn dolt_config_from_env_invalid_port_keeps_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+        std::env::set_var("DOLT_PORT", "not_a_number");
+        let cfg = DoltConfig::from_env();
+        clear_dolt_env();
+        assert_eq!(cfg.port, 3307);
+    }
+
+    #[test]
+    fn dolt_config_auto_commit_false_variants() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for value in &["false", "False", "FALSE", "0"] {
+            clear_dolt_env();
+            std::env::set_var("DOLT_AUTO_COMMIT", value);
+            let cfg = DoltConfig::from_env();
+            assert!(!cfg.auto_commit, "expected false for DOLT_AUTO_COMMIT={}", value);
+        }
+        clear_dolt_env();
+    }
+
+    #[test]
+    fn dolt_config_try_from_env_returns_none_without_vars() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+        assert!(DoltConfig::try_from_env().is_none());
+    }
+
+    #[test]
+    fn dolt_config_try_from_env_returns_some_with_host() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+        std::env::set_var("DOLT_HOST", "dolt.local");
+        let result = DoltConfig::try_from_env();
+        clear_dolt_env();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().host, "dolt.local");
+    }
+
+    // -----------------------------------------------------------------------
+    // Datetime helpers — unit tests (no DB required)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_dolt_datetime_standard_format() {
+        let dt = parse_dolt_datetime("2026-03-06 14:30:00").unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 3);
+        assert_eq!(dt.day(), 6);
+        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.minute(), 30);
+        assert_eq!(dt.second(), 0);
+    }
+
+    #[test]
+    fn parse_dolt_datetime_with_fractional_seconds() {
+        let dt = parse_dolt_datetime("2026-03-06 14:30:00.123").unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.second(), 0);
+    }
+
+    #[test]
+    fn parse_dolt_datetime_invalid_returns_error() {
+        let result = parse_dolt_datetime("not-a-date");
+        assert!(result.is_err());
+        // Error message should mention the offending string
+        assert!(result.unwrap_err().to_string().contains("not-a-date"));
+    }
+
+    #[test]
+    fn format_parse_dolt_datetime_roundtrip() {
+        let original = Utc.with_ymd_and_hms(2026, 1, 15, 9, 5, 3).unwrap();
+        let formatted = format_dolt_datetime(&original);
+        assert_eq!(formatted, "2026-01-15 09:05:03");
+        let parsed = parse_dolt_datetime(&formatted).unwrap();
+        // Round-trip: sub-second precision is lost (MySQL DATETIME has 1s resolution)
+        assert_eq!(parsed.year(), original.year());
+        assert_eq!(parsed.month(), original.month());
+        assert_eq!(parsed.day(), original.day());
+        assert_eq!(parsed.hour(), original.hour());
+        assert_eq!(parsed.minute(), original.minute());
+        assert_eq!(parsed.second(), original.second());
+    }
+
+    // -----------------------------------------------------------------------
+    // Devil's Advocate regression: the OLD broken format would have failed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn old_parse_with_timezone_required_would_fail() {
+        // Demonstrate that the original Phase 1 approach was wrong:
+        // DateTime::parse_from_str with a no-timezone format panics / errors.
+        // This test documents the bug by showing chrono DOES need %z for parse_from_str.
+        let result = chrono::DateTime::parse_from_str("2026-03-06 14:30:00", "%Y-%m-%d %H:%M:%S");
+        assert!(
+            result.is_err(),
+            "parse_from_str without timezone info MUST fail — the Phase 1 bug was real"
+        );
     }
 }
