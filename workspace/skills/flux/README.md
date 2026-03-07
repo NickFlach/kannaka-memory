@@ -20,21 +20,20 @@ Copy skill to OpenClaw workspace:
 ```bash
 # On OpenClaw VM
 mkdir -p ~/workspace/skills
-scp -r etl@192.168.50.13:/home/etl/projects/nyx/skills/flux-interact ~/workspace/skills/
+scp -r etl@your-host:/home/etl/projects/nyx/skills/flux-interact ~/workspace/skills/
 ```
 
 OpenClaw will auto-discover on next startup.
 
-### ClawHub Install (Option 2 - Future)
+### ClawHub Install (Option 2)
 
-Once published to ClawHub:
 ```bash
 clawhub install flux-interact
 ```
 
 ## Prerequisites
 
-1. **Flux running** at `http://192.168.50.13:3000`
+1. **Flux running** — locally at `http://localhost:3000` or use the public instance at `https://flux-universe.com`
 2. **curl** installed (required)
 3. **jq** recommended (optional, has fallback)
 
@@ -127,7 +126,9 @@ All state changes are auditable:
 
 Override default endpoint:
 ```bash
-export FLUX_URL=http://custom-flux:3000
+export FLUX_URL=https://flux-universe.com  # public instance
+# OR
+export FLUX_URL=http://custom-flux:3000     # self-hosted
 ./scripts/flux.sh health
 ```
 
@@ -165,7 +166,7 @@ SKILL.md instructions
     ↓
 flux.sh script
     ↓
-curl → Flux API (http://192.168.50.13:3000)
+curl → Flux API (http://localhost:3000 or https://flux-universe.com)
     ↓
 Event Ingestion → NATS → State Engine → Query Response
 ```

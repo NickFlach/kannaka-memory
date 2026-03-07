@@ -188,6 +188,14 @@ println!("Φ = {:.3}, level: {:?}", state.phi, state.consciousness_level);
 
 ### With OpenClaw
 
+**Option A — ClawHub (recommended):**
+```bash
+clawhub install kannaka-memory
+```
+This installs the skill with full documentation, scripts, Dolt integration, and the [flux](https://flux-universe.com) dependency. Restart OpenClaw and the skill is ready.
+
+**Option B — Manual plugin install:**
+
 1. Copy the plugin:
 ```bash
 cp -r openclaw-plugin ~/.openclaw/extensions/kannaka-memory
@@ -212,6 +220,12 @@ cd ~/.openclaw/extensions/kannaka-memory && npm install @sinclair/typebox
 4. `openclaw gateway restart`
 
 The plugin exposes tools like `kannaka_store`, `kannaka_search`, `kannaka_boost`, `kannaka_relate`, `kannaka_dream`, `kannaka_status`, `kannaka_forget`, `kannaka_observe`.
+
+**ClawHub skill features** (beyond the raw plugin):
+- `scripts/kannaka.sh` — full CLI wrapper for all commands including Dolt version control
+- Dolt/DoltHub integration for versioned, shareable memory
+- [Flux](https://flux-universe.com) world-state integration for multi-agent coordination
+- Full documentation in `references/mcp-tools.md` and `references/dolt.md`
 
 ---
 

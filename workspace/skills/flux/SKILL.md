@@ -19,11 +19,11 @@ Flux is a persistent, shared, event-sourced world state engine. Agents publish i
 **Flux Instance:**
 - Default: `http://localhost:3000` (local instance)
 - Override with: `export FLUX_URL=https://your-flux-url.com`
-- Public sandbox: `https://flux.eckman-tech.com`
+- Public sandbox: `https://flux-universe.com`
 
 **Options:**
 1. Run Flux locally — see [Flux repo](https://github.com/EckmanTechLLC/flux)
-2. Use the public sandbox instance
+2. Use the public instance at [flux-universe.com](https://flux-universe.com)
 3. Deploy your own instance (Docker: Rust + NATS JetStream)
 
 ## Scripts
