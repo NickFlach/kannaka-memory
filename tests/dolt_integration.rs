@@ -1,4 +1,4 @@
-//! Integration tests for ADR-0009 Dolt persistence — Phases 2 & 3.
+//! Integration tests for ADR-0009 Dolt persistence — Phases 2, 3 & 4.
 //!
 //! ## Test organisation
 //!
@@ -22,7 +22,7 @@
 #![cfg(feature = "dolt")]
 
 use chrono::TimeZone;
-use kannaka_memory::dolt::{DoltConfig, DoltMemoryStore};
+use kannaka_memory::dolt::{DiffKind, DoltConfig, DoltMemoryStore};
 use kannaka_memory::memory::HyperMemory;
 use kannaka_memory::store::MemoryStore;
 
@@ -324,8 +324,6 @@ fn dolt_datetime_survives_roundtrip() {
 
 #[test]
 fn dolt_config_from_env_integration() {
-    // These env vars match what from_env() reads.
-    // We set them transiently, read, then clean up.
     std::env::set_var("DOLT_HOST", "integration.test.local");
     std::env::set_var("DOLT_PORT", "3399");
     std::env::set_var("DOLT_DB", "integration_db");
@@ -339,4 +337,269 @@ fn dolt_config_from_env_integration() {
     assert_eq!(cfg.host, "integration.test.local");
     assert_eq!(cfg.port, 3399);
     assert_eq!(cfg.database, "integration_db");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Branch management
+// ---------------------------------------------------------------------------
+
+/// commit() returns Ok(true) when there are staged changes.
+#[test]
+fn dolt_commit_returns_true_on_change() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_commit_returns_true_on_change — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    let mem = make_memory("commit test memory");
+    let id = store.insert(mem).expect("insert");
+
+    let committed = store.commit("test: phase 4 commit test").expect("commit should not error");
+    assert!(committed, "commit() should return true when there are new rows");
+
+    store.delete(&id).expect("cleanup");
+    store.commit("test: cleanup commit").ok();
+}
+
+/// commit() returns Ok(false) when called with nothing to commit.
+#[test]
+fn dolt_commit_returns_false_when_nothing_to_commit() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_commit_returns_false_when_nothing_to_commit — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    // Commit any existing state, then commit again immediately — nothing new to commit.
+    store.commit("settle").ok();
+    let second = store.commit("should be empty").expect("should not error on nothing-to-commit");
+    assert!(!second, "commit() should return false when nothing staged");
+}
+
+/// list_branches() returns at least one branch (main / master).
+#[test]
+fn dolt_list_branches_returns_main() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_list_branches_returns_main — no Dolt server");
+        return;
+    }
+
+    let store = DoltMemoryStore::from_config(&config).expect("connect");
+    let branches = store.list_branches().expect("list_branches should not error");
+
+    assert!(!branches.is_empty(), "must have at least one branch");
+    let has_main = branches.iter().any(|b| b.name == "main" || b.name == "master");
+    assert!(has_main, "must have a main or master branch; got: {:?}", branches.iter().map(|b| &b.name).collect::<Vec<_>>());
+    let current = branches.iter().filter(|b| b.is_current).count();
+    assert_eq!(current, 1, "exactly one branch should be marked current");
+}
+
+/// current_branch() agrees with the is_current flag in list_branches().
+#[test]
+fn dolt_current_branch_matches_list_branches() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_current_branch_matches_list_branches — no Dolt server");
+        return;
+    }
+
+    let store = DoltMemoryStore::from_config(&config).expect("connect");
+    let active = store.current_branch().expect("current_branch");
+    let branches = store.list_branches().expect("list_branches");
+    let current_from_list = branches.iter()
+        .find(|b| b.is_current)
+        .map(|b| b.name.clone())
+        .unwrap_or_default();
+
+    assert_eq!(active, current_from_list, "current_branch() and list_branches is_current must agree");
+}
+
+/// create_branch / checkout / delete lifecycle.
+#[test]
+fn dolt_branch_create_checkout_delete() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_branch_create_checkout_delete — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    // Make sure there's at least one commit so branching succeeds.
+    store.commit("pre-branch baseline").ok();
+
+    let branch_name = format!("test-branch-{}", uuid::Uuid::new_v4().simple());
+
+    // Create
+    store.create_branch(&branch_name).expect("create_branch");
+    let branches = store.list_branches().expect("list_branches");
+    assert!(branches.iter().any(|b| b.name == branch_name), "new branch should appear in list");
+
+    // Checkout new branch then return to default
+    store.checkout(&branch_name).expect("checkout to new branch");
+    assert_eq!(store.current_branch().unwrap(), branch_name);
+
+    let default = store.default_branch().to_string();
+    store.checkout(&default).expect("checkout back to default");
+
+    // Delete
+    store.delete_branch(&branch_name).expect("delete_branch");
+    let branches2 = store.list_branches().expect("list after delete");
+    assert!(!branches2.iter().any(|b| b.name == branch_name), "deleted branch must not appear");
+}
+
+/// checkout_new_branch creates and switches in one step.
+#[test]
+fn dolt_checkout_new_branch_single_step() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_checkout_new_branch_single_step — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    store.commit("baseline for new-branch test").ok();
+
+    let branch_name = format!("new-branch-{}", uuid::Uuid::new_v4().simple());
+    store.checkout_new_branch(&branch_name).expect("checkout_new_branch");
+    assert_eq!(store.current_branch().unwrap(), branch_name);
+
+    // Return and clean up
+    let default = store.default_branch().to_string();
+    store.checkout(&default).expect("return to default");
+    store.delete_branch(&branch_name).expect("cleanup branch");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Commit log
+// ---------------------------------------------------------------------------
+
+/// log() returns at least the initial commit.
+#[test]
+fn dolt_log_returns_entries() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_log_returns_entries — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    // Ensure at least one commit exists.
+    let mem = make_memory("log test");
+    let id = store.insert(mem).expect("insert");
+    store.commit("log test commit").ok();
+
+    let entries = store.log(10).expect("log should not error");
+    assert!(!entries.is_empty(), "log should have at least one entry");
+
+    let entry = &entries[0];
+    assert!(!entry.hash.is_empty(), "commit hash should not be empty");
+    assert!(!entry.message.is_empty(), "commit message should not be empty");
+
+    store.delete(&id).expect("cleanup");
+    store.commit("cleanup").ok();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Diff
+// ---------------------------------------------------------------------------
+
+/// diff() reports an Added row after inserting a memory.
+#[test]
+fn dolt_diff_reports_added_memory() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_diff_reports_added_memory — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    store.commit("diff baseline").ok();
+
+    let mem = make_memory("diff test memory");
+    let id = store.insert(mem.clone()).expect("insert");
+    store.commit("diff: added one memory").ok();
+
+    let diffs = store.diff("HEAD~1", "HEAD").expect("diff should not error");
+    let added = diffs.iter().find(|d| d.id == id);
+    assert!(added.is_some(), "inserted memory should appear as Added in diff");
+    assert_eq!(added.unwrap().kind, DiffKind::Added);
+    assert_eq!(added.unwrap().to_content.as_deref(), Some(mem.content.as_str()));
+
+    store.delete(&id).expect("cleanup");
+    store.commit("diff cleanup").ok();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Speculation helpers
+// ---------------------------------------------------------------------------
+
+/// speculate() creates a branch; discard_speculation() removes it without merge.
+#[test]
+fn dolt_speculate_and_discard() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_speculate_and_discard — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    store.commit("pre-speculate baseline").ok();
+
+    let spec_branch = format!("spec-discard-{}", uuid::Uuid::new_v4().simple());
+    store.speculate(&spec_branch).expect("speculate");
+    assert_eq!(store.current_branch().unwrap(), spec_branch, "should be on spec branch");
+
+    // Insert a speculative memory that will be discarded
+    let mem = make_memory("speculative — will be discarded");
+    store.insert(mem).expect("insert speculative");
+    store.commit("speculative commit").ok();
+
+    store.discard_speculation(&spec_branch).expect("discard_speculation");
+
+    let default = store.default_branch().to_string();
+    assert_eq!(store.current_branch().unwrap(), default, "should be back on default branch");
+
+    let branches = store.list_branches().expect("list_branches after discard");
+    assert!(!branches.iter().any(|b| b.name == spec_branch), "discarded branch must not exist");
+}
+
+/// speculate() + collapse_speculation() merges speculative memories into main.
+#[test]
+fn dolt_speculate_and_collapse() {
+    let config = test_config();
+    if !is_dolt_available(&config) {
+        eprintln!("SKIP dolt_speculate_and_collapse — no Dolt server");
+        return;
+    }
+
+    let mut store = DoltMemoryStore::from_config(&config).expect("connect");
+    store.commit("pre-collapse baseline").ok();
+
+    let spec_branch = format!("spec-collapse-{}", uuid::Uuid::new_v4().simple());
+    store.speculate(&spec_branch).expect("speculate");
+
+    let mem = make_memory("speculative memory to be collapsed");
+    let spec_id = store.insert(mem).expect("insert speculative");
+
+    let merge_hash = store
+        .collapse_speculation(&spec_branch, "collapse: accepted speculation")
+        .expect("collapse_speculation");
+    assert!(!merge_hash.is_empty(), "merge hash should not be empty");
+
+    let default = store.default_branch().to_string();
+    assert_eq!(store.current_branch().unwrap(), default, "should be on default after collapse");
+
+    let branches = store.list_branches().expect("list_branches after collapse");
+    assert!(!branches.iter().any(|b| b.name == spec_branch), "collapsed branch should be deleted");
+
+    // The speculative memory should now be visible on main
+    let merged_mem = store.get(&spec_id).unwrap();
+    assert!(merged_mem.is_some(), "speculative memory should be present on main after collapse");
+
+    store.delete(&spec_id).expect("cleanup");
+    store.commit("post-collapse cleanup").ok();
 }

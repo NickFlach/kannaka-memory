@@ -37,15 +37,18 @@ use crate::wave::cosine_similarity;
 /// Build from environment variables with [`DoltConfig::from_env`] or
 /// [`DoltConfig::try_from_env`].
 ///
-/// | Variable            | Default       | Description                    |
-/// |---------------------|---------------|--------------------------------|
-/// | `DOLT_HOST`         | `127.0.0.1`   | Dolt SQL server hostname       |
-/// | `DOLT_PORT`         | `3307`        | Dolt SQL server port           |
-/// | `DOLT_DB`           | `kannaka_memory` | Database name               |
-/// | `DOLT_USER`         | `root`        | Database user                  |
-/// | `DOLT_PASSWORD`     | *(empty)*     | Database password              |
-/// | `DOLT_AUTO_COMMIT`  | `true`        | Auto-commit after N changes    |
-/// | `DOLT_COMMIT_THRESHOLD` | `10`      | Changes between auto-commits   |
+/// | Variable                | Default                          | Description                    |
+/// |-------------------------|----------------------------------|--------------------------------|
+/// | `DOLT_HOST`             | `127.0.0.1`                      | Dolt SQL server hostname       |
+/// | `DOLT_PORT`             | `3307`                           | Dolt SQL server port           |
+/// | `DOLT_DB`               | `kannaka_memory`                 | Database name                  |
+/// | `DOLT_USER`             | `root`                           | Database user                  |
+/// | `DOLT_PASSWORD`         | *(empty)*                        | Database password              |
+/// | `DOLT_AUTO_COMMIT`      | `true`                           | Auto-commit after N changes    |
+/// | `DOLT_COMMIT_THRESHOLD` | `10`                             | Changes between auto-commits   |
+/// | `DOLT_AUTHOR`           | `Kannaka Agent <kannaka@local>`  | Author header for Dolt commits |
+/// | `DOLT_REMOTE`           | `origin`                         | Default remote for push/pull   |
+/// | `DOLT_BRANCH`           | `main`                           | Default branch name            |
 #[derive(Debug, Clone)]
 pub struct DoltConfig {
     pub host: String,
@@ -55,6 +58,12 @@ pub struct DoltConfig {
     pub password: String,
     pub auto_commit: bool,
     pub commit_threshold: usize,
+    /// Author string for Dolt version commits, e.g. `"Name <email>"`.
+    pub commit_author: String,
+    /// Default remote name for push/pull operations.
+    pub remote: String,
+    /// Default branch name.
+    pub default_branch: String,
 }
 
 impl Default for DoltConfig {
@@ -67,6 +76,9 @@ impl Default for DoltConfig {
             password: String::new(),
             auto_commit: true,
             commit_threshold: 10,
+            commit_author: "Kannaka Agent <kannaka@local>".to_string(),
+            remote: "origin".to_string(),
+            default_branch: "main".to_string(),
         }
     }
 }
@@ -88,6 +100,9 @@ impl DoltConfig {
         if let Ok(v) = env::var("DOLT_COMMIT_THRESHOLD") {
             if let Ok(t) = v.parse::<usize>() { cfg.commit_threshold = t; }
         }
+        if let Ok(v) = env::var("DOLT_AUTHOR")  { cfg.commit_author  = v; }
+        if let Ok(v) = env::var("DOLT_REMOTE")  { cfg.remote         = v; }
+        if let Ok(v) = env::var("DOLT_BRANCH")  { cfg.default_branch = v; }
         cfg
     }
 
@@ -138,6 +153,55 @@ pub(crate) fn format_dolt_datetime(dt: &DateTime<Utc>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 value types
+// ---------------------------------------------------------------------------
+
+/// Information about a Dolt branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    /// Branch name.
+    pub name: String,
+    /// Latest commit hash on this branch.
+    pub hash: String,
+    /// Whether this is the currently checked-out branch.
+    pub is_current: bool,
+}
+
+/// A single entry in the Dolt commit log.
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    /// Dolt commit hash.
+    pub hash: String,
+    /// Committer name / email string.
+    pub author: String,
+    /// Commit timestamp in UTC.
+    pub date: DateTime<Utc>,
+    /// Commit message.
+    pub message: String,
+}
+
+/// How a memory row changed between two Dolt refs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// A memory that changed between two Dolt commits or branches.
+#[derive(Debug, Clone)]
+pub struct MemoryDiff {
+    /// The memory's UUID (from whichever side is non-null).
+    pub id: Uuid,
+    /// Nature of the change.
+    pub kind: DiffKind,
+    /// Content in the `from` ref (None for Added rows).
+    pub from_content: Option<String>,
+    /// Content in the `to` ref (None for Removed rows).
+    pub to_content: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // DoltMemoryStore
 // ---------------------------------------------------------------------------
 
@@ -160,6 +224,12 @@ pub struct DoltMemoryStore {
     commit_threshold: usize,
     /// IDs mutated through get_mut that have not yet been synced to Dolt.
     dirty_set: HashSet<Uuid>,
+    /// Author header written into Dolt version commits.
+    commit_author: String,
+    /// Default remote name for push / pull.
+    remote: String,
+    /// Default branch name.
+    default_branch: String,
 }
 
 impl DoltMemoryStore {
@@ -193,6 +263,9 @@ impl DoltMemoryStore {
             pending_changes: 0,
             commit_threshold: config.commit_threshold,
             dirty_set: HashSet::new(),
+            commit_author: config.commit_author.clone(),
+            remote: config.remote.clone(),
+            default_branch: config.default_branch.clone(),
         };
 
         let count = store.load_from_dolt()?;
@@ -437,42 +510,281 @@ impl DoltMemoryStore {
         Ok(memory_existed)
     }
 
-    /// Commit changes to Dolt version control.
-    pub fn commit(&mut self, message: &str) -> Result<(), StoreError> {
+    /// Commit staged changes to Dolt version control.
+    ///
+    /// Uses `DOLT_AUTHOR` config for the commit author field.
+    /// Returns `Ok(true)` if a commit was created, `Ok(false)` if there was
+    /// nothing to commit (treated as success).
+    pub fn commit(&mut self, message: &str) -> Result<bool, StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
 
-        // Stage all changes
         conn.exec_drop("CALL DOLT_ADD('.')", ())
             .map_err(|e| StoreError::Other(format!("Failed to stage changes: {}", e)))?;
 
-        // Commit with message
-        conn.exec_drop("CALL DOLT_COMMIT('-m', ?)", (message,))
-            .map_err(|e| StoreError::Other(format!("Failed to commit: {}", e)))?;
+        let result = conn.exec_drop(
+            "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+            (message, &self.commit_author),
+        );
 
-        self.pending_changes = 0;
-        Ok(())
+        match result {
+            Ok(_) => {
+                self.pending_changes = 0;
+                Ok(true)
+            }
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("nothing to commit") || msg.contains("no changes to commit") {
+                    self.pending_changes = 0;
+                    Ok(false)
+                } else {
+                    Err(StoreError::Other(format!("Failed to commit: {}", e)))
+                }
+            }
+        }
     }
 
-    /// Create a new branch.
-    pub fn branch(&self, name: &str) -> Result<(), StoreError> {
+    // -----------------------------------------------------------------------
+    // Phase 4: Branch management
+    // -----------------------------------------------------------------------
+
+    /// Create a new branch from the current HEAD (does not switch to it).
+    pub fn create_branch(&self, name: &str) -> Result<(), StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
-
         conn.exec_drop("CALL DOLT_BRANCH(?)", (name,))
-            .map_err(|e| StoreError::Other(format!("Failed to create branch: {}", e)))?;
-
+            .map_err(|e| StoreError::Other(format!("Failed to create branch '{}': {}", name, e)))?;
         Ok(())
     }
 
-    /// Switch to a different branch.
+    /// Switch to an existing branch.
     pub fn checkout(&self, name: &str) -> Result<(), StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
-
         conn.exec_drop("CALL DOLT_CHECKOUT(?)", (name,))
-            .map_err(|e| StoreError::Other(format!("Failed to checkout branch: {}", e)))?;
+            .map_err(|e| StoreError::Other(format!("Failed to checkout '{}': {}", name, e)))?;
+        Ok(())
+    }
 
+    /// Create a new branch and immediately switch to it.
+    pub fn checkout_new_branch(&self, name: &str) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("CALL DOLT_CHECKOUT('-b', ?)", (name,))
+            .map_err(|e| StoreError::Other(format!("Failed to create+checkout '{}': {}", name, e)))?;
+        Ok(())
+    }
+
+    /// Delete a branch (must not be the currently checked-out branch).
+    pub fn delete_branch(&self, name: &str) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("CALL DOLT_BRANCH('-d', ?)", (name,))
+            .map_err(|e| StoreError::Other(format!("Failed to delete branch '{}': {}", name, e)))?;
+        Ok(())
+    }
+
+    /// List all branches in the database.
+    pub fn list_branches(&self) -> Result<Vec<BranchInfo>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let active: Vec<(String,)> = conn
+            .query("SELECT active_branch()")
+            .map_err(|e| StoreError::Other(format!("Failed to get active branch: {}", e)))?;
+        let active_name = active.into_iter().next().map(|r| r.0).unwrap_or_default();
+
+        let rows: Vec<(String, String)> = conn
+            .query("SELECT name, hash FROM dolt_branches ORDER BY name")
+            .map_err(|e| StoreError::Other(format!("Failed to list branches: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(name, hash)| BranchInfo {
+                is_current: name == active_name,
+                name,
+                hash,
+            })
+            .collect())
+    }
+
+    /// Return the name of the currently active branch.
+    pub fn current_branch(&self) -> Result<String, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let rows: Vec<(String,)> = conn
+            .query("SELECT active_branch()")
+            .map_err(|e| StoreError::Other(format!("Failed to query active branch: {}", e)))?;
+        rows.into_iter()
+            .next()
+            .map(|r| r.0)
+            .ok_or_else(|| StoreError::Other("active_branch() returned no rows".to_string()))
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: Commit log
+    // -----------------------------------------------------------------------
+
+    /// Fetch recent Dolt commits on the current branch.
+    pub fn log(&self, limit: usize) -> Result<Vec<CommitInfo>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let rows: Vec<(String, String, String, String)> = conn.exec(
+            "SELECT commit_hash, committer, committer_date, message FROM dolt_log LIMIT ?",
+            (limit,),
+        ).map_err(|e| StoreError::Other(format!("Failed to query dolt_log: {}", e)))?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for (hash, author, date_str, message) in rows {
+            let date = parse_dolt_datetime(&date_str).unwrap_or_else(|_| Utc::now());
+            entries.push(CommitInfo { hash, author, date, message });
+        }
+        Ok(entries)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: DoltHub push / pull
+    // -----------------------------------------------------------------------
+
+    /// Push the current branch to a remote.
+    ///
+    /// Pass `None` for `remote` / `branch` to use the `DoltConfig` defaults.
+    pub fn push(&self, remote: Option<&str>, branch: Option<&str>) -> Result<(), StoreError> {
+        let remote = remote.unwrap_or(&self.remote);
+        let branch = branch.unwrap_or(&self.default_branch);
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("CALL DOLT_PUSH(?, ?)", (remote, branch))
+            .map_err(|e| StoreError::Other(format!("Failed to push to {}/{}: {}", remote, branch, e)))?;
+        Ok(())
+    }
+
+    /// Pull from a remote into the current branch.
+    ///
+    /// Pass `None` for `remote` / `branch` to use the `DoltConfig` defaults.
+    pub fn pull(&self, remote: Option<&str>, branch: Option<&str>) -> Result<(), StoreError> {
+        let remote = remote.unwrap_or(&self.remote);
+        let branch = branch.unwrap_or(&self.default_branch);
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("CALL DOLT_PULL(?, ?)", (remote, branch))
+            .map_err(|e| StoreError::Other(format!("Failed to pull from {}/{}: {}", remote, branch, e)))?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: Diff and merge
+    // -----------------------------------------------------------------------
+
+    /// Return memories that changed between two Dolt refs (commit hashes,
+    /// branch names, or symbolic refs like `HEAD~1`).
+    ///
+    /// # Example
+    /// ```no_run
+    /// let changes = store.diff("HEAD~1", "HEAD")?;
+    /// ```
+    pub fn diff(&self, from_ref: &str, to_ref: &str) -> Result<Vec<MemoryDiff>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // dolt_diff_memories is a system table Dolt generates automatically for
+        // the `memories` table. Columns: diff_type, from_id, from_content,
+        // to_id, to_content (plus all other table columns prefixed from_/to_).
+        let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+            conn.exec(
+                "SELECT diff_type, from_id, from_content, to_id, to_content \
+                 FROM dolt_diff_memories \
+                 WHERE from_commit = ? AND to_commit = ?",
+                (from_ref, to_ref),
+            ).map_err(|e| StoreError::Other(format!("Failed to diff memories: {}", e)))?;
+
+        let mut diffs = Vec::with_capacity(rows.len());
+        for (diff_type, from_id, from_content, to_id, to_content) in rows {
+            let kind = match diff_type.as_str() {
+                "added"    => DiffKind::Added,
+                "removed"  => DiffKind::Removed,
+                _          => DiffKind::Modified,
+            };
+            let raw_id = to_id.as_deref().or(from_id.as_deref()).unwrap_or("");
+            let id = Uuid::parse_str(raw_id)
+                .map_err(|e| StoreError::Other(format!("Invalid diff UUID '{}': {}", raw_id, e)))?;
+            diffs.push(MemoryDiff { id, kind, from_content, to_content });
+        }
+        Ok(diffs)
+    }
+
+    /// Merge a branch into the current branch.
+    ///
+    /// Returns the merge commit hash on success.
+    pub fn merge_branch(&mut self, branch: &str) -> Result<String, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let rows: Vec<(Option<String>, Option<u8>, Option<String>)> = conn.exec(
+            "SELECT DOLT_MERGE(?)", (branch,),
+        ).map_err(|e| StoreError::Other(format!("Failed to merge '{}': {}", branch, e)))?;
+
+        let hash = rows.into_iter()
+            .next()
+            .and_then(|(h, _, _)| h)
+            .unwrap_or_else(|| "merge-ok".to_string());
+
+        // Reload cache to reflect merged data
+        self.load_from_dolt()?;
+        Ok(hash)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: High-level speculation helpers
+    // -----------------------------------------------------------------------
+
+    /// Open a speculative memory branch for "what-if" thinking.
+    ///
+    /// 1. Flushes any dirty memories to Dolt.
+    /// 2. Commits current changes (if any) with a "pre-speculation" message.
+    /// 3. Creates and checks out `branch_name`.
+    ///
+    /// Call [`collapse_speculation`] or [`discard_speculation`] when done.
+    pub fn speculate(&mut self, branch_name: &str) -> Result<(), StoreError> {
+        self.flush_dirty()?;
+        self.commit(&format!("pre-speculation: before branch '{}'", branch_name))?;
+        self.checkout_new_branch(branch_name)?;
+        Ok(())
+    }
+
+    /// Merge a speculation branch back into `default_branch` and delete it.
+    ///
+    /// 1. Commits any pending changes on the speculation branch.
+    /// 2. Checks out `default_branch`.
+    /// 3. Merges `branch_name`.
+    /// 4. Deletes `branch_name`.
+    ///
+    /// Returns the merge commit hash.
+    pub fn collapse_speculation(
+        &mut self,
+        branch_name: &str,
+        message: &str,
+    ) -> Result<String, StoreError> {
+        self.flush_dirty()?;
+        self.commit(message)?;
+        let default = self.default_branch.clone();
+        self.checkout(&default)?;
+        let hash = self.merge_branch(branch_name)?;
+        self.delete_branch(branch_name)?;
+        Ok(hash)
+    }
+
+    /// Discard a speculation branch without merging.
+    ///
+    /// Checks out `default_branch` and force-deletes `branch_name`.
+    pub fn discard_speculation(&mut self, branch_name: &str) -> Result<(), StoreError> {
+        let default = self.default_branch.clone();
+        self.checkout(&default)?;
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("CALL DOLT_BRANCH('-df', ?)", (branch_name,))
+            .map_err(|e| StoreError::Other(format!("Failed to force-delete branch '{}': {}", branch_name, e)))?;
         Ok(())
     }
 
@@ -505,6 +817,11 @@ impl DoltMemoryStore {
     /// Returns the set of IDs mutated through `get_mut` but not yet flushed to Dolt.
     pub fn dirty_ids(&self) -> &HashSet<Uuid> {
         &self.dirty_set
+    }
+
+    /// Return the configured default branch name.
+    pub fn default_branch(&self) -> &str {
+        &self.default_branch
     }
 
     /// Set auto-commit behavior.
@@ -615,7 +932,7 @@ impl MemoryStore for DoltMemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, Timelike, TimeZone};
+    use chrono::{Datelike, Timelike, TimeZone, Utc};
     use std::sync::Mutex;
 
     /// Serialise all tests that read/write process-wide environment variables.
@@ -629,6 +946,7 @@ mod tests {
             "DOLT_HOST", "DOLT_PORT", "DOLT_DB",
             "DOLT_USER", "DOLT_PASSWORD",
             "DOLT_AUTO_COMMIT", "DOLT_COMMIT_THRESHOLD",
+            "DOLT_AUTHOR", "DOLT_REMOTE", "DOLT_BRANCH",
         ] {
             std::env::remove_var(key);
         }
@@ -648,6 +966,9 @@ mod tests {
         assert!(cfg.password.is_empty());
         assert!(cfg.auto_commit);
         assert_eq!(cfg.commit_threshold, 10);
+        assert_eq!(cfg.commit_author, "Kannaka Agent <kannaka@local>");
+        assert_eq!(cfg.remote, "origin");
+        assert_eq!(cfg.default_branch, "main");
     }
 
     #[test]
@@ -758,6 +1079,91 @@ mod tests {
         assert_eq!(parsed.hour(), original.hour());
         assert_eq!(parsed.minute(), original.minute());
         assert_eq!(parsed.second(), original.second());
+    }
+
+    #[test]
+    fn dolt_config_phase4_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+        std::env::set_var("DOLT_AUTHOR", "Alice <alice@wonderland>");
+        std::env::set_var("DOLT_REMOTE", "dolthub");
+        std::env::set_var("DOLT_BRANCH", "prod");
+        let cfg = DoltConfig::from_env();
+        clear_dolt_env();
+        assert_eq!(cfg.commit_author, "Alice <alice@wonderland>");
+        assert_eq!(cfg.remote, "dolthub");
+        assert_eq!(cfg.default_branch, "prod");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4 value types — no DB required
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn branch_info_is_current_flag() {
+        let b = BranchInfo { name: "main".into(), hash: "abc123".into(), is_current: true };
+        assert!(b.is_current);
+        let b2 = BranchInfo { name: "speculate/x".into(), hash: "def456".into(), is_current: false };
+        assert!(!b2.is_current);
+    }
+
+    #[test]
+    fn diff_kind_variants_are_distinct() {
+        assert_ne!(DiffKind::Added, DiffKind::Removed);
+        assert_ne!(DiffKind::Added, DiffKind::Modified);
+        assert_ne!(DiffKind::Removed, DiffKind::Modified);
+    }
+
+    #[test]
+    fn memory_diff_added_has_no_from_content() {
+        let id = Uuid::new_v4();
+        let d = MemoryDiff {
+            id,
+            kind: DiffKind::Added,
+            from_content: None,
+            to_content: Some("hello world".into()),
+        };
+        assert!(d.from_content.is_none());
+        assert_eq!(d.to_content.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn memory_diff_removed_has_no_to_content() {
+        let id = Uuid::new_v4();
+        let d = MemoryDiff {
+            id,
+            kind: DiffKind::Removed,
+            from_content: Some("old memory".into()),
+            to_content: None,
+        };
+        assert_eq!(d.from_content.as_deref(), Some("old memory"));
+        assert!(d.to_content.is_none());
+    }
+
+    #[test]
+    fn memory_diff_modified_has_both_sides() {
+        let id = Uuid::new_v4();
+        let d = MemoryDiff {
+            id,
+            kind: DiffKind::Modified,
+            from_content: Some("before".into()),
+            to_content: Some("after".into()),
+        };
+        assert_eq!(d.kind, DiffKind::Modified);
+        assert!(d.from_content.is_some());
+        assert!(d.to_content.is_some());
+    }
+
+    #[test]
+    fn commit_info_fields_accessible() {
+        let ci = CommitInfo {
+            hash: "h1".into(),
+            author: "Bob <b@b.com>".into(),
+            date: Utc::now(),
+            message: "initial commit".into(),
+        };
+        assert_eq!(ci.hash, "h1");
+        assert!(ci.message.contains("initial"));
     }
 
     // -----------------------------------------------------------------------

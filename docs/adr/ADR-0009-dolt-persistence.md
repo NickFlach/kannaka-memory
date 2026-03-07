@@ -123,11 +123,14 @@ CREATE TABLE metadata (
 5. **Delete atomicity** — Dolt delete attempted before cache eviction
 6. Backward compatible — bincode `persistence.rs` path unaffected
 
-### Phase 4: Advanced Features
-1. Memory branching for speculative thinking
-2. Automatic memory commits on significant changes
-3. DoltHub backup integration
-4. Memory diff and merge capabilities
+### Phase 4: Advanced Features ✅
+1. **Memory branching** — `create_branch`, `checkout`, `checkout_new_branch`, `delete_branch`, `list_branches`, `current_branch`
+2. **Automatic versioned commits** — `commit(message)` with `--author` header; returns `Ok(true/false)` to distinguish committed vs nothing-to-commit; threshold auto-commit still fires from `sync_memory_to_dolt`
+3. **DoltHub backup** — `push(remote, branch)` and `pull(remote, branch)` with `None` defaulting to `DoltConfig.remote` / `default_branch`; configured via `DOLT_REMOTE` / `DOLT_BRANCH` env vars
+4. **Memory diff** — `diff(from_ref, to_ref)` queries `dolt_diff_memories` system table; returns `Vec<MemoryDiff>` with `DiffKind::{Added, Removed, Modified}`
+5. **Merge** — `merge_branch(branch)` calls `DOLT_MERGE`, reloads cache, returns merge commit hash
+6. **Commit log** — `log(limit)` queries `dolt_log`; returns `Vec<CommitInfo>` with hash, author, date, message
+7. **Speculation helpers** — `speculate(branch)` / `collapse_speculation(branch, msg)` / `discard_speculation(branch)` for high-level what-if workflows
 
 ## Future Vision
 
