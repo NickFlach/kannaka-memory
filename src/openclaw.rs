@@ -15,7 +15,8 @@ use crate::xi_operator::compute_xi_signature;
 use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
-use crate::store::{EngineError, MemoryEngine, InMemoryStore, StoreError};
+use crate::hnsw::HnswStore;
+use crate::store::{EngineError, MemoryEngine, StoreError};
 use crate::working_memory::{WorkingMemory, SessionState, TaskStatus};
 
 // ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ impl KannakaMemorySystem {
         let engine = if bin_path.exists() {
             MemoryEngine::load_state(&bin_path, pipeline)?
         } else {
-            MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
+            MemoryEngine::new(Box::new(HnswStore::new()), pipeline)
         };
 
         Self::init_with_engine(data_dir, engine)

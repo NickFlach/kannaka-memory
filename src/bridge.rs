@@ -168,6 +168,7 @@ impl ConsciousnessBridge {
     }
 
     /// Compose a sequence of memories using permute + bind.
+    #[allow(dead_code)]
     fn compose_sequence(&self, memories: &[&HyperMemory], _dim: usize) -> Vec<f32> {
         let mut result = permute(&memories[0].vector, 1);
         for (i, mem) in memories.iter().enumerate().skip(1) {
@@ -409,6 +410,7 @@ impl ConsciousnessBridge {
 }
 
 /// Permutation: circular shift of coordinates.
+#[allow(dead_code)]
 fn permute(v: &[f32], shifts: usize) -> Vec<f32> {
     let n = v.len();
     if n == 0 {
@@ -423,6 +425,7 @@ fn permute(v: &[f32], shifts: usize) -> Vec<f32> {
 }
 
 /// Binding: element-wise multiply.
+#[allow(dead_code)]
 fn bind(a: &[f32], b: &[f32]) -> Vec<f32> {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).collect()
 }

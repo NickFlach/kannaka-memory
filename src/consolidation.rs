@@ -146,26 +146,57 @@ impl ConsolidationEngine {
     }
 
     /// Stage 2: Detect interference patterns between memory pairs.
+    ///
+    /// Uses HNSW approximate nearest neighbor search for O(n log n) instead of
+    /// brute-force O(n²). Each memory queries its K nearest neighbors, then
+    /// checks phase alignment to classify as constructive or destructive.
     fn stage_detect(&self, engine: &MemoryEngine, working_set: &[Uuid]) -> Vec<InterferencePair> {
-        let mut pairs = Vec::new();
-        for i in 0..working_set.len() {
-            for j in (i + 1)..working_set.len() {
-                let (vec_a, phase_a, layer_a) = match engine.store.get(&working_set[i]).ok().flatten() {
-                    Some(m) => (m.vector.clone(), m.phase, m.layer_depth),
-                    None => continue,
-                };
-                let (vec_b, phase_b, _layer_b) = match engine.store.get(&working_set[j]).ok().flatten() {
-                    Some(m) => (m.vector.clone(), m.phase, m.layer_depth),
-                    None => continue,
-                };
+        use std::collections::HashSet;
 
-                let sim = cosine_similarity(&vec_a, &vec_b);
-                if sim <= self.interference_threshold {
+        // Number of nearest neighbors to query per memory.
+        // Higher = more thorough but slower. 32 catches most interference pairs.
+        let k_neighbors: usize = 32.min(working_set.len().saturating_sub(1));
+        if k_neighbors == 0 {
+            return Vec::new();
+        }
+
+        let mut pairs = Vec::new();
+        let mut seen = HashSet::new();
+
+        for &id in working_set {
+            let (vec_a, phase_a) = match engine.store.get(&id).ok().flatten() {
+                Some(m) => (m.vector.clone(), m.phase),
+                None => continue,
+            };
+
+            // Query store (HNSW-backed) for approximate nearest neighbors
+            let neighbors = match engine.store.search(&vec_a, k_neighbors) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            for (neighbor_id, sim) in neighbors {
+                // Skip self and memories not in working set
+                if neighbor_id == id || sim <= self.interference_threshold {
                     continue;
                 }
 
+                // Deduplicate: canonical pair ordering
+                let pair_key = if id < neighbor_id {
+                    (id, neighbor_id)
+                } else {
+                    (neighbor_id, id)
+                };
+                if !seen.insert(pair_key) {
+                    continue;
+                }
+
+                let phase_b = match engine.store.get(&neighbor_id).ok().flatten() {
+                    Some(m) => m.phase,
+                    None => continue,
+                };
+
                 let phase_diff = (phase_a - phase_b).abs();
-                // Normalize to [0, π]
                 let phase_diff = phase_diff % (2.0 * PI);
                 let phase_diff = if phase_diff > PI { 2.0 * PI - phase_diff } else { phase_diff };
 
@@ -178,14 +209,11 @@ impl ConsolidationEngine {
                 };
 
                 pairs.push(InterferencePair {
-                    id_a: working_set[i],
-                    id_b: working_set[j],
+                    id_a: pair_key.0,
+                    id_b: pair_key.1,
                     similarity: sim,
                     kind,
                 });
-
-                // Track layers for wiring stage
-                let _ = layer_a; // used in wire stage via pair ids
             }
         }
         pairs

@@ -12,6 +12,7 @@ use crate::encoding::EncodingPipeline;
 use crate::geometry::MemoryCoordinates;
 use crate::memory::HyperMemory;
 use crate::skip_link::SkipLink;
+use crate::hnsw::HnswStore;
 use crate::store::{InMemoryStore, MemoryEngine, MemoryStore, StoreError};
 
 // ---------------------------------------------------------------------------
@@ -374,7 +375,7 @@ impl MemoryEngine {
         match bincode::deserialize::<MemorySnapshot>(&data) {
             Ok(snapshot) => {
                 if snapshot.version == CURRENT_VERSION {
-                    let mut store = InMemoryStore::new();
+                    let mut store = HnswStore::new();
                     for mem in snapshot.memories {
                         store.insert(mem).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
                     }
@@ -406,7 +407,7 @@ impl MemoryEngine {
         }
         
         // Migrate V1 memories to V2
-        let mut store = InMemoryStore::new();
+        let mut store = HnswStore::new();
         for mem_v1 in snapshot_v1.memories {
             let mem_v2: HyperMemory = mem_v1.into();
             store.insert(mem_v2).map_err(|e| PersistenceError::CorruptedFile(e.to_string()))?;
