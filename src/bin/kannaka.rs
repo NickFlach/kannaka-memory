@@ -55,8 +55,11 @@ fn usage() {
     eprintln!("  stats                     Show system statistics");
     eprintln!("  observe [--json]           Introspection report");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
+    eprintln!("  export-json               Export all memories as JSON (vectors included)");
     #[cfg(feature = "audio")]
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
+    #[cfg(feature = "glyph")]
+    eprintln!("  see <file>                Store a file as a glyph (visual) memory");
     process::exit(1);
 }
 
@@ -248,6 +251,35 @@ fn main() {
                 }
             }
         }
+        "export-json" => {
+            let all_mems = sys.engine.store.all_memories()
+                .map_err(|e| { eprintln!("Error: {}", e); process::exit(1); }).unwrap();
+            let output: Vec<serde_json::Value> = all_mems.iter().map(|m| {
+                serde_json::json!({
+                    "id": m.id.to_string(),
+                    "content": m.content,
+                    "amplitude": m.amplitude,
+                    "frequency": m.frequency,
+                    "phase": m.phase,
+                    "decay_rate": m.decay_rate,
+                    "created_at": m.created_at.to_rfc3339(),
+                    "layer_depth": m.layer_depth,
+                    "hallucinated": m.hallucinated,
+                    "parents": m.parents,
+                    "vector": m.vector,
+                    "xi_signature": m.xi_signature,
+                    "geometry": m.geometry,
+                    "connections": m.connections.iter().map(|c| {
+                        serde_json::json!({
+                            "target_id": c.target_id.to_string(),
+                            "strength": c.strength,
+                            "span": c.span
+                        })
+                    }).collect::<Vec<_>>()
+                })
+            }).collect();
+            println!("{}", serde_json::to_string(&output).unwrap());
+        }
         #[cfg(feature = "audio")]
         "hear" => {
             if args.len() < command_start + 2 {
@@ -268,6 +300,39 @@ fn main() {
                     println!("  Centroid: {:.2} kHz", features.spectral_centroid_khz);
                     if !features.feature_tags.is_empty() {
                         println!("  Tags: {}", features.feature_tags.join(", "));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        #[cfg(feature = "glyph")]
+        "see" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka see <file>");
+                process::exit(1);
+            }
+            let path = std::path::PathBuf::from(&args[command_start + 1]);
+            if !path.exists() {
+                eprintln!("File not found: {}", path.display());
+                process::exit(1);
+            }
+            match sys.store_glyph(&path) {
+                Ok((id, glyph)) => {
+                    println!("Seen: {id}");
+                    println!("  Folds: {}", glyph.fold_sequence.len());
+                    println!("  Centroid: ({}, {}, {})", glyph.sga_centroid.0, glyph.sga_centroid.1, glyph.sga_centroid.2);
+                    println!("  Fano: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
+                        glyph.fano_signature[0], glyph.fano_signature[1], glyph.fano_signature[2],
+                        glyph.fano_signature[3], glyph.fano_signature[4], glyph.fano_signature[5],
+                        glyph.fano_signature[6]);
+                    println!("  Ratio: {:.2}x", glyph.compression_ratio);
+                    let freqs = glyph.to_frequencies();
+                    if !freqs.is_empty() {
+                        let freq_strs: Vec<String> = freqs.iter().take(7).map(|f| format!("{:.1} Hz", f)).collect();
+                        println!("  Frequencies: {}", freq_strs.join(", "));
                     }
                 }
                 Err(e) => {

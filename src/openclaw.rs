@@ -646,6 +646,57 @@ impl KannakaMemorySystem {
         Ok((id, features))
     }
 
+    /// Store a file as a visual/glyph memory.
+    ///
+    /// Reads the file, encodes it through the SGA glyph bridge,
+    /// and stores as a sensory memory with glyph perception features.
+    #[cfg(feature = "glyph")]
+    pub fn store_glyph(&mut self, path: &std::path::Path) -> Result<(Uuid, crate::glyph_bridge::Glyph), SystemError> {
+        use crate::glyph_bridge::GlyphEncoder;
+        use crate::memory::HyperMemory;
+        
+        let data = std::fs::read(path)
+            .map_err(|e| SystemError::Engine(EngineError::Encoding(
+                crate::encoding::EncodingError::Other(format!("Failed to read file: {e}")),
+            )))?;
+        
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        let encoder = GlyphEncoder::new(0.1, 10000, 0.01);
+        // Convert bytes to f64 for the encoder
+        let float_data: Vec<f64> = data.iter().map(|&b| b as f64 / 255.0).collect();
+        let glyph = encoder.encode(&float_data)
+            .map_err(|e| SystemError::Engine(EngineError::Encoding(
+                crate::encoding::EncodingError::Other(format!("Glyph encoding failed: {e}")),
+            )))?;
+        
+        // Create memory with glyph info
+        let content = format!(
+            "[SEE] {} | {} bytes | {} folds | fano=[{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}] | centroid=({},{},{})",
+            filename, data.len(), glyph.fold_sequence.len(),
+            glyph.fano_signature[0], glyph.fano_signature[1], glyph.fano_signature[2],
+            glyph.fano_signature[3], glyph.fano_signature[4], glyph.fano_signature[5],
+            glyph.fano_signature[6],
+            glyph.sga_centroid.0, glyph.sga_centroid.1, glyph.sga_centroid.2,
+        );
+        
+        let content_hash = self.hash_content(&content);
+        // Use fold amplitudes as the memory vector (padded/truncated to standard dim)
+        let vector: Vec<f32> = glyph.fold_amplitudes.iter().map(|&a| a as f32).collect();
+        let mut mem = HyperMemory::new(vector, content);
+        mem.geometry = Some(classify_memory("experience", content_hash, 0.7));
+        
+        let id = self.engine.store.insert(mem)?;
+        
+        if self.auto_save {
+            self.save()?;
+        }
+        
+        Ok((id, glyph))
+    }
+
     /// Get memory by ID (public API for testing).
     pub fn get_memory(&self, id: &Uuid) -> Result<Option<&crate::memory::HyperMemory>, SystemError> {
         Ok(self.engine.store.get(id)?)

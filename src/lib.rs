@@ -27,6 +27,9 @@ pub mod geometry;
 pub mod working_memory;
 pub mod xi_operator;
 
+#[cfg(feature = "glyph")]
+pub mod glyph_bridge;
+
 // Consciousness differentiation tests integrated into existing test modules
 
 #[cfg(feature = "mcp")]
@@ -72,3 +75,9 @@ pub use xi_operator::{
 
 #[cfg(feature = "dolt")]
 pub use dolt::DoltMemoryStore;
+
+#[cfg(feature = "glyph")]
+pub use glyph_bridge::{
+    Glyph, GlyphEncoder, GlyphDecoder, GlyphError,
+    encode_memory_as_glyph, bloom_glyph, BASE_FREQ
+};

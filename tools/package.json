@@ -6,7 +6,7 @@
     "migrate": "node migrate-to-dolt.js"
   },
   "dependencies": {
-    "mysql2": "^3.6.0"
+    "mysql2": "^3.19.0"
   },
   "engines": {
     "node": ">=14.0.0"

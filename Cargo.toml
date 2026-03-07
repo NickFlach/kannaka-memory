@@ -37,6 +37,7 @@ mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
 dolt = ["mysql"]
+glyph = []
 
 [[bin]]
 name = "kannaka-mcp"
