@@ -42,8 +42,7 @@
 ✅ **metadata** table: 2 columns (key_name, value_text)  
 
 ## Known Issues
-- **Datetime format compatibility:** The Dolt-enabled kannaka binary has datetime parsing issues with the migrated data format
-- **Recommendation:** Update datetime format handling in the kannaka binary or adjust migration script to match expected format
+- ~~**Datetime format compatibility:** The Dolt-enabled kannaka binary has datetime parsing issues with the migrated data format~~ **RESOLVED (2026-03-07)** — `src/dolt.rs` now uses `NaiveDateTime::parse_from_str` + `.and_utc()` instead of `DateTime::parse_from_str` (which required `%z`). Migration script also normalised to `"YYYY-MM-DD HH:MM:SS"` output.
 
 ## Tools Created
 1. **`migrate-openclaw-to-dolt.js`** - Basic migration framework
@@ -55,8 +54,11 @@
 ## Next Steps
 1. ✅ Data successfully migrated and committed to Dolt
 2. ✅ Database versioning available via Git semantics
-3. 🔧 **TODO:** Fix datetime format compatibility for full binary integration
-4. 🚀 **READY:** Dolt backend provides versioned, queryable, branchable memory storage
+3. ✅ Datetime format compatibility fixed in `src/dolt.rs` and `tools/migrate-to-dolt.js`
+4. ✅ Phase 2 migration script: cross-platform paths, readiness polling, idempotent upserts, progress file, verification
+5. ✅ Phase 3 Rust integration: `DoltConfig`, `flush_dirty()`, `update()`, dirty-set tracking, delete atomicity
+6. 🚀 **READY:** Dolt backend provides versioned, queryable, branchable memory storage
+7. ⏳ **Phase 4:** Memory branching, DoltHub backup, memory diff/merge
 
 ## Architecture Achievement
 The migration establishes a **Git-like memory system** where:

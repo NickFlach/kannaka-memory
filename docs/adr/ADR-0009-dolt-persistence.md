@@ -1,7 +1,7 @@
 # ADR-0009: Dolt Database Persistence Backend
 
 **Date:** 2026-03-06  
-**Status:** Proposed  
+**Status:** Accepted — Phases 1–3 implemented (2026-03-07)  
 **Deciders:** Kannaka Team  
 **Technical Story:** Enhance kannaka-memory with versioned, queryable, and syncable persistence
 
@@ -107,17 +107,21 @@ CREATE TABLE metadata (
 3. Add initial metadata entries
 4. Commit schema as baseline
 
-### Phase 2: Data Migration
-1. Implement Node.js migration script (`tools/migrate-to-dolt.js`)
-2. Read existing memories via `kannaka.exe recall "*" --limit 1000`
-3. Transform and insert into Dolt database
-4. Commit as "initial import from bincode store"
+### Phase 2: Data Migration ✅
+1. `tools/migrate-to-dolt.js` rewritten — no hardcoded paths; config via env vars / CLI flags
+2. Server readiness **polling** (30 s timeout, 1 s tick) replaces fixed 2 s sleep
+3. **Idempotent upserts** (`ON DUPLICATE KEY UPDATE`) — safe to re-run on existing data
+4. **Progress file** (`migration-progress.json`) for crash-resumable large migrations
+5. Post-migration row-count **verification** before Dolt commit
+6. `datetime` stored as `"YYYY-MM-DD HH:MM:SS"` — compatible with Phase 1 fix
 
-### Phase 3: Rust Integration
-1. Add `dolt` feature flag to Cargo.toml
-2. Implement `DoltMemoryStore` with MySQL client
-3. Add configuration for Dolt connection settings
-4. Maintain backward compatibility with bincode persistence
+### Phase 3: Rust Integration ✅
+1. `dolt` feature flag in `Cargo.toml` gates `mysql` dependency
+2. `DoltMemoryStore` — hybrid in-memory cache + Dolt write-through, implements `MemoryStore`
+3. `DoltConfig` struct — all settings from env vars (`DOLT_HOST`, `DOLT_PORT`, `DOLT_DB`, `DOLT_USER`, `DOLT_PASSWORD`, `DOLT_AUTO_COMMIT`, `DOLT_COMMIT_THRESHOLD`) with `from_env()`, `try_from_env()`, `default()` constructors
+4. **Dirty-set tracking** — `get_mut()` marks IDs dirty; `flush_dirty()` / `update(&id)` sync to Dolt
+5. **Delete atomicity** — Dolt delete attempted before cache eviction
+6. Backward compatible — bincode `persistence.rs` path unaffected
 
 ### Phase 4: Advanced Features
 1. Memory branching for speculative thinking
@@ -180,11 +184,26 @@ LIMIT 10;
 
 ## Implementation Notes
 
-- **Connection management**: Use connection pooling for performance
-- **Transaction boundaries**: Wrap memory operations in transactions
-- **Error handling**: Graceful degradation if Dolt unavailable
-- **Configuration**: Environment variables for Dolt connection settings
-- **Testing**: Integration tests with temporary Dolt databases
+- **Connection management**: `mysql::Pool` for connection pooling
+- **Datetime serialization**: `parse_dolt_datetime` / `format_dolt_datetime` helpers use `NaiveDateTime + and_utc()` — avoids the `%z` requirement of `DateTime::parse_from_str`
+- **`resonance_key`**: Stored as `Vec::new()` on Dolt round-trips (full 10K-dim keys are not persisted in `skip_links` rows)
+- **Error handling**: `DoltConfig::try_from_env()` returns `None` when no Dolt vars are set, enabling graceful fallback to bincode
+- **Configuration**: All settings from env vars; see `DoltConfig` docs in `src/dolt.rs`
+
+## Test Coverage
+
+- **11 unit tests** in `src/dolt.rs` — always run, no live DB required:
+  - `DoltConfig` defaults, env-var overrides, invalid port, `auto_commit` variants
+  - `try_from_env` None / Some paths
+  - Datetime round-trip, fractional seconds, invalid input, Phase 1 regression proof
+- **9 integration tests** in `tests/dolt_integration.rs` — skip gracefully when no Dolt server is reachable:
+  - Insert / get / search / delete round-trip
+  - Dirty-set tracking → `flush_dirty` persists mutations
+  - `update(&id)` single-memory flush
+  - Delete atomicity verification
+  - `resonance_key` round-trip (must be `Vec::new()`)
+  - UTC datetime preservation across Dolt
+- Env-var tests use a `static Mutex` to prevent parallel-test races
 
 ## Links
 
