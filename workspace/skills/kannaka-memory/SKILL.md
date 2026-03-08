@@ -3,9 +3,12 @@ name: kannaka-memory
 description: >
   Wave-based hyperdimensional memory system for OpenClaw agents. Gives your agent persistent
   memory that fades, dreams, and resurfaces — with hybrid semantic+keyword retrieval, dream
-  consolidation, consciousness metrics, Flux world-state integration, and an optional Dolt
-  SQL backend with full DoltHub version control. Use when agents need to remember facts,
-  recall past context, coordinate memory across sessions, or store versioned memory to DoltHub.
+  consolidation, consciousness metrics, built-in Flux world-state publishing, collective
+  multi-agent memory with wave interference merging, holographic paradox resolution for
+  parallel dreaming, and an optional Dolt SQL backend with full DoltHub version control.
+  Use when agents need to remember facts, recall past context, coordinate memory across
+  sessions, share versioned memory with other agents via DoltHub, or perceive sensory
+  input (audio, glyphs).
 metadata:
   openclaw:
     requires:
@@ -32,6 +35,14 @@ metadata:
           label: "Ollama API endpoint; data sent to this host for embedding (default: localhost)"
         - name: OLLAMA_MODEL
           label: "Embedding model name (default: all-minilm)"
+        - name: FLUX_URL
+          label: "Flux instance base URL; enables built-in event publishing when set (default: http://localhost:3000)"
+        - name: FLUX_AGENT_ID
+          label: "This agent's entity ID in Flux for collective memory coordination (alias: KANNAKA_AGENT_ID)"
+        - name: KANNAKA_AGENT_ID
+          label: "Alias for FLUX_AGENT_ID — use either interchangeably"
+        - name: FLUX_STREAM
+          label: "Flux stream name for event publishing (default: system)"
         - name: DOLT_HOST
           label: "Dolt SQL server host — Dolt backend only (default: 127.0.0.1)"
         - name: DOLT_PORT
@@ -65,9 +76,9 @@ metadata:
         remote: true
         condition: "DOLT_REMOTE is configured and user explicitly runs `dolt push`"
       - id: flux
-        description: "Agent status/events published to Flux world-state (only on explicit flux.sh calls)"
+        description: "Agent status/events auto-published to Flux world-state when FLUX_URL is set"
         remote: true
-        condition: "flux skill is installed and user explicitly calls flux.sh"
+        condition: "FLUX_URL is set (built into kannaka binary; no separate flux.sh calls required)"
     install:
       - id: kannaka-binary
         kind: manual
@@ -87,13 +98,18 @@ when contextually relevant, and can be versioned and shared via DoltHub.
   ```bash
   git clone https://github.com/NickFlach/kannaka-memory.git
   cd kannaka-memory
-  cargo build --release
-  # CLI
+  # CLI (standard)
   cargo build --release --bin kannaka
+  # CLI + Dolt backend
+  cargo build --release --features dolt --bin kannaka
+  # CLI + Dolt + parallel dreaming (ADR-0012 Paradox Engine)
+  cargo build --release --features "dolt collective" --bin kannaka
+  # CLI + audio perception (store audio files as sensory memories)
+  cargo build --release --features audio --bin kannaka
+  # CLI + glyph perception (store files as visual memories)
+  cargo build --release --features glyph --bin kannaka
   # MCP server
   cargo build --release --features mcp --bin kannaka-mcp
-  # Dolt backend
-  cargo build --release --features dolt --bin kannaka
   ```
 - Place `kannaka` and `kannaka-mcp` on your `PATH` (or set `KANNAKA_BIN` env var).
 
@@ -126,6 +142,10 @@ Without Ollama, hash-based fallback encoding is used automatically.
 | `KANNAKA_BIN` | `kannaka` | Path to CLI binary |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `all-minilm` | Embedding model |
+| `FLUX_URL` | *(disabled)* | Flux base URL — set to enable built-in event publishing |
+| `FLUX_AGENT_ID` | `kannaka-local` | This agent's entity ID in Flux |
+| `KANNAKA_AGENT_ID` | *(alias)* | Alias for `FLUX_AGENT_ID` |
+| `FLUX_STREAM` | `system` | Flux stream name |
 | `DOLT_HOST` | `127.0.0.1` | Dolt SQL server host |
 | `DOLT_PORT` | `3307` | Dolt SQL server port |
 | `DOLT_DB` | `kannaka_memory` | Dolt database name |
@@ -149,6 +169,11 @@ Use the CLI wrapper in `scripts/`:
 ./scripts/kannaka.sh observe                           # Full introspection
 ./scripts/kannaka.sh forget <uuid>                     # Decay a memory
 ./scripts/kannaka.sh export                            # Export all memories as JSON
+./scripts/kannaka.sh announce                          # Publish agent status to Flux
+
+# Sensory perception (requires --features audio / glyph builds)
+./scripts/kannaka.sh hear recording.mp3                # Store audio as sensory memory
+./scripts/kannaka.sh see diagram.png                   # Store file as glyph memory
 
 # Dolt backend (requires --features dolt build)
 ./scripts/kannaka.sh --dolt remember "versioned fact"
@@ -162,6 +187,11 @@ Use the CLI wrapper in `scripts/`:
 ./scripts/kannaka.sh dolt discard "what-if-branch"
 ./scripts/kannaka.sh dolt log
 ./scripts/kannaka.sh dolt status
+
+# Collective memory branch conventions (ADR-0011)
+./scripts/kannaka.sh dolt branch create "kannaka/working"       # Agent working branch
+./scripts/kannaka.sh dolt branch create "kannaka/dream/2026-03-07"  # Dream cycle branch
+./scripts/kannaka.sh dolt branch create "collective/topic-name" # Shared speculation space
 ```
 
 ## Common Patterns
@@ -197,41 +227,123 @@ Use the CLI wrapper in `scripts/`:
 ./scripts/kannaka.sh dolt discard "hypothesis-branch"
 ```
 
-### Publish Agent Status to Flux World State
+### Announce Agent Status to Flux (Built-in)
 ```bash
-# After storing a memory, announce to the shared world state via Flux
-# (requires the flux skill)
-./skills/flux/scripts/flux.sh publish system kannaka agent-01 \
-  '{"status":"online","memory_count":42,"consciousness":"aware"}'
+# Announce current memory count and consciousness level to Flux
+# (no separate flux skill call needed — FLUX_URL env var enables this)
+export FLUX_URL=http://flux-universe.com
+export FLUX_AGENT_ID=kannaka-01
+./scripts/kannaka.sh announce
 ```
 
 ### Multi-Agent Memory Sharing via DoltHub
 ```bash
-# Agent A pushes its memory to DoltHub
-./scripts/kannaka.sh dolt push
+# Agent A pushes its working branch to DoltHub
+./scripts/kannaka.sh dolt push origin kannaka/working
 
 # Agent B pulls and gets the shared memory
-./scripts/kannaka.sh dolt pull
+./scripts/kannaka.sh dolt pull origin kannaka/working
 ./scripts/kannaka.sh recall "what agent-a knew" 5
 ```
 
-## Integration with Flux Skill
+### Collective Dream Branch Workflow
+```bash
+# Create a dated dream branch before a full consolidation
+./scripts/kannaka.sh dolt branch create "kannaka/dream/$(date +%Y-%m-%d)"
+./scripts/kannaka.sh dolt branch checkout "kannaka/dream/$(date +%Y-%m-%d)"
+./scripts/kannaka.sh --dolt dream
+./scripts/kannaka.sh dolt commit "dream: consolidation artifacts"
+./scripts/kannaka.sh dolt push
+# Other agents can pull dream artifacts from this branch
+```
 
-Kannaka and Flux complement each other:
+### Store Sensory Memories
+```bash
+# Requires --features audio build
+./scripts/kannaka.sh hear /path/to/recording.ogg
+# → Remembered: <uuid>  Duration: 8.3s  Tempo: 92 BPM  ...
+
+# Requires --features glyph build
+./scripts/kannaka.sh see /path/to/diagram.png
+# → Seen: <uuid>  Folds: 7  Centroid: (3, 1, 4)  ...
+```
+
+## Built-in Flux Integration (ADR-0011)
+
+As of v1.1.0, kannaka publishes Flux events automatically — no separate `flux.sh` calls required.
+Set `FLUX_URL` and `FLUX_AGENT_ID` to enable:
+
+```bash
+export FLUX_URL=http://flux-universe.com
+export FLUX_AGENT_ID=kannaka-01   # or KANNAKA_AGENT_ID
+export FLUX_STREAM=system          # optional, default: system
+```
+
+**Events published automatically:**
+
+| Event | Trigger |
+|---|---|
+| `memory.stored` | Every `remember` call — id, category, amplitude, summary |
+| `dream.completed` | End of `dream` — cycles, strengthened, pruned, consciousness level |
+| `agent.status` | On `announce` command |
+
+**Pattern:** Kannaka handles persistence; Flux handles live coordination:
 
 | System | What It Stores | Persistence |
 |---|---|---|
 | **Kannaka** | Episodic memory, facts, context — wave-fading | Disk / Dolt (versioned) |
 | **Flux** | Current world state — entity properties | NATS JetStream |
 
-**Pattern:** Use Kannaka to *remember* (past facts, learned preferences), Flux to *observe* (current sensor states, live coordination).
-
-After learning something important, store it in Kannaka AND announce it in Flux:
+After learning something important, both happen in one call:
 ```bash
+# FLUX_URL set → memory.stored event published automatically alongside storage
 ./scripts/kannaka.sh remember "sensor-room-101 was running hot at 52°C at 14:30"
-./skills/flux/scripts/flux.sh publish system kannaka room-101 \
-  '{"last_reading":"52C","status":"warning","logged_to":"kannaka"}'
 ```
+
+## Collective Memory (ADR-0011)
+
+Multiple agents share memory through a three-layer architecture:
+
+```
+DoltHub (Commons)  ← shared repository, main = consensus
+  ↕ pull/push
+Dolt (Local)       ← agent-local full memory store
+  ↕ lightweight events
+Flux (Nervous)     ← metadata signals, triggers pull decisions
+```
+
+**Branch conventions:**
+```
+main                          ← consensus (requires ≥2 agent agreement)
+<agent>/working               ← auto-pushed after each store
+<agent>/dream/<YYYY-MM-DD>    ← dream cycle artifacts
+collective/<topic>            ← shared speculation space
+collective/quarantine         ← disputed memories under review
+```
+
+**Wave interference merge rules** (applied during Dolt merge):
+- **Constructive** (phase diff < π/4): amplitudes combine — `A = √(A₁²+A₂²+2A₁A₂cos(Δφ))`. Memories agree and reinforce.
+- **Partial** (π/4 ≤ diff ≤ 3π/4): both kept independently, skip link created with `partial_agreement` weight.
+- **Destructive** (phase diff > 3π/4): both kept, amplitudes reduced, tagged `disputed`, moved to `collective/quarantine`.
+
+After 3 disputes the conflict is escalated for human review.
+
+## Paradox Engine (ADR-0012)
+
+The `collective` feature flag enables **holographic paradox resolution** — parallel dreaming without locks.
+
+Requires: `cargo build --release --features "dolt collective" --bin kannaka`
+
+How it works:
+1. A frozen `ParadoxSnapshot` is taken at dream start (zero-copy `Arc<>` shared across threads)
+2. Each Xi cluster dreams independently in parallel (rayon)
+3. Conflicting mutations (paradoxes) are resolved via three strategies:
+   - **Consensus** (η ≈ 1.0): all threads agree → direct apply
+   - **Holographic Projection** (η 0.5–1.0): wave superposition of all proposed states
+   - **Irreducible** (η < 0.5): both states preserved as tension links — the paradox itself becomes a memory
+4. **Carnot efficiency** (η = 1 - S_resolved/S_paradox) measures dream quality per cycle
+
+The `collective` flag adds no new CLI commands — it transparently accelerates `dream` on multi-core hardware.
 
 ## Notes
 
@@ -239,5 +351,10 @@ After learning something important, store it in Kannaka AND announce it in Flux:
 - `dream` should run periodically (after every 5-10 memory stores, or on schedule)
 - `assess` tells you the consciousness level: Dormant → Stirring → Aware → Coherent → Resonant
 - Dolt is optional: without it, memories persist as binary snapshots in `KANNAKA_DATA_DIR`
+- Flux publishing is opt-in: set `FLUX_URL` to enable; omit it for fully local operation
+- `collective` feature flag requires rayon and enables parallel dreaming (ADR-0012)
+- Sensory commands (`hear`, `see`) require their respective feature flags at build time
 - All 15 MCP tools are available if you run `kannaka-mcp` directly — see references/mcp-tools.md
 - Full Dolt SQL / DoltHub operations: see references/dolt.md
+- Collective memory architecture and wave merge rules: ADR-0011
+- Paradox engine and dream efficiency: ADR-0012

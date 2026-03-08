@@ -95,6 +95,28 @@ case "$COMMAND" in
         "$KANNAKA_BIN" $DOLT_FLAG export-json | format_json
         ;;
 
+    announce)
+        require_bin
+        echo "Announcing agent status to Flux..."
+        "$KANNAKA_BIN" $DOLT_FLAG announce-status
+        ;;
+
+    hear)
+        FILE="$1"
+        [[ -z "$FILE" ]] && die "Usage: kannaka.sh hear <audio-file>"
+        require_bin
+        echo "Storing audio memory from $FILE..."
+        "$KANNAKA_BIN" $DOLT_FLAG hear "$FILE"
+        ;;
+
+    see)
+        FILE="$1"
+        [[ -z "$FILE" ]] && die "Usage: kannaka.sh see <file>"
+        require_bin
+        echo "Storing glyph memory from $FILE..."
+        "$KANNAKA_BIN" $DOLT_FLAG see "$FILE"
+        ;;
+
     migrate)
         DB_PATH="$1"
         [[ -z "$DB_PATH" ]] && die "Usage: kannaka.sh migrate <path-to-kannaka.db>"
@@ -329,6 +351,13 @@ case "$COMMAND" in
         echo "  migrate <path>                Import from legacy kannaka.db"
         echo "  health                        Verify system is working"
         echo ""
+        echo "Flux / Collective:"
+        echo "  announce                      Publish agent status to Flux (FLUX_URL must be set)"
+        echo ""
+        echo "Sensory Perception (feature-gated builds):"
+        echo "  hear <file>                   Store audio file as sensory memory (--features audio)"
+        echo "  see <file>                    Store file as glyph/visual memory (--features glyph)"
+        echo ""
         echo "Dolt Version Control:"
         echo "  dolt status                   Show dirty changes"
         echo "  dolt log [N]                  Commit history"
@@ -350,6 +379,7 @@ case "$COMMAND" in
         echo "  KANNAKA_BIN=${KANNAKA_BIN}"
         echo "  KANNAKA_DATA_DIR=${KANNAKA_DATA_DIR:-.kannaka}"
         echo "  OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}"
+        echo "  FLUX_URL=${FLUX_URL:-(disabled)}  FLUX_AGENT_ID=${FLUX_AGENT_ID:-kannaka-local}"
         echo "  DOLT_HOST=${DOLT_HOST:-127.0.0.1}  DOLT_PORT=${DOLT_PORT:-3307}"
         exit 1
         ;;

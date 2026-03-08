@@ -56,6 +56,7 @@ fn usage() {
     eprintln!("  observe [--json]           Introspection report");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
     eprintln!("  export-json               Export all memories as JSON (vectors included)");
+    eprintln!("  announce-status           Publish agent status event to Flux (FLUX_URL must be set)");
     #[cfg(feature = "audio")]
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
     #[cfg(feature = "glyph")]
@@ -250,6 +251,10 @@ fn main() {
                     process::exit(1);
                 }
             }
+        }
+        "announce-status" => {
+            sys.announce_status();
+            println!("Status announced to Flux.");
         }
         "export-json" => {
             let all_mems = sys.engine.store.all_memories()

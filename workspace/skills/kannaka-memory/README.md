@@ -36,12 +36,13 @@ mkdir -p ~/workspace/skills
 git clone https://github.com/NickFlach/kannaka-memory.git
 cp -r kannaka-memory/workspace/skills/kannaka-memory ~/workspace/skills/
 
-# Build the CLI binary
+# Build the CLI binary (choose the feature set you need)
 cd kannaka-memory
-cargo build --release --bin kannaka
-
-# Optional: Dolt backend
-cargo build --release --features dolt --bin kannaka
+cargo build --release --bin kannaka                              # standard
+cargo build --release --features dolt --bin kannaka              # + Dolt backend
+cargo build --release --features "dolt collective" --bin kannaka # + parallel dreaming
+cargo build --release --features audio --bin kannaka             # + audio perception
+cargo build --release --features glyph --bin kannaka             # + glyph perception
 
 # Optional: MCP server
 cargo build --release --features mcp --bin kannaka-mcp
@@ -85,13 +86,28 @@ cd ~/workspace/skills/kannaka-memory
 | **Skip links** | φ-scored temporal connections, golden ratio span optimization |
 | **SGA geometry** | Clifford algebra + Fano plane topology over the memory graph |
 | **Adaptive rhythm** | Arousal-driven heartbeat: fast when active, slow when resting |
+| **Built-in Flux** | Auto-publishes `memory.stored` and `dream.completed` events when `FLUX_URL` is set |
+| **Collective memory** | Multi-agent wave interference merging, trust scoring, DoltHub branch conventions (ADR-0011) |
+| **Paradox engine** | Holographic resolution of parallel dream conflicts, Carnot efficiency tracking (ADR-0012) |
+| **Sensory perception** | Audio memories via cochlear pipeline (`--features audio`); glyph/visual via SGA (`--features glyph`) |
 | **Dolt backend** | Version-controlled SQL memory with branch/push/pull to DoltHub |
 | **MCP server** | 15 JSON-RPC tools for direct AI agent integration |
-| **Flux integration** | Pair with the `flux` skill for live world-state + persistent memory |
 
-## Flux Integration
+## Built-in Flux Integration (v1.1.0)
 
-Kannaka and the [flux skill](../flux/) complement each other naturally:
+Flux event publishing is now built directly into the kannaka binary. Set `FLUX_URL` to enable—no separate `flux.sh` calls needed:
+
+```bash
+export FLUX_URL=http://flux-universe.com
+export FLUX_AGENT_ID=kannaka-01   # or KANNAKA_AGENT_ID
+```
+
+Events published automatically:
+- `memory.stored` — on every `remember` call
+- `dream.completed` — after every dream cycle
+- `agent.status` — via `./scripts/kannaka.sh announce`
+
+Kannaka and the [flux skill](../flux/) still complement each other:
 
 ```
 Kannaka = what the agent *remembers* (past facts, learned preferences, episodic context)
@@ -100,12 +116,8 @@ Flux    = what the world *is right now* (live sensor states, entity properties)
 
 After learning something from a sensor reading:
 ```bash
-# Store in Kannaka for future recall
+# FLUX_URL set → memory.stored event is auto-published; no second command needed
 ./scripts/kannaka.sh remember "room-101 was running hot (52°C) at 14:30 on 2026-03-07"
-
-# Announce in Flux for live coordination
-./skills/flux/scripts/flux.sh publish system kannaka room-101 \
-  '{"temp_alert":true,"value":"52C","logged_to":"kannaka"}'
 ```
 
 Multi-agent memory sharing via DoltHub + live coordination via Flux = agents that
@@ -134,11 +146,11 @@ See [references/dolt.md](references/dolt.md) for the full DoltHub setup guide.
 
 ```
 kannaka-memory/
-├── SKILL.md              # OpenClaw skill definition
+├── SKILL.md              # OpenClaw skill definition (v1.1.0)
 ├── README.md             # This file
 ├── _meta.json            # ClawHub metadata
 ├── scripts/
-│   └── kannaka.sh        # CLI wrapper (remember, recall, dream, dolt ...)
+│   └── kannaka.sh        # CLI wrapper (remember, recall, dream, hear, see, announce, dolt ...)
 └── references/
     ├── mcp-tools.md      # All 15 MCP tools with input/output schemas
     └── dolt.md           # Dolt SQL setup + DoltHub integration guide

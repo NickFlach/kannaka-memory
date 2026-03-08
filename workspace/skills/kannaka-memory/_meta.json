@@ -1,8 +1,8 @@
 {
   "ownerId": "kn7472bg474xtcrazj1dhmh0m180ywh6",
   "slug": "kannaka-memory",
-  "version": "1.0.2",
-  "publishedAt": 1741381800000,
+  "version": "1.1.0",
+  "publishedAt": 1741636800000,
   "dependencies": ["flux"],
   "requires": {
     "bins": ["kannaka"],
@@ -15,6 +15,10 @@
       "KANNAKA_DATA_DIR",
       "OLLAMA_URL",
       "OLLAMA_MODEL",
+      "FLUX_URL",
+      "FLUX_AGENT_ID",
+      "KANNAKA_AGENT_ID",
+      "FLUX_STREAM",
       "DOLT_HOST",
       "DOLT_PORT",
       "DOLT_DB",
@@ -33,6 +37,7 @@
     "DOLT_PASSWORD is passed via MYSQL_PWD environment variable, not -p flag, to prevent process-list exposure",
     "DoltHub push only occurs on explicit `dolt push` commands — memories are local by default",
     "Ollama embeddings are sent to OLLAMA_URL; defaults to localhost:11434",
-    "Flux world-state publishing only occurs on explicit flux.sh calls"
+    "Flux event publishing is disabled by default; only enabled when FLUX_URL is explicitly set",
+    "Flux events carry only metadata (id, category, amplitude, summary) — never full vectors or memory content"
   ]
 }
