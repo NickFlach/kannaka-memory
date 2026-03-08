@@ -1,6 +1,6 @@
 # ADR-0013: Privacy-Preserving Collective Memory
 
-**Status:** Accepted — Phases 1–2 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–3 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka + Nick  
 **Depends:** ADR-0011 (Collective Memory), ADR-0002 (Hypervector Memory)
@@ -388,10 +388,18 @@ A sealed memory and an open memory look equally complex as glyphs. You can't tel
 - 24 unit tests covering commit/verify, homomorphic addition (2-way and 3-way), wave property merge, range verification
 - Implementation: `src/collective/commitments.rs`
 
-### Phase 3: Proof Generation
-- Bulletproofs integration (`bulletproofs` or `ark-crypto-primitives` crate)
-- Existence, amplitude range, category, depth proofs
-- Proof serialization and Dolt storage
+### Phase 3: Proof Generation ✅
+- Schnorr-like sigma protocols over Pedersen group, Fiat-Shamir non-interactive
+- `ExistenceProof` — proves knowledge of opening without revealing it
+- `AmplitudeRangeProof` — proves amplitude ≥ threshold
+- `CategoryProof` — proves glyph belongs to a category
+- `DepthProof` — proves memory survived N dream cycles
+- `SimilarityProof` — proves relevance to a query with score
+- `NonHallucinationProof` — proves memory came from real input
+- Forged/transferred proofs correctly rejected
+- 15 unit tests covering all proof types + security properties
+- Implementation: `src/collective/proofs.rs`
+- Production upgrade path: Bulletproofs for logarithmic-size range proofs
 
 ### Phase 4: Collective Integration
 - Dolt schema migration (glyphs, bloom_hints, group_keys tables)

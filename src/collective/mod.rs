@@ -19,6 +19,7 @@ pub mod commitments;
 pub mod flux;
 pub mod merge;
 pub mod privacy;
+pub mod proofs;
 pub mod trust;
 
 pub use artifacts::{DreamArtifact, ArtifactHallucination, ArtifactSkipLink, ArtifactCluster};
@@ -34,5 +35,15 @@ pub use privacy::{
     BloomHint, BloomedMemory, PrivacyLevel, PrivacyError, SealResult,
     seal, seal_with_commitments, bloom, bloom_with_hint, create_hint,
     suggest_difficulty,
+};
+pub use proofs::{
+    ExistenceProof, AmplitudeRangeProof, CategoryProof, DepthProof,
+    SimilarityProof, NonHallucinationProof,
+    prove_existence, verify_existence,
+    prove_amplitude_range, verify_amplitude_range,
+    prove_category, verify_category,
+    prove_depth, verify_depth,
+    prove_similarity, verify_similarity,
+    prove_non_hallucination, verify_non_hallucination,
 };
 pub use trust::AgentTrustStore;
