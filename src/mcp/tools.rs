@@ -26,11 +26,9 @@ impl McpToolSet {
         
         // Bootstrap BM25 index from existing memories
         if let Ok(all_mems) = system.all_memories() {
-            let count = all_mems.len();
             for mem in all_mems {
                 bm25_index.add_document(mem.id, &mem.content);
             }
-            let _ = count; // count used only for the loop above
         }
         
         Self {
@@ -554,18 +552,50 @@ impl McpToolSet {
             None => return ToolResult::error("Missing 'memory_id' parameter".to_string()),
         };
 
-        let _memory_id = match Uuid::parse_str(memory_id_str) {
+        let start_id = match Uuid::parse_str(memory_id_str) {
             Ok(id) => id,
             Err(_) => return ToolResult::error("Invalid memory_id format".to_string()),
         };
 
-        let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(2);
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
+        let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
-        ToolResult::success(format!(
-            "Would traverse memory graph from {} (max_depth: {}, limit: {})\nNote: Graph traversal not yet implemented",
-            memory_id_str, max_depth, limit
-        ))
+        // BFS traversal of skip-link connections
+        let mut visited: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<(Uuid, usize)> = std::collections::VecDeque::new();
+        let mut results: Vec<(Uuid, String, f32, usize)> = Vec::new(); // (id, content, strength, depth)
+
+        queue.push_back((start_id, 0));
+        visited.insert(start_id);
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth > max_depth || results.len() >= limit {
+                break;
+            }
+            if let Ok(Some(mem)) = self.system.get_memory(&current_id) {
+                if current_id != start_id {
+                    results.push((current_id, mem.content.clone(), mem.amplitude, depth));
+                }
+                if depth < max_depth {
+                    for link in &mem.connections {
+                        if !visited.contains(&link.target_id) {
+                            visited.insert(link.target_id);
+                            queue.push_back((link.target_id, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut response = String::new();
+        response.push_str(&format!("Found {} related memories (BFS depth ≤{}):\n\n", results.len(), max_depth));
+        for (i, (id, content, strength, depth)) in results.iter().enumerate() {
+            response.push_str(&format!(
+                "{}. [depth={} str={:.3}] {}\n   ID: {}\n\n",
+                i + 1, depth, strength, content, id
+            ));
+        }
+        ToolResult::success(response)
     }
 
     fn dream(&mut self, args: &Value) -> ToolResult {
