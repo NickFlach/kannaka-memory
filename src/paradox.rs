@@ -220,7 +220,11 @@ impl ParadoxResolver {
     }
     
     /// Detect all paradoxes: memories mutated by multiple trajectories.
-    pub fn detect_paradoxes(&self) -> Vec<Paradox> {
+    ///
+    /// Requires the snapshot to reconstruct absolute states from deltas.
+    /// Without absolute amplitudes, wave superposition and consensus detection
+    /// would operate on deltas (BUG 1 from QE: "stores deltas as absolute values").
+    pub fn detect_paradoxes(&self, snapshot: &ParadoxSnapshot) -> Vec<Paradox> {
         let mut memory_mutations: HashMap<Uuid, Vec<(u32, &Mutation)>> = HashMap::new();
         
         // Collect all mutations by memory ID
@@ -238,18 +242,16 @@ impl ParadoxResolver {
         // Find memories with multiple mutations (paradoxes)
         for (memory_id, mutations) in memory_mutations {
             if mutations.len() > 1 {
-                // Multiple trajectories modified this memory → paradox!
+                // Reconstruct ABSOLUTE states from snapshot + deltas
+                let snapshot_mem = match snapshot.memories.get(&memory_id) {
+                    Some(m) => m,
+                    None => continue, // memory disappeared from snapshot (shouldn't happen)
+                };
+                
                 let states: Vec<ProposedState> = mutations
                     .iter()
-                    .filter_map(|(cluster_id, mutation)| {
-                        // We need the snapshot memory to compute absolute states
-                        // For now, create placeholder states with relative info
-                        Some(ProposedState {
-                            source_cluster: *cluster_id,
-                            amplitude: mutation.amplitude_delta, // Will be corrected later
-                            phase: mutation.phase_delta,
-                            vector_delta: mutation.vector_delta.clone(),
-                        })
+                    .map(|(cluster_id, mutation)| {
+                        ProposedState::from_mutation(mutation, snapshot_mem, *cluster_id)
                     })
                     .collect();
                 
@@ -265,6 +267,8 @@ impl ParadoxResolver {
         
         paradoxes
     }
+    
+    // paradox_memory_ids moved inline to dream_parallel in consolidation.rs
     
     /// Compute information entropy (tension) of a set of proposed states.
     /// Uses Shannon entropy of amplitude distribution as a proxy for information content.
@@ -382,22 +386,49 @@ impl ParadoxResolver {
     }
     
     /// Check if vector deltas are compatible for holographic projection.
+    ///
+    /// Computes pairwise cosine similarity between the delta direction vectors.
+    /// If ANY pair has similarity below `projection_similarity_threshold`, the
+    /// states are incompatible → Irreducible (event horizon).
     fn vectors_compatible_for_projection(&self, states: &[ProposedState]) -> bool {
         if states.len() <= 1 {
             return true;
         }
         
-        // For now, simple check: at least some vectors should be similar-ish
-        // In a full implementation, would check pairwise cosine similarity of the delta directions
+        // Collect states with non-empty vector deltas
+        let non_empty: Vec<&ProposedState> = states.iter()
+            .filter(|s| !s.vector_delta.is_empty())
+            .collect();
         
-        // If all states have empty vector deltas, they're compatible
-        let non_empty_deltas: Vec<_> = states.iter().filter(|s| !s.vector_delta.is_empty()).collect();
-        if non_empty_deltas.len() <= 1 {
+        // If 0 or 1 states have vector changes, they're compatible (no vector conflict)
+        if non_empty.len() <= 1 {
             return true;
         }
         
-        // For simplicity, assume compatible if we reach here
-        // Real implementation would compute cosine similarity between delta vectors
+        // Build dense vectors from sparse deltas for cosine similarity
+        let max_dim = non_empty.iter()
+            .flat_map(|s| s.vector_delta.iter().map(|(d, _)| *d))
+            .max()
+            .unwrap_or(0) + 1;
+        
+        let dense_vecs: Vec<Vec<f32>> = non_empty.iter().map(|s| {
+            let mut v = vec![0.0f32; max_dim];
+            for &(dim, delta) in &s.vector_delta {
+                if dim < max_dim { v[dim] = delta; }
+            }
+            v
+        }).collect();
+        
+        // Pairwise cosine similarity check
+        for i in 0..dense_vecs.len() {
+            for j in (i + 1)..dense_vecs.len() {
+                let sim = crate::wave::cosine_similarity(&dense_vecs[i], &dense_vecs[j]);
+                if sim < self.projection_similarity_threshold {
+                    return false; // Vectors are too dissimilar → Irreducible
+                }
+            }
+        }
+        
         true
     }
     
@@ -452,14 +483,17 @@ impl ParadoxResolver {
             }
         }
         
-        // For this projection, return empty vector (would need snapshot context for full reconstruction)
+        // Vector reconstruction happens in apply_projection using snapshot base + weighted deltas.
+        // We don't store a full vector here — it would require the snapshot context.
         let vector = Vec::new();
         
-        // Information preservation estimate
-        let entropy_input = self.compute_information_tension(states);
-        let entropy_output = 0.0; // Simplified: projection compresses to single state
-        let information_preserved = if entropy_input > 1e-8 {
-            1.0 - entropy_output / entropy_input
+        // Information preservation: how much of the input signal survives projection.
+        // Perfect alignment (all states agree) → projected_amplitude = sum of amplitudes → η ≈ 1
+        // Perfect opposition → projected_amplitude ≈ 0 → η ≈ 0
+        // The ratio of projected amplitude to sum-of-amplitudes measures preservation.
+        let max_possible_amplitude = total_amplitude; // if all perfectly aligned
+        let information_preserved = if max_possible_amplitude > 1e-8 {
+            (projected_amplitude / max_possible_amplitude).min(1.0)
         } else {
             1.0
         };
@@ -706,6 +740,8 @@ mod tests {
         let mut resolver = ParadoxResolver::new();
         
         let memory_id = Uuid::new_v4();
+        let snapshot_mem = make_test_memory(memory_id, 0.8, 0.5);
+        let snapshot = make_snapshot(vec![snapshot_mem]);
         
         // Two trajectories mutate the same memory differently
         let traj1 = DreamTrajectory {
@@ -733,10 +769,15 @@ mod tests {
         resolver.ingest(&traj1);
         resolver.ingest(&traj2);
         
-        let paradoxes = resolver.detect_paradoxes();
+        let paradoxes = resolver.detect_paradoxes(&snapshot);
         assert_eq!(paradoxes.len(), 1);
         assert_eq!(paradoxes[0].memory_id, memory_id);
         assert_eq!(paradoxes[0].states.len(), 2);
+        // States should have ABSOLUTE values (snapshot + delta), not raw deltas
+        assert!((paradoxes[0].states[0].amplitude - 0.9).abs() < 1e-5,
+            "expected 0.8+0.1=0.9, got {}", paradoxes[0].states[0].amplitude);
+        assert!((paradoxes[0].states[1].amplitude - 0.7).abs() < 1e-5,
+            "expected 0.8-0.1=0.7, got {}", paradoxes[0].states[1].amplitude);
         assert!(paradoxes[0].information_tension > 0.0);
     }
     
@@ -762,6 +803,64 @@ mod tests {
         assert!(!resolver.states_in_consensus(&states));
     }
     
+    #[test]
+    fn irreducible_reached_with_dissimilar_vectors() {
+        let resolver = ParadoxResolver::new();
+        // Two states with opposing vector deltas → cosine similarity < threshold
+        let states = vec![
+            ProposedState {
+                source_cluster: 1,
+                amplitude: 0.8,
+                phase: 0.0,
+                vector_delta: vec![(0, 1.0), (1, 0.0), (2, 0.0)],
+            },
+            ProposedState {
+                source_cluster: 2,
+                amplitude: 0.7,
+                phase: 0.5,
+                vector_delta: vec![(0, -1.0), (1, 0.0), (2, 0.0)],
+            },
+        ];
+        // cosine_similarity of [1,0,0] vs [-1,0,0] = -1.0 < 0.6 threshold
+        assert!(!resolver.vectors_compatible_for_projection(&states),
+            "opposing vectors should be incompatible for projection");
+        
+        // Full resolution should produce Irreducible
+        let paradox = Paradox {
+            memory_id: Uuid::new_v4(),
+            states: states.clone(),
+            information_tension: 0.5,
+        };
+        match resolver.resolve_single_paradox(&paradox) {
+            Resolution::Irreducible { tension_links, .. } => {
+                assert!(!tension_links.is_empty(), "should have tension links");
+            }
+            other => panic!("expected Irreducible, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn projection_information_preserved_varies_with_alignment() {
+        let resolver = ParadoxResolver::new();
+        
+        // Perfectly aligned → high preservation
+        let aligned = vec![
+            ProposedState { source_cluster: 1, amplitude: 0.8, phase: 0.0, vector_delta: Vec::new() },
+            ProposedState { source_cluster: 2, amplitude: 0.6, phase: 0.0, vector_delta: Vec::new() },
+        ];
+        if let Resolution::Projection { information_preserved: ip_aligned, .. } = resolver.project_states(&aligned) {
+            // Opposed → lower preservation
+            let opposed = vec![
+                ProposedState { source_cluster: 1, amplitude: 0.8, phase: 0.0, vector_delta: Vec::new() },
+                ProposedState { source_cluster: 2, amplitude: 0.6, phase: PI, vector_delta: Vec::new() },
+            ];
+            if let Resolution::Projection { information_preserved: ip_opposed, .. } = resolver.project_states(&opposed) {
+                assert!(ip_aligned > ip_opposed,
+                    "aligned ({}) should preserve more info than opposed ({})", ip_aligned, ip_opposed);
+            }
+        }
+    }
+
     #[test]
     fn wave_superposition_formula_is_correct() {
         // Test the core holographic projection formula

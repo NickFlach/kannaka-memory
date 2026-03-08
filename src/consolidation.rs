@@ -1013,11 +1013,31 @@ impl ConsolidationEngine {
             resolver.ingest(trajectory);
         }
         
-        let paradoxes = resolver.detect_paradoxes();
+        let paradoxes = resolver.detect_paradoxes(&snapshot);
         let resolutions = resolver.project(paradoxes);
         
-        // Step 5: Apply resolutions to the engine
+        // Collect paradox memory IDs BEFORE apply consumes resolutions
+        let paradox_ids: std::collections::HashSet<Uuid> = resolutions.iter()
+            .map(|(p, _)| p.memory_id)
+            .collect();
+        
+        // Step 5a: Apply paradox resolutions to the engine
         let resolution_report = resolver.apply(engine, resolutions, &snapshot);
+        
+        // Step 5b: Apply NON-CONFLICTING mutations (memories only touched by one thread).
+        // Without this, the parallel dream is a no-op for most memories — only paradoxed
+        // memories would get resolved, and single-thread mutations would be silently dropped.
+        for trajectory in &trajectories {
+            for mutation in &trajectory.mutations {
+                if !paradox_ids.contains(&mutation.memory_id) {
+                    // This memory was only modified by one thread — apply directly
+                    if let Ok(Some(mem)) = engine.store.get_mut(&mutation.memory_id) {
+                        mutation.apply_to(mem);
+                        mem.touch();
+                    }
+                }
+            }
+        }
         
         // Extract consolidation reports from trajectories
         let consolidation_reports: Vec<ConsolidationReport> = trajectories
@@ -1045,7 +1065,10 @@ impl ConsolidationEngine {
             }
         }
         
-        // Create a temporary engine for this cluster
+        // Create a temporary engine with matching dimensions (384-dim input → 10K output).
+        // Uses hash encoder (not Ollama) since consolidation stages don't re-encode existing
+        // memories — they operate on stored vectors. Only hallucination would encode, and
+        // consolidate_subset skips hallucination.
         let pipeline = crate::encoding::EncodingPipeline::new(
             Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
             crate::codebook::Codebook::new(384, 10_000, 42),
