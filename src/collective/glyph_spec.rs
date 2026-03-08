@@ -99,18 +99,21 @@ pub struct SgaClass {
 }
 
 impl SgaClass {
-    /// Convert to a class index (0–95).
+    /// Convert to a class index (0–83).
+    ///
+    /// 84 classes = 4 quadrants × 3 modalities × 7 Fano lines.
+    /// Uses `hash % 7` (not `% 8`) for mathematically pure 7-point symmetry.
     pub fn to_class_index(&self) -> u8 {
-        (24 * self.quadrant + 8 * self.modality + self.context).min(95)
+        (21 * self.quadrant + 7 * self.modality + self.context).min(83)
     }
 
-    /// Create from a class index (0–95).
+    /// Create from a class index (0–83).
     pub fn from_class_index(idx: u8) -> Self {
-        let idx = idx.min(95);
+        let idx = idx.min(83);
         Self {
-            quadrant: idx / 24,
-            modality: (idx % 24) / 8,
-            context: idx % 8,
+            quadrant: idx / 21,
+            modality: (idx % 21) / 7,
+            context: idx % 7,
         }
     }
 
@@ -368,6 +371,7 @@ pub fn encode_wire(glyph: &Glyph) -> Vec<u8> {
 }
 
 /// Decode a Glyph from wire format bytes.
+#[allow(unused_assignments)]
 pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
     let mut pos = 0;
 
@@ -494,13 +498,11 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
             match bytes[pos + 1] { 0 => None, 1 => Some(true), _ => Some(false) },
             match bytes[pos + 2] { 0 => None, 1 => Some(true), _ => Some(false) },
         ];
-        pos += 3;
+        let _ = pos + 3; // advance past gates (suppress unused assign)
         Some(g)
     } else {
         None
     };
-
-    let _ = pos; // suppress unused warning
 
     Ok(Glyph {
         glyph_id,
@@ -578,6 +580,16 @@ fn read_length_prefixed_bytes(bytes: &[u8], pos: usize) -> Result<(Vec<u8>, usiz
         return Err(GlyphError::TooShort);
     }
     Ok((bytes[pos + 4..end].to_vec(), end))
+}
+
+/// Parse a single hex character to its nibble value.
+fn hex_nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => 0,
+    }
 }
 
 fn source_type_tag(source: &GlyphSource) -> &'static str {
@@ -702,11 +714,26 @@ pub fn privacy_glyph_to_glyph(pg: &PrivacyGlyph) -> Glyph {
         context: dominant_line,
     };
 
-    // Convert hex hash to bytes
+    // Decode hex hash to bytes (not ASCII copy)
     let mut glyph_id = [0u8; 32];
-    let hash_bytes = pg.glyph_hash.as_bytes();
-    let len = hash_bytes.len().min(32);
-    glyph_id[..len].copy_from_slice(&hash_bytes[..len]);
+    let hex_chars: Vec<u8> = pg.glyph_hash.bytes().collect();
+    for i in 0..16.min(hex_chars.len() / 2) {
+        let hi = hex_nibble(hex_chars[i * 2]);
+        let lo = hex_nibble(hex_chars[i * 2 + 1]);
+        glyph_id[i] = (hi << 4) | lo;
+    }
+    // Fill remaining bytes with hash of the full string for uniqueness
+    if hex_chars.len() > 32 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        pg.glyph_hash.hash(&mut h);
+        let extra = h.finish().to_le_bytes();
+        glyph_id[16..24].copy_from_slice(&extra);
+        pg.glyph_hash.len().hash(&mut h);
+        let extra2 = h.finish().to_le_bytes();
+        glyph_id[24..32].copy_from_slice(&extra2);
+    }
 
     Glyph {
         glyph_id,
@@ -1121,6 +1148,9 @@ pub fn scada_to_glyph(
 }
 
 /// Compute a deterministic glyph_id from Fano projection + agent + source tag.
+///
+/// Content-addressed: same inputs always produce the same ID.
+/// No timestamps or randomness — glyph identity is purely content-derived.
 fn compute_glyph_id_from_fano(fano: &[f64; 7], agent_id: &str, source_tag: &str) -> [u8; 32] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1133,13 +1163,18 @@ fn compute_glyph_id_from_fano(fano: &[f64; 7], agent_id: &str, source_tag: &str)
     source_tag.hash(&mut hasher);
     let h1 = hasher.finish();
 
-    Utc::now().timestamp_nanos_opt().unwrap_or(0).hash(&mut hasher);
+    // Chain additional hashes from different projections of the same content
+    fano.len().hash(&mut hasher);
     let h2 = hasher.finish();
 
-    fano.len().hash(&mut hasher);
+    agent_id.len().hash(&mut hasher);
+    source_tag.len().hash(&mut hasher);
     let h3 = hasher.finish();
 
-    agent_id.len().hash(&mut hasher);
+    // Mix fano values in reverse for additional entropy
+    for &f in fano.iter().rev() {
+        (f * 1e12).to_bits().hash(&mut hasher);
+    }
     let h4 = hasher.finish();
 
     let mut id = [0u8; 32];
@@ -1471,7 +1506,7 @@ mod tests {
 
     #[test]
     fn test_sga_class_roundtrip() {
-        for idx in 0..96u8 {
+        for idx in 0..84u8 {
             let cls = SgaClass::from_class_index(idx);
             assert_eq!(cls.to_class_index(), idx, "SGA class index roundtrip failed for {}", idx);
         }

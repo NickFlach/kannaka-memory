@@ -30,9 +30,7 @@ use crate::collective::commitments::{
 use crate::collective::privacy::{
     PrivacyGlyph, SealResult, BloomHint,
 };
-use crate::collective::proofs::{
-    prove_existence, verify_existence, ExistenceProof,
-};
+// proofs::{prove_existence, verify_existence, ExistenceProof} available when needed
 
 // ============================================================================
 // Dolt Schema (SQL DDL for glyph persistence)

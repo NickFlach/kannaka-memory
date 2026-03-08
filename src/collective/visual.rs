@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::collective::glyph_spec::{Glyph, GlyphSource};
-use crate::collective::glyph_store::{GlyphStore, StoredGlyph};
+use crate::collective::glyph_store::GlyphStore;
 use crate::collective::privacy::PrivacyGlyph;
 
 // ============================================================================

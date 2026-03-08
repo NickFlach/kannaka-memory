@@ -77,6 +77,7 @@ fn mod_add(a: u128, b: u128, p: u128) -> u128 {
 }
 
 /// Modular subtraction: (a - b) mod p
+#[allow(dead_code)]
 fn mod_sub(a: u128, b: u128, p: u128) -> u128 {
     let a = a % p;
     let b = b % p;
@@ -207,7 +208,7 @@ pub fn prove_existence(
 ///
 /// Checks: g^z_v · h^z_r == t · C^c
 pub fn verify_existence(proof: &ExistenceProof) -> bool {
-    let order = PRIME - 1;
+    let _order = PRIME - 1;
 
     // Recompute challenge
     let c = challenge_hash(&[proof.commitment, proof.t]);

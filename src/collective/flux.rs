@@ -333,8 +333,12 @@ pub fn evaluate_pull(signal: &RemoteMemorySignal, trust_score: f32, current_focu
     // Check topical relevance if we have a current focus
     if let Some(focus) = current_focus {
         let focus_lower = focus.to_lowercase();
-        let relevant = signal.tags.iter().any(|t| focus_lower.contains(&t.to_lowercase()))
-            || signal.summary.to_lowercase().contains(&focus_lower);
+        let summary_lower = signal.summary.to_lowercase();
+        let relevant = signal.tags.iter().any(|t| {
+            let tag_lower = t.to_lowercase();
+            // Match if tag contains focus term OR focus contains tag
+            tag_lower.contains(&focus_lower) || focus_lower.contains(&tag_lower)
+        }) || summary_lower.contains(&focus_lower);
         if relevant && signal.amplitude > 0.4 {
             return PullDecision::Pull;
         }

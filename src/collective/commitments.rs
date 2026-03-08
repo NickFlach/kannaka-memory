@@ -18,7 +18,6 @@
 //! for proper cryptographic security. The API is designed for this upgrade —
 //! swap `PedersenGroup` internals, keep the interface.
 
-use crate::geometry::FANO_LINES;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
