@@ -45,6 +45,7 @@ pub mod eye;
 pub mod dolt;
 
 pub mod collective;
+pub mod paradox;
 
 // Re-export key types
 pub use codebook::Codebook;
@@ -73,6 +74,10 @@ pub use xi_operator::{
     PHI, ALPHA, BETA, ETA, EMERGENCE_COEFF,
     apply_rotation, apply_golden_scaling, compute_xi_signature,
     xi_repulsive_force, xi_diversity_boost
+};
+pub use paradox::{
+    ParadoxSnapshot, DreamTrajectory, Mutation, Paradox, ProposedState,
+    Resolution, ResolutionReport, ParadoxResolver
 };
 
 #[cfg(feature = "dolt")]

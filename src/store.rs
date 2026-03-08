@@ -466,6 +466,23 @@ impl MemoryEngine {
         Ok(self.store.delete(id)?)
     }
 
+    /// ADR-0012: Create an immutable snapshot of all memories for parallel dreaming.
+    /// 
+    /// Returns an Arc-wrapped frozen state that can be shared across threads without locks.
+    /// This is the "reference frame" for the holographic paradox engine.
+    pub fn snapshot(&self) -> crate::paradox::ParadoxSnapshot {
+        let all_memories = self.store.all_memories().unwrap_or_default();
+        let memory_map: std::collections::HashMap<Uuid, crate::memory::HyperMemory> = all_memories
+            .into_iter()
+            .map(|mem| (mem.id, mem.clone()))
+            .collect();
+        
+        crate::paradox::ParadoxSnapshot {
+            memories: std::sync::Arc::new(memory_map),
+            timestamp: Utc::now(),
+        }
+    }
+
     /// Phase 8 (ADR-0011): Return Xi-based memory clusters for partitioned dreaming.
     ///
     /// Groups memories by frequency-category (experience / emotion / social / skill / knowledge),

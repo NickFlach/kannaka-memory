@@ -21,8 +21,11 @@ use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::{xi_repulsive_force, compute_xi_signature};
 use crate::skip_link::SkipLink;
-use crate::store::MemoryEngine;
+use crate::store::{MemoryEngine, MemoryStore};
 use crate::wave::{cosine_similarity, normalize};
+
+#[cfg(feature = "collective")]
+use rayon::prelude::*;
 
 /// Classification of interference between two memories.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -955,6 +958,120 @@ impl ConsolidationEngine {
 
         report.duration_ms = start.elapsed().as_millis() as u64;
         report
+    }
+
+    /// ADR-0012: Parallel dream with holographic paradox resolution.
+    ///
+    /// This is the core implementation of the holographic paradox engine:
+    /// 1. Take a snapshot (frozen reference frame)
+    /// 2. Partition memories into Xi clusters  
+    /// 3. Dream each cluster in parallel (with collective feature) or sequentially
+    /// 4. Detect and resolve paradoxes through holographic projection
+    /// 5. Apply resolutions to the engine
+    ///
+    /// Returns (individual_reports, resolution_report) where:
+    /// - individual_reports: ConsolidationReport from each cluster
+    /// - resolution_report: ResolutionReport from paradox resolution
+    pub fn dream_parallel(
+        &self,
+        engine: &mut MemoryEngine,
+    ) -> (Vec<ConsolidationReport>, crate::paradox::ResolutionReport) {
+        // Step 1: Create immutable snapshot
+        let snapshot = engine.snapshot();
+        
+        // Step 2: Get Xi clusters for partitioning
+        let clusters = engine.xi_clusters();
+        
+        if clusters.is_empty() {
+            // No clusters - return empty results
+            return (Vec::new(), crate::paradox::ResolutionReport::default());
+        }
+        
+        // Step 3: Dream each cluster (parallel if feature enabled, sequential otherwise)
+        let trajectories: Vec<crate::paradox::DreamTrajectory> = {
+            #[cfg(feature = "collective")]
+            {
+                // Parallel execution with rayon
+                clusters.par_iter().enumerate().map(|(cluster_idx, cluster)| {
+                    self.dream_cluster_on_snapshot(cluster_idx as u32, &cluster.memory_ids, &snapshot)
+                }).collect()
+            }
+            
+            #[cfg(not(feature = "collective"))]
+            {
+                // Sequential execution
+                clusters.iter().enumerate().map(|(cluster_idx, cluster)| {
+                    self.dream_cluster_on_snapshot(cluster_idx as u32, &cluster.memory_ids, &snapshot)
+                }).collect()
+            }
+        };
+        
+        // Step 4: Paradox resolution
+        let mut resolver = crate::paradox::ParadoxResolver::new();
+        
+        for trajectory in &trajectories {
+            resolver.ingest(trajectory);
+        }
+        
+        let paradoxes = resolver.detect_paradoxes();
+        let resolutions = resolver.project(paradoxes);
+        
+        // Step 5: Apply resolutions to the engine
+        let resolution_report = resolver.apply(engine, resolutions, &snapshot);
+        
+        // Extract consolidation reports from trajectories
+        let consolidation_reports: Vec<ConsolidationReport> = trajectories
+            .into_iter()
+            .map(|t| t.report)
+            .collect();
+        
+        (consolidation_reports, resolution_report)
+    }
+
+    /// Helper: Dream a single cluster on a snapshot and return the trajectory.
+    /// This runs a local copy of consolidation and tracks mutations.
+    fn dream_cluster_on_snapshot(
+        &self,
+        cluster_id: u32,
+        memory_ids: &[Uuid],
+        snapshot: &crate::paradox::ParadoxSnapshot,
+    ) -> crate::paradox::DreamTrajectory {
+        // Create a local in-memory store with just this cluster's memories
+        let mut local_store = crate::store::InMemoryStore::new();
+        
+        for &memory_id in memory_ids {
+            if let Some(memory) = snapshot.memories.get(&memory_id) {
+                let _ = local_store.insert(memory.clone());
+            }
+        }
+        
+        // Create a temporary engine for this cluster
+        let pipeline = crate::encoding::EncodingPipeline::new(
+            Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
+            crate::codebook::Codebook::new(384, 10_000, 42),
+        );
+        let mut local_engine = crate::store::MemoryEngine::new(Box::new(local_store), pipeline);
+        
+        // Run consolidation on local engine
+        let report = self.consolidate_subset(&mut local_engine, memory_ids);
+        
+        // Extract mutations by diffing final state against snapshot
+        let mutations: Vec<crate::paradox::Mutation> = memory_ids
+            .iter()
+            .filter_map(|&memory_id| {
+                if let Ok(Some(final_memory)) = local_engine.store.get(&memory_id) {
+                    crate::paradox::Mutation::from_diff(memory_id, final_memory, snapshot)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        crate::paradox::DreamTrajectory {
+            cluster_id,
+            mutations,
+            report,
+        }
     }
 }
 
