@@ -23,8 +23,7 @@ pub fn embed(text: &str, model: &str, base_url: &str) -> Result<Vec<f32>, Embedd
     match embed_ollama(text, model, base_url) {
         Ok(embedding) => Ok(embedding),
         Err(EmbeddingError::Network(_)) | Err(EmbeddingError::InvalidResponse(_)) => {
-            // Fallback to simple hash encoding
-            eprintln!("Ollama unavailable, using hash-based fallback encoding");
+            // Fallback to simple hash encoding (silent; callers receive a valid embedding)
             Ok(embed_fallback(text))
         }
         Err(e) => Err(e),

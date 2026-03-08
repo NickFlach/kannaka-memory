@@ -269,7 +269,7 @@ impl DoltMemoryStore {
         };
 
         let count = store.load_from_dolt()?;
-        eprintln!("DoltMemoryStore: loaded {} memories from database", count);
+        let _ = count;
 
         Ok(store)
     }

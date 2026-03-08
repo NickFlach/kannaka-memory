@@ -30,9 +30,7 @@ impl McpToolSet {
             for mem in all_mems {
                 bm25_index.add_document(mem.id, &mem.content);
             }
-            if count > 0 {
-                eprintln!("BM25 index bootstrapped with {} memories", count);
-            }
+            let _ = count; // count used only for the loop above
         }
         
         Self {
@@ -347,40 +345,32 @@ impl McpToolSet {
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-        // Get results from different search methods
-        let semantic_results = match self.system.recall(query, limit * 2) {
-            Ok(results) => results.into_iter().map(|r| (r.id, r.similarity)).collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
+        // Single recall gives us all data needed for semantic, recency, and display.
+        let all_recalled = match self.system.recall(query, limit * 3) {
+            Ok(results) => results,
+            Err(e) => return ToolResult::error(format!("Search failed: {}", e)),
         };
 
+        // Build per-strategy result lists from the single recall.
+        let semantic_results: Vec<(Uuid, f32)> = all_recalled.iter()
+            .map(|r| (r.id, r.similarity))
+            .collect();
         let keyword_results = self.bm25_index.search(query, limit * 2);
-
-        // For recency, get recent memories and filter by query similarity
-        let recent_results = match self.system.recall(query, limit * 3) {
-            Ok(results) => {
-                let _now = Utc::now();
-                results.into_iter()
-                    .filter(|r| r.age_hours < 24.0) // Last 24 hours
-                    .map(|r| (r.id, (1.0 / (r.age_hours + 1.0)) as f32)) // Higher score for more recent
-                    .collect::<Vec<_>>()
-            }
-            Err(_) => Vec::new(),
-        };
+        let recent_results: Vec<(Uuid, f32)> = all_recalled.iter()
+            .filter(|r| r.age_hours < 24.0)
+            .map(|r| (r.id, (1.0 / (r.age_hours + 1.0)) as f32))
+            .collect();
 
         // Fuse results using RRF
         let all_results = vec![semantic_results, keyword_results, recent_results];
         let fused = rrf_fuse(&all_results, 60.0);
 
-        // Get detailed results for top matches
+        // Re-order recalled results to match fused ranking.
         let top_ids: Vec<Uuid> = fused.iter().take(limit).map(|(id, _)| *id).collect();
-        let detailed_results = match self.system.recall(query, limit * 3) {
-            Ok(results) => {
-                results.into_iter()
-                    .filter(|r| top_ids.contains(&r.id))
-                    .collect::<Vec<_>>()
-            }
-            Err(e) => return ToolResult::error(format!("Search failed: {}", e)),
-        };
+        let mut detailed_results: Vec<_> = all_recalled.into_iter()
+            .filter(|r| top_ids.contains(&r.id))
+            .collect();
+        detailed_results.sort_by_key(|r| top_ids.iter().position(|id| *id == r.id).unwrap_or(usize::MAX));
 
         let mut response = String::new();
         response.push_str(&format!("Found {} results:\n\n", detailed_results.len()));
@@ -486,16 +476,24 @@ impl McpToolSet {
             Err(_) => return ToolResult::error("Invalid memory_id format".to_string()),
         };
 
-        let _decay_factor = args.get("decay_factor").and_then(|v| v.as_f64()).unwrap_or(0.5);
+        let decay_factor = args.get("decay_factor").and_then(|v| v.as_f64()).unwrap_or(0.5);
 
-        // Remove from BM25 index
+        // Remove from BM25 index regardless of mode
         self.bm25_index.remove_document(&memory_id);
 
-        // Delete from memory store
-        match self.system.forget(&memory_id) {
-            Ok(true) => ToolResult::success(format!("Memory {} forgotten", memory_id)),
-            Ok(false) => ToolResult::error(format!("Memory {} not found", memory_id)),
-            Err(e) => ToolResult::error(format!("Failed to forget: {}", e)),
+        if decay_factor <= 0.0 {
+            // Complete removal
+            match self.system.forget(&memory_id) {
+                Ok(true) => ToolResult::success(format!("Memory {} forgotten", memory_id)),
+                Ok(false) => ToolResult::error(format!("Memory {} not found", memory_id)),
+                Err(e) => ToolResult::error(format!("Failed to forget: {}", e)),
+            }
+        } else {
+            // Amplitude decay — reduce strength without removing
+            match self.system.boost(&memory_id, decay_factor) {
+                Ok(()) => ToolResult::success(format!("Memory {} decayed to {:.0}% amplitude", memory_id, decay_factor * 100.0)),
+                Err(e) => ToolResult::error(format!("Failed to decay memory: {}", e)),
+            }
         }
     }
 
