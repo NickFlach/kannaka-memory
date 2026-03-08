@@ -70,6 +70,7 @@ fn main() {
     }
 
     // Parse global flags
+    #[cfg(feature = "dolt")]
     let use_dolt;
     let command_start;
     
@@ -90,7 +91,6 @@ fn main() {
     
     #[cfg(not(feature = "dolt"))]
     {
-        use_dolt = false;
         command_start = 1;
     }
 

@@ -5,10 +5,8 @@
 //! Reads the old bincode format (without geometry/hallucinated/parents fields),
 //! converts to the current HyperMemory format, and writes a new snapshot.
 
-use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
