@@ -122,6 +122,21 @@ pub enum FluxEventPayload {
         consciousness: String,
         branch: String,
     },
+    /// ADR-0015 Phase 5: A universal glyph was published.
+    GlyphPublished {
+        /// Hex-encoded glyph_id
+        glyph_id: String,
+        /// Fano preview for routing/filtering without blooming
+        fano_preview: [f64; 7],
+        /// Source modality tag
+        source_type: String,
+        /// Bloom difficulty
+        bloom_difficulty: u32,
+        /// Agent that published
+        agent_id: String,
+        /// Amplitude for relevance filtering
+        amplitude: f64,
+    },
 }
 
 /// A Flux event envelope ready for publishing.
@@ -222,6 +237,15 @@ impl FluxPublisher {
                     "memory_count": memory_count,
                     "consciousness_level": consciousness,
                     "last_event": "agent.status",
+                })
+            }
+            FluxEventPayload::GlyphPublished { glyph_id, source_type, amplitude, bloom_difficulty, .. } => {
+                serde_json::json!({
+                    "last_glyph_id": glyph_id,
+                    "last_glyph_source": source_type,
+                    "last_glyph_amplitude": amplitude,
+                    "last_glyph_difficulty": bloom_difficulty,
+                    "last_event": "glyph.published",
                 })
             }
             _ => return, // not all events need property updates
@@ -393,6 +417,72 @@ impl FluxSubscriber {
 }
 
 // ---------------------------------------------------------------------------
+// ADR-0015 Phase 5: Glyph Subscription Filter
+// ---------------------------------------------------------------------------
+
+/// Filter for subscribing to glyphs by geometric neighborhood.
+///
+/// Agents can subscribe to glyphs whose Fano projection falls within
+/// a specific region of the 7-dimensional space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlyphSubscriptionFilter {
+    /// Minimum amplitude to consider
+    pub min_amplitude: f64,
+    /// Maximum bloom difficulty to accept (0 = any)
+    pub max_bloom_difficulty: u32,
+    /// Source types to include (empty = all)
+    pub source_types: Vec<String>,
+    /// Fano line thresholds: only accept glyphs where fano[i] >= threshold[i].
+    /// None means no filter on that line.
+    pub fano_min: [Option<f64>; 7],
+}
+
+impl Default for GlyphSubscriptionFilter {
+    fn default() -> Self {
+        Self {
+            min_amplitude: 0.0,
+            max_bloom_difficulty: 0,
+            source_types: Vec::new(),
+            fano_min: [None; 7],
+        }
+    }
+}
+
+impl GlyphSubscriptionFilter {
+    /// Check if a glyph event passes this filter.
+    pub fn matches(&self, event: &FluxEventPayload) -> bool {
+        match event {
+            FluxEventPayload::GlyphPublished {
+                fano_preview,
+                source_type,
+                bloom_difficulty,
+                amplitude,
+                ..
+            } => {
+                if *amplitude < self.min_amplitude {
+                    return false;
+                }
+                if self.max_bloom_difficulty > 0 && *bloom_difficulty > self.max_bloom_difficulty {
+                    return false;
+                }
+                if !self.source_types.is_empty() && !self.source_types.contains(source_type) {
+                    return false;
+                }
+                for (i, min) in self.fano_min.iter().enumerate() {
+                    if let Some(threshold) = min {
+                        if fano_preview[i] < *threshold {
+                            return false;
+                        }
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -427,6 +517,131 @@ mod tests {
             branch: "unknown/working".to_string(),
         };
         assert_eq!(evaluate_pull(&signal, 0.1, None), PullDecision::Skip);
+    }
+
+    #[test]
+    fn glyph_published_serialization() {
+        let event = FluxEventPayload::GlyphPublished {
+            glyph_id: "abc123".to_string(),
+            fano_preview: [0.14, 0.14, 0.14, 0.15, 0.14, 0.15, 0.14],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 8,
+            agent_id: "kannaka-01".to_string(),
+            amplitude: 0.85,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("glyph_published"));
+        assert!(json.contains("fano_preview"));
+
+        let decoded: FluxEventPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn glyph_filter_matches_all() {
+        let filter = GlyphSubscriptionFilter::default();
+        let event = FluxEventPayload::GlyphPublished {
+            glyph_id: "x".to_string(),
+            fano_preview: [0.14; 7],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.5,
+        };
+        assert!(filter.matches(&event));
+    }
+
+    #[test]
+    fn glyph_filter_min_amplitude() {
+        let filter = GlyphSubscriptionFilter {
+            min_amplitude: 0.7,
+            ..Default::default()
+        };
+        let low = FluxEventPayload::GlyphPublished {
+            glyph_id: "x".to_string(),
+            fano_preview: [0.14; 7],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.3,
+        };
+        let high = FluxEventPayload::GlyphPublished {
+            glyph_id: "y".to_string(),
+            fano_preview: [0.14; 7],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.9,
+        };
+        assert!(!filter.matches(&low));
+        assert!(filter.matches(&high));
+    }
+
+    #[test]
+    fn glyph_filter_source_type() {
+        let filter = GlyphSubscriptionFilter {
+            source_types: vec!["audio".to_string()],
+            ..Default::default()
+        };
+        let mem = FluxEventPayload::GlyphPublished {
+            glyph_id: "x".to_string(),
+            fano_preview: [0.14; 7],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.5,
+        };
+        let audio = FluxEventPayload::GlyphPublished {
+            glyph_id: "y".to_string(),
+            fano_preview: [0.14; 7],
+            source_type: "audio".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.5,
+        };
+        assert!(!filter.matches(&mem));
+        assert!(filter.matches(&audio));
+    }
+
+    #[test]
+    fn glyph_filter_fano_threshold() {
+        let mut filter = GlyphSubscriptionFilter::default();
+        filter.fano_min[5] = Some(0.2); // Require high connection energy (line 5)
+
+        let low_conn = FluxEventPayload::GlyphPublished {
+            glyph_id: "x".to_string(),
+            fano_preview: [0.2, 0.2, 0.2, 0.2, 0.1, 0.05, 0.05],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.5,
+        };
+        let high_conn = FluxEventPayload::GlyphPublished {
+            glyph_id: "y".to_string(),
+            fano_preview: [0.1, 0.1, 0.1, 0.1, 0.1, 0.3, 0.2],
+            source_type: "memory".to_string(),
+            bloom_difficulty: 0,
+            agent_id: "a".to_string(),
+            amplitude: 0.5,
+        };
+        assert!(!filter.matches(&low_conn));
+        assert!(filter.matches(&high_conn));
+    }
+
+    #[test]
+    fn glyph_filter_non_glyph_event() {
+        let filter = GlyphSubscriptionFilter::default();
+        let event = FluxEventPayload::MemoryStored {
+            memory_id: "m".to_string(),
+            category: "k".to_string(),
+            tags: Vec::new(),
+            amplitude: 0.5,
+            glyph_signature: None,
+            summary: "s".to_string(),
+            branch: "b".to_string(),
+            sync_version: 1,
+        };
+        assert!(!filter.matches(&event));
     }
 
     #[test]

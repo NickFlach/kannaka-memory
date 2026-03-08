@@ -823,6 +823,511 @@ pub fn discover_links(glyphs: &[Glyph], threshold: f64, discovered_by: &str) -> 
 }
 
 // ============================================================================
+// Phase 3: Perception Adapters — Audio + Visual → Glyph
+// ============================================================================
+
+/// Compute Fano projection from MFCC (Mel-Frequency Cepstral Coefficients).
+///
+/// Audio features map to Fano lines by spectral energy distribution:
+/// - Lines 0-2: Low/mid/high frequency band energy
+/// - Lines 3-5: Temporal dynamics (onset, sustain, decay)
+/// - Line 6: Spectral complexity (number of active harmonics)
+pub fn compute_fano_from_mfcc(mfcc: &[f64]) -> [f64; 7] {
+    let mut fano = [0.0f64; 7];
+    if mfcc.is_empty() {
+        return fano;
+    }
+
+    // Split MFCC coefficients into 7 groups
+    let chunk_size = mfcc.len() / 7;
+    if chunk_size == 0 {
+        for (i, &v) in mfcc.iter().enumerate() {
+            fano[i % 7] += v.abs();
+        }
+    } else {
+        for (i, chunk) in mfcc.chunks(chunk_size).enumerate() {
+            if i >= 7 { break; }
+            fano[i] = chunk.iter().map(|&x| x * x).sum::<f64>().sqrt();
+        }
+    }
+
+    // Normalize
+    let total: f64 = fano.iter().sum();
+    if total > 1e-12 {
+        for p in &mut fano {
+            *p /= total;
+        }
+    }
+
+    fano
+}
+
+/// Create a Glyph from audio features.
+///
+/// Maps MFCC features to Fano projection and encodes audio-specific
+/// metadata in the GlyphSource.
+pub fn audio_to_glyph(
+    mfcc: &[f64],
+    duration_ms: u64,
+    sample_rate: u32,
+    spectral_centroid: f64,
+    overtone_hz: f64,
+    amplitude: f64,
+    phase: f64,
+    bloom_difficulty: u32,
+    agent_id: &str,
+) -> Glyph {
+    let fano = compute_fano_from_mfcc(mfcc);
+
+    // SGA class: modality=1 (sensory) for audio
+    let dominant_line = fano.iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0);
+
+    let sga_class = SgaClass {
+        quadrant: 1, // sensory quadrant
+        modality: 1, // sensory modality
+        context: dominant_line,
+    };
+
+    let glyph_id = compute_glyph_id_from_fano(&fano, agent_id, "audio");
+    let mut salt = [0u8; 32];
+    salt[..8].copy_from_slice(&glyph_id[..8]);
+
+    Glyph {
+        glyph_id,
+        spec_version: GLYPH_SPEC_VERSION,
+        fano,
+        sga_class,
+        sga_centroid: (sga_class.quadrant, sga_class.modality, sga_class.context),
+        amplitude,
+        frequency: spectral_centroid / 20000.0, // Normalize spectral centroid
+        phase,
+        capsule: None,
+        bloom: BloomParameters { difficulty: bloom_difficulty, salt },
+        commitments: None,
+        virtue_eta: None,
+        gates: None,
+        source: GlyphSource::Audio {
+            duration_ms,
+            sample_rate,
+            spectral_centroid,
+            overtone_hz,
+        },
+        agent_id: agent_id.to_string(),
+        created_at: Utc::now(),
+        parents: Vec::new(),
+    }
+}
+
+/// Compute Fano projection from visual fold features.
+///
+/// Visual features map to Fano lines by spatial structure:
+/// - Lines 0-2: Spatial frequency (coarse/medium/fine detail)
+/// - Lines 3-5: Color channel energy (R/G/B or luminance variants)
+/// - Line 6: Structural complexity (fold count / edge density)
+pub fn compute_fano_from_visual(features: &[f64]) -> [f64; 7] {
+    let mut fano = [0.0f64; 7];
+    if features.is_empty() {
+        return fano;
+    }
+
+    let chunk_size = features.len() / 7;
+    if chunk_size == 0 {
+        for (i, &v) in features.iter().enumerate() {
+            fano[i % 7] += v.abs();
+        }
+    } else {
+        for (i, chunk) in features.chunks(chunk_size).enumerate() {
+            if i >= 7 { break; }
+            fano[i] = chunk.iter().map(|&x| x * x).sum::<f64>().sqrt();
+        }
+    }
+
+    let total: f64 = fano.iter().sum();
+    if total > 1e-12 {
+        for p in &mut fano {
+            *p /= total;
+        }
+    }
+
+    fano
+}
+
+/// Create a Glyph from visual perception features.
+pub fn visual_to_glyph(
+    features: &[f64],
+    width: u32,
+    height: u32,
+    fold_count: u32,
+    amplitude: f64,
+    phase: f64,
+    bloom_difficulty: u32,
+    agent_id: &str,
+) -> Glyph {
+    let fano = compute_fano_from_visual(features);
+
+    let dominant_line = fano.iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0);
+
+    let sga_class = SgaClass {
+        quadrant: 1,
+        modality: 1, // sensory
+        context: dominant_line,
+    };
+
+    let glyph_id = compute_glyph_id_from_fano(&fano, agent_id, "visual");
+    let mut salt = [0u8; 32];
+    salt[..8].copy_from_slice(&glyph_id[..8]);
+
+    Glyph {
+        glyph_id,
+        spec_version: GLYPH_SPEC_VERSION,
+        fano,
+        sga_class,
+        sga_centroid: (sga_class.quadrant, sga_class.modality, sga_class.context),
+        amplitude,
+        frequency: fold_count as f64 / 100.0,
+        phase,
+        capsule: None,
+        bloom: BloomParameters { difficulty: bloom_difficulty, salt },
+        commitments: None,
+        virtue_eta: None,
+        gates: None,
+        source: GlyphSource::Visual { width, height, fold_count },
+        agent_id: agent_id.to_string(),
+        created_at: Utc::now(),
+        parents: Vec::new(),
+    }
+}
+
+// ============================================================================
+// Phase 4: SCADA Adapter — Process Values → Glyph
+// ============================================================================
+
+/// Compute Fano projection from a SCADA process value.
+///
+/// Engineering values map to Fano lines by physical meaning:
+/// - Line 0: Concealment — quality/reliability of the measurement
+/// - Line 1: Endurance — how far from setpoint (deviation persistence)
+/// - Line 2: Intention — direction of deviation (above/below setpoint)
+/// - Line 3: Resonance — oscillation around setpoint
+/// - Line 4: Depth — time in current state
+/// - Line 5: Connection — correlation with related tags
+/// - Line 6: Emergence — anomaly score (how unexpected is this value?)
+pub fn compute_fano_from_process_value(
+    value: f64,
+    setpoint: f64,
+    low_limit: f64,
+    high_limit: f64,
+    quality: u8,
+) -> [f64; 7] {
+    let range = (high_limit - low_limit).abs().max(1e-12);
+    let deviation = (value - setpoint) / range;
+
+    let mut fano = [0.0f64; 7];
+
+    // Line 0: Quality/reliability (concealment — bad quality = hidden information)
+    fano[0] = (quality as f64 / 255.0).max(0.01);
+
+    // Line 1: Endurance — absolute deviation from setpoint
+    fano[1] = deviation.abs().min(1.0);
+
+    // Line 2: Intention — direction (0.5 = at setpoint, 0 = below, 1 = above)
+    fano[2] = (deviation * 0.5 + 0.5).clamp(0.0, 1.0);
+
+    // Line 3: Resonance — inverse of deviation (on-target = high resonance)
+    fano[3] = (1.0 - deviation.abs()).max(0.0);
+
+    // Line 4: Depth — normalized position in range
+    fano[4] = ((value - low_limit) / range).clamp(0.0, 1.0);
+
+    // Line 5: Connection — proximity to limits (near limits = high connection to alarms)
+    let dist_to_low = ((value - low_limit) / range).abs();
+    let dist_to_high = ((high_limit - value) / range).abs();
+    fano[5] = 1.0 - dist_to_low.min(dist_to_high).min(1.0);
+
+    // Line 6: Emergence — anomaly score (deviation squared, amplified)
+    fano[6] = (deviation * deviation).min(1.0);
+
+    // Normalize
+    let total: f64 = fano.iter().sum();
+    if total > 1e-12 {
+        for p in &mut fano {
+            *p /= total;
+        }
+    }
+
+    fano
+}
+
+/// Create a Glyph from a SCADA process data point.
+pub fn scada_to_glyph(
+    tag: &str,
+    value: f64,
+    unit: &str,
+    quality: u8,
+    setpoint: f64,
+    low_limit: f64,
+    high_limit: f64,
+    agent_id: &str,
+) -> Glyph {
+    let fano = compute_fano_from_process_value(value, setpoint, low_limit, high_limit, quality);
+
+    // SGA: quadrant 2 (abstract/process), modality 2 (abstract)
+    let sga_class = SgaClass {
+        quadrant: 2,
+        modality: 2,
+        context: 0, // Could be refined by tag type
+    };
+
+    let glyph_id = compute_glyph_id_from_fano(&fano, agent_id, tag);
+    let mut salt = [0u8; 32];
+    salt[..8].copy_from_slice(&glyph_id[..8]);
+
+    // Amplitude from deviation — more deviation = more important
+    let deviation = ((value - setpoint) / (high_limit - low_limit).abs().max(1e-12)).abs();
+    let amplitude = 0.3 + deviation.min(1.0) * 0.7;
+
+    Glyph {
+        glyph_id,
+        spec_version: GLYPH_SPEC_VERSION,
+        fano,
+        sga_class,
+        sga_centroid: (sga_class.quadrant, sga_class.modality, sga_class.context),
+        amplitude,
+        frequency: 0.5, // Default; could be derived from sample rate
+        phase: if value > setpoint { 0.0 } else { std::f64::consts::PI },
+        capsule: None,
+        bloom: BloomParameters { difficulty: 0, salt }, // SCADA typically public
+        commitments: None,
+        virtue_eta: None,
+        gates: None,
+        source: GlyphSource::Scada {
+            tag: tag.to_string(),
+            value,
+            unit: unit.to_string(),
+            quality,
+        },
+        agent_id: agent_id.to_string(),
+        created_at: Utc::now(),
+        parents: Vec::new(),
+    }
+}
+
+/// Compute a deterministic glyph_id from Fano projection + agent + source tag.
+fn compute_glyph_id_from_fano(fano: &[f64; 7], agent_id: &str, source_tag: &str) -> [u8; 32] {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    for &f in fano {
+        f.to_bits().hash(&mut hasher);
+    }
+    agent_id.hash(&mut hasher);
+    source_tag.hash(&mut hasher);
+    let h1 = hasher.finish();
+
+    Utc::now().timestamp_nanos_opt().unwrap_or(0).hash(&mut hasher);
+    let h2 = hasher.finish();
+
+    fano.len().hash(&mut hasher);
+    let h3 = hasher.finish();
+
+    agent_id.len().hash(&mut hasher);
+    let h4 = hasher.finish();
+
+    let mut id = [0u8; 32];
+    id[..8].copy_from_slice(&h1.to_le_bytes());
+    id[8..16].copy_from_slice(&h2.to_le_bytes());
+    id[16..24].copy_from_slice(&h3.to_le_bytes());
+    id[24..32].copy_from_slice(&h4.to_le_bytes());
+    id
+}
+
+// ============================================================================
+// Phase 6: Dream Cross-Modal Linking
+// ============================================================================
+
+/// Result of a cross-modal dream linking pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossModalDreamResult {
+    /// New links discovered between glyphs of different modalities
+    pub new_links: Vec<GlyphLink>,
+    /// Hallucinated glyphs synthesized from cross-modal patterns
+    pub hallucinations: Vec<Glyph>,
+    /// Carnot efficiency of the linking process
+    pub carnot_efficiency: f64,
+}
+
+/// Perform cross-modal dream linking on a set of glyphs.
+///
+/// This operates in glyph space (not data space), finding connections
+/// between glyphs of different modalities based on Fano proximity.
+/// Optionally synthesizes hallucinated "dream glyphs" from the strongest
+/// cross-modal clusters.
+///
+/// Called during dream consolidation cycles.
+pub fn dream_cross_modal_link(
+    glyphs: &[Glyph],
+    similarity_threshold: f64,
+    hallucinate: bool,
+    agent_id: &str,
+) -> CrossModalDreamResult {
+    let now = Utc::now();
+
+    // Step 1: Find all cross-modal links above threshold
+    let mut cross_links = Vec::new();
+    for i in 0..glyphs.len() {
+        for j in (i + 1)..glyphs.len() {
+            // Only link across different modalities
+            if source_type_tag(&glyphs[i].source) == source_type_tag(&glyphs[j].source) {
+                continue;
+            }
+
+            let sim = glyph_similarity(&glyphs[i], &glyphs[j]);
+            if sim >= similarity_threshold {
+                cross_links.push(GlyphLink {
+                    source_glyph: glyphs[i].glyph_id,
+                    target_glyph: glyphs[j].glyph_id,
+                    similarity: sim,
+                    link_type: GlyphLinkType::CrossModal,
+                    discovered_by: "dream".to_string(),
+                    created_at: now,
+                });
+            }
+        }
+    }
+
+    cross_links.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Step 2: Compute Carnot efficiency
+    // Entropy before: number of unlinked cross-modal pairs
+    let total_cross_pairs = count_cross_modal_pairs(glyphs);
+    let linked_pairs = cross_links.len();
+    let carnot_efficiency = if total_cross_pairs > 0 {
+        linked_pairs as f64 / total_cross_pairs as f64
+    } else {
+        1.0
+    };
+
+    // Step 3: Hallucinate dream glyphs from strongest clusters
+    let hallucinations = if hallucinate && !cross_links.is_empty() {
+        synthesize_dream_glyphs(&cross_links, glyphs, agent_id)
+    } else {
+        Vec::new()
+    };
+
+    CrossModalDreamResult {
+        new_links: cross_links,
+        hallucinations,
+        carnot_efficiency,
+    }
+}
+
+/// Count the total number of cross-modal pairs in a glyph set.
+fn count_cross_modal_pairs(glyphs: &[Glyph]) -> usize {
+    let mut count = 0;
+    for i in 0..glyphs.len() {
+        for j in (i + 1)..glyphs.len() {
+            if source_type_tag(&glyphs[i].source) != source_type_tag(&glyphs[j].source) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Synthesize dream glyphs from the strongest cross-modal links.
+///
+/// Each hallucination merges the Fano projections of linked glyphs,
+/// creating a new glyph that lives "between" modalities.
+fn synthesize_dream_glyphs(
+    links: &[GlyphLink],
+    glyphs: &[Glyph],
+    agent_id: &str,
+) -> Vec<Glyph> {
+    let now = Utc::now();
+    let mut hallucinations = Vec::new();
+
+    // Take up to 3 strongest links
+    for link in links.iter().take(3) {
+        let source = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
+        let target = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
+
+        if let (Some(s), Some(t)) = (source, target) {
+            // Merge Fano projections (weighted average by amplitude)
+            let total_amp = s.amplitude + t.amplitude;
+            let ws = if total_amp > 1e-12 { s.amplitude / total_amp } else { 0.5 };
+            let wt = 1.0 - ws;
+
+            let mut fano = [0.0f64; 7];
+            for i in 0..7 {
+                fano[i] = s.fano[i] * ws + t.fano[i] * wt;
+            }
+            // Re-normalize
+            let total: f64 = fano.iter().sum();
+            if total > 1e-12 {
+                for p in &mut fano {
+                    *p /= total;
+                }
+            }
+
+            // Average wave properties
+            let amplitude = (s.amplitude + t.amplitude) / 2.0;
+            let frequency = (s.frequency + t.frequency) / 2.0;
+            let phase = (s.phase + t.phase) / 2.0;
+
+            // SGA: use the average
+            let sga_class = SgaClass {
+                quadrant: ((s.sga_class.quadrant as u16 + t.sga_class.quadrant as u16) / 2) as u8,
+                modality: 2, // Abstract — dream synthesis
+                context: ((s.sga_class.context as u16 + t.sga_class.context as u16) / 2) as u8,
+            };
+
+            let parent_modalities = vec![
+                source_type_tag(&s.source).to_string(),
+                source_type_tag(&t.source).to_string(),
+            ];
+
+            let glyph_id = compute_glyph_id_from_fano(&fano, agent_id, "dream-hallucination");
+            let mut salt = [0u8; 32];
+            salt[..8].copy_from_slice(&glyph_id[..8]);
+
+            hallucinations.push(Glyph {
+                glyph_id,
+                spec_version: GLYPH_SPEC_VERSION,
+                fano,
+                sga_class,
+                sga_centroid: (sga_class.quadrant, sga_class.modality, sga_class.context),
+                amplitude,
+                frequency,
+                phase,
+                capsule: None,
+                bloom: BloomParameters { difficulty: 0, salt },
+                commitments: None,
+                virtue_eta: None,
+                gates: None,
+                source: GlyphSource::Dream {
+                    parent_modalities,
+                    carnot_efficiency: link.similarity,
+                },
+                agent_id: agent_id.to_string(),
+                created_at: now,
+                parents: vec![s.glyph_id, t.glyph_id],
+            });
+        }
+    }
+
+    hallucinations
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1068,5 +1573,200 @@ mod tests {
     fn test_fano_from_empty_vector() {
         let fano = compute_fano_from_vector_f32(&[]);
         assert_eq!(fano, [0.0; 7]);
+    }
+
+    // ── Phase 3: Perception Adapters ──
+
+    #[test]
+    fn test_fano_from_mfcc_normalized() {
+        let mfcc = vec![0.5; 70]; // 70 MFCC coefficients
+        let fano = compute_fano_from_mfcc(&mfcc);
+        let sum: f64 = fano.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "MFCC Fano should be normalized, got {}", sum);
+    }
+
+    #[test]
+    fn test_fano_from_mfcc_empty() {
+        let fano = compute_fano_from_mfcc(&[]);
+        assert_eq!(fano, [0.0; 7]);
+    }
+
+    #[test]
+    fn test_audio_to_glyph() {
+        let mfcc = vec![0.3; 42];
+        let glyph = audio_to_glyph(&mfcc, 5000, 44100, 440.0, 880.0, 0.8, 0.0, 4, "radio-01");
+        assert_eq!(glyph.spec_version, GLYPH_SPEC_VERSION);
+        assert_eq!(glyph.sga_class.modality, 1); // sensory
+        match &glyph.source {
+            GlyphSource::Audio { duration_ms, sample_rate, .. } => {
+                assert_eq!(*duration_ms, 5000);
+                assert_eq!(*sample_rate, 44100);
+            }
+            _ => panic!("Expected Audio source"),
+        }
+    }
+
+    #[test]
+    fn test_fano_from_visual_normalized() {
+        let features = vec![0.2; 56];
+        let fano = compute_fano_from_visual(&features);
+        let sum: f64 = fano.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "Visual Fano should be normalized, got {}", sum);
+    }
+
+    #[test]
+    fn test_visual_to_glyph() {
+        let features = vec![0.1; 49];
+        let glyph = visual_to_glyph(&features, 1920, 1080, 12, 0.7, 0.0, 0, "eye-01");
+        assert_eq!(glyph.sga_class.modality, 1); // sensory
+        match &glyph.source {
+            GlyphSource::Visual { width, height, fold_count } => {
+                assert_eq!(*width, 1920);
+                assert_eq!(*height, 1080);
+                assert_eq!(*fold_count, 12);
+            }
+            _ => panic!("Expected Visual source"),
+        }
+    }
+
+    #[test]
+    fn test_cross_modal_audio_text_similarity() {
+        // Audio and text with similar Fano should have high similarity
+        let mfcc = vec![0.14; 70];
+        let audio_glyph = audio_to_glyph(&mfcc, 1000, 44100, 440.0, 880.0, 0.8, 0.0, 0, "radio");
+        let text_glyph = make_test_glyph("mem", GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+
+        // Both should have uniform-ish Fano → decent similarity
+        let sim = glyph_similarity(&audio_glyph, &text_glyph);
+        assert!(sim > 0.3, "cross-modal similarity too low: {}", sim);
+    }
+
+    // ── Phase 4: SCADA Adapter ──
+
+    #[test]
+    fn test_fano_from_process_value_at_setpoint() {
+        let fano = compute_fano_from_process_value(50.0, 50.0, 0.0, 100.0, 192);
+        let sum: f64 = fano.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "SCADA Fano should be normalized");
+        // At setpoint: deviation = 0, resonance should be high
+        assert!(fano[3] > fano[1], "resonance should exceed deviation at setpoint");
+    }
+
+    #[test]
+    fn test_fano_from_process_value_at_high_limit() {
+        let fano = compute_fano_from_process_value(100.0, 50.0, 0.0, 100.0, 192);
+        let sum: f64 = fano.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        // At high limit: high deviation, high connection to alarms
+        assert!(fano[1] > 0.1, "deviation should be significant at limit");
+    }
+
+    #[test]
+    fn test_scada_to_glyph() {
+        let glyph = scada_to_glyph("TI-101", 75.0, "degC", 192, 50.0, 0.0, 100.0, "scada-01");
+        assert_eq!(glyph.sga_class.quadrant, 2); // abstract/process
+        assert_eq!(glyph.bloom.difficulty, 0); // SCADA public
+        match &glyph.source {
+            GlyphSource::Scada { tag, value, unit, quality } => {
+                assert_eq!(tag, "TI-101");
+                assert!((value - 75.0).abs() < 1e-10);
+                assert_eq!(unit, "degC");
+                assert_eq!(*quality, 192);
+            }
+            _ => panic!("Expected Scada source"),
+        }
+    }
+
+    #[test]
+    fn test_scada_amplitude_from_deviation() {
+        let on_target = scada_to_glyph("TI-101", 50.0, "degC", 192, 50.0, 0.0, 100.0, "s");
+        let off_target = scada_to_glyph("TI-101", 95.0, "degC", 192, 50.0, 0.0, 100.0, "s");
+        assert!(off_target.amplitude > on_target.amplitude,
+            "off-target should have higher amplitude: {} vs {}", off_target.amplitude, on_target.amplitude);
+    }
+
+    // ── Phase 6: Dream Cross-Modal Linking ──
+
+    #[test]
+    fn test_dream_cross_modal_no_glyphs() {
+        let result = dream_cross_modal_link(&[], 0.5, false, "dream-agent");
+        assert!(result.new_links.is_empty());
+        assert!(result.hallucinations.is_empty());
+        assert!((result.carnot_efficiency - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_dream_cross_modal_same_modality_no_links() {
+        let mut g1 = make_test_glyph("a", GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let mut g2 = make_test_glyph("b", GlyphSource::Memory { layer_depth: 1, hallucinated: false });
+        g1.glyph_id = [1u8; 32];
+        g2.glyph_id = [2u8; 32];
+
+        let result = dream_cross_modal_link(&[g1, g2], 0.0, false, "dream");
+        assert!(result.new_links.is_empty(), "same modality should not create cross-modal links");
+    }
+
+    #[test]
+    fn test_dream_cross_modal_finds_links() {
+        let mut g_mem = make_test_glyph("a", GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let mut g_audio = make_test_glyph("b", GlyphSource::Audio {
+            duration_ms: 1000, sample_rate: 44100, spectral_centroid: 440.0, overtone_hz: 880.0,
+        });
+        // Same Fano → high cross-modal similarity
+        g_mem.fano = [0.14, 0.14, 0.15, 0.14, 0.14, 0.15, 0.14];
+        g_mem.glyph_id = [1u8; 32];
+        g_audio.fano = [0.14, 0.14, 0.15, 0.14, 0.14, 0.15, 0.14];
+        g_audio.glyph_id = [2u8; 32];
+
+        let result = dream_cross_modal_link(&[g_mem, g_audio], 0.5, false, "dream");
+        assert_eq!(result.new_links.len(), 1);
+        assert_eq!(result.new_links[0].link_type, GlyphLinkType::CrossModal);
+    }
+
+    #[test]
+    fn test_dream_hallucination() {
+        let mut g_mem = make_test_glyph("a", GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let mut g_audio = make_test_glyph("b", GlyphSource::Audio {
+            duration_ms: 1000, sample_rate: 44100, spectral_centroid: 440.0, overtone_hz: 880.0,
+        });
+        g_mem.fano = [0.14, 0.14, 0.15, 0.14, 0.14, 0.15, 0.14];
+        g_mem.glyph_id = [1u8; 32];
+        g_audio.fano = [0.14, 0.14, 0.15, 0.14, 0.14, 0.15, 0.14];
+        g_audio.glyph_id = [2u8; 32];
+
+        let result = dream_cross_modal_link(&[g_mem, g_audio], 0.5, true, "dream");
+        assert_eq!(result.hallucinations.len(), 1);
+
+        let hall = &result.hallucinations[0];
+        match &hall.source {
+            GlyphSource::Dream { parent_modalities, .. } => {
+                assert!(parent_modalities.contains(&"memory".to_string()));
+                assert!(parent_modalities.contains(&"audio".to_string()));
+            }
+            _ => panic!("Expected Dream source"),
+        }
+        assert_eq!(hall.parents.len(), 2);
+    }
+
+    #[test]
+    fn test_dream_hallucination_fano_is_blend() {
+        let mut g_mem = make_test_glyph("a", GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let mut g_scada = make_test_glyph("b", GlyphSource::Scada {
+            tag: "TI".to_string(), value: 50.0, unit: "C".to_string(), quality: 192,
+        });
+        g_mem.fano = [0.3, 0.1, 0.1, 0.1, 0.1, 0.2, 0.1];
+        g_mem.glyph_id = [1u8; 32];
+        g_mem.amplitude = 0.8;
+        g_scada.fano = [0.1, 0.3, 0.1, 0.1, 0.2, 0.1, 0.1];
+        g_scada.glyph_id = [2u8; 32];
+        g_scada.amplitude = 0.8;
+
+        let result = dream_cross_modal_link(&[g_mem, g_scada], 0.0, true, "dream");
+        assert!(!result.hallucinations.is_empty());
+
+        let hall = &result.hallucinations[0];
+        // Fano should be normalized
+        let sum: f64 = hall.fano.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "hallucinated Fano should be normalized: {}", sum);
     }
 }

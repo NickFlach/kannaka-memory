@@ -29,7 +29,7 @@ pub mod virtue;
 pub mod visual;
 
 pub use artifacts::{DreamArtifact, ArtifactHallucination, ArtifactSkipLink, ArtifactCluster};
-pub use flux::{FluxConfig, FluxPublisher, FluxSubscriber, FluxEventPayload, evaluate_pull, PullDecision};
+pub use flux::{FluxConfig, FluxPublisher, FluxSubscriber, FluxEventPayload, GlyphSubscriptionFilter, evaluate_pull, PullDecision};
 pub use merge::{classify_merge, merge_guard, apply_constructive, apply_destructive, apply_partial, MergeKind, MergeResult, QuarantineEntry};
 pub use commitments::{
     PedersenCommitment, CommitmentOpening, GlyphCommitments, GlyphOpenings,
@@ -68,20 +68,26 @@ pub use revelation::{
     create_group, add_group_member, revoke_group_member, group_effective_difficulty,
 };
 pub use visual::{
-    GlyphVisual, GlyphCluster,
+    GlyphVisual, GlyphCluster, UniversalGlyphVisual,
     fano_to_visual, render_svg, render_collective_svg,
     visualize_store, cluster_visuals,
+    glyph_to_visual, render_constellation_svg, cluster_by_source,
 };
 pub use glyph_spec::{
     Glyph, GlyphSource, SgaClass, GlyphLink, GlyphLinkType, GlyphError,
     GLYPH_MAGIC, GLYPH_SPEC_VERSION, UNIVERSAL_GLYPH_SCHEMA,
     glyph_similarity, encode_wire, decode_wire,
     memory_to_glyph, privacy_glyph_to_glyph, discover_links,
+    compute_fano_from_mfcc, compute_fano_from_visual, compute_fano_from_process_value,
+    audio_to_glyph, visual_to_glyph, scada_to_glyph,
+    CrossModalDreamResult, dream_cross_modal_link,
 };
 pub use virtue::{
     VirtueGate, GateResult, VirtueEvaluation, VirtueOutcome, VirtueDecision,
     VirtueConstraint, ConstraintSet, Strictness, ConstraintViolation,
     ActionContext, GateInputs, VirtueEngine, VirtueOracle,
+    VirtueSnapshot, MoralInventory,
     compute_virtue_efficiency, evaluate_three_gates,
     check_constraints, default_five_refusals, store_virtue_memory,
+    moral_inventory, decision_to_snapshot,
 };

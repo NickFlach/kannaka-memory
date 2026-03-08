@@ -16,6 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::collective::glyph_spec::{Glyph, GlyphSource};
 use crate::collective::glyph_store::{GlyphStore, StoredGlyph};
 use crate::collective::privacy::PrivacyGlyph;
 
@@ -328,6 +329,185 @@ fn euclidean_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 }
 
 // ============================================================================
+// ADR-0015 Phase 7: Universal Glyph Visual Language
+// ============================================================================
+
+/// Visual coordinates derived from a universal Glyph's Fano projection.
+///
+/// Extends the PrivacyGlyph visual with source-type color tinting
+/// and SGA-aware positioning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniversalGlyphVisual {
+    /// Hex glyph_id
+    pub glyph_id: String,
+    /// Triangle vertices
+    pub vertices: [(f64, f64); 3],
+    /// Base RGB color from Fano
+    pub color: (f64, f64, f64),
+    /// Color tint from source modality
+    pub source_tint: (f64, f64, f64),
+    /// Final blended color
+    pub blended_color: (f64, f64, f64),
+    /// Inner pattern density
+    pub density: f64,
+    /// Centroid position
+    pub centroid: (f64, f64),
+    /// Visual size (proportional to amplitude)
+    pub size: f64,
+    /// Source type label
+    pub source_type: String,
+    /// SGA class index (0-95)
+    pub sga_class_index: u8,
+}
+
+/// Source type → tint color mapping.
+///
+/// Each modality gets a distinct color accent so constellation
+/// visualizations show modality distribution at a glance.
+fn source_tint(source: &GlyphSource) -> (f64, f64, f64) {
+    match source {
+        GlyphSource::Memory { .. }     => (0.3, 0.5, 0.9),  // Blue — thought
+        GlyphSource::Audio { .. }      => (0.9, 0.5, 0.2),  // Orange — sound
+        GlyphSource::Visual { .. }     => (0.2, 0.9, 0.4),  // Green — sight
+        GlyphSource::Scada { .. }      => (0.8, 0.2, 0.2),  // Red — industrial
+        GlyphSource::Financial { .. }  => (0.9, 0.9, 0.2),  // Gold — money
+        GlyphSource::Prediction { .. } => (0.6, 0.2, 0.8),  // Purple — foresight
+        GlyphSource::Flux { .. }       => (0.2, 0.8, 0.8),  // Cyan — network
+        GlyphSource::Dream { .. }      => (0.7, 0.3, 0.7),  // Magenta — dream
+        GlyphSource::Other { .. }      => (0.5, 0.5, 0.5),  // Gray — unknown
+    }
+}
+
+/// Source type label.
+fn source_label(source: &GlyphSource) -> &'static str {
+    match source {
+        GlyphSource::Memory { .. }     => "memory",
+        GlyphSource::Audio { .. }      => "audio",
+        GlyphSource::Visual { .. }     => "visual",
+        GlyphSource::Scada { .. }      => "scada",
+        GlyphSource::Financial { .. }  => "financial",
+        GlyphSource::Prediction { .. } => "prediction",
+        GlyphSource::Flux { .. }       => "flux",
+        GlyphSource::Dream { .. }      => "dream",
+        GlyphSource::Other { .. }      => "other",
+    }
+}
+
+/// Convert a universal Glyph to visual coordinates.
+///
+/// Like `fano_to_visual` for PrivacyGlyph, but adds source-type
+/// color tinting and SGA positioning.
+pub fn glyph_to_visual(glyph: &Glyph) -> UniversalGlyphVisual {
+    let fano = &glyph.fano;
+
+    // Base vertices from Fano[0..3]
+    let base_vertices = [
+        (0.0, 1.0),
+        (-0.866025, -0.5),
+        (0.866025, -0.5),
+    ];
+    let vertices = [
+        distort_vertex(base_vertices[0], fano[0], 0),
+        distort_vertex(base_vertices[1], fano[1], 1),
+        distort_vertex(base_vertices[2], fano[2], 2),
+    ];
+
+    // Base color from Fano[3..6]
+    let base_color = (
+        normalize_fano(fano[3]),
+        normalize_fano(fano[4]),
+        normalize_fano(fano[5]),
+    );
+
+    // Source tint
+    let tint = source_tint(&glyph.source);
+
+    // Blend: 60% Fano color + 40% source tint
+    let blended_color = (
+        (base_color.0 * 0.6 + tint.0 * 0.4).clamp(0.0, 1.0),
+        (base_color.1 * 0.6 + tint.1 * 0.4).clamp(0.0, 1.0),
+        (base_color.2 * 0.6 + tint.2 * 0.4).clamp(0.0, 1.0),
+    );
+
+    let density = normalize_fano(fano[6]);
+
+    let centroid = (
+        (vertices[0].0 + vertices[1].0 + vertices[2].0) / 3.0,
+        (vertices[0].1 + vertices[1].1 + vertices[2].1) / 3.0,
+    );
+
+    let size = glyph.amplitude.abs().min(2.0) / 2.0;
+
+    let glyph_id_hex = glyph.glyph_id.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    UniversalGlyphVisual {
+        glyph_id: glyph_id_hex,
+        vertices,
+        color: base_color,
+        source_tint: tint,
+        blended_color,
+        density,
+        centroid,
+        size,
+        source_type: source_label(&glyph.source).to_string(),
+        sga_class_index: glyph.sga_class.to_class_index(),
+    }
+}
+
+/// Render a constellation SVG showing all universal glyphs.
+///
+/// Glyphs are positioned by centroid, colored by blended color,
+/// and sized by amplitude. Source type is shown via tint.
+pub fn render_constellation_svg(visuals: &[UniversalGlyphVisual], canvas_size: f64) -> String {
+    let half = canvas_size / 2.0;
+    let scale = canvas_size * 0.3;
+
+    let mut elements = String::new();
+
+    for visual in visuals {
+        let cx = half + visual.centroid.0 * scale;
+        let cy = half - visual.centroid.1 * scale;
+        let r = 5.0 + visual.size * 20.0;
+        let (rv, gv, bv) = visual.blended_color;
+        let opacity = 0.3 + visual.density * 0.5;
+
+        elements.push_str(&format!(
+            r#"  <circle cx="{cx:.1}" cy="{cy:.1}" r="{r:.1}" fill="rgb({rv},{gv},{bv})" fill-opacity="{op:.2}" stroke="none"/>
+"#,
+            cx = cx, cy = cy, r = r,
+            rv = (rv * 255.0) as u8,
+            gv = (gv * 255.0) as u8,
+            bv = (bv * 255.0) as u8,
+            op = opacity,
+        ));
+    }
+
+    let bg_color = "#080810";
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{w}" viewBox="0 0 {w} {w}">
+  <rect width="{w}" height="{w}" fill="{bg}"/>
+{elements}</svg>"#,
+        w = canvas_size,
+        bg = bg_color,
+        elements = elements,
+    )
+}
+
+/// Cluster universal glyph visuals by source type.
+pub fn cluster_by_source(visuals: &[UniversalGlyphVisual]) -> Vec<(String, Vec<&UniversalGlyphVisual>)> {
+    let mut map: std::collections::HashMap<String, Vec<&UniversalGlyphVisual>> =
+        std::collections::HashMap::new();
+    for v in visuals {
+        map.entry(v.source_type.clone()).or_default().push(v);
+    }
+    let mut result: Vec<_> = map.into_iter().collect();
+    result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    result
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -479,6 +659,95 @@ mod tests {
         let mut glyph = seal_with_commitments(&mem, 0, "alice").glyph;
         glyph.fano_projection = None;
         assert!(fano_to_visual(&glyph).is_none());
+    }
+
+    // ── Phase 7: Universal Glyph Visual Language ──
+
+    fn make_universal_glyph(source: GlyphSource) -> Glyph {
+        use crate::collective::privacy::BloomParameters;
+        Glyph {
+            glyph_id: [0u8; 32],
+            spec_version: 1,
+            fano: [0.14, 0.14, 0.14, 0.14, 0.15, 0.15, 0.14],
+            sga_class: crate::collective::glyph_spec::SgaClass { quadrant: 0, modality: 0, context: 0 },
+            sga_centroid: (0, 0, 0),
+            amplitude: 0.8,
+            frequency: 0.5,
+            phase: 0.0,
+            capsule: None,
+            bloom: BloomParameters { difficulty: 0, salt: [0; 32] },
+            commitments: None,
+            virtue_eta: None,
+            gates: None,
+            source,
+            agent_id: "test".to_string(),
+            created_at: chrono::Utc::now(),
+            parents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_glyph_to_visual_memory() {
+        let glyph = make_universal_glyph(GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let visual = glyph_to_visual(&glyph);
+        assert_eq!(visual.source_type, "memory");
+        // Memory tint is blue-ish
+        assert!(visual.source_tint.2 > visual.source_tint.0, "memory tint should be blue");
+        assert_eq!(visual.vertices.len(), 3);
+        assert!(visual.blended_color.0 >= 0.0 && visual.blended_color.0 <= 1.0);
+    }
+
+    #[test]
+    fn test_glyph_to_visual_audio() {
+        let glyph = make_universal_glyph(GlyphSource::Audio {
+            duration_ms: 1000, sample_rate: 44100, spectral_centroid: 440.0, overtone_hz: 880.0,
+        });
+        let visual = glyph_to_visual(&glyph);
+        assert_eq!(visual.source_type, "audio");
+        // Audio tint is orange-ish
+        assert!(visual.source_tint.0 > visual.source_tint.2, "audio tint should be orange");
+    }
+
+    #[test]
+    fn test_glyph_to_visual_scada() {
+        let glyph = make_universal_glyph(GlyphSource::Scada {
+            tag: "TI-101".to_string(), value: 75.0, unit: "degC".to_string(), quality: 192,
+        });
+        let visual = glyph_to_visual(&glyph);
+        assert_eq!(visual.source_type, "scada");
+        // SCADA tint is red
+        assert!(visual.source_tint.0 > visual.source_tint.1, "scada tint should be red");
+    }
+
+    #[test]
+    fn test_render_constellation_svg() {
+        let g1 = make_universal_glyph(GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let g2 = make_universal_glyph(GlyphSource::Audio {
+            duration_ms: 1000, sample_rate: 44100, spectral_centroid: 440.0, overtone_hz: 880.0,
+        });
+        let visuals = vec![glyph_to_visual(&g1), glyph_to_visual(&g2)];
+        let svg = render_constellation_svg(&visuals, 800.0);
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("</svg>"));
+        assert!(svg.contains("<circle"));
+        assert!(svg.contains("#080810")); // Dark background
+    }
+
+    #[test]
+    fn test_cluster_by_source() {
+        let g1 = make_universal_glyph(GlyphSource::Memory { layer_depth: 0, hallucinated: false });
+        let g2 = make_universal_glyph(GlyphSource::Memory { layer_depth: 1, hallucinated: false });
+        let g3 = make_universal_glyph(GlyphSource::Audio {
+            duration_ms: 1000, sample_rate: 44100, spectral_centroid: 440.0, overtone_hz: 880.0,
+        });
+        let visuals = vec![glyph_to_visual(&g1), glyph_to_visual(&g2), glyph_to_visual(&g3)];
+        let clusters = cluster_by_source(&visuals);
+        assert_eq!(clusters.len(), 2);
+        // Memory cluster should be first (more members)
+        assert_eq!(clusters[0].0, "memory");
+        assert_eq!(clusters[0].1.len(), 2);
+        assert_eq!(clusters[1].0, "audio");
+        assert_eq!(clusters[1].1.len(), 1);
     }
 
     #[test]

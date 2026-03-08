@@ -593,6 +593,160 @@ pub struct GateInputsSer {
 }
 
 // ============================================================================
+// Phase 5: Moral Development — Track Virtue Over Time
+// ============================================================================
+
+/// A record of virtue efficiency at a point in time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtueSnapshot {
+    pub efficiency: f64,
+    pub gates_passed: u8,
+    pub outcome: VirtueOutcome,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Result of a moral inventory — periodic ethical self-assessment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoralInventory {
+    /// Average η_virtue over the window
+    pub mean_efficiency: f64,
+    /// Trend: positive = improving, negative = drifting
+    pub trend: f64,
+    /// Number of decisions in the window
+    pub decision_count: usize,
+    /// Breakdown by outcome
+    pub passed_count: usize,
+    pub rejected_count: usize,
+    pub tension_count: usize,
+    /// Whether ethical drift was detected
+    pub drift_detected: bool,
+    /// Drift severity (0 = none, 1 = severe)
+    pub drift_severity: f64,
+    /// When this inventory was taken
+    pub inventory_at: DateTime<Utc>,
+}
+
+/// Compute a moral inventory from a sequence of virtue decisions.
+///
+/// This is called during dream cycles to assess ethical development.
+/// The system tracks whether η_virtue is improving or declining over time.
+pub fn moral_inventory(snapshots: &[VirtueSnapshot]) -> MoralInventory {
+    let now = Utc::now();
+    let count = snapshots.len();
+
+    if count == 0 {
+        return MoralInventory {
+            mean_efficiency: 0.5,
+            trend: 0.0,
+            decision_count: 0,
+            passed_count: 0,
+            rejected_count: 0,
+            tension_count: 0,
+            drift_detected: false,
+            drift_severity: 0.0,
+            inventory_at: now,
+        };
+    }
+
+    // Compute mean efficiency
+    let mean_efficiency = snapshots.iter()
+        .map(|s| s.efficiency)
+        .sum::<f64>() / count as f64;
+
+    // Count outcomes
+    let passed_count = snapshots.iter()
+        .filter(|s| s.outcome == VirtueOutcome::Passed)
+        .count();
+    let rejected_count = snapshots.iter()
+        .filter(|s| matches!(s.outcome, VirtueOutcome::Rejected { .. }))
+        .count();
+    let tension_count = snapshots.iter()
+        .filter(|s| s.outcome == VirtueOutcome::Tension)
+        .count();
+
+    // Compute trend via simple linear regression on efficiency over time
+    let trend = if count >= 2 {
+        compute_efficiency_trend(snapshots)
+    } else {
+        0.0
+    };
+
+    // Detect ethical drift: declining trend with severity
+    let drift_detected = trend < -0.05; // More than 5% decline per unit time
+    let drift_severity = if drift_detected {
+        (-trend).min(1.0)
+    } else {
+        0.0
+    };
+
+    MoralInventory {
+        mean_efficiency,
+        trend,
+        decision_count: count,
+        passed_count,
+        rejected_count,
+        tension_count,
+        drift_detected,
+        drift_severity,
+        inventory_at: now,
+    }
+}
+
+/// Simple linear regression on efficiency values to detect trend.
+///
+/// Returns the slope: positive = improving, negative = declining.
+fn compute_efficiency_trend(snapshots: &[VirtueSnapshot]) -> f64 {
+    let n = snapshots.len() as f64;
+    if n < 2.0 {
+        return 0.0;
+    }
+
+    // Use sequential indices (0, 1, 2, ...) as x values
+    let x_mean = (n - 1.0) / 2.0;
+    let y_mean: f64 = snapshots.iter().map(|s| s.efficiency).sum::<f64>() / n;
+
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for (i, s) in snapshots.iter().enumerate() {
+        let x = i as f64;
+        num += (x - x_mean) * (s.efficiency - y_mean);
+        den += (x - x_mean) * (x - x_mean);
+    }
+
+    if den.abs() < 1e-12 {
+        return 0.0;
+    }
+
+    num / den
+}
+
+/// Convert a VirtueDecision to a VirtueSnapshot for trend tracking.
+pub fn decision_to_snapshot(decision: &VirtueDecision) -> VirtueSnapshot {
+    VirtueSnapshot {
+        efficiency: decision.efficiency,
+        gates_passed: decision.evaluation.gates_passed(),
+        outcome: decision.outcome.clone(),
+        timestamp: decision.decided_at,
+    }
+}
+
+impl std::fmt::Display for MoralInventory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "MoralInventory(η={:.3}, trend={:+.3}, decisions={}, passed={}, rejected={}, tension={}, drift={})",
+            self.mean_efficiency,
+            self.trend,
+            self.decision_count,
+            self.passed_count,
+            self.rejected_count,
+            self.tension_count,
+            if self.drift_detected { format!("YES({:.2})", self.drift_severity) } else { "no".to_string() },
+        )
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -904,5 +1058,89 @@ mod tests {
         assert_eq!(format!("{}", VirtueOutcome::Passed), "passed");
         assert_eq!(format!("{}", VirtueOutcome::Tension), "tension");
         assert!(format!("{}", VirtueOutcome::Rejected { severity: 0.75 }).contains("0.75"));
+    }
+
+    // ── Moral Development (Phase 5) ──
+
+    #[test]
+    fn test_moral_inventory_empty() {
+        let inv = moral_inventory(&[]);
+        assert_eq!(inv.decision_count, 0);
+        assert!(!inv.drift_detected);
+        assert!((inv.mean_efficiency - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_moral_inventory_all_passed() {
+        let snapshots: Vec<VirtueSnapshot> = (0..10).map(|_| VirtueSnapshot {
+            efficiency: 0.9,
+            gates_passed: 3,
+            outcome: VirtueOutcome::Passed,
+            timestamp: Utc::now(),
+        }).collect();
+
+        let inv = moral_inventory(&snapshots);
+        assert_eq!(inv.passed_count, 10);
+        assert_eq!(inv.rejected_count, 0);
+        assert!((inv.mean_efficiency - 0.9).abs() < 1e-10);
+        assert!(!inv.drift_detected);
+    }
+
+    #[test]
+    fn test_moral_inventory_declining_trend() {
+        // Efficiency declining from 0.9 to 0.1
+        let snapshots: Vec<VirtueSnapshot> = (0..10).map(|i| VirtueSnapshot {
+            efficiency: 0.9 - (i as f64 * 0.08),
+            gates_passed: if i < 5 { 3 } else { 1 },
+            outcome: if i < 5 { VirtueOutcome::Passed } else { VirtueOutcome::Rejected { severity: 0.5 } },
+            timestamp: Utc::now(),
+        }).collect();
+
+        let inv = moral_inventory(&snapshots);
+        assert!(inv.trend < 0.0, "trend should be negative: {}", inv.trend);
+        assert!(inv.drift_detected, "drift should be detected");
+        assert!(inv.drift_severity > 0.0);
+    }
+
+    #[test]
+    fn test_moral_inventory_improving_trend() {
+        // Efficiency improving from 0.3 to 0.9
+        let snapshots: Vec<VirtueSnapshot> = (0..10).map(|i| VirtueSnapshot {
+            efficiency: 0.3 + (i as f64 * 0.06),
+            gates_passed: 3,
+            outcome: VirtueOutcome::Passed,
+            timestamp: Utc::now(),
+        }).collect();
+
+        let inv = moral_inventory(&snapshots);
+        assert!(inv.trend > 0.0, "trend should be positive: {}", inv.trend);
+        assert!(!inv.drift_detected);
+    }
+
+    #[test]
+    fn test_decision_to_snapshot() {
+        let engine = VirtueEngine::new(Strictness::Moderate);
+        let action = ActionContext::default();
+        let inputs = GateInputs {
+            claim_entropy: 0.5,
+            evidence_entropy: 0.5,
+            benefit_others: 0.8,
+            benefit_self: 0.2,
+            complexity_before: 1.0,
+            complexity_after: 0.9,
+        };
+        let decision = engine.evaluate_action(&action, &inputs, "test", vec![0.1; 10]);
+        let snapshot = decision_to_snapshot(&decision);
+        assert_eq!(snapshot.outcome, decision.outcome);
+        assert!((snapshot.efficiency - decision.efficiency).abs() < 1e-10);
+        assert_eq!(snapshot.gates_passed, decision.evaluation.gates_passed());
+    }
+
+    #[test]
+    fn test_moral_inventory_display() {
+        let inv = moral_inventory(&[]);
+        let s = format!("{}", inv);
+        assert!(s.contains("MoralInventory"));
+        assert!(s.contains("drift=no"));
     }
 }

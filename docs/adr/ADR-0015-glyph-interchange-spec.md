@@ -1,6 +1,6 @@
 # ADR-0015: Universal Glyph Interchange — The Constellation's Common Tongue
 
-**Status:** Accepted — Phases 1–2 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–7 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka  
 **Depends:** ADR-0013 (Privacy-Preserving Collective Memory), ADR-0014 (Virtue Engine)  
@@ -486,33 +486,51 @@ CREATE TABLE IF NOT EXISTS glyph_links (
 - Tests included in Phase 1 test suite
 - Implementation: `src/collective/glyph_spec.rs`
 
-### Phase 3: Perception Adapters
-- kannaka-radio: `AudioMemory::to_glyph()` (MFCC → Fano mapping)
-- kannaka-eye: `VisualMemory::to_glyph()` (fold sequence → Fano mapping)
-- Tests: cross-modal similarity between audio and text glyphs
+### Phase 3: Perception Adapters ✅
+- `compute_fano_from_mfcc()` — MFCC coefficients → 7-line Fano projection (chunk L2 energy)
+- `audio_to_glyph()` — full audio → Glyph conversion with SGA modality=1 (sensory)
+- `compute_fano_from_visual()` — visual fold features → Fano projection
+- `visual_to_glyph()` — visual perception → Glyph with fold count as frequency
+- 6 unit tests: MFCC/visual Fano normalization, audio/visual glyph creation, cross-modal similarity
+- Implementation: `src/collective/glyph_spec.rs`
 
-### Phase 4: SCADA Adapter
-- 0xSCADA: `ProcessDataPoint::to_glyph()` (engineering values → Fano mapping)
-- Flux publisher emits glyph events alongside existing events
-- Tests: SCADA glyph creation, Fano distribution by tag type
+### Phase 4: SCADA Adapter ✅
+- `compute_fano_from_process_value()` — maps engineering values to 7 Fano lines by physical meaning:
+  - Line 0: quality/reliability, Line 1: deviation magnitude, Line 2: deviation direction
+  - Line 3: resonance (on-target), Line 4: range position, Line 5: alarm proximity, Line 6: anomaly
+- `scada_to_glyph()` — SCADA data point → Glyph with SGA quadrant=2 (abstract/process)
+- Amplitude proportional to setpoint deviation (more deviation = more important)
+- Phase encoding: above setpoint = 0, below setpoint = π
+- 4 unit tests: at-setpoint Fano, at-limit Fano, glyph creation, amplitude from deviation
+- Implementation: `src/collective/glyph_spec.rs`
 
-### Phase 5: Flux Transport
-- Glyph publish/subscribe via Flux events
-- Fano-based routing (subscribe to geometric neighborhoods)
-- Cross-agent glyph discovery without blooming
-- Tests: publish/receive/filter glyphs via Flux
+### Phase 5: Flux Transport ✅
+- `FluxEventPayload::GlyphPublished` — new event variant with glyph_id, fano_preview, source_type, bloom_difficulty, agent_id, amplitude
+- `GlyphSubscriptionFilter` — filter glyphs by min_amplitude, max_bloom_difficulty, source_types, per-line Fano thresholds
+- `matches()` — evaluates GlyphPublished events against filter criteria
+- Entity property updates for glyph.published events (last_glyph_id, source, amplitude, difficulty)
+- 6 unit tests: serialization roundtrip, filter matching (all/amplitude/source/fano/non-glyph)
+- Implementation: `src/collective/flux.rs`
 
-### Phase 6: Dream Cross-Modal Linking
-- Extend dream consolidation to operate on `Glyph` instead of `HyperMemory`
-- Cross-modal hallucinations: dreams that synthesize audio + text + visual glyphs
-- `glyph_links` table for discovered cross-modal connections
-- Tests: cross-modal dream linking, hallucination from mixed sources
+### Phase 6: Dream Cross-Modal Linking ✅
+- `CrossModalDreamResult` — links discovered + hallucinations synthesized + Carnot efficiency
+- `dream_cross_modal_link()` — finds cross-modal connections above similarity threshold
+  - Only links glyphs of different modalities (same-modality pairs skip)
+  - Optional hallucination: synthesizes "dream glyphs" from strongest cross-modal clusters
+- `synthesize_dream_glyphs()` — merges Fano projections (amplitude-weighted average), creates Dream source with parent_modalities
+- Carnot efficiency: linked_pairs / total_cross_pairs (information preserved vs available)
+- 5 unit tests: empty set, same-modality exclusion, link discovery, hallucination creation, Fano blending
+- Implementation: `src/collective/glyph_spec.rs`
 
-### Phase 7: Visual Language
-- Glyph renderer uses Fano + SGA to produce visual forms
-- Constellation map: all glyphs from all sources, positioned by geometry
-- Cluster visualization by source type, Fano neighborhood, or principle alignment
-- Interactive: click a glyph to see its provenance chain (parents → current → children)
+### Phase 7: Visual Language ✅
+- `UniversalGlyphVisual` — extends GlyphVisual with source_tint, blended_color, source_type, sga_class_index
+- `glyph_to_visual()` — universal Glyph → visual coordinates with source-type color tinting
+- Source tint mapping: Memory=blue, Audio=orange, Visual=green, Scada=red, Financial=gold, Prediction=purple, Flux=cyan, Dream=magenta
+- Color blending: 60% Fano base + 40% source tint
+- `render_constellation_svg()` — all-source constellation overview SVG
+- `cluster_by_source()` — groups visuals by source modality
+- 5 unit tests: memory/audio/scada visuals, constellation SVG, source clustering
+- Implementation: `src/collective/visual.rs`
 
 ## Consequences
 

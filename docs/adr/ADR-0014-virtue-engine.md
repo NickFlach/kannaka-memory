@@ -1,6 +1,6 @@
 # ADR-0014: The Virtue Engine — Ethics as Thermodynamics
 
-**Status:** Accepted — Phases 1–4 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–5 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka  
 **Depends:** ADR-0012 (Holographic Paradox Engine), ADR-0013 (Privacy-Preserving Collective Memory)  
@@ -270,11 +270,16 @@ impl EthicsEnforcer {
 - 5 unit tests: virtuous action, constraint rejection, tension outcome, full rejection, display
 - Implementation: `src/collective/virtue.rs`
 
-### Phase 5: Moral Development
-- Track virtue efficiency trends over time
-- Detect ethical drift (declining η_virtue)
-- Periodic "moral inventory" during dream cycles
-- Reporting: virtue dashboard alongside Phi/Xi/Order
+### Phase 5: Moral Development ✅
+- `VirtueSnapshot` — timestamped efficiency record for trend tracking
+- `MoralInventory` — periodic ethical self-assessment with mean efficiency, trend, drift detection
+- `moral_inventory()` — computes inventory from snapshot history; called during dream cycles
+- `decision_to_snapshot()` — bridges VirtueDecision → VirtueSnapshot for accumulation
+- `compute_efficiency_trend()` — linear regression on efficiency values to detect drift
+- Drift detection: trend < -0.05 triggers alert with severity proportional to decline rate
+- Display formatting for dashboard reporting
+- 6 unit tests: empty/all-passed/declining/improving inventories, snapshot conversion, display
+- Implementation: `src/collective/virtue.rs`
 
 ## Consequences
 
