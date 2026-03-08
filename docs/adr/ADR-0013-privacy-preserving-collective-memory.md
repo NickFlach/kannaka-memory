@@ -1,6 +1,6 @@
 # ADR-0013: Privacy-Preserving Collective Memory
 
-**Status:** Proposed  
+**Status:** Accepted — Phase 1 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka + Nick  
 **Depends:** ADR-0011 (Collective Memory), ADR-0002 (Hypervector Memory)
@@ -363,12 +363,17 @@ A sealed memory and an open memory look equally complex as glyphs. You can't tel
 
 ## Implementation Plan
 
-### Phase 1: Glyph Container
-- `Glyph` struct with `EncryptedCapsule` and `BloomParameters`
-- `WorkFunction` with hashcash-style difficulty scaling
-- `bloom()` and `seal()` functions
-- Auto-difficulty classifier (pattern matching + PII detection)
-- Glyph generation from existing `HyperMemory`
+### Phase 1: Glyph Container ✅
+- `PrivacyGlyph` struct with `EncryptedCapsule` and `BloomParameters`
+- Hashcash work function with continuous difficulty scaling (0 to ∞)
+- `seal()` — encrypts memory into glyph with specified difficulty
+- `bloom()` — solves hashcash puzzle to derive decryption key
+- `bloom_with_hint()` — bloom at reduced cost using published hint
+- `create_hint()` — progressive revelation (can only lower difficulty)
+- `suggest_difficulty()` — auto-classifier with PII/legal/financial/medical/API key detection
+- `PrivacyLevel` enum for guidance (Public → Sealed)
+- 21 unit tests covering all paths
+- Implementation: `src/collective/privacy.rs`
 
 ### Phase 2: Commitment Layer
 - Pedersen commitments for wave properties
