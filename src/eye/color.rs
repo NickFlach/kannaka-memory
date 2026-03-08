@@ -134,7 +134,7 @@ pub fn dominant_colors(rgb: &[u8], width: u32, height: u32, k: usize) -> Vec<f32
     }
 
     // Sort by count (most dominant first) — approximate by V value
-    centroids.sort_by(|a, b| b.v.partial_cmp(&a.v).unwrap_or(std::cmp::Ordering::Equal));
+    centroids.sort_by(|a, b| b.v.total_cmp(&a.v));
 
     let mut result = Vec::with_capacity(k * 3);
     for c in &centroids {

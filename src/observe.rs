@@ -189,7 +189,7 @@ impl MemoryIntrospector {
         };
 
         // Top 10 strongest links (deduplicated)
-        all_links.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
+        all_links.sort_by(|a, b| b.strength.total_cmp(&a.strength));
         let strongest_links: Vec<LinkInfo> = all_links.into_iter().take(10).collect();
 
         let layer_distribution: Vec<(u8, usize)> = layer_counts.into_iter().collect();
@@ -250,7 +250,7 @@ impl MemoryIntrospector {
         let n = all.len().max(1) as f32;
 
         // Top 10 strongest
-        mem_infos.sort_by(|a, b| b.0.abs().partial_cmp(&a.0.abs()).unwrap_or(std::cmp::Ordering::Equal));
+        mem_infos.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
         let strongest: Vec<MemoryInfo> = mem_infos.iter().take(10).map(|(_, i)| i.clone()).collect();
 
         // Bottom 10 that are still active

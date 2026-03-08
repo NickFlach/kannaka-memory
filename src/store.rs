@@ -116,7 +116,7 @@ impl MemoryStore for InMemoryStore {
             .values()
             .map(|m| (m.id, cosine_similarity(query, &m.vector)))
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
         Ok(scored)
     }
@@ -136,7 +136,7 @@ impl MemoryStore for InMemoryStore {
                 (m.id, sim * strength)
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
         Ok(scored)
     }
@@ -330,11 +330,7 @@ impl MemoryEngine {
             .collect::<Vec<_>>();
 
         // Re-sort by combined_score after Xi diversity boost may have changed relative ordering
-        results.sort_by(|a, b| {
-            b.combined_score
-                .partial_cmp(&a.combined_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
         results.truncate(top_k);
             
         Ok(results)
@@ -422,11 +418,7 @@ impl MemoryEngine {
             })
             .collect();
 
-        results.sort_by(|a, b| {
-            b.combined_score
-                .partial_cmp(&a.combined_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
         results.truncate(top_k);
         Ok(results)
     }

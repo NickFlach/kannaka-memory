@@ -216,7 +216,7 @@ impl HnswIndex {
                 self.nodes.get(&nb_id).map(|nb| (nb_id, cosine_similarity(&node_vec, &nb.vector)))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(m_max);
 
         if let Some(n) = self.nodes.get_mut(&node_id) {
@@ -305,7 +305,7 @@ impl HnswIndex {
 
         // Extract sorted by similarity descending
         let mut out: Vec<Candidate> = results.into_iter().map(|rc| rc.0).collect();
-        out.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(Ordering::Equal));
+        out.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
         out
     }
 
@@ -419,7 +419,7 @@ impl HnswStore {
         let mut scored: Vec<(Uuid, f32)> = self.memories.values()
             .map(|m| (m.id, cosine_similarity(query, &m.vector)))
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
         scored
     }
@@ -470,7 +470,7 @@ impl MemoryStore for HnswStore {
                     (m.id, sim * strength)
                 })
                 .collect();
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
             scored.truncate(top_k);
             return Ok(scored);
         }
@@ -485,7 +485,7 @@ impl MemoryStore for HnswStore {
                 })
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
         Ok(scored)
     }
@@ -610,7 +610,7 @@ mod tests {
             let mut brute: Vec<(Uuid, f32)> = vectors.iter()
                 .map(|(id, v)| (*id, cosine_similarity(&query, v)))
                 .collect();
-            brute.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+            brute.sort_by(|a, b| b.1.total_cmp(&a.1));
             let truth: HashSet<Uuid> = brute.iter().take(top_k).map(|(id, _)| *id).collect();
 
             // HNSW search
@@ -673,7 +673,7 @@ mod tests {
         let start = Instant::now();
         for q in &queries {
             let mut scored: Vec<f32> = vectors.iter().map(|v| cosine_similarity(q, v)).collect();
-            scored.sort_by(|a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
+            scored.sort_by(|a, b| b.total_cmp(a));
             scored.truncate(top_k);
         }
         let brute_time = start.elapsed();
