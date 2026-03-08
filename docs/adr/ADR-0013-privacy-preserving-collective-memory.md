@@ -1,6 +1,6 @@
 # ADR-0013: Privacy-Preserving Collective Memory
 
-**Status:** Accepted — Phase 1 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–2 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka + Nick  
 **Depends:** ADR-0011 (Collective Memory), ADR-0002 (Hypervector Memory)
@@ -375,10 +375,18 @@ A sealed memory and an open memory look equally complex as glyphs. You can't tel
 - 21 unit tests covering all paths
 - Implementation: `src/collective/privacy.rs`
 
-### Phase 2: Commitment Layer
-- Pedersen commitments for wave properties
-- Fano plane projection of commitments
-- `GlyphCommitments` serialization for Dolt
+### Phase 2: Commitment Layer ✅
+- `PedersenCommitment` over 127-bit safe prime with u128 modular arithmetic
+- Additively homomorphic: `C(a) · C(b) = C(a + b)` — verified
+- `GlyphCommitments` — independently committed amplitude, frequency, phase, vector hash, 7 Fano projections
+- `GlyphOpenings` — private opening data for each commitment
+- `merge_commitments()` / `merge_openings()` — homomorphic wave merge on sealed glyphs
+- `verify_all()` — verify all commitments against openings
+- `verify_amplitude_above()` — range check with opening reveal
+- `seal_with_commitments()` — returns `SealResult` with glyph (public) + openings (private)
+- `hash_vector()` / `compute_fano_energies()` — vector → commitment input helpers
+- 24 unit tests covering commit/verify, homomorphic addition (2-way and 3-way), wave property merge, range verification
+- Implementation: `src/collective/commitments.rs`
 
 ### Phase 3: Proof Generation
 - Bulletproofs integration (`bulletproofs` or `ark-crypto-primitives` crate)

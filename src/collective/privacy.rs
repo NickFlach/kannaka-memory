@@ -9,6 +9,10 @@
 //! The bloom cost follows Nick's equation: `dx/dt = f(x) - Iηx`
 //! where η is the bloom difficulty (the interference term resisting revelation).
 
+use crate::collective::commitments::{
+    GlyphCommitments, GlyphOpenings, commit_wave_properties,
+    hash_vector, compute_fano_energies,
+};
 use crate::memory::HyperMemory;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,6 +43,10 @@ pub struct PrivacyGlyph {
 
     /// H(capsule) — unique identifier
     pub glyph_hash: String,
+
+    /// Pedersen commitments for wave properties (Phase 2).
+    /// Provable without blooming. Additively homomorphic for merge.
+    pub commitments: Option<GlyphCommitments>,
 
     /// Wave properties (public, for collective operations)
     /// These are committed values — verifiable but not revealing content.
@@ -435,10 +443,51 @@ fn contains_medical_terms(lower: &str) -> bool {
 // Sealing and Blooming
 // ============================================================================
 
+/// Result of sealing a memory: the glyph (public) and openings (private).
+#[derive(Debug, Clone)]
+pub struct SealResult {
+    pub glyph: PrivacyGlyph,
+    /// Keep these private — needed to verify commitments or create proofs.
+    pub openings: GlyphOpenings,
+}
+
 /// Seal a memory into a privacy glyph.
 ///
 /// The memory's content and vector are encrypted. The key is derivable
 /// by solving a hashcash puzzle of the given difficulty.
+///
+/// Returns both the glyph (public, shareable) and the openings (private,
+/// needed for proofs and verification).
+pub fn seal_with_commitments(
+    memory: &HyperMemory,
+    difficulty: u32,
+    agent_id: &str,
+) -> SealResult {
+    let glyph = seal(memory, difficulty, agent_id);
+
+    // Generate Pedersen commitments for wave properties
+    let vec_hash = hash_vector(&memory.vector);
+    let fano = compute_fano_energies(&memory.vector);
+    let (commitments, openings) = commit_wave_properties(
+        memory.amplitude as f64,
+        memory.frequency as f64,
+        memory.phase as f64,
+        vec_hash,
+        &fano,
+    );
+
+    SealResult {
+        glyph: PrivacyGlyph {
+            commitments: Some(commitments),
+            ..glyph
+        },
+        openings,
+    }
+}
+
+/// Seal a memory into a privacy glyph (without Pedersen commitments).
+///
+/// Use `seal_with_commitments` for full Phase 2 functionality.
 pub fn seal(
     memory: &HyperMemory,
     difficulty: u32,
@@ -477,6 +526,7 @@ pub fn seal(
         agent_id: agent_id.to_string(),
         created_at: Utc::now(),
         glyph_hash,
+        commitments: None,
         committed_amplitude: memory.amplitude as f64,
         committed_frequency: memory.frequency as f64,
         committed_phase: memory.phase as f64,
@@ -541,7 +591,7 @@ pub fn bloom_with_hint(glyph: &PrivacyGlyph, hint: &BloomHint, max_difficulty: u
 
     // The hint provides a partial nonce that reduces the search space
     let target_zeros = hint.new_difficulty;
-    let search_bound = 1u64 << hint.new_difficulty.min(40);
+    let search_bound = 8u64.saturating_mul(1u64 << hint.new_difficulty.min(40));
     let mut nonce_counter: u64 = 0;
 
     loop {
@@ -974,5 +1024,48 @@ mod tests {
 
         assert_ne!(g1.glyph_hash, g2.glyph_hash);
         assert_ne!(g1.capsule.ciphertext, g2.capsule.ciphertext);
+    }
+
+    // ---- Phase 2: Commitment integration tests ----
+
+    #[test]
+    fn test_seal_with_commitments() {
+        use crate::collective::commitments::verify_all;
+
+        let mem = test_memory("committed memory");
+        let result = seal_with_commitments(&mem, 0, "agent-1");
+
+        assert!(result.glyph.commitments.is_some());
+        let commitments = result.glyph.commitments.as_ref().unwrap();
+        assert!(verify_all(commitments, &result.openings));
+    }
+
+    #[test]
+    fn test_seal_with_commitments_merge() {
+        use crate::collective::commitments::{
+            verify_all, merge_commitments, merge_openings,
+        };
+
+        let mem_a = test_memory("memory alpha");
+        let mem_b = test_memory("memory beta");
+        let result_a = seal_with_commitments(&mem_a, 8, "agent-1");
+        let result_b = seal_with_commitments(&mem_b, 8, "agent-2");
+
+        let c_a = result_a.glyph.commitments.as_ref().unwrap();
+        let c_b = result_b.glyph.commitments.as_ref().unwrap();
+
+        // Homomorphic merge on sealed glyphs
+        let c_merged = merge_commitments(c_a, c_b);
+        let o_merged = merge_openings(&result_a.openings, &result_b.openings);
+
+        // Merged commitment verifies with merged opening
+        assert!(verify_all(&c_merged, &o_merged));
+    }
+
+    #[test]
+    fn test_seal_without_commitments_has_none() {
+        let mem = test_memory("plain seal");
+        let glyph = seal(&mem, 0, "agent-1");
+        assert!(glyph.commitments.is_none());
     }
 }
