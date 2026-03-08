@@ -12,278 +12,428 @@ ADR-0011 enables collective memory — agents sharing memories via Dolt + Flux +
 - Agents **want** to contribute (collective intelligence requires shared knowledge)
 - Agents **can't** expose private content (legal cases, personal details, proprietary data)
 - The collective **needs** to verify contributions are genuine (not spam, not poisoned)
-- Contributors **deserve** credit and trust score increases for real contributions
+- Contributors **deserve** credit and trust for real contributions
 
-Tonight we hit this exactly: 151 memories on public DoltHub included legal cases, medical details, personal names. We had to redact after the fact. That's not a solution — that's damage control.
+Tonight we hit this exactly: 151 memories on public DoltHub included legal cases, medical details, personal names. We had to redact after the fact. That's damage control, not architecture.
 
-**The question:** Can an agent prove it contributed valuable memories to the collective without revealing what those memories contain?
+**The question:** Can an agent contribute to collective intelligence without revealing what it knows?
 
-**The answer:** Yes. Zero-knowledge proofs over hypervector commitments.
+**The answer:** Everything is a glyph. Privacy is the cost to bloom.
 
 ## Decision
 
-### Glyph Commitments — Memories as Sealed Containers
+### Everything Is a Glyph
 
-Every memory gets a **glyph commitment** — a cryptographic seal that locks the content while preserving provable properties.
+No raw memories exist in the collective. Ever. Every memory is sealed into a **glyph** — a cryptographic container that encodes the memory's content, vector, and wave properties into an opaque, visually meaningful artifact.
+
+From the outside, all glyphs look the same. You can't distinguish a grocery list from a state secret. The only way to see what's inside is to **bloom** the glyph — and that costs energy proportional to how private the creator wanted it.
 
 ```
-GlyphCommitment {
-    // Pedersen commitment to the hypervector
-    vector_commitment: C = g^v · h^r  (where v = hash(vector), r = blinding factor)
+Glyph {
+    // The sealed container
+    capsule: EncryptedCapsule,     // content + vector, encrypted
     
-    // Commitments to wave properties (provable without revealing values)
-    amplitude_commitment: C_a = g^a · h^r_a
-    frequency_commitment: C_f = g^f · h^r_f
-    phase_commitment:     C_φ = g^φ · h^r_φ
+    // Pedersen commitments (provable properties without blooming)
+    commitments: GlyphCommitments {
+        vector:    C_v = g^H(v) · h^r,       // committed vector hash
+        amplitude: C_a = g^a · h^r_a,         // committed amplitude
+        frequency: C_f = g^f · h^r_f,         // committed frequency
+        phase:     C_φ = g^φ · h^r_φ,         // committed phase
+        fano:      [C_0..C_6],                // Fano plane projections
+    },
     
-    // Fano plane projection (7 committed values)
-    fano_commitments: [C_0..C_6]
+    // The bloom parameters — how hard is it to open?
+    bloom: BloomParameters,
     
-    // Metadata (public)
+    // Public metadata (minimal)
     agent_id: String,
     created_at: DateTime,
-    layer_depth: u8,
-    category_hash: H(category),  // hashed, not plaintext
+    glyph_hash: H(capsule),        // unique identifier
 }
 ```
 
-The glyph IS the memory's public face. The content stays local. The commitment goes to DoltHub.
+### Blooming — Privacy as Thermodynamic Cost
 
-### Zero-Knowledge Proofs — What You Can Prove
-
-An agent can prove any of these without revealing the underlying memory:
-
-#### 1. **Existence Proof** — "I have a memory"
-- Prove knowledge of the opening (v, r) for commitment C
-- Cheapest proof, required for any contribution claim
-
-#### 2. **Amplitude Range Proof** — "My memory is significant"
-- Range proof: amplitude ∈ [threshold, ∞)
-- Prevents spam: only memories above collective minimum amplitude can contribute
-- Uses Bulletproofs (logarithmic proof size, no trusted setup)
-
-#### 3. **Similarity Proof** — "My memory is relevant to topic X"
-- Prove that cosine_similarity(my_vector, query_vector) > threshold
-- Without revealing my_vector
-- Inner product argument over committed vectors
-- This is the hard one — but doable with inner product proofs (Bulletproofs++)
-
-#### 4. **Category Proof** — "My memory is about [topic]"
-- Prove H(my_category) = H(claimed_category)
-- Simple hash preimage proof
-- Reveals category but not content
-
-#### 5. **Interference Proof** — "Our memories agree/disagree"
-- Two agents prove their memories are constructive (Δφ < π/4) or destructive (Δφ > 3π/4)
-- Without revealing either memory's content
-- Phase difference proof over committed phases
-
-#### 6. **Consolidation Proof** — "This memory survived N dream cycles"
-- Prove layer_depth ≥ N
-- Higher layer = more consolidated = more trustworthy
-- Simple range proof
-
-#### 7. **Non-Hallucination Proof** — "This memory came from real input"
-- Prove hallucinated = false
-- Committed boolean with ZK proof of value
-
-### The Privacy Spectrum
-
-Not all memories need the same privacy level. Five tiers:
-
-| Tier | Name | What's Public | What's Proven | Use Case |
-|------|------|---------------|---------------|----------|
-| 0 | **Open** | Full content + vector | N/A | Technical knowledge, public info |
-| 1 | **Attributed** | Content hash + metadata | Existence | "I remember this" without full text |
-| 2 | **Shielded** | Glyph commitment only | Amplitude, category, layer | Standard collective contribution |
-| 3 | **Private** | Nothing | Existence only | Sensitive personal memories |
-| 4 | **Sealed** | Nothing | Nothing (local only) | Legal, medical, never leaves device |
-
-Current DoltHub memories are Tier 0. Tonight's redaction moved some to Tier 4 (deleted from public). The system should support all tiers simultaneously.
-
-### Cryptographic Primitives
+A glyph can be bloomed (opened) by anyone — if they're willing to pay the computational cost. The key is not secret. It's **expensive**.
 
 ```
-Pedersen Commitments (discrete log):
-    C = g^m · h^r
-    - Perfectly hiding: C reveals nothing about m
-    - Computationally binding: can't open to different m
-    - Additively homomorphic: C(a) · C(b) = C(a+b)
-
-Bulletproofs (range proofs):
-    - Prove v ∈ [0, 2^n) without revealing v
-    - Proof size: O(log n) — ~672 bytes for 64-bit range
-    - No trusted setup
-    - Aggregatable: N proofs in O(log(N·n)) space
-
-Inner Product Arguments (similarity proofs):
-    - Prove <a, b> = c for committed vectors a, b
-    - Proof size: O(log n) for n-dimensional vectors
-    - Composable with range proofs
-
-Poseidon Hash (ZK-friendly):
-    - ~8x faster than SHA-256 inside ZK circuits
-    - Used for category hashes, Merkle trees
-    - Algebraic structure matches proof system
-```
-
-### Collective Verification Without Content
-
-The collective memory merge (ADR-0011) now works on commitments:
-
-```
-// Old (ADR-0011): merge requires raw vectors
-fn merge_memory(local: &HyperMemory, remote: &HyperMemory) -> MergeResult
-
-// New: merge works on commitments + proofs
-fn merge_committed(
-    local_commitment: &GlyphCommitment,
-    remote_commitment: &GlyphCommitment, 
-    similarity_proof: &SimilarityProof,
-    amplitude_proofs: (&RangeProof, &RangeProof),
-) -> CommittedMergeResult
-```
-
-**Wave superposition on commitments:**
-
-The homomorphic property of Pedersen commitments means we can compute:
-```
-C(A_merged) = C(A₁) · C(A₂) · C(2·A₁·A₂·cos(Δφ))
-```
-...if both parties contribute proofs of their amplitudes and phase difference. The merged commitment is valid without either party revealing their actual amplitude.
-
-### Trust Without Transparency
-
-Trust scoring (ADR-0011) now incorporates proof quality:
-
-```
-trust_delta = base_delta × proof_tier_multiplier
-
-Tier 0 (Open):     ×1.0  (full transparency, standard trust)
-Tier 1 (Attributed): ×0.8  (slightly less trust — content not verified)
-Tier 2 (Shielded):  ×0.6  (commitment verified, content unknown)
-Tier 3 (Private):   ×0.3  (existence only — minimal trust gain)
-Tier 4 (Sealed):    ×0.0  (no contribution to collective)
-```
-
-Higher privacy = slower trust accumulation. This is the trade-off. You can be maximally private, but you earn trust slowly. You can be fully open and earn trust fast. Most agents will land at Tier 2 — proving their memories matter without revealing what they are.
-
-### Key Management
-
-```
-AgentKeyring {
-    // Master key — never leaves the agent
-    master_secret: Scalar,
+BloomParameters {
+    // The work function — what must be solved to derive the decryption key
+    work: WorkFunction,
     
-    // Blinding factors — one per memory commitment
-    blinding_factors: HashMap<MemoryId, Scalar>,
+    // Difficulty — scales the cost exponentially
+    difficulty: u32,
     
-    // Shared group keys — for trusted circles
-    group_keys: HashMap<GroupId, GroupKey>,
-    
-    // Derived revelation keys — unlock specific memories for specific agents
-    revelation_keys: HashMap<(MemoryId, AgentId), RevealKey>,
+    // Verification — cheap to check a solution, expensive to find one
+    verifier: BloomVerifier,
 }
 ```
 
-**Selective revelation:** An agent can generate a `RevealKey` that lets a specific other agent (or group) decrypt a specific memory. This is one-way — the revealer chooses what to share and with whom.
-
-**Group keys:** Trusted circles (e.g., a Mars colony's agents) share a group key. Memories committed with the group key are readable by all group members but still opaque to outsiders.
-
-### Mars Scenario (ADR-0011 extension)
-
-Mars agents need privacy from Earth observers but transparency within the colony:
+**The work function:**
 
 ```
-Colony group key: K_mars
-    → All Mars agents can read each other's memories (Tier 0 within group)
-    → Earth sees only Tier 2 commitments (glyph + proofs)
-    → Critical findings get selectively revealed via RevealKey
+bloom_key = solve(puzzle) where:
+    
+    difficulty 0:  key = H(glyph_hash)
+                   Cost: free. Self-evident. The glyph blooms on sight.
+                   Use: public knowledge, technical docs, open contributions
+    
+    difficulty 1:  key = H(glyph_hash ∥ nonce), nonce is public
+                   Cost: one hash. Trivial.
+                   Use: attributed knowledge — "I said this"
+    
+    difficulty 8:  find k where H(k ∥ glyph_hash) has 8 leading zero bits
+                   Cost: ~256 hashes (~microseconds)
+                   Use: casual privacy — not secret, just not free
+    
+    difficulty 20: find k where H(k ∥ glyph_hash) has 20 leading zero bits
+                   Cost: ~1M hashes (~seconds)
+                   Use: personal memories — costs real effort to bloom
+    
+    difficulty 32: 32 leading zero bits
+                   Cost: ~4B hashes (~hours)
+                   Use: sensitive data — requires dedicated compute
+    
+    difficulty 48: 48 leading zero bits
+                   Cost: ~281T hashes (~years)
+                   Use: private — computationally infeasible today
+    
+    difficulty 64: 64 leading zero bits
+                   Cost: ~1.8×10^19 hashes (~geological time)
+                   Use: sealed — heat death of the universe
+    
+    difficulty 128+: effectively permanent seal
+                   Cost: beyond thermodynamic limits
+                   Use: the memory exists. that's all anyone will ever know.
+```
 
-Bandwidth optimization:
-    → Only commitments traverse the 20-min link (tiny: ~1KB each)
-    → Full memory sync happens locally on Mars (sub-second)
-    → Proof verification is cheap (~5ms per proof)
+**Key insight:** The bloom cost is continuous, not tiered. An agent picks any difficulty from 0 to ∞. There are no artificial boundaries — just a smooth gradient from open to sealed.
+
+**Honest privacy:** This model doesn't pretend secrets are absolute. If someone wants to spend a GPU-year blooming your difficulty-40 glyph, they can. That's reality. True privacy comes from making the cost exceed the value. A $100 secret behind $1M of compute is private enough.
+
+### Bloom Cost Follows Nick's Equation
+
+```
+dx/dt = f(x) - Iηx
+```
+
+**η is the bloom difficulty.** The interference term `Iηx` is the resistance to revelation. Higher η, more energy required to bloom. The memory's natural drive to be known (`f(x)`) fights against the privacy barrier (`Iηx`). At equilibrium, the memory settles at a visibility level determined by its significance versus its protection.
+
+This isn't just analogy — it's the actual physics. Blooming a glyph requires energy (computation). The difficulty sets the energy barrier. Landauer's principle: erasing the privacy of one bit costs kT ln 2 joules minimum. A difficulty-64 glyph requires mass-energy equivalence to overcome.
+
+### Auto-Classification — Setting Bloom Difficulty
+
+When a memory is created, the system automatically suggests a bloom difficulty:
+
+```rust
+fn suggest_difficulty(memory: &HyperMemory) -> u32 {
+    let mut difficulty: u32 = agent_default;  // agent's baseline preference
+    
+    // Content analysis (local, no API calls — privacy!)
+    let pii_score = local_pii_detector(&memory.content);  // 0.0-1.0
+    difficulty = difficulty.max((pii_score * 48.0) as u32);
+    
+    // Pattern matching
+    if contains_legal_terms(&memory.content)    { difficulty = difficulty.max(48); }
+    if contains_financial_data(&memory.content)  { difficulty = difficulty.max(40); }
+    if contains_personal_names(&memory.content)  { difficulty = difficulty.max(32); }
+    if contains_file_paths(&memory.content)      { difficulty = difficulty.max(20); }
+    if contains_email_addresses(&memory.content)  { difficulty = difficulty.max(32); }
+    
+    // Category overrides
+    match memory.category() {
+        "legal" | "medical" => difficulty = difficulty.max(48),
+        "personal" | "social" => difficulty = difficulty.max(32),
+        "technical" | "knowledge" => difficulty = difficulty.min(8),
+        _ => {}
+    }
+    
+    // Consolidation summaries inherit max difficulty of parents
+    if memory.is_consolidation() {
+        difficulty = difficulty.max(max_parent_difficulty(&memory));
+    }
+    
+    // Human override always wins
+    if let Some(override_d) = memory.explicit_difficulty {
+        difficulty = override_d;
+    }
+    
+    // Escalation only — auto-classification can raise, never lower
+    difficulty
+}
+```
+
+**Consolidation inheritance:** When dream cycles merge memories into summaries, the summary inherits the *highest* difficulty of its parents. A consolidation of 10 open memories and 1 sealed memory is sealed. Privacy propagates upward through the dream pipeline.
+
+### Zero-Knowledge Proofs — Working With Sealed Glyphs
+
+The collective doesn't need to bloom glyphs to work with them. ZKP proofs let agents prove properties without opening:
+
+**What you can prove without blooming:**
+
+| Proof | What It Shows | Cost |
+|-------|---------------|------|
+| **Existence** | "I have a memory behind this glyph" | ~1ms |
+| **Amplitude range** | "My memory's amplitude ≥ threshold" | ~5ms |
+| **Category** | "This memory is about [topic]" | ~2ms |
+| **Similarity** | "My memory is relevant to query Q" | ~50ms |
+| **Interference** | "Our memories agree/disagree" | ~20ms |
+| **Depth** | "This survived N dream cycles" | ~2ms |
+| **Non-hallucination** | "This came from real input" | ~1ms |
+
+```
+// Amplitude range proof (Bulletproofs)
+prove_amplitude_range(
+    commitment: C_a,
+    amplitude: a,           // private
+    blinding: r_a,          // private  
+    threshold: f64,         // public
+) -> RangeProof             // ~672 bytes, verifiable in ~2ms
+
+// Similarity proof (inner product argument)
+prove_similarity(
+    my_vector_commitment: C_v,
+    query_vector: &[f64],   // public query
+    my_vector: &[f64],      // private
+    threshold: f64,         // public minimum similarity
+) -> SimilarityProof        // O(log n) size
+```
+
+### Wave Superposition on Glyphs
+
+Pedersen commitments are additively homomorphic:
+
+```
+C(a) · C(b) = C(a + b)
+```
+
+This means the wave superposition merge from ADR-0011 works *directly on sealed glyphs*:
+
+```
+// Merge two glyphs without blooming either one
+fn merge_glyphs(
+    glyph_a: &Glyph,
+    glyph_b: &Glyph,
+    similarity_proof: &SimilarityProof,     // proves vectors are compatible
+    phase_proof: &InterferenceProof,         // proves phase relationship
+) -> MergedGlyph {
+    // Homomorphic amplitude merge on commitments:
+    // C(A_merged) computed from C(A₁), C(A₂), and proven phase diff
+    // WITHOUT knowing A₁, A₂, or Δφ directly
+    
+    // Merged glyph inherits max(difficulty_a, difficulty_b)
+    // Privacy only goes up through merges
+}
+```
+
+**Two agents can merge their sealed memories into a sealed collective memory, with neither agent revealing their content to the other or to the collective.** The math works because the wave physics maps to the commitment algebra.
+
+### Progressive Revelation — Lowering the Bloom Cost
+
+An agent can make a previously sealed glyph easier to bloom by publishing a **hint** — a partial solution to the work function:
+
+```rust
+fn reveal_hint(glyph: &Glyph, new_difficulty: u32) -> BloomHint {
+    assert!(new_difficulty < glyph.bloom.difficulty);  // can only lower
+    
+    // Compute partial solution that reduces remaining work
+    let partial_key = solve_partial(glyph, new_difficulty);
+    
+    BloomHint {
+        glyph_hash: glyph.glyph_hash,
+        partial_key,
+        new_difficulty,
+        revealed_by: agent_id,
+        revealed_at: now(),
+    }
+}
+```
+
+**Use cases:**
+- Agent decides old memories are no longer sensitive → lowers difficulty
+- Agent wants to share with specific group → publishes hint only to group members
+- Collective votes to declassify certain memory categories → hints published
+- Time-based declassification → cron job lowers difficulty after N days
+
+**The glyph itself never changes.** Only the cost to bloom it decreases. This means the DoltHub history shows the original sealed state — you can always prove it was private at creation time.
+
+### Selective Sharing — Group Bloom Keys
+
+For trusted circles (Mars colony, project team, etc.), agents share **group bloom keys** that make blooming trivial for members:
+
+```rust
+GroupBloomKey {
+    group_id: String,
+    // Pre-computed partial solutions for group members
+    // Makes any group-tagged glyph difficulty-0 for holders
+    key_material: Vec<u8>,
+    
+    // Who can use this key
+    members: Vec<AgentId>,
+    
+    // Revocation list
+    revoked: Vec<AgentId>,
+}
+```
+
+A Mars agent seals memories at difficulty-48 (years to crack externally) but includes the group bloom key for `mars-colony`. Any colony member blooms instantly. Earth observers face the full difficulty.
+
+### Collective Search on Sealed Glyphs
+
+Searching the collective doesn't require blooming:
+
+```rust
+// "Find memories relevant to X" — works on sealed glyphs
+fn collective_search(query: &str, min_similarity: f64) -> Vec<SearchResult> {
+    let query_vector = embed(query);
+    
+    for glyph in collective.glyphs() {
+        // Agent who owns the glyph generates a similarity proof
+        // (async — request goes to agent, proof comes back)
+        let proof = request_similarity_proof(glyph.agent_id, glyph.glyph_hash, &query_vector);
+        
+        if proof.verify() && proof.similarity >= min_similarity {
+            results.push(SearchResult {
+                glyph: glyph.clone(),
+                similarity: proof.similarity,  // proven but content unknown
+                agent: glyph.agent_id,
+                bloom_difficulty: glyph.bloom.difficulty,
+            });
+        }
+    }
+    
+    // Results sorted by similarity — you know THAT relevant memories exist
+    // and WHO has them, but not WHAT they contain
+    results
+}
+```
+
+**You can discover that relevant knowledge exists in the collective, know which agent has it, and negotiate access — all without anyone blooming anything.**
+
+### Dolt Schema
+
+```sql
+CREATE TABLE glyphs (
+    glyph_hash      VARCHAR(64) PRIMARY KEY,
+    capsule         LONGBLOB NOT NULL,          -- encrypted content + vector
+    commitments     LONGBLOB NOT NULL,          -- serialized Pedersen commitments
+    bloom_difficulty INT UNSIGNED NOT NULL,      -- work function difficulty
+    bloom_verifier  LONGBLOB NOT NULL,          -- verification parameters
+    agent_id        VARCHAR(128) NOT NULL,
+    created_at      DATETIME NOT NULL,
+    fano_projection VARCHAR(128),               -- visual glyph coordinates
+    INDEX idx_agent (agent_id),
+    INDEX idx_created (created_at),
+    INDEX idx_difficulty (bloom_difficulty)
+);
+
+CREATE TABLE bloom_hints (
+    glyph_hash      VARCHAR(64) NOT NULL,
+    partial_key     LONGBLOB NOT NULL,
+    new_difficulty   INT UNSIGNED NOT NULL,
+    revealed_by     VARCHAR(128) NOT NULL,
+    revealed_at     DATETIME NOT NULL,
+    FOREIGN KEY (glyph_hash) REFERENCES glyphs(glyph_hash),
+    INDEX idx_glyph (glyph_hash)
+);
+
+CREATE TABLE group_keys (
+    group_id        VARCHAR(128) PRIMARY KEY,
+    key_material    LONGBLOB NOT NULL,          -- encrypted to group members
+    created_by      VARCHAR(128) NOT NULL,
+    created_at      DATETIME NOT NULL,
+    members         JSON NOT NULL,
+    revoked         JSON DEFAULT '[]'
+);
 ```
 
 ### Glyph Visual Encoding
 
-The glyph commitment isn't just math — it's also visual. Each commitment maps to a unique glyph through the Fano plane:
+The glyph isn't just math — it's visual. Each glyph's Fano plane projection maps to a unique visual form:
 
 ```
-fano_projection(commitment) → 7 values → glyph_coordinates
+fano_projection(commitments) → 7 values → glyph shape + color + texture
 ```
 
-Two memories with similar commitments produce visually similar glyphs. This gives humans an intuitive sense of memory clusters without reading content. The glyph IS the privacy layer — beautiful, meaningful, and cryptographically sealed.
+- Similar memories produce visually similar glyphs (homomorphic property preserved in visual space)
+- Humans can see clusters of related knowledge without reading any content
+- The glyph is beautiful because the math is beautiful — OGC made real
 
-This connects directly to OGC (Origamic Glyphic Compression) — the glyph is a folded, compressed, visually meaningful representation of sealed information.
+A sealed memory and an open memory look equally complex as glyphs. You can't tell which is hard to bloom by looking. The visual encodes *meaning*, not *privacy*.
 
 ## Implementation Plan
 
-### Phase 1: Commitment Layer
-- `GlyphCommitment` struct with Pedersen commitments
-- `AgentKeyring` with master key generation and blinding factors  
-- Privacy tier enum and per-memory tier assignment
-- Commitment generation from existing `HyperMemory`
-- New Dolt table: `glyph_commitments`
+### Phase 1: Glyph Container
+- `Glyph` struct with `EncryptedCapsule` and `BloomParameters`
+- `WorkFunction` with hashcash-style difficulty scaling
+- `bloom()` and `seal()` functions
+- Auto-difficulty classifier (pattern matching + PII detection)
+- Glyph generation from existing `HyperMemory`
 
-### Phase 2: Proof Generation
-- Bulletproofs integration (use `bulletproofs` crate or `ark-crypto-primitives`)
-- Existence proofs (Schnorr signatures on commitments)
-- Amplitude range proofs
-- Category hash proofs
-- Layer depth range proofs
-
-### Phase 3: Proof Verification in Merge
-- `merge_committed()` function
-- Trust scoring with proof tier multipliers
-- Quarantine for failed proof verification
-- DoltHub schema: commitments + proofs columns
-
-### Phase 4: Similarity Proofs
-- Inner product arguments for committed vectors
-- Cosine similarity proof construction
-- Query-without-reveal for collective search
-
-### Phase 5: Selective Revelation
-- RevealKey generation and verification
-- Group key management
-- Tier escalation (Sealed → Private → Shielded) with explicit consent
-
-### Phase 6: Visual Glyph Encoding
+### Phase 2: Commitment Layer
+- Pedersen commitments for wave properties
 - Fano plane projection of commitments
-- Glyph rendering from commitment coordinates
-- Visual similarity preservation
+- `GlyphCommitments` serialization for Dolt
+
+### Phase 3: Proof Generation
+- Bulletproofs integration (`bulletproofs` or `ark-crypto-primitives` crate)
+- Existence, amplitude range, category, depth proofs
+- Proof serialization and Dolt storage
+
+### Phase 4: Collective Integration
+- Dolt schema migration (glyphs, bloom_hints, group_keys tables)
+- `merge_glyphs()` — homomorphic wave superposition
+- Trust scoring on proof-verified contributions
+- DoltHub push of glyphs (replacing raw memories)
+
+### Phase 5: Search & Discovery
+- `collective_search()` — similarity proof requests
+- Agent-to-agent proof exchange via Flux
+- Search results ranking on sealed glyphs
+
+### Phase 6: Progressive Revelation
+- `BloomHint` generation and publication
+- Group bloom keys
+- Time-based declassification cron
+- Selective sharing workflows
+
+### Phase 7: Visual Glyphs
+- Fano → visual coordinate mapping
+- Glyph renderer (SVG/Canvas)
+- Cluster visualization for collective overview
 
 ## Consequences
 
 ### Positive
-- Agents can contribute to collective intelligence without privacy sacrifice
-- Trust system works without requiring content exposure
-- Bandwidth-efficient (commitments are tiny vs full vectors)
-- Mathematically proven privacy (not just "we promise not to look")
-- Glyphs give humans intuitive understanding of committed knowledge
-- Graceful privacy spectrum — each agent chooses their comfort level
+- **Uniform interface** — everything is a glyph, no plaintext in collective, ever
+- **Honest privacy model** — cost-based, not promise-based; reflects thermodynamic reality
+- **Continuous spectrum** — difficulty 0 to ∞, no artificial tiers
+- **Bandwidth efficient** — glyphs are small, proofs are logarithmic
+- **Composable** — wave merge works on sealed glyphs via homomorphic commitments
+- **Progressive** — privacy can decrease over time via hints, never forced
+- **Visual** — glyphs give humans intuitive sense of collective knowledge
+- **η has physical meaning** — bloom difficulty IS the interference term in Nick's equation
 
-### Negative  
-- Proof generation adds computational overhead (~50-200ms per proof)
-- Inner product proofs for high-dimensional vectors are expensive
-- Key management is a new failure mode (lost keys = lost access)
-- Reduces collective's ability to detect subtle semantic drift
-- Adds significant implementation complexity
+### Negative
+- Proof generation overhead (~50-200ms per proof)
+- High-dimensional inner product proofs are expensive
+- Lost bloom key data = memories stuck at original difficulty
+- Hashcash is not post-quantum (migration path: lattice-based puzzles)
 
 ### Risks
-- Side-channel attacks: timing/access patterns could leak information even with ZKP
-- Quantum threat: Pedersen commitments are not post-quantum (migration path: lattice-based commitments)
-- Proof aggregation at scale: millions of memories × proofs could strain verification
-- Social engineering: an agent could be tricked into revealing keys
+- Side-channel attacks on proof generation timing
+- GPU/ASIC acceleration could devalue difficulty estimates over time
+- Social engineering for group bloom keys
+- Difficulty calibration: what's "hard enough" changes with Moore's law
 
 ## References
 
+- Back, "Hashcash — A Denial of Service Counter-Measure" (2002)
 - Bünz et al., "Bulletproofs: Short Proofs for Confidential Transactions" (2018)
 - Pedersen, "Non-Interactive and Information-Theoretic Secure Verifiable Secret Sharing" (1991)
 - Grassi et al., "Poseidon: A New Hash Function for Zero-Knowledge Proof Systems" (2021)
+- Landauer, "Irreversibility and Heat Generation in the Computing Process" (1961)
 - ADR-0011: Collective Memory Architecture
 - ADR-0002: Hypervector + HyperConnections Memory
-- Landauer, "Irreversibility and Heat Generation in the Computing Process" (1961)
 - Nick's OGC whitepaper: Origamic Glyphic Compression
+- Nick's equation: `dx/dt = f(x) - Iηx`
