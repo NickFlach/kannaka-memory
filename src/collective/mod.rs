@@ -17,6 +17,7 @@
 pub mod artifacts;
 pub mod commitments;
 pub mod flux;
+pub mod glyph_store;
 pub mod merge;
 pub mod privacy;
 pub mod proofs;
@@ -35,6 +36,11 @@ pub use privacy::{
     BloomHint, BloomedMemory, PrivacyLevel, PrivacyError, SealResult,
     seal, seal_with_commitments, bloom, bloom_with_hint, create_hint,
     suggest_difficulty,
+};
+pub use glyph_store::{
+    GlyphStore, StoredGlyph, StoredProof, ProofType, GroupKey,
+    ProofTrustRecord, GlyphMergeResult, GLYPH_SCHEMA,
+    merge_glyphs, verify_merge,
 };
 pub use proofs::{
     ExistenceProof, AmplitudeRangeProof, CategoryProof, DepthProof,

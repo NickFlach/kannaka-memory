@@ -1,6 +1,6 @@
 # ADR-0013: Privacy-Preserving Collective Memory
 
-**Status:** Accepted — Phases 1–3 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–4 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka + Nick  
 **Depends:** ADR-0011 (Collective Memory), ADR-0002 (Hypervector Memory)
@@ -401,11 +401,17 @@ A sealed memory and an open memory look equally complex as glyphs. You can't tel
 - Implementation: `src/collective/proofs.rs`
 - Production upgrade path: Bulletproofs for logarithmic-size range proofs
 
-### Phase 4: Collective Integration
-- Dolt schema migration (glyphs, bloom_hints, group_keys tables)
-- `merge_glyphs()` — homomorphic wave superposition
-- Trust scoring on proof-verified contributions
-- DoltHub push of glyphs (replacing raw memories)
+### Phase 4: Collective Integration ✅
+- `GlyphStore` — in-memory store with insert/get/by_agent/bloomable queries
+- `GLYPH_SCHEMA` — Dolt DDL for glyphs, bloom_hints, group_keys tables
+- `merge_glyphs()` — homomorphic wave superposition on sealed glyphs
+- `verify_merge()` — verify merged commitments against merged openings
+- `GroupKey` — group bloom keys with member/revocation tracking
+- `ProofTrustRecord` — proof-verified trust scoring (+0.01 success, -0.05 failure)
+- `publish_hint()` / `effective_difficulty()` — hint-aware difficulty resolution
+- `attach_proof()` — link verified proofs to stored glyphs
+- 13 unit tests covering store ops, merge, hints, group keys, trust
+- Implementation: `src/collective/glyph_store.rs`
 
 ### Phase 5: Search & Discovery
 - `collective_search()` — similarity proof requests
