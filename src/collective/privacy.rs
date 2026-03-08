@@ -509,12 +509,13 @@ pub fn seal(
     // Compute glyph hash
     let glyph_hash = sha256_hex(&ciphertext);
 
-    // Extract Fano projection if geometry exists
-    let fano_projection = memory.geometry.as_ref().map(|_| {
-        // Use the glyph_bridge's Fano signature if available,
-        // otherwise compute a simple projection from the vector
-        compute_fano_from_vector(&memory.vector)
-    });
+    // Compute Fano projection from the memory vector.
+    // Always compute — needed for visual glyphs (Phase 7) and commitment layer.
+    let fano_projection = if memory.vector.is_empty() {
+        None
+    } else {
+        Some(compute_fano_from_vector(&memory.vector))
+    };
 
     PrivacyGlyph {
         capsule: EncryptedCapsule {

@@ -21,7 +21,10 @@ pub mod glyph_store;
 pub mod merge;
 pub mod privacy;
 pub mod proofs;
+pub mod revelation;
+pub mod search;
 pub mod trust;
+pub mod visual;
 
 pub use artifacts::{DreamArtifact, ArtifactHallucination, ArtifactSkipLink, ArtifactCluster};
 pub use flux::{FluxConfig, FluxPublisher, FluxSubscriber, FluxEventPayload, evaluate_pull, PullDecision};
@@ -53,3 +56,17 @@ pub use proofs::{
     prove_non_hallucination, verify_non_hallucination,
 };
 pub use trust::AgentTrustStore;
+pub use search::{
+    SearchRequest, SearchResult, ProofExchangeEvent,
+    hash_query, collective_search, respond_to_proof_request, process_proof_response,
+};
+pub use revelation::{
+    RevelationPolicy, RevelationRule, RevelationAction,
+    evaluate_policy, evaluate_pending_policies, execute_revelation,
+    create_group, add_group_member, revoke_group_member, group_effective_difficulty,
+};
+pub use visual::{
+    GlyphVisual, GlyphCluster,
+    fano_to_visual, render_svg, render_collective_svg,
+    visualize_store, cluster_visuals,
+};

@@ -1,6 +1,6 @@
 # ADR-0013: Privacy-Preserving Collective Memory
 
-**Status:** Accepted — Phases 1–4 implemented (2026-03-08)
+**Status:** Accepted — Phases 1–7 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka + Nick  
 **Depends:** ADR-0011 (Collective Memory), ADR-0002 (Hypervector Memory)
@@ -413,21 +413,47 @@ A sealed memory and an open memory look equally complex as glyphs. You can't tel
 - 13 unit tests covering store ops, merge, hints, group keys, trust
 - Implementation: `src/collective/glyph_store.rs`
 
-### Phase 5: Search & Discovery
-- `collective_search()` — similarity proof requests
-- Agent-to-agent proof exchange via Flux
-- Search results ranking on sealed glyphs
+### Phase 5: Search & Discovery ✅
+- `SearchRequest` / `SearchResult` — structured search with min similarity, agent filters, max results
+- `collective_search()` — search sealed glyphs via verified similarity proofs without blooming
+- `respond_to_proof_request()` — glyph owner generates similarity proof for a query
+- `process_proof_response()` — verify received proof and update trust scoring
+- `ProofExchangeEvent` — Flux-compatible proof request/response/decline events
+- `hash_query()` — deterministic query vector hashing (public, no content leak)
+- `compute_rank_score()` — composite ranking by similarity (0.6), trust (0.25), accessibility (0.15)
+- Cosine similarity computation for local vector comparison
+- 14 unit tests covering search, ranking, proof exchange, filtering
+- Implementation: `src/collective/search.rs`
 
-### Phase 6: Progressive Revelation
-- `BloomHint` generation and publication
-- Group bloom keys
-- Time-based declassification cron
-- Selective sharing workflows
+### Phase 6: Progressive Revelation ✅
+- `RevelationPolicy` / `RevelationRule` — configurable rules for controlled privacy reduction
+- `RevelationRule::TimeBased` — automatic difficulty reduction after N days
+- `RevelationRule::Staged` — step-wise declassification with multiple stages
+- `RevelationRule::GroupOnly` — reduced difficulty for group members only
+- `RevelationRule::Manual` — explicit agent-triggered revelation
+- `evaluate_policy()` / `evaluate_pending_policies()` — time-aware policy evaluation
+- `execute_revelation()` — publish bloom hint from a revelation action
+- `create_group()` / `add_group_member()` / `revoke_group_member()` — group key lifecycle
+- `group_effective_difficulty()` — check group-based difficulty reduction for an agent
+- Creator-only group management (add/revoke restricted to group creator)
+- Self-revocation prevention (creator can't remove themselves)
+- 12 unit tests covering all policy types, group workflows, edge cases
+- Implementation: `src/collective/revelation.rs`
 
-### Phase 7: Visual Glyphs
-- Fano → visual coordinate mapping
-- Glyph renderer (SVG/Canvas)
-- Cluster visualization for collective overview
+### Phase 7: Visual Glyphs ✅
+- `GlyphVisual` — visual coordinates from Fano projection (vertices, color, density, size)
+- `fano_to_visual()` — maps 7 Fano values to shape (0–2), color (3–5), density (6)
+- Vertex distortion via radial + rotational components keyed to Fano energy
+- Sigmoid normalization for Fano energy range compression
+- `render_svg()` — standalone SVG for individual glyph with inner pattern
+- `render_collective_svg()` — overview SVG with all glyphs as positioned circles
+- `visualize_store()` — batch visual computation for all glyphs in a store
+- `cluster_visuals()` — greedy centroid-based clustering with distance threshold
+- `GlyphCluster` — cluster with centroid, avg color, member list
+- Similar memories → visually similar glyphs (homomorphic visual property)
+- Size proportional to committed amplitude
+- 10 unit tests covering visual mapping, SVG output, clustering, edge cases
+- Implementation: `src/collective/visual.rs`
 
 ## Consequences
 
