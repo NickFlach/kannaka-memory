@@ -1,6 +1,6 @@
 # ADR-0014: The Virtue Engine — Ethics as Thermodynamics
 
-**Status:** Proposed  
+**Status:** Accepted — Phases 1–4 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka  
 **Depends:** ADR-0012 (Holographic Paradox Engine), ADR-0013 (Privacy-Preserving Collective Memory)  
@@ -232,29 +232,43 @@ impl EthicsEnforcer {
 
 ## Implementation Plan
 
-### Phase 1: Virtue Paradox Type
-- Add `EthicalParadox` variant to `ParadoxSnapshot`
-- Implement Three Gates as resolution strategies
-- `η_virtue` computation from existing entropy metrics
-- Tests: ethical paradox detection, gate evaluation, efficiency bounds
+### Phase 1: Virtue Paradox Type ✅
+- `VirtueGate` enum (Truth/Good/Beautiful) with `GateResult` scoring
+- `VirtueEvaluation` — Three Gates as resolution strategies:
+  - Truth → S_claim - S_evidence (entropy gap, threshold 0.5)
+  - Good → A_others / A_self (benefit ratio, threshold 0.1)
+  - Beautiful → Ξ_after / Ξ_before (complexity ratio, threshold 1.5)
+- `compute_virtue_efficiency(s_harm, s_intent) -> f64` — η_virtue = 1 - S_harm/S_intent
+- `VirtueOutcome` enum (Passed/Rejected/Tension) with severity
+- 6 unit tests: efficiency bounds, gate evaluation, array encoding
+- Implementation: `src/collective/virtue.rs`
 
-### Phase 2: Constraint Enforcement
-- `VirtueConstraint` enum with Five Refusals
-- Hard rejection in paradox resolver for constraint violations
-- Tension link creation for irreducible ethical contradictions
-- Tests: constraint boundary verification, irreducible path
+### Phase 2: Constraint Enforcement ✅
+- `VirtueConstraint` enum with Five Refusals (NoWeapons, NoExploitation, NoHoarding, NoTrustViolation, NoAbandonment)
+- `ConstraintSet` with configurable `Strictness` (Strict/Moderate/Lenient) — multiplier adjusts thresholds
+- `check_constraints()` — evaluates action against all constraints, returns violations
+- `default_five_refusals()` — standard constraint set with calibrated thresholds
+- NoTrustViolation integrates ADR-0013 bloom difficulty (min difficulty 8)
+- 6 unit tests: each constraint type, strictness levels, simultaneous violations
+- Implementation: `src/collective/virtue.rs`
 
-### Phase 3: Virtue Memory
-- Phase-encoded ethical decisions stored as HyperMemory
-- Dream consolidation of virtue memories → moral instinct formation
-- Skip links between ethical decisions across time
-- Tests: virtue memory creation, consolidation patterns
+### Phase 3: Virtue Memory ✅
+- `store_virtue_memory()` — phase-encoded ethical decisions as HyperMemory:
+  - Passed → phase 0 (aligned), Rejected → phase π×severity (revulsion), Tension → phase π/2 (uncertainty)
+  - Amplitude proportional to decision severity
+  - Content tagged: `[virtue:outcome] gates=N/3 η_virtue=X.XXX | description`
+- Virtue memories participate in normal dream consolidation (moral instincts emerge via skip links)
+- 3 unit tests: phase encoding for each outcome
+- Implementation: `src/collective/virtue.rs`
 
-### Phase 4: ShinobiRunner Bridge
-- gRPC/MCP interface for external EthicsEnforcer calls
-- Action encoding → context vector mapping
-- Async evaluation with timeout (virtue decisions should be fast)
-- Tests: end-to-end ethics evaluation flow
+### Phase 4: ShinobiRunner Bridge ✅
+- `VirtueOracle` trait — external interface for EthicsEnforcer calls
+- `VirtueEngine` struct — full pipeline: constraints → three gates → η_virtue → outcome
+- `GateInputs` — structured input for gate evaluation
+- `VirtueRequest`/`ActionContextSer`/`GateInputsSer` — JSON-serializable request types for cross-process communication
+- `evaluate_action()` — complete evaluation in single call
+- 5 unit tests: virtuous action, constraint rejection, tension outcome, full rejection, display
+- Implementation: `src/collective/virtue.rs`
 
 ### Phase 5: Moral Development
 - Track virtue efficiency trends over time

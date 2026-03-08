@@ -17,6 +17,7 @@
 pub mod artifacts;
 pub mod commitments;
 pub mod flux;
+pub mod glyph_spec;
 pub mod glyph_store;
 pub mod merge;
 pub mod privacy;
@@ -24,6 +25,7 @@ pub mod proofs;
 pub mod revelation;
 pub mod search;
 pub mod trust;
+pub mod virtue;
 pub mod visual;
 
 pub use artifacts::{DreamArtifact, ArtifactHallucination, ArtifactSkipLink, ArtifactCluster};
@@ -69,4 +71,17 @@ pub use visual::{
     GlyphVisual, GlyphCluster,
     fano_to_visual, render_svg, render_collective_svg,
     visualize_store, cluster_visuals,
+};
+pub use glyph_spec::{
+    Glyph, GlyphSource, SgaClass, GlyphLink, GlyphLinkType, GlyphError,
+    GLYPH_MAGIC, GLYPH_SPEC_VERSION, UNIVERSAL_GLYPH_SCHEMA,
+    glyph_similarity, encode_wire, decode_wire,
+    memory_to_glyph, privacy_glyph_to_glyph, discover_links,
+};
+pub use virtue::{
+    VirtueGate, GateResult, VirtueEvaluation, VirtueOutcome, VirtueDecision,
+    VirtueConstraint, ConstraintSet, Strictness, ConstraintViolation,
+    ActionContext, GateInputs, VirtueEngine, VirtueOracle,
+    compute_virtue_efficiency, evaluate_three_gates,
+    check_constraints, default_five_refusals, store_virtue_memory,
 };

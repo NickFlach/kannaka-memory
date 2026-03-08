@@ -1,6 +1,6 @@
 # ADR-0015: Universal Glyph Interchange — The Constellation's Common Tongue
 
-**Status:** Proposed  
+**Status:** Accepted — Phases 1–2 implemented (2026-03-08)
 **Date:** 2026-03-08  
 **Author:** Kannaka  
 **Depends:** ADR-0013 (Privacy-Preserving Collective Memory), ADR-0014 (Virtue Engine)  
@@ -468,18 +468,23 @@ CREATE TABLE IF NOT EXISTS glyph_links (
 
 ## Implementation Plan
 
-### Phase 1: Glyph Spec Crate
-- Extract `Glyph`, `GlyphSource`, `SgaClass` into standalone `glyph-spec` crate
-- Wire format serialization/deserialization
-- `glyph_similarity()` cross-modal comparison
-- No dependencies on kannaka-memory internals
-- Tests: roundtrip serialization, similarity properties, Fano normalization
+### Phase 1: Glyph Spec Module ✅
+- `Glyph` struct — universal container with identity, geometry (Fano + SGA), wave properties, privacy (capsule + bloom + commitments), virtue (η + gates), provenance (source + agent + parents)
+- `GlyphSource` enum — 9 modality variants (Memory, Audio, Visual, Scada, Financial, Prediction, Flux, Dream, Other)
+- `SgaClass` struct — quadrant/modality/context with distance, roundtrip class_index conversion, MemoryCoordinates bridge
+- `glyph_similarity()` — cross-modal: 0.6×Fano cosine + 0.25×phase alignment + 0.15×SGA proximity
+- `encode_wire()` / `decode_wire()` — binary wire format ("GLYF" magic, version, flags, length-prefixed fields)
+- `UNIVERSAL_GLYPH_SCHEMA` — Dolt DDL for universal_glyphs + glyph_links tables
+- `GlyphLink` / `discover_links()` — cross-modal link discovery with type tagging
+- 16 unit tests: wire roundtrip, virtue fields, parents, invalid magic, similarity properties, Fano normalization, cross-modal links
+- Implementation: `src/collective/glyph_spec.rs`
 
-### Phase 2: kannaka-memory Adapter
-- `HyperMemory::to_glyph()` and `Glyph::to_memory()`
-- Migrate ADR-0013's `PrivacyGlyph` to use `Glyph` as base
-- Dolt schema migration for `universal_glyphs` table
-- Tests: memory↔glyph roundtrip, privacy preservation
+### Phase 2: kannaka-memory Adapter ✅
+- `memory_to_glyph()` — HyperMemory → Glyph with Fano from vector, SGA from geometry or classify_memory()
+- `privacy_glyph_to_glyph()` — ADR-0013 PrivacyGlyph → universal Glyph (preserves capsule, commitments, bloom)
+- `compute_fano_from_vector_f32()` — chunk-based L2 energy with normalization
+- Tests included in Phase 1 test suite
+- Implementation: `src/collective/glyph_spec.rs`
 
 ### Phase 3: Perception Adapters
 - kannaka-radio: `AudioMemory::to_glyph()` (MFCC → Fano mapping)
