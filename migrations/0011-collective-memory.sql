@@ -13,7 +13,8 @@ ALTER TABLE memories
     ADD COLUMN sync_version    BIGINT       NOT NULL DEFAULT 0,
     ADD COLUMN merge_history   JSON                  DEFAULT '[]',
     ADD COLUMN last_consolidated_at DATETIME(6)      DEFAULT NULL,
-    ADD COLUMN disputed        BOOLEAN      NOT NULL DEFAULT FALSE;
+    ADD COLUMN disputed        BOOLEAN      NOT NULL DEFAULT FALSE,
+    ADD COLUMN glyph_content   JSON                  DEFAULT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_origin_agent ON memories (origin_agent);
 CREATE INDEX IF NOT EXISTS idx_disputed     ON memories (disputed);

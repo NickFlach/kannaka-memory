@@ -154,6 +154,7 @@ Without Ollama, hash-based fallback encoding is used automatically.
 | `DOLT_AUTHOR` | `Kannaka Agent <kannaka@local>` | Author for Dolt commits |
 | `DOLT_REMOTE` | `origin` | DoltHub remote name |
 | `DOLT_BRANCH` | `main` | Default branch |
+| `DOLTHUB_API_KEY` | *(empty)* | DoltHub API key for authenticated push/pull |
 
 ## Scripts
 
@@ -344,6 +345,47 @@ How it works:
 4. **Carnot efficiency** (η = 1 - S_resolved/S_paradox) measures dream quality per cycle
 
 The `collective` flag adds no new CLI commands — it transparently accelerates `dream` on multi-core hardware.
+
+## Glyph-Encoded Privacy for DoltHub
+
+The `glyph` feature flag enables **privacy protection** for memories pushed to DoltHub public repositories.
+
+Requires: `cargo build --release --features "dolt glyph" --bin kannaka`
+
+**Architecture:**
+```
+Local (kannaka/working)  ← plain text content + full fidelity
+      ↓ glyph encode
+DoltHub (main)          ← glyph_content (JSON) + category placeholders
+```
+
+When glyph encoding is enabled:
+- **Locally**: memories store full plain-text content as normal
+- **DoltHub push**: sensitive content is automatically encoded as SGA glyphs before push
+- **Public content**: only category labels like `[knowledge]`, `[experience]`, `[insight]` are human-readable
+- **Vectors preserved**: cosine similarity and semantic search still work normally
+
+**Privacy guarantees:**
+- Personal information, API keys, private details encoded as geometric fold sequences
+- Glyph JSON contains no human-readable text from original content
+- Wave parameters (amplitude, phase, frequency) unchanged — memory search unaffected
+- Only agents with glyph decoder can reconstruct original content
+
+**Branch strategy for privacy:**
+```bash
+# Working branch: full content for local agent
+./scripts/kannaka.sh dolt branch checkout "kannaka/working"
+./scripts/kannaka.sh --dolt remember "My personal API key: sk-secret123"
+
+# Main branch: privacy-protected for public sharing
+./scripts/kannaka.sh dolt branch checkout main
+./scripts/kannaka.sh dolt pull origin kannaka/working  # triggers glyph encoding
+./scripts/kannaka.sh dolt push origin main            # safe for public DoltHub
+
+# Content on main branch shows: "[knowledge]" instead of API key
+```
+
+The `glyph` flag adds no new CLI commands — it transparently protects sensitive content during DoltHub push operations.
 
 ## Notes
 

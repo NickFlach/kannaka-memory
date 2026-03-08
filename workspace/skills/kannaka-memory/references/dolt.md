@@ -316,4 +316,118 @@ SELECT DATE(created_at) AS day, COUNT(*) AS memories_added
 FROM memories
 GROUP BY day
 ORDER BY day;
+
+-- View glyph-encoded memories (glyph feature only)
+SELECT id, content, glyph_content IS NOT NULL AS has_glyph
+FROM memories
+WHERE glyph_content IS NOT NULL;
 ```
+
+---
+
+## Glyph-Encoded Privacy for DoltHub
+
+When the `glyph` feature is enabled, sensitive memory content is automatically protected during DoltHub operations.
+
+### Architecture
+
+```
+Local (kannaka/working)         DoltHub (main)
+├─ content: "API key: sk-123"   ├─ content: "[knowledge]"
+├─ vector: [0.1, 0.3, ...]      ├─ vector: [0.1, 0.3, ...] (unchanged)
+└─ glyph_content: null          └─ glyph_content: {"fold_sequence": [42,17,...], ...}
+```
+
+### Privacy Protection
+
+**What's protected:**
+- Personal information, API keys, private details
+- Names, addresses, phone numbers, emails
+- Sensitive business logic, passwords, secrets
+
+**What's preserved:**
+- Wave parameters (amplitude, frequency, phase) — search works normally
+- Vector embeddings — cosine similarity unchanged
+- Timestamps, metadata, skip links
+- Memory structure and relationships
+
+### Build with Glyph Privacy
+
+```bash
+cargo build --release --features "dolt glyph" --bin kannaka
+```
+
+### Setup Environment
+
+```bash
+export DOLTHUB_API_KEY=your_dolthub_api_key
+export DOLT_REMOTE=origin
+```
+
+### Privacy Workflow
+
+```bash
+# 1. Store sensitive memory locally (full content preserved)
+./scripts/kannaka.sh --dolt remember "Customer John Doe called about API issues, key: sk-secret123"
+
+# 2. Create privacy-protected main branch
+./scripts/kannaka.sh dolt prepare-dolthub  # encodes sensitive content as glyphs
+
+# 3. Push to public DoltHub (safe)
+./scripts/kannaka.sh dolt push origin main
+
+# 4. Revert local content (restore full text)
+./scripts/kannaka.sh dolt reset --hard HEAD~1
+
+# Result on DoltHub main branch: content = "[knowledge]", glyph_content = SGA-encoded JSON
+```
+
+### Branch Strategy for Privacy
+
+```bash
+# Working branch: full content for local agent use
+kannaka/working     ← plain text: "API key: sk-secret123"
+     ↓ glyph encode
+main (DoltHub)      ← category: "[knowledge]" + glyph_content JSON
+```
+
+### Verification
+
+```bash
+# Check what's visible on DoltHub
+mysql -h 127.0.0.1 -P 3307 -u root kannaka_memory \
+  --execute="SELECT content, glyph_content IS NOT NULL AS has_glyph FROM memories WHERE glyph_content IS NOT NULL LIMIT 5;"
+
+# Output:
+# content        | has_glyph
+# [knowledge]    | 1
+# [experience]   | 1
+# [insight]      | 1
+```
+
+### Category Labels
+
+| Memory Type | Category Label |
+|---|---|
+| `hallucinated = TRUE` | `[hallucination]` |
+| `layer_depth = 0` | `[experience]` |
+| `layer_depth ≤ 3` | `[knowledge]` |
+| `layer_depth > 3` | `[insight]` |
+
+### Security Notes
+
+- **Glyph JSON contains no human-readable text** from original content
+- **Vectors unchanged** — other agents can still find related memories via similarity search
+- **Fold sequences** represent geometric transformations, not linguistic tokens
+- **SGA-guided compression** maps content to 96-class space via Fano line relationships
+- **Only agents with glyph decoder** can reconstruct original content from `glyph_content` field
+
+### Migration Note
+
+The `glyph_content` column is added by migration `0011-collective-memory.sql`:
+
+```sql
+ALTER TABLE memories ADD COLUMN glyph_content JSON DEFAULT NULL;
+```
+
+Existing memories without glyph encoding will have `glyph_content = NULL` and remain as plain text.

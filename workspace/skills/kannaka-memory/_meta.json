@@ -26,7 +26,8 @@
       "DOLT_PASSWORD",
       "DOLT_AUTHOR",
       "DOLT_REMOTE",
-      "DOLT_BRANCH"
+      "DOLT_BRANCH",
+      "DOLTHUB_API_KEY"
     ]
   },
   "dataDestinations": {

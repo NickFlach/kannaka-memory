@@ -28,6 +28,9 @@ use crate::skip_link::SkipLink;
 use crate::store::{MemoryStore, StoreError};
 use crate::wave::cosine_similarity;
 
+#[cfg(feature = "glyph")]
+use crate::glyph_bridge::{GlyphEncoder, encode_memory_as_glyph};
+
 // ---------------------------------------------------------------------------
 // DoltConfig — Phase 3: configuration from environment variables
 // ---------------------------------------------------------------------------
@@ -286,8 +289,8 @@ impl DoltMemoryStore {
             conn.query("SELECT id, content, amplitude, frequency, phase, decay_rate, created_at, layer_depth, hallucinated FROM memories")
             .map_err(|e| StoreError::Other(format!("Failed to query memories basic: {}", e)))?;
 
-        let memories_extended: Vec<(String, Option<String>, String, Option<String>, Option<String>)> = 
-            conn.query("SELECT id, parents, vector_data, xi_signature, geometry FROM memories")
+        let memories_extended: Vec<(String, Option<String>, String, Option<String>, Option<String>, Option<String>)> = 
+            conn.query("SELECT id, parents, vector_data, xi_signature, geometry, glyph_content FROM memories")
             .map_err(|e| StoreError::Other(format!("Failed to query memories extended: {}", e)))?;
 
         // ADR-0011: collective fields — query separately so older databases (pre-migration)
@@ -332,9 +335,9 @@ impl DoltMemoryStore {
         }
 
         // Create lookup map for extended data
-        let mut extended_data: HashMap<String, (Option<String>, String, Option<String>, Option<String>)> = HashMap::new();
-        for (id, parents_json, vector_json, xi_signature_json, geometry_json) in memories_extended {
-            extended_data.insert(id, (parents_json, vector_json, xi_signature_json, geometry_json));
+        let mut extended_data: HashMap<String, (Option<String>, String, Option<String>, Option<String>, Option<String>)> = HashMap::new();
+        for (id, parents_json, vector_json, xi_signature_json, geometry_json, glyph_content_json) in memories_extended {
+            extended_data.insert(id, (parents_json, vector_json, xi_signature_json, geometry_json, glyph_content_json));
         }
 
         // ADR-0011: lookup map for collective data (all fields Optional — backward compat)
@@ -354,9 +357,9 @@ impl DoltMemoryStore {
             let created_at = parse_dolt_datetime(&created_at_str)?;
             
             // Get extended data
-            let (parents_json, vector_json, xi_signature_json, geometry_json) = extended_data
+            let (parents_json, vector_json, xi_signature_json, geometry_json, _glyph_content_json) = extended_data
                 .remove(&id)
-                .unwrap_or((None, "[]".to_string(), None, None));
+                .unwrap_or((None, "[]".to_string(), None, None, None));
             let uuid = Uuid::parse_str(&id)
                 .map_err(|e| StoreError::Other(format!("Invalid memory UUID: {}", e)))?;
 
@@ -433,6 +436,50 @@ impl DoltMemoryStore {
 
     /// Sync a single memory to Dolt (upsert operation).
     pub fn sync_memory_to_dolt(&mut self, memory: &HyperMemory) -> Result<(), StoreError> {
+        #[cfg(feature = "glyph")]
+        {
+            self.sync_memory_to_dolt_with_glyph(memory)
+        }
+        #[cfg(not(feature = "glyph"))]
+        {
+            self.sync_memory_to_dolt_internal(memory, None)
+        }
+    }
+
+    /// Encode content as glyph for privacy protection on DoltHub
+    #[cfg(feature = "glyph")]
+    fn encode_content_as_glyph(content: &str) -> Option<String> {
+        // Convert text to f64 array (UTF-8 bytes as f64s)
+        let bytes = content.as_bytes();
+        let data: Vec<f64> = bytes.iter().map(|&b| b as f64).collect();
+        
+        if data.is_empty() {
+            return None;
+        }
+        
+        // Encode through GlyphEncoder
+        let encoder = GlyphEncoder::default();
+        match encoder.encode(&data) {
+            Ok(glyph) => {
+                // Serialize the Glyph struct to JSON
+                serde_json::to_string(&glyph).ok()
+            }
+            Err(_) => None
+        }
+    }
+
+    /// Update memory with glyph content if glyph feature is enabled
+    #[cfg(feature = "glyph")]
+    fn sync_memory_to_dolt_with_glyph(&mut self, memory: &HyperMemory) -> Result<(), StoreError> {
+        // Encode content as glyph
+        let glyph_content = Self::encode_content_as_glyph(&memory.content);
+        
+        // Sync to Dolt (this will be modified to store glyph_content)
+        self.sync_memory_to_dolt_internal(memory, glyph_content.as_deref())
+    }
+
+    /// Internal method that accepts glyph_content parameter
+    fn sync_memory_to_dolt_internal(&mut self, memory: &HyperMemory, glyph_content: Option<&str>) -> Result<(), StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
 
@@ -476,10 +523,10 @@ impl DoltMemoryStore {
             (&memory.id.to_string(), &memory.content, memory.amplitude, memory.frequency, memory.phase, memory.decay_rate, &created_at_str, memory.layer_depth, memory.hallucinated)
         ).map_err(|e| StoreError::Other(format!("Failed to upsert memory basic: {}", e)))?;
 
-        // Update extended fields  
+        // Update extended fields with glyph_content
         conn.exec_drop(
-            r"UPDATE memories SET parents = ?, vector_data = ?, xi_signature = ?, geometry = ? WHERE id = ?",
-            (&parents_json, &vector_json, &xi_signature_json, &geometry_json, &memory.id.to_string())
+            r"UPDATE memories SET parents = ?, vector_data = ?, xi_signature = ?, geometry = ?, glyph_content = ? WHERE id = ?",
+            (&parents_json, &vector_json, &xi_signature_json, &geometry_json, &glyph_content, &memory.id.to_string())
         ).map_err(|e| StoreError::Other(format!("Failed to update memory extended: {}", e)))?;
 
         // ADR-0011: update collective fields (no-op on pre-migration databases)
@@ -938,6 +985,14 @@ impl DoltMemoryStore {
                 INDEX idx_memory_b (memory_id_b)
             )", ()).map_err(|e| StoreError::Other(format!("Failed to create quarantine: {}", e)))?;
 
+        // Add glyph_content column for privacy-protected DoltHub push (ADR-0011)
+        let _ = conn.exec_drop(r"
+            ALTER TABLE memories ADD COLUMN glyph_content JSON DEFAULT NULL
+        ", ()).map_err(|e| {
+            // Non-fatal: column might already exist
+            eprintln!("[dolt] Note: glyph_content column may already exist: {}", e);
+        });
+
         Ok(())
     }
 
@@ -1036,6 +1091,52 @@ impl DoltMemoryStore {
          .unwrap_or(0);
 
         Ok((deleted, escalated))
+    }
+
+    /// Prepare for DoltHub push by encoding sensitive content as glyphs
+    #[cfg(feature = "glyph")]
+    pub fn prepare_for_dolthub(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Update memories where glyph_content exists to replace content with category placeholder
+        conn.exec_drop(
+            r"UPDATE memories 
+              SET content = CASE 
+                  WHEN hallucinated = 1 THEN '[hallucination]'
+                  WHEN layer_depth = 0 THEN '[experience]'  
+                  WHEN layer_depth <= 3 THEN '[knowledge]'
+                  ELSE '[insight]'
+              END
+              WHERE glyph_content IS NOT NULL",
+            ()
+        ).map_err(|e| StoreError::Other(format!("Failed to prepare for DoltHub: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Helper function to generate content category for privacy
+    #[cfg(feature = "glyph")]
+    fn content_category(memory: &HyperMemory) -> String {
+        if memory.hallucinated {
+            "[hallucination]".to_string()
+        } else if memory.layer_depth == 0 {
+            "[experience]".to_string()
+        } else if memory.layer_depth <= 3 {
+            "[knowledge]".to_string()
+        } else {
+            "[insight]".to_string()
+        }
+    }
+
+    /// Helper function for DoltHub-safe content (returns category if glyph exists, original otherwise)
+    #[cfg(feature = "glyph")]
+    pub fn dolthub_content(memory: &HyperMemory, has_glyph: bool) -> String {
+        if has_glyph {
+            Self::content_category(memory)
+        } else {
+            memory.content.clone()
+        }
     }
 }
 
@@ -1383,5 +1484,90 @@ mod tests {
             result.is_err(),
             "parse_from_str without timezone info MUST fail — the Phase 1 bug was real"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Glyph encoding tests (feature-gated)
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "glyph")]
+    #[test]
+    fn glyph_encoding_roundtrip() {
+        let content = "This is sensitive personal information that should be private.";
+        let glyph_json = DoltMemoryStore::encode_content_as_glyph(content);
+        
+        assert!(glyph_json.is_some(), "Glyph encoding should succeed");
+        
+        let glyph_str = glyph_json.unwrap();
+        // Verify the JSON doesn't contain human-readable plain text
+        assert!(!glyph_str.contains("sensitive personal information"));
+        assert!(!glyph_str.contains("should be private"));
+        
+        // Verify it's valid JSON
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&glyph_str);
+        assert!(parsed.is_ok(), "Glyph should be valid JSON");
+    }
+
+    #[cfg(feature = "glyph")]
+    #[test]
+    fn glyph_privacy_check() {
+        let test_cases = vec![
+            "My personal diary entry about feeling sad today",
+            "Secret API key: sk-123456789abcdef",
+            "John Doe lives at 123 Main Street, Anytown USA",
+            "Phone number: +1-555-123-4567",
+        ];
+        
+        for content in test_cases {
+            let glyph_json = DoltMemoryStore::encode_content_as_glyph(content);
+            assert!(glyph_json.is_some(), "Should encode: {}", content);
+            
+            let glyph_str = glyph_json.unwrap();
+            // Verify no sensitive text leaks through
+            let words: Vec<&str> = content.split_whitespace().collect();
+            for word in words {
+                if word.len() > 3 { // Skip short words like "at", "the"
+                    assert!(!glyph_str.contains(word), "Glyph leaked word '{}' from: {}", word, content);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "glyph")]
+    #[test]
+    fn content_category_classification() {
+        let memory1 = HyperMemory::new(vec![0.1; 100], "Test memory".to_string());
+        let mut memory2 = memory1.clone();
+        memory2.hallucinated = true;
+        let mut memory3 = memory1.clone();
+        memory3.layer_depth = 5;
+        
+        assert_eq!(DoltMemoryStore::content_category(&memory1), "[experience]");
+        assert_eq!(DoltMemoryStore::content_category(&memory2), "[hallucination]");
+        assert_eq!(DoltMemoryStore::content_category(&memory3), "[insight]");
+    }
+
+    #[cfg(feature = "glyph")]
+    #[test]
+    fn dolthub_content_privacy() {
+        let memory = HyperMemory::new(vec![0.1; 100], "Sensitive personal data".to_string());
+        
+        let safe_content = DoltMemoryStore::dolthub_content(&memory, true);
+        assert_eq!(safe_content, "[experience]");
+        assert!(!safe_content.contains("Sensitive"));
+        assert!(!safe_content.contains("personal"));
+        
+        let unsafe_content = DoltMemoryStore::dolthub_content(&memory, false);
+        assert_eq!(unsafe_content, "Sensitive personal data");
+    }
+
+    #[cfg(feature = "glyph")]
+    #[test]
+    fn glyph_empty_content_handling() {
+        let result = DoltMemoryStore::encode_content_as_glyph("");
+        assert!(result.is_none(), "Empty content should return None");
+        
+        let result = DoltMemoryStore::encode_content_as_glyph("   ");
+        assert!(result.is_some(), "Whitespace should encode successfully");
     }
 }
