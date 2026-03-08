@@ -242,11 +242,13 @@ impl<E: TextEncoder> CachedEncoder<E> {
 impl<E: TextEncoder> TextEncoder for CachedEncoder<E> {
     fn embed(&self, text: &str) -> Result<Vec<f32>, EncodingError> {
         let key = text.to_string();
-        if let Some(cached) = self.cache.read().unwrap().get(&key) {
+        let read_guard = self.cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = read_guard.get(&key) {
             return Ok(cached.clone());
         }
+        drop(read_guard);
         let result = self.inner.embed(text)?;
-        self.cache.write().unwrap().insert(key, result.clone());
+        self.cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, result.clone());
         Ok(result)
     }
 

@@ -237,8 +237,6 @@ impl DiskStore {
     /// Tries V3 format first, then V2, then V1 with migration.
     pub fn open(path: PathBuf) -> Result<Self, PersistenceError> {
         let data = fs::read(&path)?;
-        eprintln!("[DiskStore::open] file={} size={} bytes", path.display(), data.len());
-        
         // Try V3 (current)
         if let Ok(snapshot) = bincode::deserialize::<MemorySnapshot>(&data) {
             if snapshot.version == CURRENT_VERSION {
@@ -256,7 +254,8 @@ impl DiskStore {
                 return Err(PersistenceError::VersionMismatch {
                     expected: CURRENT_VERSION, got: snapshot.version });
             }
-            // version < CURRENT_VERSION: fall through to V2/V1 migration
+            // version < CURRENT_VERSION: fall through to V2/V1 migration only
+            // (do not attempt V2/V1 deserialization since we already parsed a valid header)
         }
 
         // Try V2 (pre-collective) and migrate to V3

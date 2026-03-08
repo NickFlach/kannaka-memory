@@ -34,9 +34,7 @@ impl PartialOrd for Candidate {
 }
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.similarity
-            .partial_cmp(&other.similarity)
-            .unwrap_or(Ordering::Equal)
+        self.similarity.total_cmp(&other.similarity)
     }
 }
 

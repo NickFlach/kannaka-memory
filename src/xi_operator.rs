@@ -99,7 +99,7 @@ pub fn xi_repulsive_force(xi_a: &[f32], xi_b: &[f32]) -> f32 {
 
 /// Boost search diversity using Xi signatures.
 /// Memories with different Xi residues get boosted scores for better differentiation.
-/// The boost is capped at 1.5× the base similarity to prevent runaway score inflation.
+/// The boost is capped at 1.0 (valid cosine similarity ceiling).
 pub fn xi_diversity_boost(base_similarity: f32, xi_a: &[f32], xi_b: &[f32]) -> f32 {
     let repulsion = xi_repulsive_force(xi_a, xi_b);
     
@@ -107,8 +107,8 @@ pub fn xi_diversity_boost(base_similarity: f32, xi_a: &[f32], xi_b: &[f32]) -> f
     // This encourages retrieval of diverse perspectives on similar content
     if base_similarity > 0.7 && repulsion > 0.3 {
         let boosted = base_similarity * (1.0 + repulsion * 0.5);
-        // Cap at 1.5× base to prevent runaway inflation in downstream ranking
-        boosted.min(base_similarity * 1.5)
+        // Cap at 1.0: cosine similarity cannot exceed 1.0
+        boosted.min(1.0)
     } else {
         base_similarity
     }

@@ -61,7 +61,7 @@ pub struct ConsolidationReport {
     pub duration_ms: u64,
 }
 
-/// The 7-stage consolidation engine.
+/// The 9-stage consolidation engine.
 pub struct ConsolidationEngine {
     /// Similarity threshold for interference detection
     pub interference_threshold: f32,
@@ -91,7 +91,7 @@ impl Default for ConsolidationEngine {
 }
 
 impl ConsolidationEngine {
-    /// Run a full 7-stage consolidation cycle on memories at the given layer range.
+    /// Run a full 9-stage consolidation cycle on memories at the given layer range.
     pub fn consolidate(
         &self,
         engine: &mut MemoryEngine,
@@ -229,6 +229,18 @@ impl ConsolidationEngine {
     /// Stage 3: Bundle memories at each layer into summary vectors at the next layer.
     fn stage_bundle(&self, engine: &mut MemoryEngine, working_set: &[Uuid], max_layer: u8) -> usize {
         let mut bundles_created = 0;
+
+        // Prune stale summary memories from previous dream cycles before creating new ones.
+        // This prevents unbounded accumulation of __consolidation_summary_layer_N memories.
+        let stale_summaries: Vec<Uuid> = engine.store.all_memories()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.content.starts_with("__consolidation_summary_layer_"))
+            .map(|m| m.id)
+            .collect();
+        for id in stale_summaries {
+            let _ = engine.delete(&id);
+        }
 
         for layer in 0..=max_layer {
             let vectors: Vec<Vec<f32>> = working_set

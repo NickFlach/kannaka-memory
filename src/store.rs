@@ -291,7 +291,8 @@ impl MemoryEngine {
         let qvec = self.pipeline.encode_text(query)?;
         let query_xi = compute_xi_signature(&qvec);
         let now = Utc::now();
-        let raw = self.store.search(&qvec, self.store.count())?;
+        let raw_limit = (top_k * 10).min(self.store.count());
+        let raw = self.store.search(&qvec, raw_limit)?;
         let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
         let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?; // Get more candidates for diversity
 
@@ -351,7 +352,8 @@ impl MemoryEngine {
 
         // Step 1: Get initial candidates (top_k * 3)
         let initial = self.store.search_with_wave(&qvec, top_k * 3, now)?;
-        let raw_all = self.store.search(&qvec, self.store.count())?;
+        let raw_limit = (top_k * 10).min(self.store.count());
+        let raw_all = self.store.search(&qvec, raw_limit)?;
         let raw_map: HashMap<Uuid, f32> = raw_all.into_iter().collect();
 
         // Step 2: Follow skip links from candidates

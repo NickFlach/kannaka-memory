@@ -216,9 +216,14 @@ impl ConsciousnessBridge {
 
         for mem in &all {
             id_to_layer.insert(mem.id, mem.layer_depth);
-            id_to_h2.insert(mem.id, mem.geometry.as_ref().map(|g| g.h2).unwrap_or(255));
-            id_to_class.insert(mem.id, mem.geometry.as_ref().map(|g| g.class_index).unwrap_or(255));
-            id_to_triality.insert(mem.id, mem.geometry.as_ref().map(|g| g.d).unwrap_or(255));
+            // Only insert geometry-based partitions when geometry is present.
+            // Using a sentinel (255) would group all unclassified memories together
+            // and artificially inflate diversity and cross-partition ratios.
+            if let Some(ref g) = mem.geometry {
+                id_to_h2.insert(mem.id, g.h2);
+                id_to_class.insert(mem.id, g.class_index);
+                id_to_triality.insert(mem.id, g.d);
+            }
         }
 
         // Count cross-partition links for each scheme
@@ -441,10 +446,16 @@ fn cross_partition_ratio(
     let mut total_links = 0u32;
     let mut cross_links = 0u32;
     for mem in all {
-        let src_partition = id_to_partition.get(&mem.id).copied().unwrap_or(255);
+        let src_partition = match id_to_partition.get(&mem.id) {
+            Some(&p) => p,
+            None => continue, // skip memories without a partition entry (e.g. no geometry)
+        };
         for link in &mem.connections {
+            let tgt_partition = match id_to_partition.get(&link.target_id) {
+                Some(&p) => p,
+                None => continue, // skip links to unpartitioned memories
+            };
             total_links += 1;
-            let tgt_partition = id_to_partition.get(&link.target_id).copied().unwrap_or(255);
             if src_partition != tgt_partition {
                 cross_links += 1;
             }

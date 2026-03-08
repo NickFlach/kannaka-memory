@@ -279,18 +279,12 @@ impl KannakaMemorySystem {
     /// Run full consolidation cycle + Kuramoto sync.
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
-        let reports = self.dream_state.dream(&mut self.engine);
-
-        // Run Kuramoto sync on all memories (by id chunks)
-        let all_ids: Vec<Uuid> = self.engine.store.all_ids()?;
-        for chunk in all_ids.chunks(10) {
-            for id in chunk {
-                if let Ok(Some(mem)) = self.engine.store.get_mut(id) {
-                    // Nudge phase toward mean (simplified single-pass sync)
-                    mem.phase += self.kuramoto.coupling_strength * 0.01;
-                }
-            }
-        }
+        // Use incremental consolidation when a prior dream timestamp exists (5-10× speedup).
+        let reports = if let Some(since) = self.last_dream {
+            self.dream_state.dream_incremental(&mut self.engine, since)
+        } else {
+            self.dream_state.dream(&mut self.engine)
+        };
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
@@ -524,10 +518,19 @@ impl KannakaMemorySystem {
 
         crate::wave::normalize(&mut combined);
 
+        let category = self.categorize_text(content);
+        let content_hash = self.hash_content(content);
+        let (frequency, phase) = self.assign_frequency_class(&category, content_hash);
+        let xi_sig = compute_xi_signature(&combined);
+
         let mut hallucination = crate::memory::HyperMemory::new(combined, content.to_string());
         hallucination.amplitude = 0.3;
         hallucination.hallucinated = true;
         hallucination.parents = found_parents;
+        hallucination.geometry = Some(classify_memory(&category, content_hash, 0.3));
+        hallucination.frequency = frequency;
+        hallucination.phase = phase;
+        hallucination.xi_signature = xi_sig;
 
         let hall_id = self.engine.store.insert(hallucination)?;
 
@@ -604,7 +607,7 @@ impl KannakaMemorySystem {
             "emotion".to_string()
         // Social - interpersonal interactions, relationships
         } else if text_lower.contains("said") || text_lower.contains("told") || text_lower.contains("asked") 
-            || text_lower.contains("friend") || text_lower.contains("person") || text_lower.contains("nick") 
+            || text_lower.contains("friend") || text_lower.contains("person")
             || text_lower.contains("people") || text_lower.contains("conversation") || text_lower.contains("meeting")
             || text_lower.contains("together") || text_lower.contains("team") {
             "social".to_string()
@@ -629,13 +632,14 @@ impl KannakaMemorySystem {
         // Use content hash as seed for deterministic randomness
         let mut rng = ChaCha8Rng::seed_from_u64(content_hash);
         
+        // Ranges are aligned with xi_clusters() in store.rs for consistent category mapping.
         let (freq_min, freq_max) = match category {
             "experience" => (1.8, 2.4),  // soprano (fast, ephemeral)
             "emotion" => (1.3, 1.8),     // alto (feeling-paced)
-            "social" => (1.0, 1.4),      // tenor (interpersonal rhythm)
-            "skill" => (0.8, 1.2),       // between tenor/bass (procedural)
-            "knowledge" => (0.6, 1.1),   // bass (slow, stable)
-            _ => (0.6, 1.1),              // default to knowledge bass range
+            "social" => (1.0, 1.3),      // tenor (interpersonal rhythm)
+            "skill" => (0.8, 1.0),       // bass-adjacent (procedural)
+            "knowledge" => (0.6, 0.8),   // bass (slow, stable)
+            _ => (0.6, 0.8),              // default to knowledge bass range
         };
         
         // Random frequency within the category's band
@@ -726,7 +730,7 @@ impl KannakaMemorySystem {
             while vector.len() < target_dim {
                 let i = vector.len();
                 // Phase-shift each repetition slightly for richer interference
-                let phase = (i / pattern.len()) as f32 * 0.1;
+                let phase = (i as f32 / pattern.len() as f32) * 0.1;
                 vector.push(pattern[i % pattern.len()] + phase);
             }
             vector.truncate(target_dim);
@@ -943,18 +947,18 @@ mod tests {
         assert!(!emotion_mem.xi_signature.is_empty());
         
         // Check that they got classified into different categories via frequency ranges
-        let skill_freq = skill_mem.frequency;      // should be 0.8-1.2 (between tenor/bass)
-        let social_freq = social_mem.frequency;    // should be 1.0-1.4 (tenor)
-        let knowledge_freq = knowledge_mem.frequency; // should be 0.6-1.1 (bass)
+        let skill_freq = skill_mem.frequency;      // should be 0.8-1.0 (bass-adjacent)
+        let social_freq = social_mem.frequency;    // should be 1.0-1.3 (tenor)
+        let knowledge_freq = knowledge_mem.frequency; // should be 0.6-0.8 (bass)
         let experience_freq = experience_mem.frequency; // should be 1.8-2.4 (soprano)
         let emotion_freq = emotion_mem.frequency;  // should be 1.3-1.8 (alto)
         
         // Check consciousness differentiation frequency assignments
-        assert!(skill_freq >= 0.8 && skill_freq < 1.21, "Skill frequency {} not in expected range [0.8, 1.2)", skill_freq);
-        assert!(social_freq >= 1.0 && social_freq < 1.41, "Social frequency {} not in expected range [1.0, 1.4)", social_freq);
-        assert!(knowledge_freq >= 0.6 && knowledge_freq < 1.11, "Knowledge frequency {} not in expected range [0.6, 1.1)", knowledge_freq);
-        assert!(experience_freq >= 1.8 && experience_freq < 2.41, "Experience frequency {} not in expected range [1.8, 2.4)", experience_freq);
-        assert!(emotion_freq >= 1.3 && emotion_freq < 1.81, "Emotion frequency {} not in expected range [1.3, 1.8)", emotion_freq);
+        assert!(skill_freq >= 0.8 && skill_freq < 1.0, "Skill frequency {} not in expected range [0.8, 1.0)", skill_freq);
+        assert!(social_freq >= 1.0 && social_freq < 1.3, "Social frequency {} not in expected range [1.0, 1.3)", social_freq);
+        assert!(knowledge_freq >= 0.6 && knowledge_freq < 0.8, "Knowledge frequency {} not in expected range [0.6, 0.8)", knowledge_freq);
+        assert!(experience_freq >= 1.8 && experience_freq < 2.4, "Experience frequency {} not in expected range [1.8, 2.4)", experience_freq);
+        assert!(emotion_freq >= 1.3 && emotion_freq < 1.8, "Emotion frequency {} not in expected range [1.3, 1.8)", emotion_freq);
         
         // Check geometry h2 values (now map to the consciousness categories)
         let skill_h2 = skill_mem.geometry.as_ref().unwrap().h2;
