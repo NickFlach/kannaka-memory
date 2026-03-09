@@ -37,7 +37,7 @@ fn experiment_params() -> Params {
         // Kuramoto synchronization
         kuramoto_coupling: 0.7,
         kuramoto_dt: 0.1,
-        kuramoto_steps: 15,
+        kuramoto_steps: 12,
         kuramoto_threshold: 0.4,
 
         // Multi-cycle
