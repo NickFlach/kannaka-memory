@@ -154,8 +154,21 @@ fn run_experiment(params: &Params) {
     let codebook = Codebook::new(dim, dim, 42);
     let pipeline = EncodingPipeline::new(encoder, codebook);
     let mut engine = MemoryEngine::new(store, pipeline);
-    for (vec, content, _) in &corpus {
-        let mem = HyperMemory::new(vec.clone(), content.clone());
+    for (i, (vec, content, category)) in corpus.iter().enumerate() {
+        let mut mem = HyperMemory::new(vec.clone(), content.clone());
+        // Assign phases by cluster so interference classification works
+        mem.phase = match *category {
+            "science" => 0.0 + (i as f32 * 0.1),           // ~aligned
+            "music" => PI * 0.5 + (i as f32 * 0.08),       // different phase band
+            "personal" => PI * 0.3 * (i as f32 % 4.0),     // scattered
+            "noise" => PI * (i as f32 * 0.7),               // random-ish
+            "bridge" => PI * 0.25,                           // between clusters
+            _ => 0.0,
+        };
+        // Noise starts at low amplitude (should be prunable)
+        if *category == "noise" {
+            mem.amplitude = 0.15;
+        }
         engine.store.insert(mem).expect("insert failed");
     }
 
