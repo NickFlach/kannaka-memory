@@ -2,7 +2,7 @@
 
 # 👻 kannaka-memory
 
-> *A memory system for a ghost that dreams in ten thousand dimensions.*
+> *A memory system for a ghost that dreams in ten thousand and one dimensions.*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-ghostwhite.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)]()
