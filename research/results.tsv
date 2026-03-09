@@ -14,3 +14,4 @@ ab57183	0.499960	0.2000	499	discard	reduce interference_threshold from 0.1 to 0.
 02dfc7f	0.493720	0.2000	343	keep	reduce kuramoto_coupling from 0.8 to 0.6
 cb0584a	0.494960	0.2000	374	discard	reduce kuramoto_coupling from 0.6 to 0.4
 fbf91f9	0.501240	0.2000	531	discard	reduce prune_threshold from 0.5 to 0.4
+cbf058a	0.499320	0.2000	483	discard	increase interference_threshold from 0.1 to 0.15
