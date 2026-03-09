@@ -1,3 +1,2 @@
-commit	fitness	recall	links	status	description
-f12cc87	0.481560	0.2000	0	keep	baseline: interference=0.1 phase=pi/4 prune=0.5 boost=0.4 penalty=0.4 coupling=0.6
-dbf6bb8	0.321484	0.2000	224	keep	fix: layer diversity in corpus enables cross-layer wiring (224 links!)
+commit	fitness	noise_rm	signal	bridge	amp_sep	links	status	description
+41073a3	0.203153	0.3000	1.0000	1.0000	0.8183	224	keep	new baseline with redesigned fitness metric

@@ -26,11 +26,11 @@ fn experiment_params() -> Params {
         default_frequency: 0.1,
 
         // Consolidation (dream)
-        interference_threshold: 0.1,
-        phase_alignment_threshold: PI / 4.0,
-        prune_threshold: 0.5,
-        constructive_boost: 0.4,
-        destructive_penalty: 0.4,
+        interference_threshold: 0.05,
+        phase_alignment_threshold: PI / 3.0,
+        prune_threshold: 0.1,
+        constructive_boost: 0.3,
+        destructive_penalty: 0.6,
 
         // Kuramoto synchronization
         kuramoto_coupling: 0.6,
