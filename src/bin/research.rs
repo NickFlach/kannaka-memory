@@ -41,7 +41,7 @@ fn experiment_params() -> Params {
         kuramoto_threshold: 0.4,
 
         // Multi-cycle
-        dream_cycles: 2,
+        dream_cycles: 1,
     }
 }
 
