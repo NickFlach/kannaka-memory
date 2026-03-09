@@ -42,6 +42,10 @@ glyph = []
 collective = ["rayon"]
 
 [[bin]]
+name = "research"
+path = "src/bin/research.rs"
+
+[[bin]]
 name = "kannaka-mcp"
 path = "src/bin/mcp_server.rs"
 required-features = ["mcp"]
