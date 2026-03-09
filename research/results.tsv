@@ -1,3 +1,11 @@
 commit	fitness	noise_rm	signal	bridge	amp_sep	links	status	description
 41073a3	0.203153	0.3000	1.0000	1.0000	0.8183	224	keep	new baseline with redesigned fitness metric
 c7f39ad	0.151885	0.5000	1.0000	1.0000	0.8264	287	keep	interference=0.05 phase=pi/3 prune=0.1 boost=0.3 penalty=0.6
+28f7ea5	0.097519	0.8000	1.0000	1.0000	0.6867	302	keep	interference=0.02 phase=pi/2.5 prune=0.1 penalty=0.8
+e15906c	0.141849	0.6000	1.0000	1.0000	0.7247	323	discard	phase=pi/2 prune=0.12 boost=0.5 penalty=1.0
+dfe6c86	0.136735	0.6000	1.0000	1.0000	0.7606	302	discard	prune=0.12 boost=0.5 penalty=1.0
+106d55e	0.097639	0.8000	1.0000	1.0000	0.6867	302	discard	kuramoto coupling=0.9 - no effect
+12aeeef	0.157500	0.5000	1.0000	1.0000	0.7908	302	discard	boost=0.6 noise survived from boost
+f024283	0.222472	0.4000	1.0000	1.0000	0.5239	171	discard	phase=pi/6 too strict
+7274495	0.137169	0.6000	1.0000	1.0000	0.7555	302	discard	boost=0.35 still helped noise
+5b4b9c2	0.000660	1.0000	1.0000	1.0000	1.0000	302	keep	interference=0.01 penalty=1.2 boost=0.15 NEAR PERFECT
