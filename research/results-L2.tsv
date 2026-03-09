@@ -4,3 +4,4 @@ b987a7c	0.545140	1.0000	0.0400	1.0000	0.0000	0.0000	0.0000	641	discard	L2 baseli
 ebcf676	0.141982	0.8000	0.6000	1.0000	0.6948	0.9638	1.0000	498	discard	L2-2: interference=0.03 penalty=0.5 - signal dropped
 f7d39fe	0.113076	0.9000	0.6267	1.0000	0.7506	0.9732	1.0000	502	keep	L2-5: phase=pi/2 penalty=0.5 - wider constructive band
 68c4e95	0.098006	0.7000	0.8133	1.0000	0.8662	0.9692	1.0000	448	keep	L2-10: SINGLE CYCLE wins - less accumulation damage
+93d7a6f	0.127953	0.7000	0.7733	1.0000	0.6992	0.9764	1.0000	450	discard	L2-11: interference=0.04 - lower threshold hurt signal
