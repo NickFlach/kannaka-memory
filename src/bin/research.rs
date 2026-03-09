@@ -35,7 +35,7 @@ fn experiment_params() -> Params {
         destructive_penalty: 0.5,
 
         // Kuramoto synchronization
-        kuramoto_coupling: 0.8,
+        kuramoto_coupling: 0.7,
         kuramoto_dt: 0.1,
         kuramoto_steps: 15,
         kuramoto_threshold: 0.4,
