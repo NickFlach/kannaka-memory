@@ -4,3 +4,4 @@ d40cda4	0.589000	0.2000	475	discard	reduce interference_threshold to 0.5 (worse)
 eb4e66c	0.585560	0.2000	389	SUCCESS	lower interference_threshold from 0.3 to 0.2
 ab64607	0.497560	0.2000	439	keep	new baseline: varied phases + noise amplitude
 b78502e	0.503920	0.2000	598	discard	lower kuramoto_threshold from 0.5 to 0.4
+008fc58	0.496280	0.2000	407	keep	increase constructive_boost from 0.3 to 0.4
