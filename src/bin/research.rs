@@ -1,9 +1,10 @@
 //! kannaka-research — autonomous memory system benchmarking
 //!
-//! Run: cargo run --bin research
+//! Run: cargo run --release --bin research
 //!
-//! The agent modifies `research/params.toml` or the ExperimentParams below.
-//! This binary evaluates the parameters against a fixed test corpus.
+//! Level 1 (solved): noise removal, signal preservation, skip links
+//! Level 2 (current): cluster coherence, multi-cycle consolidation,
+//!   phase alignment, cross-cluster contamination resistance
 
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -14,6 +15,7 @@ use kannaka_memory::encoding::{EncodingPipeline, SimpleHashEncoder};
 use kannaka_memory::kuramoto::KuramotoSync;
 use kannaka_memory::memory::HyperMemory;
 use kannaka_memory::store::{InMemoryStore, MemoryEngine};
+use kannaka_memory::wave::cosine_similarity;
 
 // ============================================================================
 // EXPERIMENT PARAMETERS — THIS IS WHAT THE AGENT MODIFIES
@@ -37,11 +39,14 @@ fn experiment_params() -> Params {
         kuramoto_dt: 0.1,
         kuramoto_steps: 10,
         kuramoto_threshold: 0.5,
+
+        // Multi-cycle
+        dream_cycles: 3,
     }
 }
 
 // ============================================================================
-// Parameter struct (agent edits the values above, not this struct)
+// Parameter struct
 // ============================================================================
 
 #[allow(dead_code)]
@@ -57,6 +62,7 @@ struct Params {
     kuramoto_dt: f32,
     kuramoto_steps: usize,
     kuramoto_threshold: f32,
+    dream_cycles: usize,
 }
 
 // ============================================================================
@@ -86,12 +92,21 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         corpus.push((v, format!("resonance patterns track {}", i), "music"));
     }
 
-    // Cluster 3: Personal (15 memories, sparse)
+    // Cluster 3: Personal (15 memories, sparse — harder to cluster)
     for i in 0..15 {
         let v: Vec<f32> = (0..dim).map(|j| {
             ((i * 7 + j * 13) as f32 * 0.37).sin() * 0.6
         }).collect();
         corpus.push((v, format!("personal memory {}", i), "personal"));
+    }
+
+    // Cluster 4: Emotion (10 memories, overlaps with personal — tests contamination resistance)
+    for i in 0..10 {
+        let v: Vec<f32> = (0..dim).map(|j| {
+            ((i * 7 + j * 13) as f32 * 0.37).sin() * 0.5  // similar to personal but lower amp
+            + ((i * 11 + j * 3) as f32 * 0.71).cos() * 0.3 // unique emotion component
+        }).collect();
+        corpus.push((v, format!("emotion feeling {}", i), "emotion"));
     }
 
     // Noise (10 memories, low amplitude — should be pruned)
@@ -100,6 +115,14 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
             ((i * 31 + j * 97) as f32 * 1.7).sin() * 0.1
         }).collect();
         corpus.push((v, format!("noise {}", i), "noise"));
+    }
+
+    // Decoys (5 memories — high amplitude noise that should NOT be pruned naively)
+    for i in 0..5 {
+        let v: Vec<f32> = (0..dim).map(|j| {
+            ((i * 43 + j * 71) as f32 * 2.3).sin() * 0.9
+        }).collect();
+        corpus.push((v, format!("decoy outlier {}", i), "decoy"));
     }
 
     // Cross-cluster bridges (5 memories — should form skip links)
@@ -117,25 +140,26 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
     corpus
 }
 
-/// Evaluate noise removal: what fraction of noise memories were pruned?
+/// Evaluate noise removal (only actual noise, not decoys)
 fn eval_noise_removal(engine: &MemoryEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
-    let surviving_noise = all.iter().filter(|m| m.content.starts_with("noise") && m.amplitude > 0.01).count();
-    // 10 noise memories in corpus — ideal: all pruned
+    let surviving_noise = all.iter()
+        .filter(|m| m.content.starts_with("noise") && m.amplitude > 0.01)
+        .count();
     1.0 - (surviving_noise as f32 / 10.0)
 }
 
-/// Evaluate signal preservation: are the main cluster memories still alive?
+/// Evaluate signal preservation (all non-noise memories should survive)
 fn eval_signal_preservation(engine: &MemoryEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
+    // 75 signal memories: 20 science + 20 music + 15 personal + 10 emotion + 5 bridge + 5 decoy
     let signal_count = all.iter().filter(|m| {
-        m.content.contains("quantum") || m.content.contains("resonance") || m.content.contains("personal")
+        !m.content.starts_with("noise") && m.amplitude > 0.01
     }).count();
-    // 55 signal memories (20 science + 20 music + 15 personal)
-    (signal_count as f32 / 55.0).min(1.0)
+    (signal_count as f32 / 75.0).min(1.0)
 }
 
-/// Evaluate bridge connectivity: do bridge memories have skip links?
+/// Evaluate bridge connectivity
 fn eval_bridge_links(engine: &MemoryEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let bridges: Vec<_> = all.iter().filter(|m| m.content.contains("bridge")).collect();
@@ -144,24 +168,97 @@ fn eval_bridge_links(engine: &MemoryEngine) -> f32 {
     linked as f32 / bridges.len() as f32
 }
 
-/// Evaluate amplitude separation: ratio of avg signal amplitude to avg noise amplitude
-fn eval_amplitude_separation(engine: &MemoryEngine) -> f32 {
+/// Evaluate intra-cluster phase coherence
+/// After Kuramoto sync, memories in the same cluster should have aligned phases
+fn eval_phase_coherence(engine: &MemoryEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
-    let signal_amps: Vec<f32> = all.iter()
-        .filter(|m| m.content.contains("quantum") || m.content.contains("resonance") || m.content.contains("personal"))
-        .map(|m| m.amplitude)
+    let mut total_coherence = 0.0f32;
+    let mut cluster_count = 0;
+
+    for cluster_name in &["quantum", "resonance"] {
+        let phases: Vec<f32> = all.iter()
+            .filter(|m| m.content.contains(cluster_name) && m.amplitude > 0.01)
+            .map(|m| m.phase)
+            .collect();
+        
+        if phases.len() < 2 { continue; }
+        
+        // Kuramoto order parameter: R = |1/N * sum(e^(i*phase))|
+        let sum_cos: f32 = phases.iter().map(|p| p.cos()).sum();
+        let sum_sin: f32 = phases.iter().map(|p| p.sin()).sum();
+        let n = phases.len() as f32;
+        let r = ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt();
+        
+        total_coherence += r;
+        cluster_count += 1;
+    }
+
+    if cluster_count == 0 { return 0.0; }
+    total_coherence / cluster_count as f32
+}
+
+/// Evaluate cluster separation: are different clusters distinguishable?
+/// Measures avg within-cluster similarity vs avg cross-cluster similarity
+fn eval_cluster_separation(engine: &MemoryEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    
+    let science: Vec<&Vec<f32>> = all.iter()
+        .filter(|m| m.content.contains("quantum") && m.amplitude > 0.01)
+        .map(|m| &m.vector)
         .collect();
-    let noise_amps: Vec<f32> = all.iter()
-        .filter(|m| m.content.starts_with("noise"))
+    let music: Vec<&Vec<f32>> = all.iter()
+        .filter(|m| m.content.contains("resonance") && m.amplitude > 0.01)
+        .map(|m| &m.vector)
+        .collect();
+    
+    if science.len() < 2 || music.len() < 2 { return 0.0; }
+
+    // Avg within-cluster similarity
+    let mut within_sum = 0.0f32;
+    let mut within_count = 0;
+    for i in 0..science.len().min(5) {
+        for j in (i+1)..science.len().min(5) {
+            within_sum += cosine_similarity(science[i], science[j]).abs();
+            within_count += 1;
+        }
+    }
+    let within_avg = if within_count > 0 { within_sum / within_count as f32 } else { 0.0 };
+
+    // Avg cross-cluster similarity
+    let mut cross_sum = 0.0f32;
+    let mut cross_count = 0;
+    for s in science.iter().take(5) {
+        for m in music.iter().take(5) {
+            cross_sum += cosine_similarity(s, m).abs();
+            cross_count += 1;
+        }
+    }
+    let cross_avg = if cross_count > 0 { cross_sum / cross_count as f32 } else { 0.0 };
+
+    // Separation = within - cross, normalized to [0, 1]
+    ((within_avg - cross_avg) / (within_avg + 0.001)).max(0.0).min(1.0)
+}
+
+/// Evaluate amplitude distribution: signal memories should have diverse amplitudes
+/// (not all boosted to the same value — that's information loss)
+fn eval_amplitude_diversity(engine: &MemoryEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let amps: Vec<f32> = all.iter()
+        .filter(|m| !m.content.starts_with("noise") && m.amplitude > 0.01)
         .map(|m| m.amplitude)
         .collect();
     
-    let avg_signal = if signal_amps.is_empty() { 0.0 } else { signal_amps.iter().sum::<f32>() / signal_amps.len() as f32 };
-    let avg_noise = if noise_amps.is_empty() { return 1.0; } else { noise_amps.iter().sum::<f32>() / noise_amps.len() as f32 };
+    if amps.len() < 2 { return 0.0; }
     
-    // Ratio capped at 1.0 — higher signal vs noise = better
-    if avg_noise == 0.0 { return 1.0; }
-    (avg_signal / (avg_signal + avg_noise)).min(1.0)
+    let mean = amps.iter().sum::<f32>() / amps.len() as f32;
+    let variance = amps.iter().map(|a| (a - mean).powi(2)).sum::<f32>() / amps.len() as f32;
+    let cv = variance.sqrt() / (mean + 0.001); // coefficient of variation
+    
+    // Want moderate diversity — not zero (all same) and not huge (chaotic)
+    // Sweet spot: CV around 0.3-0.7
+    if cv < 0.1 { cv / 0.1 }  // too uniform
+    else if cv > 1.0 { (2.0 - cv).max(0.0) }  // too chaotic
+    else { 1.0 }  // goldilocks
 }
 
 fn run_experiment(params: &Params) {
@@ -176,25 +273,37 @@ fn run_experiment(params: &Params) {
     let mut engine = MemoryEngine::new(store, pipeline);
     for (i, (vec, content, category)) in corpus.iter().enumerate() {
         let mut mem = HyperMemory::new(vec.clone(), content.clone());
-        // Assign phases by cluster so interference classification works
         mem.phase = match *category {
-            "science" => 0.0 + (i as f32 * 0.1),           // ~aligned
-            "music" => PI * 0.5 + (i as f32 * 0.08),       // different phase band
-            "personal" => PI * 0.3 * (i as f32 % 4.0),     // scattered
-            "noise" => PI * (i as f32 * 0.7),               // random-ish
-            "bridge" => PI * 0.25,                           // between clusters
+            "science" => 0.0 + (i as f32 * 0.1),
+            "music" => PI * 0.5 + (i as f32 * 0.08),
+            "personal" => PI * 0.3 * (i as f32 % 4.0),
+            "emotion" => PI * 0.4 * (i as f32 % 3.0),
+            "noise" => PI * (i as f32 * 0.7),
+            "decoy" => PI * (i as f32 * 0.31),
+            "bridge" => PI * 0.25,
             _ => 0.0,
         };
-        // Assign layer diversity so cross-layer wiring can fire
         mem.layer_depth = match *category {
-            "science" => (i % 3) as u8,      // spread across layers 0-2
-            "music" => ((i + 1) % 3) as u8,  // offset from science
-            "personal" => 0,                  // all shallow
-            "noise" => 0,                     // shallow (should be pruned)
-            "bridge" => 1,                    // mid-layer (bridges between)
+            "science" => (i % 3) as u8,
+            "music" => ((i + 1) % 3) as u8,
+            "personal" => 0,
+            "emotion" => 1,
+            "noise" => 0,
+            "decoy" => 2,
+            "bridge" => 1,
             _ => 0,
         };
-        // Noise starts at low amplitude (should be prunable)
+        // Set category-appropriate frequencies
+        mem.frequency = match *category {
+            "science" => 0.1,
+            "music" => 0.15,
+            "personal" => 0.08,
+            "emotion" => 1.5,  // emotion frequency band
+            "noise" => 0.5,
+            "decoy" => 0.12,
+            "bridge" => 0.11,
+            _ => params.default_frequency,
+        };
         if *category == "noise" {
             mem.amplitude = 0.15;
         }
@@ -203,7 +312,6 @@ fn run_experiment(params: &Params) {
 
     let pre_count = engine.store.count();
 
-    // Build consolidation engine from params
     let consolidator = ConsolidationEngine {
         interference_threshold: params.interference_threshold,
         phase_alignment_threshold: params.phase_alignment_threshold,
@@ -218,45 +326,62 @@ fn run_experiment(params: &Params) {
         },
     };
 
-    // Run consolidation
+    // Run multiple consolidation cycles
     let start = Instant::now();
-    let report = consolidator.consolidate(&mut engine, 0, 2);
+    let mut total_strengthened = 0usize;
+    let mut total_pruned = 0usize;
+    let mut total_links = 0usize;
+    let mut total_hallucinations = 0usize;
+    let mut last_report = None;
+
+    for cycle in 0..params.dream_cycles {
+        let report = consolidator.consolidate(&mut engine, 0, 2);
+        total_strengthened += report.memories_strengthened;
+        total_pruned += report.memories_pruned;
+        total_links += report.skip_links_created;
+        total_hallucinations += report.hallucinations_created;
+        last_report = Some(report);
+    }
     let consolidation_ms = start.elapsed().as_millis() as u64;
 
     let post_count = engine.store.count();
 
-    // Component scores (HIGHER IS BETTER for each)
+    // Component scores (HIGHER IS BETTER)
     let noise_removal = eval_noise_removal(&engine);
     let signal_preservation = eval_signal_preservation(&engine);
     let bridge_links = eval_bridge_links(&engine);
-    let amp_separation = eval_amplitude_separation(&engine);
-    let link_density = (report.skip_links_created as f32 / 100.0).min(1.0);
-    let speed = 1.0 - (consolidation_ms as f32 / 5000.0).min(1.0);
+    let phase_coherence = eval_phase_coherence(&engine);
+    let cluster_separation = eval_cluster_separation(&engine);
+    let amp_diversity = eval_amplitude_diversity(&engine);
+    let link_density = (total_links as f32 / 200.0).min(1.0);
+    let speed = 1.0 - (consolidation_ms as f32 / 10000.0).min(1.0);
 
-    // Composite fitness (LOWER IS BETTER)
-    // Invert component scores so lower = better
-    let fitness = 0.25 * (1.0 - noise_removal)
-        + 0.20 * (1.0 - signal_preservation)
-        + 0.15 * (1.0 - bridge_links)
-        + 0.15 * (1.0 - amp_separation)
-        + 0.15 * (1.0 - link_density)
+    // Level 2 composite fitness (LOWER IS BETTER)
+    let fitness = 0.15 * (1.0 - noise_removal)
+        + 0.15 * (1.0 - signal_preservation)
+        + 0.10 * (1.0 - bridge_links)
+        + 0.15 * (1.0 - phase_coherence)
+        + 0.15 * (1.0 - cluster_separation)
+        + 0.10 * (1.0 - amp_diversity)
+        + 0.10 * (1.0 - link_density)
         + 0.10 * (1.0 - speed);
 
-    // Print results in grep-friendly format
     println!("---");
     println!("fitness:              {:.6}", fitness);
     println!("noise_removal:        {:.4}", noise_removal);
     println!("signal_preservation:  {:.4}", signal_preservation);
     println!("bridge_links:         {:.4}", bridge_links);
-    println!("amp_separation:       {:.4}", amp_separation);
+    println!("phase_coherence:      {:.4}", phase_coherence);
+    println!("cluster_separation:   {:.4}", cluster_separation);
+    println!("amp_diversity:        {:.4}", amp_diversity);
     println!("link_density:         {:.4}", link_density);
     println!("speed:                {:.4}", speed);
     println!("consolidation_ms:     {}", consolidation_ms);
-    println!("links_created:        {}", report.skip_links_created);
-    println!("memories_strengthened: {}", report.memories_strengthened);
-    println!("memories_pruned:      {}", report.memories_pruned);
-    println!("clusters_synced:      {}", report.clusters_synced);
-    println!("hallucinations:       {}", report.hallucinations_created);
+    println!("dream_cycles:         {}", params.dream_cycles);
+    println!("links_created:        {}", total_links);
+    println!("memories_strengthened: {}", total_strengthened);
+    println!("memories_pruned:      {}", total_pruned);
+    println!("hallucinations:       {}", total_hallucinations);
     println!("pre_count:            {}", pre_count);
     println!("post_count:           {}", post_count);
     println!("---");
