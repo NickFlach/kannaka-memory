@@ -30,9 +30,9 @@ fn experiment_params() -> Params {
         // Consolidation (dream)
         interference_threshold: 0.05,
         phase_alignment_threshold: PI / 2.0,
-        prune_threshold: 0.08,
-        constructive_boost: 0.3,
-        destructive_penalty: 0.5,
+        prune_threshold: 0.09,
+        constructive_boost: 0.25,
+        destructive_penalty: 0.4,
 
         // Kuramoto synchronization
         kuramoto_coupling: 0.7,
@@ -41,7 +41,7 @@ fn experiment_params() -> Params {
         kuramoto_threshold: 0.4,
 
         // Multi-cycle
-        dream_cycles: 1,
+        dream_cycles: 2,
     }
 }
 
