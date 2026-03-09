@@ -10,3 +10,4 @@ ee48023	0.499280	0.2000	482	discard	increase phase_alignment_threshold from PI/4
 629cc5b	0.501360	0.2000	534	discard	lower kuramoto_threshold from 0.5 to 0.3
 a3fd8ea	0.502000	0.2000	550	discard	increase constructive_boost from 0.4 to 0.5
 ab57183	0.499960	0.2000	499	discard	reduce interference_threshold from 0.1 to 0.05
+58d3842	0.496520	0.2000	413	discard	reduce destructive_penalty from 0.4 to 0.3
