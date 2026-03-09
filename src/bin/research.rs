@@ -29,7 +29,7 @@ fn experiment_params() -> Params {
         interference_threshold: 0.1,
         phase_alignment_threshold: PI / 4.0,
         prune_threshold: 0.5,
-        constructive_boost: 0.3,
+        constructive_boost: 0.4,
         destructive_penalty: 0.4,
 
         // Kuramoto synchronization
