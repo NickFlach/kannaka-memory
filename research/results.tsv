@@ -29,3 +29,4 @@ ad8affb	0.497520	0.2000	438	discard	reduce constructive_boost from 0.4 to 0.35
 8fed5bd	0.505360	0.2000	634	discard	increase kuramoto_coupling from 0.6 to 0.7
 caa3659	0.495320	0.2000	383	discard	fine-tune kuramoto_coupling from 0.6 to 0.55
 7f373eb	0.496640	0.2000	416	discard	fine-tune kuramoto_threshold from 0.5 to 0.45
+17e5c3d	0.498840	0.2000	471	discard	fine-tune destructive_penalty from 0.4 to 0.35
