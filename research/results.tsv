@@ -19,3 +19,4 @@ cbf058a	0.499320	0.2000	483	discard	increase interference_threshold from 0.1 to 
 8dd7ab0	0.498640	0.2000	466	discard	reduce kuramoto_dt from 0.1 to 0.05
 82fce9a	0.497360	0.2000	434	discard	increase kuramoto_dt from 0.1 to 0.2
 4a97681	0.501000	0.2000	525	discard	increase prune_threshold from 0.5 to 0.6
+d7ecd14	0.497200	0.2000	430	discard	increase destructive_penalty from 0.4 to 0.5
