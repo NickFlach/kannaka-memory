@@ -1,3 +1,4 @@
 commit	fitness	recall	duration_ms	status	description
 8149aad	0.588040	0.2000	451	baseline	initial parameters
 d40cda4	0.589000	0.2000	475	discard	reduce interference_threshold to 0.5 (worse)d34faa1	0.587640	0.2000	441	SUCCESS	raise prune_threshold from 0.05 to 0.3
+eb4e66c	0.585560	0.2000	389	SUCCESS	lower interference_threshold from 0.3 to 0.2
