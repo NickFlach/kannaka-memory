@@ -1,2 +1,3 @@
 commit	fitness	noise_rm	signal	bridge	amp_sep	links	status	description
 41073a3	0.203153	0.3000	1.0000	1.0000	0.8183	224	keep	new baseline with redesigned fitness metric
+c7f39ad	0.151885	0.5000	1.0000	1.0000	0.8264	287	keep	interference=0.05 phase=pi/3 prune=0.1 boost=0.3 penalty=0.6
