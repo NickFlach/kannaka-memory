@@ -165,6 +165,15 @@ fn run_experiment(params: &Params) {
             "bridge" => PI * 0.25,                           // between clusters
             _ => 0.0,
         };
+        // Assign layer diversity so cross-layer wiring can fire
+        mem.layer_depth = match *category {
+            "science" => (i % 3) as u8,      // spread across layers 0-2
+            "music" => ((i + 1) % 3) as u8,  // offset from science
+            "personal" => 0,                  // all shallow
+            "noise" => 0,                     // shallow (should be pruned)
+            "bridge" => 1,                    // mid-layer (bridges between)
+            _ => 0,
+        };
         // Noise starts at low amplitude (should be prunable)
         if *category == "noise" {
             mem.amplitude = 0.15;
