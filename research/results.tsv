@@ -22,3 +22,4 @@ cbf058a	0.499320	0.2000	483	discard	increase interference_threshold from 0.1 to 
 d7ecd14	0.497200	0.2000	430	discard	increase destructive_penalty from 0.4 to 0.5
 5d9be1c	0.497520	0.2000	438	discard	reduce kuramoto_steps from 10 to 5
 f8c664f	0.495360	0.2000	384	discard	reduce kuramoto_coupling from 0.6 to 0.5
+1607d9a	0.494560	0.2000	364	discard	fine-tune constructive_boost from 0.4 to 0.45
