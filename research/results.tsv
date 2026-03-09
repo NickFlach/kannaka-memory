@@ -27,3 +27,4 @@ ad8affb	0.497520	0.2000	438	discard	reduce constructive_boost from 0.4 to 0.35
 8affd64	0.498040	0.2000	451	discard	reduce decay_rate from 1e-6 to 5e-7
 2446b11	0.497360	0.2000	434	discard	increase default_frequency from 0.1 to 0.15
 8fed5bd	0.505360	0.2000	634	discard	increase kuramoto_coupling from 0.6 to 0.7
+caa3659	0.495320	0.2000	383	discard	fine-tune kuramoto_coupling from 0.6 to 0.55
