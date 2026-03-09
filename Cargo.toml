@@ -45,6 +45,10 @@ collective = ["rayon"]
 name = "research"
 path = "src/bin/research.rs"
 
+[[example]]
+name = "glyph_demo"
+required-features = ["glyph"]
+
 [[bin]]
 name = "kannaka-mcp"
 path = "src/bin/mcp_server.rs"
