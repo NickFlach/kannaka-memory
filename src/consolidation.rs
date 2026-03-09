@@ -80,11 +80,11 @@ pub struct ConsolidationEngine {
 impl Default for ConsolidationEngine {
     fn default() -> Self {
         Self {
-            interference_threshold: 0.01,
-            phase_alignment_threshold: PI / 2.5,
+            interference_threshold: 0.05,
+            phase_alignment_threshold: PI / 2.0,
             prune_threshold: 0.1,
-            constructive_boost: 0.15,
-            destructive_penalty: 1.2,
+            constructive_boost: 0.3,
+            destructive_penalty: 0.5,
             kuramoto: KuramotoSync::default(),
         }
     }

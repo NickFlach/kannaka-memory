@@ -1,2 +1,6 @@
 commit	fitness	noise	signal	bridge	phase	cluster	amp_div	links	status	description
-b987a7c	0.545140	1.0000	0.0400	1.0000	0.0000	0.0000	0.0000	641	keep	L2 baseline: L1 optimal params destroy signal in 3 cycles
+b987a7c	0.545140	1.0000	0.0400	1.0000	0.0000	0.0000	0.0000	641	discard	L2 baseline: L1 params destroy signal in 3 cycles
+3fcfdc1	0.137003	0.4000	0.8400	1.0000	0.8817	0.9707	1.0000	452	keep	L2-1: penalty=0.4 boost=0.3 coupling=0.8 steps=15 cycles=2
+ebcf676	0.141982	0.8000	0.6000	1.0000	0.6948	0.9638	1.0000	498	discard	L2-2: interference=0.03 penalty=0.5 - signal dropped
+f7d39fe	0.113076	0.9000	0.6267	1.0000	0.7506	0.9732	1.0000	502	keep	L2-5: phase=pi/2 penalty=0.5 - wider constructive band
+68c4e95	0.098006	0.7000	0.8133	1.0000	0.8662	0.9692	1.0000	448	keep	L2-10: SINGLE CYCLE wins - less accumulation damage
