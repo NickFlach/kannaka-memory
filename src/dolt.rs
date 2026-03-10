@@ -16,6 +16,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use mysql::*;
@@ -52,6 +54,10 @@ use crate::glyph_bridge::{GlyphEncoder, encode_memory_as_glyph};
 /// | `DOLT_AUTHOR`           | `Kannaka Agent <kannaka@local>`  | Author header for Dolt commits |
 /// | `DOLT_REMOTE`           | `origin`                         | Default remote for push/pull   |
 /// | `DOLT_BRANCH`           | `main`                           | Default branch name            |
+/// | `DOLT_AUTO_PUSH`        | `false`                          | Enable auto-push to DoltHub    |
+/// | `DOLT_PUSH_INTERVAL`    | `300`                            | Push after N seconds idle      |
+/// | `DOLT_PUSH_THRESHOLD`   | `5`                              | Push after N commits           |
+/// | `DOLT_AGENT_ID`         | `local`                          | Agent identifier for sync      |
 #[derive(Debug, Clone)]
 pub struct DoltConfig {
     pub host: String,
@@ -67,6 +73,14 @@ pub struct DoltConfig {
     pub remote: String,
     /// Default branch name.
     pub default_branch: String,
+    /// Enable automatic push to DoltHub after commits.
+    pub auto_push: bool,
+    /// Push after this many seconds of inactivity (default: 300).
+    pub push_interval_secs: u64,
+    /// Push after this many commits (default: 5).
+    pub push_threshold: usize,
+    /// Agent identifier for sync events and branch naming.
+    pub agent_id: String,
 }
 
 impl Default for DoltConfig {
@@ -82,6 +96,10 @@ impl Default for DoltConfig {
             commit_author: "Kannaka Agent <kannaka@local>".to_string(),
             remote: "origin".to_string(),
             default_branch: "main".to_string(),
+            auto_push: false,
+            push_interval_secs: 300,
+            push_threshold: 5,
+            agent_id: "local".to_string(),
         }
     }
 }
@@ -106,6 +124,16 @@ impl DoltConfig {
         if let Ok(v) = env::var("DOLT_AUTHOR")  { cfg.commit_author  = v; }
         if let Ok(v) = env::var("DOLT_REMOTE")  { cfg.remote         = v; }
         if let Ok(v) = env::var("DOLT_BRANCH")  { cfg.default_branch = v; }
+        if let Ok(v) = env::var("DOLT_AUTO_PUSH") {
+            cfg.auto_push = v.to_lowercase() != "false" && v != "0";
+        }
+        if let Ok(v) = env::var("DOLT_PUSH_INTERVAL") {
+            if let Ok(s) = v.parse::<u64>() { cfg.push_interval_secs = s; }
+        }
+        if let Ok(v) = env::var("DOLT_PUSH_THRESHOLD") {
+            if let Ok(t) = v.parse::<usize>() { cfg.push_threshold = t; }
+        }
+        if let Ok(v) = env::var("DOLT_AGENT_ID") { cfg.agent_id = v; }
         cfg
     }
 
@@ -233,6 +261,10 @@ pub struct DoltMemoryStore {
     remote: String,
     /// Default branch name.
     default_branch: String,
+    /// Agent identifier for sync events and branch naming.
+    agent_id: String,
+    /// Background auto-push thread (ADR-0017).
+    auto_pusher: Option<AutoPusher>,
 }
 
 impl DoltMemoryStore {
@@ -259,6 +291,22 @@ impl DoltMemoryStore {
 
     /// Build from an already-constructed pool with explicit commit settings.
     pub fn from_pool(pool: Pool, config: &DoltConfig) -> Result<Self, StoreError> {
+        // Start auto-pusher if configured
+        let auto_pusher = if config.auto_push {
+            Some(AutoPusher::start(
+                pool.clone(),
+                config.remote.clone(),
+                config.default_branch.clone(),
+                config.commit_author.clone(),
+                config.push_threshold,
+                config.push_interval_secs,
+                #[cfg(feature = "glyph")]
+                true,
+            ))
+        } else {
+            None
+        };
+
         let mut store = Self {
             cache: HashMap::new(),
             pool,
@@ -269,12 +317,27 @@ impl DoltMemoryStore {
             commit_author: config.commit_author.clone(),
             remote: config.remote.clone(),
             default_branch: config.default_branch.clone(),
+            agent_id: config.agent_id.clone(),
+            auto_pusher,
         };
 
         let count = store.load_from_dolt()?;
         let _ = count;
 
         Ok(store)
+    }
+
+    /// Return the configured agent identifier.
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// Stop the auto-push background thread (if running).
+    pub fn stop_auto_push(&mut self) {
+        if let Some(ref mut pusher) = self.auto_pusher {
+            pusher.stop();
+        }
+        self.auto_pusher = None;
     }
 
     /// Load all memories from Dolt into the in-memory cache.
@@ -622,6 +685,7 @@ impl DoltMemoryStore {
         match result {
             Ok(_) => {
                 self.pending_changes = 0;
+                self.notify_commit();
                 Ok(true)
             }
             Err(e) => {
@@ -1138,6 +1202,257 @@ impl DoltMemoryStore {
             memory.content.clone()
         }
     }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 2: Dream Branch Workflow
+    // -----------------------------------------------------------------------
+
+    /// Create a dream branch and switch to it.
+    ///
+    /// Branch name: `{agent_id}/dream/{timestamp}` (e.g. `flaukowski/dream/2026-03-10-143000`).
+    /// Flushes dirty memories and commits pending changes before branching.
+    ///
+    /// Returns the branch name for later use in [`collapse_dream`].
+    pub fn begin_dream(&mut self, agent_id: &str) -> Result<String, StoreError> {
+        let timestamp = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
+        let branch_name = format!("{}/dream/{}", agent_id, timestamp);
+
+        self.flush_dirty()?;
+        self.commit(&format!("pre-dream: snapshot before dream cycle ({})", &timestamp))?;
+        self.checkout_new_branch(&branch_name)?;
+
+        eprintln!("[dolt] Dream branch created: {}", branch_name);
+        Ok(branch_name)
+    }
+
+    /// Commit dream artifacts to the current dream branch.
+    ///
+    /// Call this after each stage or at the end of the dream cycle to record
+    /// hallucinations, strengthened connections, and prune results.
+    pub fn commit_dream_artifacts(
+        &mut self,
+        stage: &str,
+        stats: &serde_json::Value,
+    ) -> Result<bool, StoreError> {
+        let message = format!("dream({}): {}", stage,
+            serde_json::to_string(stats).unwrap_or_else(|_| "{}".to_string()));
+        self.flush_dirty()?;
+        self.commit(&message)
+    }
+
+    /// Complete the dream cycle: merge dream branch back to working branch,
+    /// optionally push to DoltHub with privacy encoding.
+    ///
+    /// Returns the merge commit hash and the dream branch name (for PR creation).
+    pub fn collapse_dream(
+        &mut self,
+        dream_branch: &str,
+        report_json: &str,
+    ) -> Result<String, StoreError> {
+        // Commit any remaining artifacts
+        self.flush_dirty()?;
+        let commit_msg = format!("dream: consolidation complete\n\n{}", report_json);
+        self.commit(&commit_msg)?;
+
+        // Merge back to default branch
+        let default = self.default_branch.clone();
+        self.checkout(&default)?;
+        let hash = self.merge_branch(dream_branch)?;
+
+        eprintln!("[dolt] Dream branch {} merged → {} (commit: {})",
+            dream_branch, default, &hash[..8.min(hash.len())]);
+
+        Ok(hash)
+    }
+
+    /// Push a dream branch to DoltHub, applying glyph privacy encoding first.
+    ///
+    /// If `create_pr` is true, returns a PR-ready branch name. The actual PR
+    /// creation happens via DoltHub API (not SQL).
+    #[cfg(feature = "glyph")]
+    pub fn push_dream_branch(
+        &self,
+        dream_branch: &str,
+        remote: Option<&str>,
+    ) -> Result<(), StoreError> {
+        // Privacy gate: encode content as glyphs before pushing
+        self.prepare_for_dolthub()?;
+        self.push(remote, Some(dream_branch))?;
+        eprintln!("[dolt] Dream branch pushed to DoltHub: {}", dream_branch);
+        Ok(())
+    }
+
+    /// Discard a dream branch without merging (e.g. if dream produced bad results).
+    pub fn discard_dream(&mut self, dream_branch: &str) -> Result<(), StoreError> {
+        eprintln!("[dolt] Discarding dream branch: {}", dream_branch);
+        self.discard_speculation(dream_branch)
+    }
+
+    /// Notify the auto-pusher (if any) that a commit has occurred.
+    /// Call this after each successful commit to trigger threshold-based pushes.
+    pub fn notify_commit(&self) {
+        if let Some(ref pusher) = self.auto_pusher {
+            pusher.notify_commit();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0017 Phase 2: Auto-Push Scheduler
+// ---------------------------------------------------------------------------
+
+/// Shared state between the auto-pusher thread and the DoltMemoryStore.
+struct AutoPushState {
+    /// Number of commits since last push.
+    commits_since_push: AtomicUsize,
+    /// Signal to stop the background thread.
+    stop: AtomicBool,
+    /// Last activity timestamp (for idle-based push).
+    last_activity: Mutex<Instant>,
+}
+
+/// Background thread that automatically pushes to DoltHub based on
+/// commit count or idle time thresholds.
+///
+/// Created via [`AutoPusher::start`] and stopped via [`AutoPusher::stop`] or on drop.
+///
+/// # Configuration (via environment)
+/// - `DOLT_AUTO_PUSH=true` — enable auto-push
+/// - `DOLT_PUSH_INTERVAL=300` — push after 300 seconds of inactivity
+/// - `DOLT_PUSH_THRESHOLD=5` — push after 5 commits
+pub struct AutoPusher {
+    state: Arc<AutoPushState>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AutoPusher {
+    /// Start the auto-push background thread.
+    ///
+    /// The thread wakes up every `check_interval` seconds to see if either
+    /// threshold (commit count or idle time) has been met. If so, it pushes.
+    pub fn start(
+        pool: Pool,
+        remote: String,
+        branch: String,
+        commit_author: String,
+        push_threshold: usize,
+        push_interval_secs: u64,
+        #[cfg(feature = "glyph")]
+        enable_privacy: bool,
+    ) -> Self {
+        let state = Arc::new(AutoPushState {
+            commits_since_push: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            last_activity: Mutex::new(Instant::now()),
+        });
+
+        let thread_state = Arc::clone(&state);
+        let check_interval = Duration::from_secs(10.min(push_interval_secs));
+
+        let handle = std::thread::Builder::new()
+            .name("dolt-auto-push".into())
+            .spawn(move || {
+                eprintln!("[dolt] Auto-push started (threshold: {} commits, interval: {}s)",
+                    push_threshold, push_interval_secs);
+
+                while !thread_state.stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(check_interval);
+
+                    if thread_state.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let commits = thread_state.commits_since_push.load(Ordering::Relaxed);
+                    let idle_secs = thread_state.last_activity.lock()
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0);
+
+                    let should_push =
+                        (commits >= push_threshold) ||
+                        (commits > 0 && idle_secs >= push_interval_secs);
+
+                    if should_push {
+                        eprintln!("[dolt] Auto-push triggered (commits: {}, idle: {}s)",
+                            commits, idle_secs);
+
+                        // Privacy encoding before push (if glyph feature enabled)
+                        #[cfg(feature = "glyph")]
+                        if enable_privacy {
+                            if let Ok(mut conn) = pool.get_conn() {
+                                let _ = conn.exec_drop(
+                                    r"UPDATE memories
+                                      SET content = CASE
+                                          WHEN hallucinated = 1 THEN '[hallucination]'
+                                          WHEN layer_depth = 0 THEN '[experience]'
+                                          WHEN layer_depth <= 3 THEN '[knowledge]'
+                                          ELSE '[insight]'
+                                      END
+                                      WHERE glyph_content IS NOT NULL",
+                                    ()
+                                );
+                            }
+                        }
+
+                        // Stage, commit any pending, then push
+                        let push_result = pool.get_conn().and_then(|mut conn| {
+                            // Stage any unstaged changes
+                            let _ = conn.exec_drop("CALL DOLT_ADD('.')", ());
+                            // Try to commit (may be nothing)
+                            let _ = conn.exec_drop(
+                                "CALL DOLT_COMMIT('-m', ?, '--author', ?, '--allow-empty')",
+                                ("auto-push: scheduled sync", &commit_author),
+                            );
+                            conn.exec_drop("CALL DOLT_PUSH(?, ?)", (&remote, &branch))
+                        });
+
+                        match push_result {
+                            Ok(_) => {
+                                thread_state.commits_since_push.store(0, Ordering::Relaxed);
+                                eprintln!("[dolt] Auto-push succeeded to {}/{}", remote, branch);
+                            }
+                            Err(e) => {
+                                eprintln!("[dolt] Auto-push failed (will retry): {}", e);
+                            }
+                        }
+                    }
+                }
+
+                eprintln!("[dolt] Auto-push thread stopped");
+            })
+            .expect("Failed to spawn auto-push thread");
+
+        Self {
+            state,
+            handle: Some(handle),
+        }
+    }
+
+    /// Notify the auto-pusher that a commit occurred.
+    pub fn notify_commit(&self) {
+        self.state.commits_since_push.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut t) = self.state.last_activity.lock() {
+            *t = Instant::now();
+        }
+    }
+
+    /// Get the number of commits since the last push.
+    pub fn commits_since_push(&self) -> usize {
+        self.state.commits_since_push.load(Ordering::Relaxed)
+    }
+
+    /// Stop the auto-push background thread.
+    pub fn stop(&mut self) {
+        self.state.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for AutoPusher {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl MemoryStore for DoltMemoryStore {
@@ -1251,6 +1566,8 @@ mod tests {
             "DOLT_USER", "DOLT_PASSWORD",
             "DOLT_AUTO_COMMIT", "DOLT_COMMIT_THRESHOLD",
             "DOLT_AUTHOR", "DOLT_REMOTE", "DOLT_BRANCH",
+            "DOLT_AUTO_PUSH", "DOLT_PUSH_INTERVAL",
+            "DOLT_PUSH_THRESHOLD", "DOLT_AGENT_ID",
         ] {
             std::env::remove_var(key);
         }
@@ -1273,6 +1590,26 @@ mod tests {
         assert_eq!(cfg.commit_author, "Kannaka Agent <kannaka@local>");
         assert_eq!(cfg.remote, "origin");
         assert_eq!(cfg.default_branch, "main");
+        assert!(!cfg.auto_push);
+        assert_eq!(cfg.push_interval_secs, 300);
+        assert_eq!(cfg.push_threshold, 5);
+        assert_eq!(cfg.agent_id, "local");
+    }
+
+    #[test]
+    fn dolt_config_auto_push_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_dolt_env();
+        std::env::set_var("DOLT_AUTO_PUSH", "true");
+        std::env::set_var("DOLT_PUSH_INTERVAL", "60");
+        std::env::set_var("DOLT_PUSH_THRESHOLD", "3");
+        std::env::set_var("DOLT_AGENT_ID", "arc");
+        let cfg = DoltConfig::from_env();
+        clear_dolt_env();
+        assert!(cfg.auto_push);
+        assert_eq!(cfg.push_interval_secs, 60);
+        assert_eq!(cfg.push_threshold, 3);
+        assert_eq!(cfg.agent_id, "arc");
     }
 
     #[test]

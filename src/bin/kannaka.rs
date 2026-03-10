@@ -34,20 +34,19 @@ fn dirs_or_default() -> PathBuf {
 }
 
 #[cfg(feature = "dolt")]
-fn init_with_dolt(data_dir: PathBuf) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
-    use mysql::*;
-    
-    // Create MySQL connection pool to Dolt server on port 3307
-    let url = "mysql://root@localhost:3307/kannaka_memory";
-    let pool = Pool::new(url)?;
-    
-    // Create DoltMemoryStore
-    let store = DoltMemoryStore::new(pool)?;
-    eprintln!("DoltMemoryStore initialized with {} memories", store.count());
-    
-    // Create the KannakaMemorySystem with custom store
-    KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+fn init_with_dolt(data_dir: PathBuf) -> Result<(KannakaMemorySystem, kannaka_memory::dolt::DoltConfig), Box<dyn std::error::Error>> {
+    let config = kannaka_memory::dolt::DoltConfig::from_env();
+    let store = DoltMemoryStore::from_config(&config)?;
+    eprintln!("DoltMemoryStore initialized with {} memories (agent: {})",
+        store.count(), config.agent_id);
+    if config.auto_push {
+        eprintln!("[dolt] Auto-push enabled (threshold: {} commits, interval: {}s)",
+            config.push_threshold, config.push_interval_secs);
+    }
+
+    let sys = KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    Ok((sys, config))
 }
 
 fn usage() {
@@ -125,16 +124,22 @@ fn main() {
     let dir = data_dir();
 
     #[cfg(feature = "dolt")]
+    let dolt_config: Option<kannaka_memory::dolt::DoltConfig>;
+
+    #[cfg(feature = "dolt")]
     let mut sys = if use_dolt {
-        // Initialize with Dolt backend
         match init_with_dolt(dir) {
-            Ok(s) => s,
+            Ok((s, cfg)) => {
+                dolt_config = Some(cfg);
+                s
+            }
             Err(e) => {
                 eprintln!("Failed to initialize with Dolt: {e}");
                 process::exit(1);
             }
         }
     } else {
+        dolt_config = None;
         match KannakaMemorySystem::init(dir) {
             Ok(s) => s,
             Err(e) => {
@@ -206,15 +211,74 @@ fn main() {
             }
         }
         "dream" => {
+            // ADR-0017: If Dolt is active, wrap dream in a branch workflow
+            #[cfg(feature = "dolt")]
+            let dream_branch: Option<String> = if use_dolt {
+                let agent = dolt_config.as_ref().map(|c| c.agent_id.as_str()).unwrap_or("local");
+                match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                    Ok(mut store) => {
+                        match store.begin_dream(agent) {
+                            Ok(branch) => Some(branch),
+                            Err(e) => {
+                                eprintln!("[dolt] Warning: could not create dream branch: {e}");
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[dolt] Warning: could not connect for dream branch: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             match sys.dream() {
                 Ok(report) => {
                     println!("Dream complete ({} cycles)", report.cycles);
                     println!("  Strengthened: {}", report.memories_strengthened);
                     println!("  Pruned: {}", report.memories_pruned);
                     println!("  New connections: {}", report.new_connections);
+                    println!("  Hallucinations: {}", report.hallucinations_created);
                     println!("  Consciousness: {} → {}", report.consciousness_before, report.consciousness_after);
                     if report.emerged {
-                        println!("  ✨ Emergence detected!");
+                        println!("  Emergence detected!");
+                    }
+
+                    // ADR-0017: Collapse dream branch back to main
+                    #[cfg(feature = "dolt")]
+                    if let Some(ref branch) = dream_branch {
+                        let report_json = serde_json::json!({
+                            "cycles": report.cycles,
+                            "strengthened": report.memories_strengthened,
+                            "pruned": report.memories_pruned,
+                            "connections": report.new_connections,
+                            "hallucinations": report.hallucinations_created,
+                            "consciousness": report.consciousness_after,
+                            "emerged": report.emerged,
+                        }).to_string();
+
+                        match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                            Ok(mut store) => {
+                                match store.collapse_dream(branch, &report_json) {
+                                    Ok(hash) => {
+                                        println!("[dolt] Dream merged → commit {}", &hash[..8.min(hash.len())]);
+
+                                        // Push dream branch to DoltHub if auto-push enabled
+                                        if dolt_config.as_ref().map(|c| c.auto_push).unwrap_or(false) {
+                                            if let Err(e) = store.push(None, None) {
+                                                eprintln!("[dolt] Warning: push failed: {e}");
+                                            } else {
+                                                println!("[dolt] Pushed to DoltHub");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => eprintln!("[dolt] Warning: dream merge failed: {e}"),
+                                }
+                            }
+                            Err(e) => eprintln!("[dolt] Warning: could not connect for merge: {e}"),
+                        }
                     }
                 }
                 Err(e) => {
