@@ -273,6 +273,134 @@ dolt merge agent-beta
 
 ---
 
+### AutoPusher (ADR-0017)
+
+```bash
+# Enable automatic push to DoltHub after N commits
+export DOLT_AUTO_PUSH=true
+export DOLT_PUSH_THRESHOLD=5    # push after 5 commits (default)
+export DOLT_PUSH_INTERVAL=300   # or after 300s idle (default)
+export DOLT_AGENT_ID=my-agent   # agent identifier
+```
+
+The AutoPusher runs as a background thread, tracking commit count and idle time. Push triggers when either threshold is reached.
+
+### Dream Branches (ADR-0017)
+
+Dream consolidation runs on isolated branches: `{agent_id}/dream/{timestamp}`
+
+```bash
+# Automatic: dream creates/merges branch automatically with --dolt
+./scripts/kannaka.sh --dolt dream
+
+# With PR review: push dream branch and open DoltHub PR
+DOLTHUB_REPO=flaukowski/kannaka-memory ./scripts/kannaka.sh --dolt dream --create-pr
+```
+
+Branch lifecycle:
+1. `begin_dream()` — creates `agent/dream/YYYYMMDD-HHMMSS`
+2. Dream cycle runs, artifacts committed to the branch
+3. `collapse_dream()` — merges branch back to main, deletes branch
+4. OR `create_dream_pr()` — pushes branch, opens DoltHub PR with consolidation report
+
+### Wave Interference Merge (ADR-0017)
+
+When pulling from DoltHub with conflicts, wave physics determines resolution:
+
+| Phase Difference | Merge Type | Action |
+|---|---|---|
+| Δφ < π/4 | Constructive | Amplitudes combine: A = √(A₁²+A₂²+2A₁A₂cos(Δφ)) |
+| π/4 ≤ Δφ ≤ 3π/4 | Partial | Both kept, skip link created |
+| Δφ > 3π/4 | Destructive | Both kept, amplitudes reduced, quarantined |
+
+```bash
+# Pull with wave merge
+kannaka --dolt pull-merge
+```
+
+### Analytics Dashboard (ADR-0017)
+
+7 SQL views for memory health monitoring:
+
+```bash
+# Install all views
+./scripts/dolt-analytics.sh install
+
+# Full dashboard
+./scripts/dolt-analytics.sh status
+
+# Query specific view
+./scripts/dolt-analytics.sh query v_memory_health
+./scripts/dolt-analytics.sh query v_sga_distribution
+```
+
+Views:
+- `v_memory_health` — amplitude distribution, decay rates, agent count
+- `v_dream_history` — consolidation log from commit messages
+- `v_agent_contributions` — memories per origin agent
+- `v_sga_distribution` — SGA class frequency
+- `v_layer_distribution` — temporal depth (episodic/short/long/deep)
+- `v_quarantine_status` — dispute overview
+- `v_skip_link_network` — connection density
+
+### Bootstrap (ADR-0017)
+
+```bash
+./scripts/dolt-bootstrap.sh init     # Clone repo, verify schema
+./scripts/dolt-bootstrap.sh status   # Show state
+./scripts/dolt-bootstrap.sh verify   # Test roundtrip
+```
+
+### MCP Server (ADR-0017)
+
+```bash
+./scripts/dolt-mcp-server.sh start   # SQL server on port 3307
+./scripts/dolt-mcp-server.sh config  # Generate MCP config JSON
+./scripts/dolt-mcp-server.sh test    # Test connectivity
+./scripts/dolt-mcp-server.sh stop    # Stop server
+```
+
+### SGA Classify-on-Store (ADR-0017)
+
+When building with `--features "dolt glyph"`, memories stored via `--dolt remember` are automatically classified:
+
+- `sga_class` — dominant class index (0-83): `21*h2 + 7*d + l`
+- `sga_centroid_h2/d/l` — centroid coordinates in the 84-class space
+- `fano_signature` — 7-element energy distribution across Fano plane lines
+
+Search by geometry:
+```sql
+-- Find memories in the same SGA class
+SELECT * FROM memories WHERE sga_class = 47;
+
+-- Find memories near a centroid
+SELECT * FROM memories
+WHERE ABS(sga_centroid_h2 - 2) + ABS(sga_centroid_d - 3) + ABS(sga_centroid_l - 1) <= 2;
+```
+
+### Wasteland Bridge (ADR-0017)
+
+Generate verifiable Dolt commits as evidence for Wasteland completions:
+
+```bash
+# Create evidence commit
+kannaka --dolt evidence w-abc123 "Implemented feature X"
+# Output: commit hash
+
+# Verify evidence
+kannaka --dolt verify <commit-hash> w-abc123
+# Output: VALID/INVALID with commit details
+```
+
+### Revelation Tables (ADR-0017)
+
+Progressive memory declassification via community voting:
+
+- `bloom_hints` — bloom filter hints for classified memories
+- `revelation_votes` — community votes to declassify (3 votes = reveal)
+
+---
+
 ## DoltConfig Environment Reference
 
 | Variable | Default | Description |
@@ -287,6 +415,13 @@ dolt merge agent-beta
 | `DOLT_AUTHOR` | `Kannaka Agent <kannaka@local>` | Author for Dolt commits |
 | `DOLT_REMOTE` | `origin` | Default remote for push/pull |
 | `DOLT_BRANCH` | `main` | Default branch |
+| `DOLT_DB_DIR` | `.dolt-db` | Dolt database directory (for scripts) |
+| `DOLTHUB_REPO` | `flaukowski/kannaka-memory` | DoltHub repository path |
+| `DOLT_AGENT_ID` | `local` | Agent identifier for multi-agent |
+| `DOLT_AUTO_PUSH` | `false` | Auto-push after N commits |
+| `DOLT_PUSH_THRESHOLD` | `5` | Commits before auto-push |
+| `DOLT_PUSH_INTERVAL` | `300` | Seconds between push checks |
+| `DOLTHUB_TOKEN` | *(empty)* | DoltHub API token (for dream-as-PR) |
 
 ---
 

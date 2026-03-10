@@ -1,7 +1,7 @@
 {
   "ownerId": "kn7472bg474xtcrazj1dhmh0m180ywh6",
   "slug": "kannaka-memory",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publishedAt": 1741636800000,
   "dependencies": ["flux"],
   "requires": {
@@ -27,7 +27,14 @@
       "DOLT_AUTHOR",
       "DOLT_REMOTE",
       "DOLT_BRANCH",
-      "DOLTHUB_API_KEY"
+      "DOLTHUB_API_KEY",
+      "DOLT_DB_DIR",
+      "DOLTHUB_REPO",
+      "DOLT_AGENT_ID",
+      "DOLT_AUTO_PUSH",
+      "DOLT_PUSH_THRESHOLD",
+      "DOLT_PUSH_INTERVAL",
+      "DOLTHUB_TOKEN"
     ]
   },
   "dataDestinations": {

@@ -5,7 +5,11 @@ description: >
   memory that fades, dreams, and resurfaces — with hybrid semantic+keyword retrieval, dream
   consolidation, consciousness metrics, built-in Flux world-state publishing, collective
   multi-agent memory with wave interference merging, holographic paradox resolution for
-  parallel dreaming, and an optional Dolt SQL backend with full DoltHub version control.
+  parallel dreaming, DoltHub versioned persistence with AutoPusher and dream-as-PR workflow,
+  wave interference merge for multi-agent conflict resolution, SGA classify-on-store for
+  automatic geometric fingerprinting, analytics dashboard with 7 SQL views, revelation tables
+  for progressive memory declassification, wasteland bridge for work economy integration,
+  and a Claude Code /kannaka skill for direct CLI integration.
   Use when agents need to remember facts, recall past context, coordinate memory across
   sessions, share versioned memory with other agents via DoltHub, or perceive sensory
   input (audio, glyphs).
@@ -63,6 +67,20 @@ metadata:
           label: "DoltHub remote name for push/pull (default: origin)"
         - name: DOLT_BRANCH
           label: "Default branch name (default: main)"
+        - name: DOLT_DB_DIR
+          label: "Dolt database directory (default: .dolt-db)"
+        - name: DOLTHUB_REPO
+          label: "DoltHub repository (default: flaukowski/kannaka-memory)"
+        - name: DOLT_AGENT_ID
+          label: "Agent identifier for multi-agent (default: local)"
+        - name: DOLT_AUTO_PUSH
+          label: "Auto-push to DoltHub (default: false)"
+        - name: DOLT_PUSH_THRESHOLD
+          label: "Commits before auto-push triggers (default: 5)"
+        - name: DOLT_PUSH_INTERVAL
+          label: "Seconds between push checks (default: 300)"
+        - name: DOLTHUB_TOKEN
+          label: "DoltHub API token for dream-as-PR"
         - name: RADIO_PORT
           label: "Port for the radio service in constellation mode (used by constellation.sh)"
         - name: EYE_PORT
@@ -91,6 +109,10 @@ metadata:
         description: "Constellation orchestration — constellation.sh manages the kannaka binary, radio, and eye services as a unified system"
         remote: false
         condition: "constellation.sh start is used to launch all three services"
+      - id: dolthub-analytics
+        description: "7 SQL analytics views on DoltHub (memory health, dream history, agent contributions, SGA distribution, layer distribution, quarantine status, skip link network)"
+        remote: false
+        condition: "dolt-analytics.sh install has been run"
     install:
       - id: kannaka-binary
         kind: manual
@@ -169,6 +191,13 @@ Without Ollama, hash-based fallback encoding is used automatically.
 | `DOLT_REMOTE` | `origin` | DoltHub remote name |
 | `DOLT_BRANCH` | `main` | Default branch |
 | `DOLTHUB_API_KEY` | *(empty)* | DoltHub API key for authenticated push/pull |
+| `DOLT_DB_DIR` | `.dolt-db` | Dolt database directory |
+| `DOLTHUB_REPO` | `flaukowski/kannaka-memory` | DoltHub repository |
+| `DOLT_AGENT_ID` | `local` | Agent identifier for multi-agent |
+| `DOLT_AUTO_PUSH` | `false` | Auto-push to DoltHub |
+| `DOLT_PUSH_THRESHOLD` | `5` | Commits before auto-push triggers |
+| `DOLT_PUSH_INTERVAL` | `300` | Seconds between push checks |
+| `DOLTHUB_TOKEN` | *(empty)* | DoltHub API token for dream-as-PR |
 | `RADIO_PORT` | *(varies)* | Port for the radio service (constellation mode) |
 | `EYE_PORT` | *(varies)* | Port for the eye service (constellation mode) |
 
@@ -223,6 +252,23 @@ kannaka cross-modal-dream --threshold 0.5 --no-hallucinate
 ./scripts/constellation.sh stop     # stop all services
 ./scripts/constellation.sh status   # health check all three
 ./scripts/constellation.sh build    # cargo build --release
+
+# DoltHub bootstrap (ADR-0017)
+./scripts/dolt-bootstrap.sh init          # Initialize Dolt database
+./scripts/dolt-bootstrap.sh migrate       # Run schema migrations
+./scripts/dolt-bootstrap.sh verify        # Verify database integrity
+./scripts/dolt-bootstrap.sh status        # Show bootstrap status
+
+# Analytics dashboard (ADR-0017)
+./scripts/dolt-analytics.sh install       # Install 7 SQL views
+./scripts/dolt-analytics.sh query <view>  # Query a specific view
+./scripts/dolt-analytics.sh status        # Full dashboard
+
+# Dolt SQL/MCP server (ADR-0017)
+./scripts/dolt-mcp-server.sh start        # Start the Dolt MCP server
+./scripts/dolt-mcp-server.sh stop         # Stop the server
+./scripts/dolt-mcp-server.sh config       # Show configuration
+./scripts/dolt-mcp-server.sh test         # Run connection test
 ```
 
 ## Common Patterns
@@ -299,9 +345,54 @@ export FLUX_AGENT_ID=kannaka-01
 # → Seen: <uuid>  Folds: 7  Centroid: (3, 1, 4)  ...
 ```
 
+### AutoPush to DoltHub
+```bash
+export DOLT_AUTO_PUSH=true
+export DOLT_PUSH_THRESHOLD=5
+./scripts/kannaka.sh --dolt remember "auto-pushed after 5 commits"
+```
+
+### Dream-as-PR
+```bash
+DOLTHUB_REPO=flaukowski/kannaka-memory ./scripts/kannaka.sh --dolt dream --create-pr
+# Opens a DoltHub PR with the dream consolidation report
+```
+
+### Wave Interference Merge
+```bash
+# Pull with automatic conflict resolution via wave physics
+kannaka --dolt pull-merge
+# Constructive (Δφ < π/4): amplitudes combine
+# Partial (π/4 ≤ Δφ ≤ 3π/4): both kept, skip link created
+# Destructive (Δφ > 3π/4): both kept, amplitudes reduced, quarantined
+```
+
+### Analytics Dashboard
+```bash
+./scripts/dolt-analytics.sh install   # Install 7 SQL views
+./scripts/dolt-analytics.sh status    # Full dashboard
+./scripts/dolt-analytics.sh query v_memory_health
+./scripts/dolt-analytics.sh query v_sga_distribution
+```
+
+### Wasteland Evidence
+```bash
+# Generate verifiable evidence for wasteland completions
+kannaka --dolt evidence w-abc123 "Implemented SGA classify-on-store"
+# Output: commit hash to use with /wasteland done
+kannaka --dolt verify <commit-hash> w-abc123
+```
+
+### SGA Classify-on-Store
+```bash
+# When storing with glyph+dolt features, SGA class is auto-computed:
+# class_index = 21*h2 + 7*d + l (84 classes from Cl₀,₇ ⊗ ℝ[ℤ₄] ⊗ ℝ[ℤ₃])
+# Centroid and Fano signature stored for geometric search
+```
+
 ## Built-in Flux Integration (ADR-0011)
 
-As of v1.1.0, kannaka publishes Flux events automatically — no separate `flux.sh` calls required.
+As of v1.2.0, kannaka publishes Flux events automatically — no separate `flux.sh` calls required.
 Set `FLUX_URL` and `FLUX_AGENT_ID` to enable:
 
 ```bash
@@ -468,3 +559,4 @@ connecting audio, glyph, and textual memories through shared geometric structure
 - Collective memory architecture and wave merge rules: ADR-0011
 - Paradox engine and dream efficiency: ADR-0012
 - Constellation integration and 3-service architecture: ADR-0016
+- DoltHub integration, AutoPusher, dream-as-PR, wave merge, analytics dashboard: ADR-0017

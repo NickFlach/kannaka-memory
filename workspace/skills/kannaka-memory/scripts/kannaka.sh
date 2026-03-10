@@ -61,9 +61,11 @@ case "$COMMAND" in
         ;;
 
     dream)
+        PR_FLAG=""
+        [[ "${1:-}" == "--create-pr" || "${1:-}" == "--pr" ]] && PR_FLAG="--create-pr"
         require_bin
         echo "Running dream consolidation..."
-        "$KANNAKA_BIN" $DOLT_FLAG dream
+        "$KANNAKA_BIN" $DOLT_FLAG dream $PR_FLAG
         ;;
 
     assess)
@@ -136,6 +138,28 @@ case "$COMMAND" in
             echo "$OUTPUT"
             exit 1
         fi
+        ;;
+
+    evidence)
+        WANTED_ID="$1"
+        DESC="${*:2}"
+        [[ -z "$WANTED_ID" ]] && die "Usage: kannaka.sh evidence <wanted-id> <description>"
+        require_bin
+        "$KANNAKA_BIN" --dolt evidence "$WANTED_ID" "$DESC"
+        ;;
+
+    verify)
+        COMMIT="$1"
+        WANTED_ID="$2"
+        [[ -z "$COMMIT" || -z "$WANTED_ID" ]] && die "Usage: kannaka.sh verify <commit-hash> <wanted-id>"
+        require_bin
+        "$KANNAKA_BIN" --dolt verify "$COMMIT" "$WANTED_ID"
+        ;;
+
+    pull-merge)
+        require_bin
+        echo "Pulling with wave interference merge..."
+        "$KANNAKA_BIN" --dolt pull-merge
         ;;
 
     # -------------------------------------------------------------------------
@@ -303,6 +327,24 @@ case "$COMMAND" in
                 esac
                 ;;
 
+            analytics)
+                ANALYTICS_CMD="${1:-status}"
+                shift || true
+                bash "$(dirname "$0")/../../scripts/dolt-analytics.sh" "$ANALYTICS_CMD" "$@"
+                ;;
+
+            bootstrap)
+                BOOT_CMD="${1:-status}"
+                shift || true
+                bash "$(dirname "$0")/../../scripts/dolt-bootstrap.sh" "$BOOT_CMD" "$@"
+                ;;
+
+            mcp)
+                MCP_CMD="${1:-config}"
+                shift || true
+                bash "$(dirname "$0")/../../scripts/dolt-mcp-server.sh" "$MCP_CMD" "$@"
+                ;;
+
             *)
                 echo "Kannaka Dolt Commands:"
                 echo ""
@@ -371,6 +413,16 @@ case "$COMMAND" in
         echo "  dolt discard <name>           Abandon speculation branch"
         echo "  dolt clone <org/repo>         Clone from DoltHub"
         echo "  dolt remote list|add          Manage DoltHub remotes"
+        echo ""
+        echo "DoltHub Integration (ADR-0017):"
+        echo "  evidence <id> <desc>          Generate Dolt commit as wasteland evidence"
+        echo "  verify <hash> <id>            Verify wasteland evidence"
+        echo "  pull-merge                    Pull with wave interference merge"
+        echo "  dream --create-pr             Dream with DoltHub PR review"
+        echo ""
+        echo "  dolt analytics install|status|query <view>  Analytics dashboard"
+        echo "  dolt bootstrap init|status|verify           DoltHub bootstrap"
+        echo "  dolt mcp start|stop|config|test             Dolt SQL/MCP server"
         echo ""
         echo "Flags:"
         echo "  --dolt                        Use Dolt SQL backend (requires Dolt server on :3307)"

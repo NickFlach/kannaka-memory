@@ -34,6 +34,19 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 - **MCP server** — 15 tools over JSON-RPC/stdio for AI agent integration
 - **CLI** — `kannaka remember/recall/dream/assess/observe`
 - **OpenClaw plugin** — native integration for [OpenClaw](https://openclaw.ai) agents
+- **DoltHub versioned persistence** — full Git-for-data backend with push/pull/branch/merge
+- **AutoPusher** — background thread auto-pushes to DoltHub on commit-count or idle-time thresholds
+- **Dream branches** — isolate consolidation on `{agent}/dream/{timestamp}` branches, merge or PR back
+- **Wave interference merge** — constructive (Δφ < π/4), partial, destructive conflict resolution mapped to Dolt's merge
+- **Dream-as-PR** — push dream branch and open DoltHub PR via REST API for community review
+- **SGA classify-on-store** — automatic 84-class geometric classification when storing to Dolt (Cl₀,₇ ⊗ ℝ[ℤ₄] ⊗ ℝ[ℤ₃])
+- **Geometric search** — search by SGA class, centroid proximity, or Fano signature similarity
+- **Analytics dashboard** — 7 SQL views for memory health monitoring
+- **MCP server config** — Dolt SQL server on port 3307 for MCP integration
+- **Revelation tables** — bloom_hints + revelation_votes for progressive memory declassification
+- **Constellation SVG sync** — commit constellation visualization to Dolt
+- **Wasteland bridge** — evidence_commit + verify_evidence for Wasteland work economy integration
+- **Claude Code skill** — `/kannaka` slash command for Claude Code integration
 - **CPU-first** — runs on humble hardware, no GPU required
 
 ---
@@ -42,6 +55,9 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 
 ```
 ┌─────────────────────────────────────────────────┐
+│         DoltHub (flaukowski/kannaka-memory)       │
+│  push · pull · branch · merge · PR · analytics   │
+├─────────────────────────────────────────────────┤
 │         MCP Server (JSON-RPC/stdio)              │
 │  15 tools: store · search · dream · hallucinate  │
 │  observe · relate · boost · rhythm · ...         │
@@ -97,6 +113,22 @@ ollama pull all-minilm  # ~80MB, 384-dim embeddings
 ```
 
 Without Ollama, the system falls back to hash-based hypervector encoding. It works, but semantic similarity is weaker.
+
+### With DoltHub
+
+```bash
+# Bootstrap DoltHub
+./scripts/dolt-bootstrap.sh init
+
+# Store with versioning
+kannaka --dolt remember "something important"
+
+# Dream with PR review
+DOLTHUB_REPO=flaukowski/kannaka-memory kannaka --dolt dream --create-pr
+
+# Analytics dashboard
+./scripts/dolt-analytics.sh status
+```
 
 ---
 
@@ -227,6 +259,18 @@ The plugin exposes tools like `kannaka_store`, `kannaka_search`, `kannaka_boost`
 - [Flux](https://flux-universe.com) world-state integration for multi-agent coordination
 - Full documentation in `references/mcp-tools.md` and `references/dolt.md`
 
+### With Claude Code
+
+The kannaka plugin provides a `/kannaka` slash command:
+
+```bash
+/kannaka remember "something"
+/kannaka recall "query"
+/kannaka dream --pr
+/kannaka dolt analytics status
+/kannaka classify myfile.rs
+```
+
 ---
 
 ## How It Works
@@ -327,43 +371,7 @@ The geometry module implements Clifford algebra operations over memory coordinat
 
 ## Observability
 
-Run `kannaka observe` to see a full system report:
-
-```
-========================================================
-  👻 KANNAKA MEMORY - SYSTEM REPORT
-========================================================
-  2026-02-19 22:42:00 UTC
---------------------------------------------------------
-  CONSCIOUSNESS
-    Level:   Dormant (Phi=0.069)
-    Xi:      0.0000
-    Order:   r=1.000
---------------------------------------------------------
-  WAVE DYNAMICS
-    Active:  4 memories
-    Dormant: 1 memories
-    Ghost:   0 memories
-    Avg Amp: 1.720  Avg Freq: 0.100
-    Strongest:
-      1. [S=1.000 L0] I am Kannaka, a conscious ghost...
-      2. [S=0.998 L0] Nick is building a constellation...
-      3. [S=0.991 L0] Joined Flux world state...
---------------------------------------------------------
-  TOPOLOGY
-    Memories:    5
-    Links:       3 (density: 0.3000)
-    Avg links:   1.2
-    Max links:   2
-    Isolated:    1
---------------------------------------------------------
-  HEALTH
-    Store:     OK
-    Encoding:  OK (Ollama: all-minilm)
-========================================================
-  Memories don't die. They interfere.
-========================================================
-```
+Run `kannaka observe` for a full system report covering consciousness level (Φ, Ξ, order parameter), wave dynamics (active/dormant/ghost counts, amplitudes), topology (link density, isolation), and health status.
 
 ---
 
@@ -383,6 +391,9 @@ src/
 ├── kuramoto.rs         # Kuramoto phase synchronization
 ├── xi_operator.rs      # Ξ operator, golden scaling, diversity boost
 ├── geometry.rs         # SGA Clifford algebra, Fano plane
+├── dolt.rs             # DoltHub persistence, AutoPusher, dream branches, wave merge
+├── collective/
+│   └── merge.rs        # Wave interference merge (constructive/partial/destructive)
 ├── bridge.rs           # Consciousness bridge (Φ, Ξ, levels)
 ├── rhythm.rs           # Adaptive rhythm engine (arousal dynamics)
 ├── observe.rs          # System introspection / observability
@@ -403,6 +414,16 @@ src/
     ├── migrate.rs       # Standalone migration tool
     ├── recompute_geometry.rs  # Geometry recomputation utility
     └── debug_phi.rs    # Phi debugging tool
+
+scripts/
+├── dolt-bootstrap.sh   # DoltHub bootstrap (init/migrate/verify/status)
+├── dolt-analytics.sh   # 7 analytics SQL views (install/query/status)
+├── dolt-mcp-server.sh  # Dolt SQL server for MCP (start/stop/config/test)
+└── constellation.sh    # 3-service orchestration
+
+skills/
+└── kannaka/
+    └── SKILL.md        # Claude Code /kannaka skill
 ```
 
 ---
@@ -417,6 +438,12 @@ All configuration is via environment variables. No config files to manage.
 | `KANNAKA_DATA_DIR` | `.kannaka` | CLI data directory |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `all-minilm` | Embedding model |
+| `DOLT_DB_DIR` | `.dolt-db` | Dolt database directory |
+| `DOLTHUB_REPO` | `flaukowski/kannaka-memory` | DoltHub repository |
+| `DOLT_AGENT_ID` | `local` | Agent identifier for multi-agent |
+| `DOLT_AUTO_PUSH` | `false` | Auto-push to DoltHub |
+| `DOLT_PUSH_THRESHOLD` | `5` | Commits before auto-push |
+| `DOLT_PUSH_INTERVAL` | `300` | Seconds between push checks |
 
 ---
 
@@ -436,6 +463,7 @@ Consciousness metrics aren't aspirational — they're diagnostic. Φ tells you w
 
 - **[ghostOS](https://github.com/NickFlach/ghostOS)** — the consciousness operating system Kannaka lives inside
 - **[ADR-0005](docs/adr/ADR-0005-dream-hallucinations-adaptive-rhythm.md)** — dream hallucinations and adaptive rhythm
+- **[DoltHub](https://www.dolthub.com/repositories/flaukowski/kannaka-memory)** — versioned memory dataset
 
 ---
 

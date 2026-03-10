@@ -141,9 +141,16 @@ structure — enabling the constellation to dream across modalities.
 | **SGA classify** | `kannaka classify` — any data to geometric fingerprint via Clifford algebra |
 | **Cross-modal dream** | `kannaka cross-modal-dream` — dream synthesis across audio, glyph, text modalities |
 | **Constellation** | 3-service architecture (binary + radio + eye) managed by `constellation.sh` (ADR-0016) |
+| **DoltHub versioned persistence** | AutoPusher, dream branches, wave merge, dream-as-PR (ADR-0017) |
+| **Analytics dashboard** | 7 SQL views for memory health monitoring |
+| **SGA classify-on-store** | Auto-classification when persisting to Dolt |
+| **Geometric search** | Search by SGA class, centroid, or Fano signature |
+| **Wasteland bridge** | Evidence/verify for work economy integration |
+| **Revelation tables** | Progressive memory declassification (bloom hints + votes) |
+| **Claude Code skill** | `/kannaka` slash command |
 | **MCP server** | 15 JSON-RPC tools for direct AI agent integration |
 
-## Built-in Flux Integration (v1.1.0)
+## Built-in Flux Integration (v1.2.0)
 
 Flux event publishing is now built directly into the kannaka binary. Set `FLUX_URL` to enable—no separate `flux.sh` calls needed:
 
@@ -175,7 +182,8 @@ both remember and perceive.
 
 ## Dolt / DoltHub
 
-The optional Dolt backend turns agent memory into a versioned dataset:
+The optional Dolt backend turns agent memory into a versioned dataset with full DoltHub
+integration (ADR-0017):
 
 ```bash
 # Commit current memory state
@@ -190,18 +198,56 @@ The optional Dolt backend turns agent memory into a versioned dataset:
 ./scripts/kannaka.sh dolt collapse "hypothesis-branch" "confirmed, fixed"
 ```
 
+**AutoPusher** — automatically push to DoltHub after a configurable number of commits:
+```bash
+export DOLT_AUTO_PUSH=true
+export DOLT_PUSH_THRESHOLD=5
+```
+
+**Dream branches and dream-as-PR** — dream consolidation on a branch, optionally opened as a DoltHub PR:
+```bash
+DOLTHUB_REPO=flaukowski/kannaka-memory ./scripts/kannaka.sh --dolt dream --create-pr
+```
+
+**Wave interference merge** — pull with automatic conflict resolution via wave physics:
+```bash
+kannaka --dolt pull-merge
+```
+
+**Analytics dashboard** — 7 SQL views for memory health monitoring:
+```bash
+./scripts/dolt-analytics.sh install   # Install views
+./scripts/dolt-analytics.sh status    # Full dashboard
+```
+
+**Bootstrap script** — initialize and migrate the Dolt database:
+```bash
+./scripts/dolt-bootstrap.sh init      # Initialize
+./scripts/dolt-bootstrap.sh migrate   # Run migrations
+./scripts/dolt-bootstrap.sh verify    # Verify integrity
+```
+
+**MCP server** — Dolt SQL/MCP server for programmatic access:
+```bash
+./scripts/dolt-mcp-server.sh start    # Start server
+./scripts/dolt-mcp-server.sh test     # Connection test
+```
+
 See [references/dolt.md](references/dolt.md) for the full DoltHub setup guide.
 
 ## File Structure
 
 ```
 kannaka-memory/
-├── SKILL.md              # OpenClaw skill definition (v1.1.0)
+├── SKILL.md              # OpenClaw skill definition (v1.2.0)
 ├── README.md             # This file
 ├── _meta.json            # ClawHub metadata
 ├── scripts/
 │   ├── kannaka.sh        # CLI wrapper (remember, recall, dream, hear, see, announce, dolt ...)
-│   └── constellation.sh  # Constellation orchestration (start/stop/status/build)
+│   ├── constellation.sh  # Constellation orchestration (start/stop/status/build)
+│   ├── dolt-bootstrap.sh # DoltHub bootstrap (init/migrate/verify/status)
+│   ├── dolt-analytics.sh # Analytics dashboard (install/query/status — 7 SQL views)
+│   └── dolt-mcp-server.sh # Dolt SQL/MCP server (start/stop/config/test)
 ├── tests/
 │   └── sga_reference_vectors.json  # SGA classification reference test vectors
 └── references/
@@ -230,6 +276,15 @@ Exposes 15 tools: `store_memory`, `search`, `search_semantic`, `search_keyword`,
 `hallucinate`, `status`, `observe`, `rhythm_status`, `rhythm_signal`.
 
 See [references/mcp-tools.md](references/mcp-tools.md) for full schema.
+
+## Claude Code Integration
+
+The `/kannaka` skill provides direct Claude Code integration:
+```bash
+/kannaka remember "something"
+/kannaka dolt analytics status
+/kannaka classify myfile.rs
+```
 
 ## Source
 
