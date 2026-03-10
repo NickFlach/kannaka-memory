@@ -14,6 +14,12 @@ use kannaka_memory::glyph_bridge::GlyphEncoder;
 #[cfg(feature = "dolt")]
 use kannaka_memory::{DoltMemoryStore, MemoryStore};
 
+#[cfg(feature = "collective")]
+use kannaka_memory::collective::{
+    Glyph, GlyphSource, SgaClass,
+    dream_cross_modal_link,
+};
+
 fn data_dir() -> PathBuf {
     env::var("KANNAKA_DATA_DIR")
         .map(PathBuf::from)
@@ -67,6 +73,8 @@ fn usage() {
     eprintln!("  see <file>                Store a file as a glyph (visual) memory");
     #[cfg(feature = "glyph")]
     eprintln!("  classify [--file <path>]  Classify data via SGA (reads stdin if no --file)");
+    #[cfg(feature = "collective")]
+    eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL glyphs from stdin");
     process::exit(1);
 }
 
@@ -105,6 +113,12 @@ fn main() {
     #[cfg(feature = "glyph")]
     if args[command_start] == "classify" {
         classify_command(&args[command_start..]);
+        return;
+    }
+
+    #[cfg(feature = "collective")]
+    if args[command_start] == "cross-modal-dream" {
+        cross_modal_dream_command(&args[command_start..]);
         return;
     }
 
@@ -459,6 +473,261 @@ fn classify_command(args: &[String]) {
             process::exit(1);
         }
     }
+}
+
+/// Stateless cross-modal dream linking — no memory system needed.
+/// Reads JSONL glyph classifications from stdin, performs cross-modal dream linking,
+/// and outputs results as JSON to stdout.
+#[cfg(feature = "collective")]
+fn cross_modal_dream_command(args: &[String]) {
+    use std::io::BufRead;
+    use chrono::Utc;
+    use kannaka_memory::collective::privacy::BloomParameters;
+
+    // Parse optional flags
+    let mut similarity_threshold = 0.5_f64;
+    let mut hallucinate = true;
+    let mut agent_id = "dream-cli".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--threshold" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --threshold requires a value");
+                    process::exit(1);
+                }
+                similarity_threshold = args[i + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("Error: invalid threshold value: {}", args[i + 1]);
+                    process::exit(1);
+                });
+                i += 2;
+            }
+            "--no-hallucinate" => {
+                hallucinate = false;
+                i += 1;
+            }
+            "--agent-id" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --agent-id requires a value");
+                    process::exit(1);
+                }
+                agent_id = args[i + 1].clone();
+                i += 2;
+            }
+            _ => { i += 1; }
+        }
+    }
+
+    // Read JSONL from stdin — each line is a glyph classification result
+    let stdin = std::io::stdin();
+    let mut glyphs: Vec<Glyph> = Vec::new();
+
+    for (line_num, line_result) in stdin.lock().lines().enumerate() {
+        let line = line_result.unwrap_or_else(|e| {
+            eprintln!("Error reading line {}: {e}", line_num + 1);
+            process::exit(1);
+        });
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(trimmed).unwrap_or_else(|e| {
+            eprintln!("Error parsing JSON on line {}: {e}", line_num + 1);
+            process::exit(1);
+        });
+
+        // Extract fields from the classify output
+        let fold_sequence: Vec<u8> = parsed["fold_sequence"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect())
+            .unwrap_or_default();
+
+        let fano_arr: [f64; 7] = {
+            let fano_vec: Vec<f64> = parsed["fano_signature"]
+                .as_array()
+                .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+                .unwrap_or_else(|| vec![1.0 / 7.0; 7]);
+            let mut arr = [1.0 / 7.0; 7];
+            for (idx, val) in fano_vec.iter().take(7).enumerate() {
+                arr[idx] = *val;
+            }
+            arr
+        };
+
+        let centroid_h2 = parsed["centroid"]["h2"].as_u64().unwrap_or(0) as u8;
+        let centroid_d = parsed["centroid"]["d"].as_u64().unwrap_or(0) as u8;
+        let centroid_l = parsed["centroid"]["l"].as_u64().unwrap_or(0) as u8;
+
+        let source_type_str = parsed["source_type"].as_str().unwrap_or("text");
+
+        let source = match source_type_str {
+            "text" | "file" => GlyphSource::Memory { layer_depth: 0, hallucinated: false },
+            "audio" => GlyphSource::Audio {
+                duration_ms: 0,
+                sample_rate: 44100,
+                spectral_centroid: 0.0,
+                overtone_hz: 0.0,
+            },
+            "image" | "visual" => GlyphSource::Visual {
+                width: 0,
+                height: 0,
+                fold_count: fold_sequence.len() as u32,
+            },
+            "scada" => GlyphSource::Scada {
+                tag: parsed["label"].as_str().unwrap_or("unknown").to_string(),
+                value: 0.0,
+                unit: String::new(),
+                quality: 100,
+            },
+            "financial" => GlyphSource::Financial {
+                asset: parsed["label"].as_str().unwrap_or("unknown").to_string(),
+                action: String::new(),
+                golden_ratio: 0.0,
+            },
+            "prediction" => GlyphSource::Prediction {
+                market_id: String::new(),
+                position: 0.0,
+                confidence: 0.0,
+            },
+            other => GlyphSource::Other {
+                system: other.to_string(),
+                metadata: parsed["label"].as_str().unwrap_or("").to_string(),
+            },
+        };
+
+        // Build a glyph ID from fold_sequence hash
+        let mut glyph_id = [0u8; 32];
+        // Simple deterministic ID: hash the line number and fold sequence
+        let id_bytes = format!("{line_num}:{fold_sequence:?}");
+        for (idx, byte) in id_bytes.as_bytes().iter().enumerate() {
+            glyph_id[idx % 32] ^= byte;
+        }
+
+        let glyph = Glyph {
+            glyph_id,
+            spec_version: 1,
+            fano: fano_arr,
+            sga_class: SgaClass {
+                quadrant: centroid_h2,
+                modality: centroid_d,
+                context: centroid_l,
+            },
+            sga_centroid: (centroid_h2, centroid_d, centroid_l),
+            amplitude: parsed["compression_ratio"].as_f64().unwrap_or(1.0),
+            frequency: 1.0,
+            phase: 0.0,
+            capsule: None,
+            bloom: BloomParameters {
+                difficulty: 0,
+                salt: [0u8; 32],
+            },
+            commitments: None,
+            virtue_eta: None,
+            gates: None,
+            source,
+            agent_id: agent_id.clone(),
+            created_at: Utc::now(),
+            parents: Vec::new(),
+        };
+
+        glyphs.push(glyph);
+    }
+
+    if glyphs.is_empty() {
+        eprintln!("Error: no glyph data read from stdin");
+        process::exit(1);
+    }
+
+    eprintln!("Cross-modal dream: {} glyphs, threshold={:.2}, hallucinate={}", glyphs.len(), similarity_threshold, hallucinate);
+
+    // Run cross-modal dream linking
+    let result = dream_cross_modal_link(&glyphs, similarity_threshold, hallucinate, &agent_id);
+
+    // Map source_type_tag for output (re-derive since the fn is private)
+    let get_source_tag = |src: &GlyphSource| -> &'static str {
+        match src {
+            GlyphSource::Memory { .. } => "memory",
+            GlyphSource::Audio { .. } => "audio",
+            GlyphSource::Visual { .. } => "visual",
+            GlyphSource::Scada { .. } => "scada",
+            GlyphSource::Financial { .. } => "financial",
+            GlyphSource::Prediction { .. } => "prediction",
+            GlyphSource::Flux { .. } => "flux",
+            GlyphSource::Dream { .. } => "dream",
+            GlyphSource::Other { .. } => "other",
+        }
+    };
+
+    // Build output
+    let dream_results: Vec<serde_json::Value> = result.new_links.iter().map(|link| {
+        let source_glyph = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
+        let target_glyph = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
+
+        let modal_a = source_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+        let modal_b = target_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+
+        // Find shared Fano lines (indices where both have above-average energy)
+        let shared_fano_lines: Vec<usize> = if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
+            let avg = 1.0 / 7.0;
+            (0..7).filter(|&i| s.fano[i] > avg && t.fano[i] > avg).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Synthesize a dream glyph (averaged Fano of the pair)
+        let dream_glyph = if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
+            let mut fano = [0.0f64; 7];
+            for i in 0..7 {
+                fano[i] = (s.fano[i] + t.fano[i]) / 2.0;
+            }
+            serde_json::json!({
+                "fano_signature": fano,
+                "centroid": {
+                    "h2": (s.sga_centroid.0 + t.sga_centroid.0) / 2,
+                    "d": (s.sga_centroid.1 + t.sga_centroid.1) / 2,
+                    "l": (s.sga_centroid.2 + t.sga_centroid.2) / 2
+                },
+                "source_modalities": [modal_a, modal_b]
+            })
+        } else {
+            serde_json::json!(null)
+        };
+
+        serde_json::json!({
+            "modal_a": modal_a,
+            "modal_b": modal_b,
+            "similarity": link.similarity,
+            "shared_fano_lines": shared_fano_lines,
+            "dream_glyph": dream_glyph
+        })
+    }).collect();
+
+    let total_pairs = dream_results.len();
+
+    let strongest_link = result.new_links.first().map(|link| {
+        let source_glyph = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
+        let target_glyph = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
+        let modal_a = source_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+        let modal_b = target_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+        serde_json::json!({
+            "modal_a": modal_a,
+            "modal_b": modal_b,
+            "similarity": link.similarity
+        })
+    });
+
+    let output = serde_json::json!({
+        "dream_results": dream_results,
+        "total_pairs": total_pairs,
+        "strongest_link": strongest_link,
+        "carnot_efficiency": result.carnot_efficiency,
+        "hallucinations": result.hallucinations.len()
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
 #[cfg(feature = "glyph")]
