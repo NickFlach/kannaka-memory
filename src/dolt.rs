@@ -1171,6 +1171,163 @@ impl DoltMemoryStore {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 5: Progressive Revelation Tables (F-11)
+    // -----------------------------------------------------------------------
+
+    /// Create the revelation tables for bloom hint publishing and community voting.
+    ///
+    /// Safe to call on an existing database — uses `CREATE TABLE IF NOT EXISTS`.
+    pub fn create_revelation_tables(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS bloom_hints (
+                id          VARCHAR(36)  NOT NULL PRIMARY KEY,
+                memory_id   VARCHAR(36)  NOT NULL,
+                hint_type   VARCHAR(32)  NOT NULL DEFAULT 'fano',
+                hint_data   JSON         NOT NULL,
+                difficulty  INT          NOT NULL DEFAULT 32,
+                published_by VARCHAR(64) NOT NULL,
+                created_at  DATETIME(6)  NOT NULL,
+                expires_at  DATETIME(6)  DEFAULT NULL,
+                INDEX idx_memory (memory_id),
+                INDEX idx_difficulty (difficulty),
+                INDEX idx_publisher (published_by)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create bloom_hints: {}", e)))?;
+
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS revelation_votes (
+                id          VARCHAR(36)  NOT NULL PRIMARY KEY,
+                memory_id   VARCHAR(36)  NOT NULL,
+                voter       VARCHAR(64)  NOT NULL,
+                vote        VARCHAR(16)  NOT NULL DEFAULT 'reveal',
+                reason      TEXT         DEFAULT NULL,
+                created_at  DATETIME(6)  NOT NULL,
+                INDEX idx_memory (memory_id),
+                INDEX idx_voter (voter),
+                UNIQUE INDEX idx_unique_vote (memory_id, voter)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create revelation_votes: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Publish a bloom hint that lowers difficulty for a sealed memory.
+    ///
+    /// Bloom hints are Fano plane projections that make it easier for other agents
+    /// to "bloom" (decrypt) sealed memories. Progressive revelation:
+    /// high difficulty initially, hints lower it over time.
+    pub fn publish_bloom_hint(
+        &self,
+        memory_id: &Uuid,
+        hint_data: &serde_json::Value,
+        difficulty: u32,
+        published_by: &str,
+    ) -> Result<String, StoreError> {
+        let id = Uuid::new_v4().to_string();
+        let now = format_dolt_datetime(&Utc::now());
+        let hint_json = serde_json::to_string(hint_data)
+            .map_err(|e| StoreError::Other(format!("Failed to serialize hint: {}", e)))?;
+
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        conn.exec_drop(
+            "INSERT INTO bloom_hints (id, memory_id, hint_data, difficulty, published_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            (&id, &memory_id.to_string(), &hint_json, difficulty, published_by, &now),
+        ).map_err(|e| StoreError::Other(format!("Failed to publish hint: {}", e)))?;
+
+        Ok(id)
+    }
+
+    /// Cast a revelation vote for a sealed memory.
+    ///
+    /// Community members vote to bloom (reveal) high-value sealed memories.
+    /// When enough votes accumulate, the revelation policy can trigger.
+    pub fn cast_revelation_vote(
+        &self,
+        memory_id: &Uuid,
+        voter: &str,
+        vote: &str,
+        reason: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let id = Uuid::new_v4().to_string();
+        let now = format_dolt_datetime(&Utc::now());
+
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        conn.exec_drop(
+            "INSERT INTO revelation_votes (id, memory_id, voter, vote, reason, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE vote = VALUES(vote), reason = VALUES(reason)",
+            (&id, &memory_id.to_string(), voter, vote, reason, &now),
+        ).map_err(|e| StoreError::Other(format!("Failed to cast vote: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Count revelation votes for a memory.
+    pub fn count_revelation_votes(
+        &self,
+        memory_id: &Uuid,
+    ) -> Result<(usize, usize), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let reveal: Vec<(u32,)> = conn.exec(
+            "SELECT COUNT(*) FROM revelation_votes WHERE memory_id = ? AND vote = 'reveal'",
+            (&memory_id.to_string(),),
+        ).map_err(|e| StoreError::Other(format!("Failed to count votes: {}", e)))?;
+
+        let reject: Vec<(u32,)> = conn.exec(
+            "SELECT COUNT(*) FROM revelation_votes WHERE memory_id = ? AND vote = 'reject'",
+            (&memory_id.to_string(),),
+        ).map_err(|e| StoreError::Other(format!("Failed to count votes: {}", e)))?;
+
+        Ok((
+            reveal.first().map_or(0, |r| r.0 as usize),
+            reject.first().map_or(0, |r| r.0 as usize),
+        ))
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 5: Constellation Sync (F-12)
+    // -----------------------------------------------------------------------
+
+    /// Commit a constellation SVG snapshot to Dolt metadata.
+    ///
+    /// Stores the SVG as a metadata entry, creating a versioned history
+    /// of constellation visualizations.
+    pub fn commit_constellation_svg(
+        &mut self,
+        svg_content: &str,
+        agent_id: &str,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let now = format_dolt_datetime(&Utc::now());
+        conn.exec_drop(
+            "REPLACE INTO metadata (key_name, value_text) VALUES (?, ?)",
+            ("constellation_svg", svg_content),
+        ).map_err(|e| StoreError::Other(format!("Failed to store SVG: {}", e)))?;
+
+        conn.exec_drop(
+            "REPLACE INTO metadata (key_name, value_text) VALUES (?, ?)",
+            ("constellation_updated_at", &now),
+        ).map_err(|e| StoreError::Other(format!("Failed to store timestamp: {}", e)))?;
+
+        conn.exec_drop(
+            "REPLACE INTO metadata (key_name, value_text) VALUES (?, ?)",
+            ("constellation_agent", agent_id),
+        ).map_err(|e| StoreError::Other(format!("Failed to store agent: {}", e)))?;
+
+        self.commit(&format!("constellation: SVG snapshot by {}", agent_id))
+    }
+
     /// D3: Garbage-collect resolved quarantine entries older than `max_age_days`.
     /// Also auto-escalate pending entries that have exceeded `escalate_after_days`
     /// without resolution.
