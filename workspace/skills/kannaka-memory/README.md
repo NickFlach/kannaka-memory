@@ -18,6 +18,34 @@ it gives your OpenClaw agent something eerily close to remembering.
 **Memories dream** — a 9-stage consolidation cycle wires new connections overnight.
 **Memories resurface** — with the right query at the right phase, even old memories ring true.
 
+## Constellation
+
+Kannaka runs as a **constellation** — three services orchestrated by a single script:
+
+| Service | Role | Port |
+|---|---|---|
+| **kannaka** (binary) | Core memory — classify, dream, remember, recall | — |
+| **radio** | Audio perception — cochlear pipeline for sensory memories | `RADIO_PORT` |
+| **eye** | Glyph/visual perception — SGA geometric fingerprinting | `EYE_PORT` |
+
+```bash
+# Start the full constellation (builds binary + launches radio + eye)
+./scripts/constellation.sh start
+
+# Health check all three services
+./scripts/constellation.sh status
+
+# Stop everything
+./scripts/constellation.sh stop
+
+# Rebuild the binary only
+./scripts/constellation.sh build
+```
+
+The constellation uses the full-featured build: `cargo build --release --features audio,glyph,collective`
+
+See ADR-0016 for the architectural rationale.
+
 ## Installation
 
 ### ClawHub Install (recommended)
@@ -43,6 +71,7 @@ cargo build --release --features dolt --bin kannaka              # + Dolt backen
 cargo build --release --features "dolt collective" --bin kannaka # + parallel dreaming
 cargo build --release --features audio --bin kannaka             # + audio perception
 cargo build --release --features glyph --bin kannaka             # + glyph perception
+cargo build --release --features audio,glyph,collective --bin kannaka # full-featured (constellation)
 
 # Optional: MCP server
 cargo build --release --features mcp --bin kannaka-mcp
@@ -75,6 +104,24 @@ cd ~/workspace/skills/kannaka-memory
 ./scripts/kannaka.sh assess
 ```
 
+## Classify & Cross-Modal Dream
+
+The `classify` subcommand produces SGA geometric fingerprints from any input, and
+`cross-modal-dream` synthesizes cross-modal dream artifacts from those fingerprints.
+
+```bash
+# SGA classification — any data → geometric fingerprint
+echo "sensor data stream" | kannaka classify          # stdin
+kannaka classify --file image.png                      # file input
+
+# Cross-modal dream — pipe classify output into dream synthesis
+echo '{"fold_sequence":[...],...}' | kannaka cross-modal-dream
+kannaka cross-modal-dream --threshold 0.5 --no-hallucinate
+```
+
+These commands connect audio, glyph, and textual memories through shared geometric
+structure — enabling the constellation to dream across modalities.
+
 ## Features
 
 | Feature | Description |
@@ -91,6 +138,9 @@ cd ~/workspace/skills/kannaka-memory
 | **Paradox engine** | Holographic resolution of parallel dream conflicts, Carnot efficiency tracking (ADR-0012) |
 | **Sensory perception** | Audio memories via cochlear pipeline (`--features audio`); glyph/visual via SGA (`--features glyph`) |
 | **Dolt backend** | Version-controlled SQL memory with branch/push/pull to DoltHub |
+| **SGA classify** | `kannaka classify` — any data to geometric fingerprint via Clifford algebra |
+| **Cross-modal dream** | `kannaka cross-modal-dream` — dream synthesis across audio, glyph, text modalities |
+| **Constellation** | 3-service architecture (binary + radio + eye) managed by `constellation.sh` (ADR-0016) |
 | **MCP server** | 15 JSON-RPC tools for direct AI agent integration |
 
 ## Built-in Flux Integration (v1.1.0)
@@ -150,7 +200,10 @@ kannaka-memory/
 ├── README.md             # This file
 ├── _meta.json            # ClawHub metadata
 ├── scripts/
-│   └── kannaka.sh        # CLI wrapper (remember, recall, dream, hear, see, announce, dolt ...)
+│   ├── kannaka.sh        # CLI wrapper (remember, recall, dream, hear, see, announce, dolt ...)
+│   └── constellation.sh  # Constellation orchestration (start/stop/status/build)
+├── tests/
+│   └── sga_reference_vectors.json  # SGA classification reference test vectors
 └── references/
     ├── mcp-tools.md      # All 15 MCP tools with input/output schemas
     └── dolt.md           # Dolt SQL setup + DoltHub integration guide
