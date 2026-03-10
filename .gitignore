@@ -4,3 +4,9 @@ node_modules/
 .env.local
 dist/
 .gitnexus
+.dolt-db/
+.claude-flow/
+.claude/
+.mcp.json
+AGENTS.md
+CLAUDE.md
