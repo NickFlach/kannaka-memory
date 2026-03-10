@@ -52,6 +52,7 @@ fn experiment_params() -> Params {
         xi_repulsion_weight: 0.3,
         consciousness_phi_target: 0.2,
         hallucination_amplitude: 0.3,
+        phase_spread: 0.5,
     }
 }
 
@@ -77,6 +78,7 @@ struct Params {
     xi_repulsion_weight: f32,
     consciousness_phi_target: f32,
     hallucination_amplitude: f32,
+    phase_spread: f32,
 }
 
 // ============================================================================
@@ -501,11 +503,12 @@ fn run_experiment_l3(params: &Params) {
     let pipeline = EncodingPipeline::new(encoder, codebook);
     let mut engine = MemoryEngine::new(store, pipeline);
 
+    let ps = params.phase_spread;
     for (i, (vec, content, category)) in corpus.iter().enumerate() {
         let mut mem = HyperMemory::new(vec.clone(), content.clone());
         mem.phase = match *category {
-            "science" => 0.0 + (i as f32 * 0.1),
-            "music" => PI * 0.5 + (i as f32 * 0.08),
+            "science" => 0.0 + (i as f32 * 0.1 * ps),
+            "music" => PI * 0.5 + (i as f32 * 0.08 * ps),
             "personal" => PI * 0.3 * (i as f32 % 4.0),
             "emotion" => PI * 0.4 * (i as f32 % 3.0),
             "noise" => PI * (i as f32 * 0.7),
