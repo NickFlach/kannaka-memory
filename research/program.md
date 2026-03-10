@@ -30,7 +30,7 @@ Cluster coherence, multi-cycle consolidation, phase alignment, cross-cluster con
 - 15% phase_coherence, 15% cluster_separation
 - 10% amp_diversity, 10% link_density, 10% speed
 
-### Level 3 (NEW — baseline: 0.384600)
+### Level 3 (best: 0.195 avg — baseline: 0.384600)
 Xi diversity, consciousness emergence, hallucination quality, dream efficiency.
 This level tests whether the dreaming system produces *meaningful* consolidation,
 not just mechanical noise removal.
@@ -60,25 +60,26 @@ Only `experiment_params()` values in `src/bin/research.rs`:
 - `default_frequency` — base oscillation rate (current: 0.1)
 
 **Consolidation:**
-- `interference_threshold` — min similarity for pair interaction (current: 0.05)
+- `interference_threshold` — min similarity for pair interaction (current: 0.04)
 - `phase_alignment_threshold` — max phase diff for constructive merge (current: π/2)
-- `prune_threshold` — amplitude below this → ghost/prune (current: 0.089)
-- `constructive_boost` — amplitude boost for aligned pairs (current: 0.25)
-- `destructive_penalty` — amplitude penalty for misaligned pairs (current: 0.4)
+- `prune_threshold` — amplitude below this → ghost/prune (current: 0.095)
+- `constructive_boost` — amplitude boost for aligned pairs (current: 0.35)
+- `destructive_penalty` — amplitude penalty for misaligned pairs (current: 0.55)
 
 **Kuramoto synchronization:**
-- `kuramoto_coupling` — coupling strength between oscillators (current: 0.7)
+- `kuramoto_coupling` — coupling strength between oscillators (current: 0.8)
 - `kuramoto_dt` — time step for phase sync (current: 0.1)
-- `kuramoto_steps` — iterations of sync per dream cycle (current: 12)
-- `kuramoto_threshold` — coupling threshold for pair sync (current: 0.4)
+- `kuramoto_steps` — iterations of sync per dream cycle (current: 15)
+- `kuramoto_threshold` — coupling threshold for pair sync (current: 0.35)
 
 **Multi-cycle:**
-- `dream_cycles` — number of consolidation cycles (current: 2)
+- `dream_cycles` — number of consolidation cycles (current: 1)
 
 **Level 3 parameters:**
 - `xi_repulsion_weight` — strength of Xi-diversity pressure (current: 0.3)
-- `consciousness_phi_target` — target Φ value for consciousness score (current: 0.5)
+- `consciousness_phi_target` — target Φ value for consciousness score (current: 0.2)
 - `hallucination_amplitude` — starting amplitude for hallucinated memories (current: 0.3)
+- `phase_spread` — within-cluster phase initialization spread (current: 0.2)
 
 You may also add new parameters to `Params` struct AND the corresponding usage in
 `run_experiment`/`run_experiment_l3`, as long as the corpus generation and metric
@@ -121,15 +122,29 @@ commit	fitness	noise	signal	bridge	phase	cluster	amp_div	xi_div	consciousness	ha
 - Try frequency-band-aware pruning (noise has freq=0.5, signal is lower)
 - Try layer-aware thresholds (prune harder in layer 0, gentler in deeper layers)
 
-### Level 3 (baseline 0.384)
-- Xi diversity is 0.00 — the Xi operator isn't being exercised during consolidation
-- Consciousness (Φ) is only 0.41 — need more integrated information across clusters
-- Hallucination quality is 0.22 — hallucinations are too random or too similar
-- Try more dream cycles (3-4) to give Kuramoto more time to sync
-- Try lower prune threshold so more diverse memories survive
-- Try higher constructive boost to create richer skip link topology (increases Φ)
-- Hallucination amplitude affects whether they survive pruning — tune carefully
-- The consciousness target (0.5) might need to be adjusted based on system capacity
+### Level 3 (best avg: 0.195, baseline: 0.384 → 49% improvement)
+**Solved metrics:**
+- Consciousness (Φ): 0.97 — target 0.2 well-matched to actual phi
+- Signal preservation: 0.92 — higher interference threshold reduces damage
+- Dream efficiency: 0.81 — fewer interference pairs = less wasted work
+- Bridge links: 1.00, cluster separation: 0.97, amp diversity: 1.00
+
+**Stuck metrics:**
+- Xi diversity: 0.00 — STRUCTURAL: xi_diversity_boost requires base_similarity > 0.7
+  AND repulsion > 0.3, but Xi is a linear transform so similar vectors always produce
+  similar Xi signatures. Mathematically impossible to satisfy both conditions.
+  Accounts for 0.100 of fitness (51% of remaining loss).
+- Noise removal: 0.70 — 3/10 noise memories always survive due to accidental
+  constructive interference. Deterministic, not parameter-tunable.
+- Hallucination quality: volatile (binary 0.14/1.0) — depends on HashMap iteration
+  order which selects different parent memories for hallucination synthesis.
+
+**Key discoveries:**
+- Single dream cycle is critical — multi-cycle causes accumulation damage
+- phase_spread=0.2 reduces within-cluster phase spread → easier Kuramoto sync
+- interference_threshold=0.04 (up from 0.03) reduces chaotic low-similarity interactions
+- destructive_penalty=0.55 provides good noise suppression without signal damage
+- consciousness_phi_target=0.2 exactly matches the system's natural phi value
 
 ## Hardware
 
