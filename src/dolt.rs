@@ -1295,6 +1295,295 @@ impl DoltMemoryStore {
             pusher.notify_commit();
         }
     }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 3: Wave Interference Merge via Dolt Conflicts
+    // -----------------------------------------------------------------------
+
+    /// Pull from remote and resolve any conflicts using the wave interference
+    /// algorithm from ADR-0011.
+    ///
+    /// Dolt's three-way merge provides `base`, `ours`, and `theirs` for each
+    /// conflicting cell. This maps directly to the wave interference model:
+    ///
+    /// | Dolt Value | Wave Analog |
+    /// |------------|-------------|
+    /// | `base`     | Memory state before divergence |
+    /// | `ours`     | This agent's modifications |
+    /// | `theirs`   | Other agent's modifications |
+    ///
+    /// Returns a report of merge outcomes.
+    pub fn pull_with_wave_merge(
+        &mut self,
+        remote: Option<&str>,
+        branch: Option<&str>,
+    ) -> Result<WaveMergeReport, StoreError> {
+        let remote_name = remote.unwrap_or(&self.remote);
+        let branch_name = branch.unwrap_or(&self.default_branch);
+
+        // Try a normal pull first
+        let pull_result = self.pull(Some(remote_name), Some(branch_name));
+
+        match pull_result {
+            Ok(_) => {
+                // No conflicts — reload cache and return clean report
+                self.load_from_dolt()?;
+                Ok(WaveMergeReport::clean())
+            }
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("conflict") || msg.contains("merge") {
+                    // Conflicts detected — resolve with wave interference
+                    self.resolve_dolt_conflicts()
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Resolve Dolt merge conflicts using wave interference classification.
+    ///
+    /// Reads the `dolt_conflicts_memories` table, classifies each conflict pair
+    /// using `classify_merge`, applies the appropriate resolution, and commits.
+    fn resolve_dolt_conflicts(&mut self) -> Result<WaveMergeReport, StoreError> {
+        use crate::collective::merge::{
+            classify_merge, merge_guard, apply_constructive, apply_destructive,
+            apply_partial, MergeKind, QuarantineEntry,
+        };
+
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Read "ours" side of conflicts
+        let ours: Vec<(Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<String>)> = conn.query(
+            "SELECT our_id, our_amplitude, our_phase, our_frequency, our_content \
+             FROM dolt_conflicts_memories"
+        ).unwrap_or_default();
+
+        // Read "theirs" side of conflicts
+        let theirs: Vec<(Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<String>)> = conn.query(
+            "SELECT their_id, their_amplitude, their_phase, their_frequency, their_content \
+             FROM dolt_conflicts_memories"
+        ).unwrap_or_default();
+
+        if ours.is_empty() {
+            let _ = conn.exec_drop("CALL DOLT_CONFLICTS_RESOLVE('--ours', 'memories')", ());
+            drop(conn);
+            self.commit("merge: no conflicts to resolve")?;
+            self.load_from_dolt()?;
+            return Ok(WaveMergeReport::clean());
+        }
+
+        let mut report = WaveMergeReport {
+            total_conflicts: ours.len(),
+            constructive: 0,
+            destructive: 0,
+            partial: 0,
+            independent: 0,
+            quarantined: Vec::new(),
+        };
+
+        for (our_row, their_row) in ours.iter().zip(theirs.iter()) {
+            let (our_id, our_amp, our_phase, our_freq, our_content) = our_row;
+            let (their_id, their_amp, their_phase, their_freq, their_content) = their_row;
+
+            let our_id_str = our_id.as_deref().or(their_id.as_deref()).unwrap_or("");
+            let our_uuid = match Uuid::parse_str(our_id_str) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            let local_mem = self.cache.get(&our_uuid).cloned();
+            let their_id_str = their_id.as_deref().unwrap_or("");
+            let their_uuid = Uuid::parse_str(their_id_str).unwrap_or(our_uuid);
+
+            if let Some(mut local) = local_mem {
+                let mut remote_mem = local.clone();
+                remote_mem.id = their_uuid;
+                if let Some(a) = their_amp { remote_mem.amplitude = *a; }
+                if let Some(p) = their_phase { remote_mem.phase = *p; }
+                if let Some(f) = their_freq { remote_mem.frequency = *f; }
+                if let Some(c) = their_content { remote_mem.content = c.clone(); }
+                if remote_mem.origin_agent == local.origin_agent {
+                    remote_mem.origin_agent = format!("{}_remote", local.origin_agent);
+                }
+
+                if merge_guard(&local, &remote_mem, None, None).is_some() {
+                    report.independent += 1;
+                    continue;
+                }
+
+                let result = classify_merge(&local, &remote_mem);
+
+                match result.kind {
+                    MergeKind::Constructive => {
+                        apply_constructive(&mut local, &remote_mem, &result);
+                        self.cache.insert(our_uuid, local.clone());
+                        self.sync_memory_to_dolt(&local)?;
+                        report.constructive += 1;
+                    }
+                    MergeKind::Destructive => {
+                        apply_destructive(&mut local, &remote_mem, &result);
+                        self.cache.insert(our_uuid, local.clone());
+                        self.sync_memory_to_dolt(&local)?;
+
+                        let entry = QuarantineEntry::new(&local, &remote_mem, &result);
+                        self.quarantine_memories(&entry)?;
+                        report.quarantined.push(entry.id);
+                        report.destructive += 1;
+                    }
+                    MergeKind::Partial => {
+                        apply_partial(&mut local, &remote_mem, &result);
+                        self.cache.insert(our_uuid, local.clone());
+                        self.sync_memory_to_dolt(&local)?;
+                        report.partial += 1;
+                    }
+                    MergeKind::Independent => {
+                        report.independent += 1;
+                    }
+                }
+            } else {
+                report.independent += 1;
+            }
+        }
+
+        // Resolve all conflicts (we've already applied our resolution)
+        let mut conn2 = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let _ = conn2.exec_drop("CALL DOLT_CONFLICTS_RESOLVE('--ours', 'memories')", ());
+        drop(conn2);
+
+        // Commit the resolution
+        let msg = format!(
+            "wave-merge: {} conflicts resolved ({}C/{}D/{}P/{}I, {} quarantined)",
+            report.total_conflicts, report.constructive, report.destructive,
+            report.partial, report.independent, report.quarantined.len()
+        );
+        self.commit(&msg)?;
+        self.load_from_dolt()?;
+
+        eprintln!("[dolt] {}", msg);
+        Ok(report)
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 3: Dream-as-Pull-Request (F-6)
+    // -----------------------------------------------------------------------
+
+    /// Create a DoltHub pull request from a dream branch.
+    ///
+    /// Uses the DoltHub REST API to create a PR. Requires `DOLTHUB_API_KEY`
+    /// env var to be set. Returns the PR URL on success.
+    pub fn create_dream_pr(
+        &self,
+        dream_branch: &str,
+        title: &str,
+        description: &str,
+        dolthub_repo: &str,
+    ) -> Result<String, StoreError> {
+        let api_key = env::var("DOLTHUB_API_KEY")
+            .map_err(|_| StoreError::Other(
+                "DOLTHUB_API_KEY not set — required for PR creation".to_string()
+            ))?;
+
+        // Parse owner/repo
+        let parts: Vec<&str> = dolthub_repo.split('/').collect();
+        if parts.len() != 2 {
+            return Err(StoreError::Other(format!(
+                "Invalid DoltHub repo format '{}', expected 'owner/repo'", dolthub_repo
+            )));
+        }
+        let (owner, repo) = (parts[0], parts[1]);
+
+        // Push the dream branch first
+        self.push(None, Some(dream_branch))?;
+
+        // Create PR via DoltHub API
+        let pr_body = serde_json::json!({
+            "title": title,
+            "description": description,
+            "fromBranchName": dream_branch,
+            "toBranchName": self.default_branch,
+        });
+
+        let url = format!(
+            "https://www.dolthub.com/api/v1alpha1/{}/{}/pulls",
+            owner, repo
+        );
+
+        let response = ureq::post(&url)
+            .set("Authorization", &format!("token {}", api_key))
+            .set("Content-Type", "application/json")
+            .send_string(&pr_body.to_string())
+            .map_err(|e| StoreError::Other(format!("DoltHub PR creation failed: {}", e)))?;
+
+        let status = response.status();
+        let body = response.into_string()
+            .unwrap_or_else(|_| "{}".to_string());
+
+        if status >= 200 && status < 300 {
+            // Try to extract PR URL from response
+            let pr_url = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                json.get("html_url")
+                    .or(json.get("url"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        format!("https://www.dolthub.com/repositories/{}/{}/pulls", owner, repo)
+                    })
+            } else {
+                format!("https://www.dolthub.com/repositories/{}/{}/pulls", owner, repo)
+            };
+
+            eprintln!("[dolt] Dream PR created: {}", pr_url);
+            Ok(pr_url)
+        } else {
+            Err(StoreError::Other(format!(
+                "DoltHub PR creation failed (HTTP {}): {}", status, body
+            )))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0017 Phase 3: Wave Merge Report
+// ---------------------------------------------------------------------------
+
+/// Report of a wave interference merge operation.
+#[derive(Debug, Clone)]
+pub struct WaveMergeReport {
+    /// Total number of Dolt conflicts encountered.
+    pub total_conflicts: usize,
+    /// Conflicts resolved as constructive (amplitudes superposed).
+    pub constructive: usize,
+    /// Conflicts resolved as destructive (memories dampened + quarantined).
+    pub destructive: usize,
+    /// Conflicts resolved as partial (both kept, linked).
+    pub partial: usize,
+    /// Conflicts classified as independent (different topics).
+    pub independent: usize,
+    /// IDs of quarantined memory pairs.
+    pub quarantined: Vec<Uuid>,
+}
+
+impl WaveMergeReport {
+    /// Create a clean report (no conflicts).
+    pub fn clean() -> Self {
+        Self {
+            total_conflicts: 0,
+            constructive: 0,
+            destructive: 0,
+            partial: 0,
+            independent: 0,
+            quarantined: Vec::new(),
+        }
+    }
+
+    /// Whether the merge was clean (no conflicts).
+    pub fn is_clean(&self) -> bool {
+        self.total_conflicts == 0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1903,8 +2192,39 @@ mod tests {
     fn glyph_empty_content_handling() {
         let result = DoltMemoryStore::encode_content_as_glyph("");
         assert!(result.is_none(), "Empty content should return None");
-        
+
         let result = DoltMemoryStore::encode_content_as_glyph("   ");
         assert!(result.is_some(), "Whitespace should encode successfully");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Wave merge report tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wave_merge_report_clean() {
+        let report = WaveMergeReport::clean();
+        assert!(report.is_clean());
+        assert_eq!(report.total_conflicts, 0);
+        assert_eq!(report.constructive, 0);
+        assert_eq!(report.destructive, 0);
+        assert_eq!(report.partial, 0);
+        assert_eq!(report.independent, 0);
+        assert!(report.quarantined.is_empty());
+    }
+
+    #[test]
+    fn wave_merge_report_with_conflicts_not_clean() {
+        let report = WaveMergeReport {
+            total_conflicts: 3,
+            constructive: 2,
+            destructive: 1,
+            partial: 0,
+            independent: 0,
+            quarantined: vec![Uuid::new_v4()],
+        };
+        assert!(!report.is_clean());
+        assert_eq!(report.total_conflicts, 3);
+        assert_eq!(report.quarantined.len(), 1);
     }
 }
