@@ -1,11 +1,15 @@
 //! Simple CLI for testing the Kannaka memory system.
 
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process;
 
 use kannaka_memory::observe::MemoryIntrospector;
 use kannaka_memory::openclaw::KannakaMemorySystem;
+
+#[cfg(feature = "glyph")]
+use kannaka_memory::glyph_bridge::GlyphEncoder;
 
 #[cfg(feature = "dolt")]
 use kannaka_memory::{DoltMemoryStore, MemoryStore};
@@ -61,6 +65,8 @@ fn usage() {
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
     #[cfg(feature = "glyph")]
     eprintln!("  see <file>                Store a file as a glyph (visual) memory");
+    #[cfg(feature = "glyph")]
+    eprintln!("  classify [--file <path>]  Classify data via SGA (reads stdin if no --file)");
     process::exit(1);
 }
 
@@ -95,8 +101,15 @@ fn main() {
         command_start = 1;
     }
 
+    // Handle stateless commands before initializing memory system
+    #[cfg(feature = "glyph")]
+    if args[command_start] == "classify" {
+        classify_command(&args[command_start..]);
+        return;
+    }
+
     let dir = data_dir();
-    
+
     #[cfg(feature = "dolt")]
     let mut sys = if use_dolt {
         // Initialize with Dolt backend
@@ -347,5 +360,115 @@ fn main() {
             }
         }
         _ => usage(),
+    }
+}
+
+/// Stateless SGA classification — no memory system needed.
+/// Reads data from stdin or --file, encodes via GlyphEncoder, outputs JSON.
+#[cfg(feature = "glyph")]
+fn classify_command(args: &[String]) {
+    let mut file_path: Option<PathBuf> = None;
+    let mut source_type = "text".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--file" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --file requires a path argument");
+                    process::exit(1);
+                }
+                file_path = Some(PathBuf::from(&args[i + 1]));
+                source_type = "file".to_string();
+                i += 2;
+            }
+            _ => { i += 1; }
+        }
+    }
+
+    // Read input data
+    let raw_bytes: Vec<u8> = if let Some(path) = &file_path {
+        if !path.exists() {
+            eprintln!("Error: file not found: {}", path.display());
+            process::exit(1);
+        }
+        source_type = guess_source_type(path);
+        std::fs::read(path).unwrap_or_else(|e| {
+            eprintln!("Error reading file: {e}");
+            process::exit(1);
+        })
+    } else {
+        // Read from stdin
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf).unwrap_or_else(|e| {
+            eprintln!("Error reading stdin: {e}");
+            process::exit(1);
+        });
+        buf
+    };
+
+    if raw_bytes.is_empty() {
+        eprintln!("Error: empty input");
+        process::exit(1);
+    }
+
+    // Sample up to 50k points for large files
+    let data: Vec<f64> = if raw_bytes.len() > 50_000 {
+        let step = raw_bytes.len() / 50_000;
+        raw_bytes.iter().step_by(step).take(50_000).map(|&b| b as f64 / 255.0).collect()
+    } else {
+        raw_bytes.iter().map(|&b| b as f64 / 255.0).collect()
+    };
+
+    let encoder = GlyphEncoder::default();
+    match encoder.encode(&data) {
+        Ok(glyph) => {
+            let fold_seq: Vec<u8> = glyph.fold_sequence.clone();
+            let freqs = glyph.to_frequencies();
+            let dominant = glyph.fold_sequence.iter()
+                .copied()
+                .max_by_key(|&c| glyph.fold_sequence.iter().filter(|&&x| x == c).count())
+                .unwrap_or(0);
+
+            // Count distinct classes used
+            let mut seen = std::collections::HashSet::new();
+            for &c in &glyph.fold_sequence {
+                seen.insert(c);
+            }
+
+            let output = serde_json::json!({
+                "fold_sequence": fold_seq,
+                "amplitudes": glyph.fold_amplitudes,
+                "phases": glyph.fold_phases,
+                "fano_signature": glyph.fano_signature,
+                "centroid": {
+                    "h2": glyph.sga_centroid.0,
+                    "d": glyph.sga_centroid.1,
+                    "l": glyph.sga_centroid.2
+                },
+                "dominant_class": dominant,
+                "classes_used": seen.len(),
+                "compression_ratio": glyph.compression_ratio,
+                "frequencies": freqs,
+                "source_type": source_type
+            });
+            println!("{}", serde_json::to_string(&output).unwrap());
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "glyph")]
+fn guess_source_type(path: &std::path::Path) -> String {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "txt" | "md" | "rs" | "js" | "ts" | "py" | "json" | "toml" | "yaml" | "yml"
+        | "html" | "css" | "xml" | "csv" | "sh" => "text".to_string(),
+        "wav" | "mp3" | "flac" | "ogg" | "aac" | "m4a" => "audio".to_string(),
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" => "image".to_string(),
+        "mp4" | "avi" | "mkv" | "mov" | "webm" => "video".to_string(),
+        _ => "binary".to_string(),
     }
 }
