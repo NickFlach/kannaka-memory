@@ -40,7 +40,7 @@ fn experiment_params() -> Params {
         destructive_penalty: 0.5,
 
         // Kuramoto synchronization
-        kuramoto_coupling: 0.75,
+        kuramoto_coupling: 0.8,
         kuramoto_dt: 0.1,
         kuramoto_steps: 15,
         kuramoto_threshold: 0.35,
@@ -50,7 +50,7 @@ fn experiment_params() -> Params {
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
-        consciousness_phi_target: 0.3,
+        consciousness_phi_target: 0.2,
         hallucination_amplitude: 0.3,
     }
 }
