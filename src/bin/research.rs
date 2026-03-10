@@ -33,7 +33,7 @@ fn experiment_params() -> Params {
         default_frequency: 0.1,
 
         // Consolidation (dream)
-        interference_threshold: 0.03,
+        interference_threshold: 0.04,
         phase_alignment_threshold: PI / 2.0,
         prune_threshold: 0.095,
         constructive_boost: 0.35,
