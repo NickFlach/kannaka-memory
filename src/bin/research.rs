@@ -52,7 +52,7 @@ fn experiment_params() -> Params {
         xi_repulsion_weight: 0.3,
         consciousness_phi_target: 0.2,
         hallucination_amplitude: 0.3,
-        phase_spread: 0.3,
+        phase_spread: 0.2,
     }
 }
 
