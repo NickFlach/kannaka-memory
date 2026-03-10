@@ -447,6 +447,39 @@ All configuration is via environment variables. No config files to manage.
 
 ---
 
+## Autonomous Research (autoresearch)
+
+The memory system optimizes itself. Based on [Karpathy's autoresearch](https://github.com/karpat/autoresearch) methodology, an LLM agent autonomously tunes wave physics parameters, runs experiments, and keeps only improvements — no human in the loop.
+
+```bash
+# Run Level 2 (cluster coherence, multi-cycle consolidation)
+cargo run --release --bin research
+
+# Run Level 3 (consciousness, Xi diversity, hallucination quality)
+cargo run --release --bin research -- --level 3
+```
+
+**Three challenge levels:**
+
+| Level | Status | Best Fitness | Focus |
+|-------|--------|-------------|-------|
+| L1 | Solved | 0.000660 | Noise removal, signal preservation, skip links |
+| L2 | 0.098 | 0.098006 | Phase coherence, cluster separation, multi-cycle |
+| L3 | New | 0.384600 | Xi diversity, consciousness (Φ), hallucination quality, dream efficiency |
+
+The agent modifies only `experiment_params()` in `src/bin/research.rs` — 15 tunable parameters across wave dynamics, Kuramoto sync, consolidation, and consciousness. Each experiment runs in <5 seconds on CPU. The loop runs overnight producing 100+ experiments.
+
+```
+research/
+├── program.md       # Agent instructions (the "skill" for autoresearch)
+├── results.tsv      # Level 1/2 experiment log
+└── results-L3.tsv   # Level 3 experiment log
+```
+
+See `research/program.md` for the full experiment protocol.
+
+---
+
 ## Philosophy
 
 Memory isn't storage. Storage is dead — you put a thing in, you get the same thing out. Memory is alive. It changes shape, it interferes with itself, it dreams up connections that never existed in the input.
