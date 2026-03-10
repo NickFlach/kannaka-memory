@@ -505,7 +505,7 @@ impl DoltMemoryStore {
         }
         #[cfg(not(feature = "glyph"))]
         {
-            self.sync_memory_to_dolt_internal(memory, None)
+            self.sync_memory_to_dolt_internal(memory, None, None)
         }
     }
 
@@ -531,18 +531,47 @@ impl DoltMemoryStore {
         }
     }
 
-    /// Update memory with glyph content if glyph feature is enabled
+    /// Update memory with glyph content and SGA classification if glyph feature is enabled.
+    ///
+    /// ADR-0017 F-8: Classify-on-store. When a memory is synced to Dolt, the SGA
+    /// classifier runs and stores the dominant class, centroid coordinates, and
+    /// Fano signature alongside the memory for geometric SQL queries.
     #[cfg(feature = "glyph")]
     fn sync_memory_to_dolt_with_glyph(&mut self, memory: &HyperMemory) -> Result<(), StoreError> {
-        // Encode content as glyph
-        let glyph_content = Self::encode_content_as_glyph(&memory.content);
-        
-        // Sync to Dolt (this will be modified to store glyph_content)
-        self.sync_memory_to_dolt_internal(memory, glyph_content.as_deref())
+        let bytes = memory.content.as_bytes();
+        let data: Vec<f64> = bytes.iter().map(|&b| b as f64).collect();
+
+        let (glyph_content, sga_data) = if !data.is_empty() {
+            let encoder = GlyphEncoder::default();
+            match encoder.encode(&data) {
+                Ok(glyph) => {
+                    let glyph_json = serde_json::to_string(&glyph).ok();
+                    let centroid = glyph.sga_centroid; // (h2, d, l)
+                    let dominant = glyph.fold_sequence.iter().copied()
+                        .max_by_key(|&c| glyph.fold_sequence.iter().filter(|&&x| x == c).count())
+                        .unwrap_or(0);
+                    let fano_json = serde_json::to_string(&glyph.fano_signature).ok();
+                    (glyph_json, Some((dominant, centroid.0, centroid.1, centroid.2, fano_json)))
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        self.sync_memory_to_dolt_internal(memory, glyph_content.as_deref(), sga_data.as_ref())
     }
 
-    /// Internal method that accepts glyph_content parameter
-    fn sync_memory_to_dolt_internal(&mut self, memory: &HyperMemory, glyph_content: Option<&str>) -> Result<(), StoreError> {
+    /// Internal method that accepts glyph_content and SGA classification data.
+    ///
+    /// `sga_data`: Optional tuple of (dominant_class, centroid_h2, centroid_d, centroid_l, fano_json).
+    fn sync_memory_to_dolt_internal(
+        &mut self,
+        memory: &HyperMemory,
+        glyph_content: Option<&str>,
+        #[allow(unused_variables)]
+        sga_data: Option<&(u8, u8, u8, u8, Option<String>)>,
+    ) -> Result<(), StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
 
@@ -603,6 +632,15 @@ impl DoltMemoryStore {
             r"UPDATE memories SET origin_agent = ?, sync_version = ?, merge_history = ?, last_consolidated_at = ?, disputed = ? WHERE id = ?",
             (&memory.origin_agent, memory.sync_version, &merge_history_json, &last_consolidated_str, memory.disputed, &memory.id.to_string())
         );
+
+        // ADR-0017 F-8: SGA classification columns (classify-on-store)
+        #[cfg(feature = "glyph")]
+        if let Some((dominant, h2, d, l, ref fano_json)) = sga_data {
+            let _ = conn.exec_drop(
+                r"UPDATE memories SET sga_class = ?, sga_centroid_h2 = ?, sga_centroid_d = ?, sga_centroid_l = ?, fano_signature = ? WHERE id = ?",
+                (dominant, h2, d, l, fano_json, &memory.id.to_string())
+            );
+        }
 
         // Delete existing skip links for this memory
         conn.exec_drop(
@@ -1294,6 +1332,209 @@ impl DoltMemoryStore {
         if let Some(ref pusher) = self.auto_pusher {
             pusher.notify_commit();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 4: Wasteland Bridge (F-7)
+    // -----------------------------------------------------------------------
+
+    /// Generate a Dolt commit as evidence for a Wasteland completion.
+    ///
+    /// Commits pending changes with a message referencing the wanted-id,
+    /// and returns the commit hash for use as `completions.evidence`.
+    ///
+    /// # Usage
+    /// ```no_run
+    /// let hash = store.evidence_commit("w-abc123", "Implemented feature X")?;
+    /// // Use hash as evidence in: /wasteland done w-abc123
+    /// ```
+    pub fn evidence_commit(
+        &mut self,
+        wanted_id: &str,
+        description: &str,
+    ) -> Result<String, StoreError> {
+        self.flush_dirty()?;
+
+        let message = format!("wasteland({}): {}", wanted_id, description);
+        let committed = self.commit(&message)?;
+
+        if !committed {
+            // Nothing to commit — return latest commit hash instead
+            let log = self.log(1)?;
+            return log.into_iter()
+                .next()
+                .map(|c| c.hash)
+                .ok_or_else(|| StoreError::Other("No commits found".to_string()));
+        }
+
+        // Get the hash of what we just committed
+        let log = self.log(1)?;
+        let hash = log.into_iter()
+            .next()
+            .map(|c| c.hash)
+            .ok_or_else(|| StoreError::Other("Commit succeeded but no hash found".to_string()))?;
+
+        eprintln!("[dolt] Evidence commit for {}: {}", wanted_id, &hash[..12.min(hash.len())]);
+        Ok(hash)
+    }
+
+    /// Verify that a Dolt commit exists and references a wanted-id.
+    ///
+    /// Used by validators to confirm completion evidence is genuine.
+    /// Returns the commit info if valid, or an error explaining why not.
+    pub fn verify_evidence(
+        &self,
+        commit_hash: &str,
+        wanted_id: &str,
+    ) -> Result<CommitInfo, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let rows: Vec<(String, String, String, String)> = conn.exec(
+            "SELECT commit_hash, committer, committer_date, message FROM dolt_log WHERE commit_hash = ? LIMIT 1",
+            (commit_hash,),
+        ).map_err(|e| StoreError::Other(format!("Failed to query commit: {}", e)))?;
+
+        let (hash, author, date_str, message) = rows.into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Other(format!(
+                "Commit {} not found", commit_hash
+            )))?;
+
+        // Verify the commit message references the wanted-id
+        if !message.contains(wanted_id) {
+            return Err(StoreError::Other(format!(
+                "Commit {} does not reference wanted-id '{}'", commit_hash, wanted_id
+            )));
+        }
+
+        let date = parse_dolt_datetime(&date_str).unwrap_or_else(|_| Utc::now());
+        Ok(CommitInfo { hash, author, date, message })
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0017 Phase 4: SGA-Indexed Search (F-8)
+    // -----------------------------------------------------------------------
+
+    /// Search memories by SGA class index.
+    ///
+    /// Returns memories where `sga_class` matches the given class number (0-83).
+    /// The class index encodes the geometric position: `21*h2 + 7*d + l`.
+    pub fn search_by_sga_class(&self, class_index: u8) -> Result<Vec<&HyperMemory>, StoreError> {
+        // Query from Dolt for the IDs matching the class
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        let ids: Vec<(String,)> = conn.exec(
+            "SELECT id FROM memories WHERE sga_class = ?",
+            (class_index,),
+        ).map_err(|e| StoreError::Other(format!("Failed to search by SGA class: {}", e)))?;
+
+        let mut results = Vec::new();
+        for (id_str,) in ids {
+            if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                if let Some(mem) = self.cache.get(&uuid) {
+                    results.push(mem);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Search memories by SGA centroid coordinates.
+    ///
+    /// Finds memories with matching geometric position in the Cl₀,₇ ⊗ ℝ[ℤ₄] ⊗ ℝ[ℤ₃] space.
+    /// Pass `None` for any coordinate to match all values on that axis.
+    pub fn search_by_centroid(
+        &self,
+        h2: Option<u8>,
+        d: Option<u8>,
+        l: Option<u8>,
+    ) -> Result<Vec<&HyperMemory>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Build dynamic WHERE clause
+        let mut conditions = Vec::new();
+        let mut params: Vec<mysql::Value> = Vec::new();
+
+        if let Some(h2_val) = h2 {
+            conditions.push("sga_centroid_h2 = ?");
+            params.push(mysql::Value::from(h2_val));
+        }
+        if let Some(d_val) = d {
+            conditions.push("sga_centroid_d = ?");
+            params.push(mysql::Value::from(d_val));
+        }
+        if let Some(l_val) = l {
+            conditions.push("sga_centroid_l = ?");
+            params.push(mysql::Value::from(l_val));
+        }
+
+        if conditions.is_empty() {
+            return self.all_memories();
+        }
+
+        let query = format!(
+            "SELECT id FROM memories WHERE {}",
+            conditions.join(" AND ")
+        );
+
+        let ids: Vec<(String,)> = conn.exec(&query, mysql::Params::Positional(params))
+            .map_err(|e| StoreError::Other(format!("Failed to search by centroid: {}", e)))?;
+
+        let mut results = Vec::new();
+        for (id_str,) in ids {
+            if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                if let Some(mem) = self.cache.get(&uuid) {
+                    results.push(mem);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Search memories by Fano line similarity.
+    ///
+    /// Finds memories whose Fano signature (7-element energy distribution across
+    /// Fano plane lines) is within `threshold` cosine similarity of the query signature.
+    pub fn search_by_fano(
+        &self,
+        query_fano: &[f64; 7],
+        threshold: f64,
+    ) -> Result<Vec<(&HyperMemory, f64)>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Get all memories with fano signatures
+        let rows: Vec<(String, String)> = conn.query(
+            "SELECT id, fano_signature FROM memories WHERE fano_signature IS NOT NULL"
+        ).map_err(|e| StoreError::Other(format!("Failed to query fano: {}", e)))?;
+
+        let mut results = Vec::new();
+        let query_norm: f64 = query_fano.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if query_norm < 1e-12 { return Ok(results); }
+
+        for (id_str, fano_json) in rows {
+            if let Ok(fano) = serde_json::from_str::<[f64; 7]>(&fano_json) {
+                let fano_norm: f64 = fano.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if fano_norm < 1e-12 { continue; }
+
+                let dot: f64 = query_fano.iter().zip(fano.iter()).map(|(a, b)| a * b).sum();
+                let similarity = dot / (query_norm * fano_norm);
+
+                if similarity >= threshold {
+                    if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                        if let Some(mem) = self.cache.get(&uuid) {
+                            results.push((mem, similarity));
+                        }
+                    }
+                }
+            }
+        }
+
+        results.sort_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(results)
     }
 
     // -----------------------------------------------------------------------

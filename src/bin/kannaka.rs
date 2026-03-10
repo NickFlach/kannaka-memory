@@ -74,6 +74,14 @@ fn usage() {
     eprintln!("  classify [--file <path>]  Classify data via SGA (reads stdin if no --file)");
     #[cfg(feature = "collective")]
     eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL glyphs from stdin");
+    #[cfg(feature = "dolt")]
+    {
+        eprintln!();
+        eprintln!("Dolt commands (require --dolt):");
+        eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
+        eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
+        eprintln!("  pull-merge                 Pull with wave interference conflict resolution");
+    }
     process::exit(1);
 }
 
@@ -471,6 +479,101 @@ fn main() {
                 }
             }
         }
+        // ADR-0017 F-7: Wasteland Bridge commands
+        #[cfg(feature = "dolt")]
+        "evidence" if use_dolt => {
+            if args.len() < command_start + 3 {
+                eprintln!("Usage: kannaka --dolt evidence <wanted-id> <description>");
+                process::exit(1);
+            }
+            let wanted_id = &args[command_start + 1];
+            let description = args[command_start + 2..].join(" ");
+
+            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                Ok(mut store) => {
+                    match store.evidence_commit(wanted_id, &description) {
+                        Ok(hash) => {
+                            println!("{}", hash);
+                            eprintln!("[dolt] Evidence commit: {} → {}", wanted_id, &hash[..12.min(hash.len())]);
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+
+        #[cfg(feature = "dolt")]
+        "verify" if use_dolt => {
+            if args.len() < command_start + 3 {
+                eprintln!("Usage: kannaka --dolt verify <commit-hash> <wanted-id>");
+                process::exit(1);
+            }
+            let commit_hash = &args[command_start + 1];
+            let wanted_id = &args[command_start + 2];
+
+            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                Ok(store) => {
+                    match store.verify_evidence(commit_hash, wanted_id) {
+                        Ok(info) => {
+                            println!("VALID");
+                            println!("  Commit:  {}", info.hash);
+                            println!("  Author:  {}", info.author);
+                            println!("  Date:    {}", info.date);
+                            println!("  Message: {}", info.message);
+                        }
+                        Err(e) => {
+                            println!("INVALID: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+
+        #[cfg(feature = "dolt")]
+        "pull-merge" if use_dolt => {
+            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                Ok(mut store) => {
+                    match store.pull_with_wave_merge(None, None) {
+                        Ok(report) => {
+                            if report.is_clean() {
+                                println!("Pull complete — no conflicts");
+                            } else {
+                                println!("Wave interference merge:");
+                                println!("  Conflicts:    {}", report.total_conflicts);
+                                println!("  Constructive: {}", report.constructive);
+                                println!("  Destructive:  {}", report.destructive);
+                                println!("  Partial:      {}", report.partial);
+                                println!("  Independent:  {}", report.independent);
+                                if !report.quarantined.is_empty() {
+                                    println!("  Quarantined:  {}", report.quarantined.len());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+
         _ => usage(),
     }
 }
