@@ -36,21 +36,21 @@ fn experiment_params() -> Params {
         interference_threshold: 0.05,
         phase_alignment_threshold: PI / 2.0,
         prune_threshold: 0.089,
-        constructive_boost: 0.25,
-        destructive_penalty: 0.4,
+        constructive_boost: 0.35,
+        destructive_penalty: 0.5,
 
         // Kuramoto synchronization
-        kuramoto_coupling: 0.7,
+        kuramoto_coupling: 0.75,
         kuramoto_dt: 0.1,
-        kuramoto_steps: 12,
-        kuramoto_threshold: 0.4,
+        kuramoto_steps: 15,
+        kuramoto_threshold: 0.35,
 
         // Multi-cycle
-        dream_cycles: 2,
+        dream_cycles: 1,
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
-        consciousness_phi_target: 0.5,
+        consciousness_phi_target: 0.3,
         hallucination_amplitude: 0.3,
     }
 }
