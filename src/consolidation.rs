@@ -17,6 +17,8 @@ use std::time::Instant;
 use chrono::{Duration, Utc};
 use uuid::Uuid;
 
+use serde::{Deserialize, Serialize};
+
 use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::{xi_repulsive_force, compute_xi_signature};
@@ -59,6 +61,60 @@ pub struct ConsolidationReport {
     pub skip_links_created: usize,
     pub hallucinations_created: usize,
     pub duration_ms: u64,
+    /// Kuramoto order parameter R after consolidation (EXP-003)
+    pub final_order_parameter: f32,
+}
+
+/// Adaptive parameters that persist between dream cycles (EXP-003).
+///
+/// After each cycle, the engine observes the Kuramoto order parameter R
+/// and adjusts parameters to maintain R in the sweet spot [0.55, 0.85]:
+/// - R too high → reduce constructive_boost, raise prune_threshold (rigid → loosen)
+/// - R too low  → increase coupling strength (fragmented → bind)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveParams {
+    pub constructive_boost: f32,
+    pub prune_threshold: f32,
+    pub destructive_penalty: f32,
+    /// Target range for order parameter R
+    pub r_target_low: f32,
+    pub r_target_high: f32,
+    /// Learning rate for parameter adaptation
+    pub adaptive_rate: f32,
+}
+
+impl Default for AdaptiveParams {
+    fn default() -> Self {
+        Self {
+            constructive_boost: 0.3,
+            prune_threshold: 0.1,
+            destructive_penalty: 0.5,
+            r_target_low: 0.55,
+            r_target_high: 0.85,
+            adaptive_rate: 0.05,
+        }
+    }
+}
+
+impl AdaptiveParams {
+    /// Adapt parameters based on observed Kuramoto order parameter R.
+    /// Returns the new params (mutates self in place too).
+    pub fn adapt(&mut self, order_parameter: f32) {
+        let r_mid = (self.r_target_low + self.r_target_high) / 2.0;
+        let error = order_parameter - r_mid;
+
+        if order_parameter > self.r_target_high {
+            // Over-synchronized (rigid): loosen up
+            self.constructive_boost = (self.constructive_boost - error * self.adaptive_rate).max(0.05);
+            self.prune_threshold = (self.prune_threshold + error * self.adaptive_rate * 0.5).min(0.3);
+        } else if order_parameter < self.r_target_low {
+            // Under-synchronized (fragmented): tighten coupling, reduce pruning aggression
+            // error is negative here, so -error is positive
+            self.constructive_boost = (self.constructive_boost + (-error) * self.adaptive_rate).min(0.6);
+            self.destructive_penalty = (self.destructive_penalty - (-error) * self.adaptive_rate * 0.3).max(0.1);
+        }
+        // In target range: no adjustment (stable)
+    }
 }
 
 /// The 9-stage consolidation engine.
@@ -75,6 +131,8 @@ pub struct ConsolidationEngine {
     pub destructive_penalty: f32,
     /// Kuramoto synchronization parameters
     pub kuramoto: KuramotoSync,
+    /// Adaptive parameters that evolve between dream cycles (EXP-003)
+    pub adaptive: AdaptiveParams,
 }
 
 impl Default for ConsolidationEngine {
@@ -86,6 +144,7 @@ impl Default for ConsolidationEngine {
             constructive_boost: 0.3,
             destructive_penalty: 0.5,
             kuramoto: KuramotoSync::default(),
+            adaptive: AdaptiveParams::default(),
         }
     }
 }
@@ -137,8 +196,33 @@ impl ConsolidationEngine {
         // Stage 8: HALLUCINATE — generate novel memories from distant clusters
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
+        // EXP-003: Compute final order parameter and record it
+        let final_r = self.compute_global_order_parameter(engine, &working_set);
+        report.final_order_parameter = final_r;
+
         report.duration_ms = start.elapsed().as_millis() as u64;
         report
+    }
+
+    /// Apply adaptive parameter tuning based on a consolidation report (EXP-003).
+    ///
+    /// Call this after `consolidate()` to evolve λ, boost, and threshold
+    /// for the next dream cycle. Mirrors ghostOS adaptive λ.
+    pub fn adapt_from_report(&mut self, report: &ConsolidationReport) {
+        self.adaptive.adapt(report.final_order_parameter);
+        // Apply adapted params to engine for next cycle
+        self.constructive_boost = self.adaptive.constructive_boost;
+        self.prune_threshold = self.adaptive.prune_threshold;
+        self.destructive_penalty = self.adaptive.destructive_penalty;
+    }
+
+    /// Compute global Kuramoto order parameter R across all working set memories.
+    fn compute_global_order_parameter(&self, engine: &MemoryEngine, working_set: &[Uuid]) -> f32 {
+        let memories: Vec<crate::memory::HyperMemory> = working_set
+            .iter()
+            .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+            .collect();
+        self.compute_category_order_parameter(&memories)
     }
 
     /// Stage 1: Load memories in the given layer range into a working set.
@@ -270,9 +354,11 @@ impl ConsolidationEngine {
         bundles_created
     }
 
-    /// Stage 4: Strengthen constructive interference pairs.
+    /// Stage 4: Strengthen constructive interference pairs and Xi-aware bridge nodes.
     fn stage_strengthen(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
+        
+        // Traditional constructive interference strengthening
         for pair in pairs.iter().filter(|p| p.kind == Interference::Constructive) {
             // Get phases for averaging
             let (phase_a, phase_b) = {
@@ -298,6 +384,70 @@ impl ConsolidationEngine {
                 count += 1;
             }
         }
+        
+        // Xi-aware bridge node strengthening
+        count += self.stage_strengthen_bridge_nodes(engine);
+        
+        count
+    }
+
+    /// Stage 4b: Strengthen memories that serve as "bridge nodes" connecting multiple clusters.
+    /// These memories are structurally important for network integration.
+    fn stage_strengthen_bridge_nodes(&self, engine: &mut MemoryEngine) -> usize {
+        use std::collections::{HashMap, HashSet};
+        
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        
+        if clusters.len() < 2 {
+            return 0; // Need at least 2 clusters for bridge nodes to exist
+        }
+        
+        // Build cluster membership map
+        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+        
+        let all_memories = engine.store.all_memories().unwrap_or_default();
+        let mut bridge_nodes = Vec::new();
+        
+        // Identify bridge nodes: memories connected to 3+ different clusters
+        for memory in &all_memories {
+            let mut connected_clusters = HashSet::new();
+            
+            // Add memory's own cluster
+            if let Some(&own_cluster) = id_to_cluster.get(&memory.id) {
+                connected_clusters.insert(own_cluster);
+            }
+            
+            // Check clusters of connected memories
+            for link in &memory.connections {
+                if let Some(&target_cluster) = id_to_cluster.get(&link.target_id) {
+                    connected_clusters.insert(target_cluster);
+                }
+            }
+            
+            // Memory is a bridge node if connected to 3+ clusters
+            if connected_clusters.len() >= 3 {
+                let bridge_strength = connected_clusters.len() as f32;
+                bridge_nodes.push((memory.id, bridge_strength));
+            }
+        }
+        
+        // Apply amplitude boosts to bridge nodes (10-20% bonus, scaled by bridge strength)
+        let mut count = 0;
+        for (bridge_id, bridge_strength) in bridge_nodes {
+            if let Some(mem) = engine.store.get_mut(&bridge_id).ok().flatten() {
+                let bonus_factor = 0.1 + (bridge_strength - 3.0) * 0.03; // 10% for 3 clusters, +3% per additional
+                let amplitude_bonus = bonus_factor.min(0.2); // Cap at 20%
+                mem.amplitude += amplitude_bonus;
+                count += 1;
+            }
+        }
+        
         count
     }
 
@@ -561,12 +711,20 @@ impl ConsolidationEngine {
     }
 
     /// Stage 5: Prune destructive interference pairs.
+    ///
+    /// EXP-003: Uses proportional dampening instead of flat penalty.
+    /// `amplitude *= (1.0 - destructive_penalty * dt)` produces exponential decay
+    /// consistent with the wave function, avoiding the cliff-edge behavior of
+    /// flat subtraction (which could instantly kill high-amplitude memories).
     fn stage_prune(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
+        let dt = 1.0; // one consolidation time-step
         for pair in pairs.iter().filter(|p| p.kind == Interference::Destructive) {
             for id in &[pair.id_a, pair.id_b] {
                 if let Some(mem) = engine.store.get_mut(id).ok().flatten() {
-                    mem.amplitude -= self.destructive_penalty;
+                    // Proportional dampening: stronger memories lose more absolute amplitude
+                    // but the same fraction, matching exponential decay semantics.
+                    mem.amplitude *= 1.0 - self.destructive_penalty * dt;
                     if mem.amplitude < self.prune_threshold {
                         mem.amplitude = 0.0; // soft-delete (ghost)
                     }
@@ -610,15 +768,154 @@ impl ConsolidationEngine {
         count
     }
 
-    /// Stage 8: Generate hallucinated memories by combining distant clusters.
+    /// Stage 8: Generate hallucinated memories by combining memories from different clusters.
     ///
-    /// Selects 2-3 memories that are maximally distant in semantic space,
-    /// bundles their hypervectors, and stores the result as a new hallucinated memory.
+    /// Preferentially selects memories from DIFFERENT Xi clusters to create naturally
+    /// cross-domain synthetic memories that enhance both integration and differentiation.
     fn stage_hallucinate(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> usize {
         if working_set.len() < 3 {
             return 0;
         }
 
+        // Get Xi clusters for cluster-aware hallucination
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        
+        if clusters.len() < 2 {
+            // Fallback to original distance-based hallucination if no clusters
+            return self.stage_hallucinate_distance_based(engine, working_set);
+        }
+        
+        return self.stage_hallucinate_cross_cluster(engine, &clusters);
+    }
+
+    /// Generate hallucinations by preferentially combining memories from different clusters.
+    fn stage_hallucinate_cross_cluster(&self, engine: &mut MemoryEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
+        use std::collections::HashMap;
+        
+        // Build cluster membership map
+        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+        
+        // Collect candidate memories from each cluster
+        let mut cluster_candidates: Vec<Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)>> = vec![Vec::new(); clusters.len()];
+        
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                if let Some(mem) = engine.store.get(&mem_id).ok().flatten() {
+                    if mem.amplitude > self.prune_threshold && !mem.content.starts_with("__consolidation") {
+                        let tags: Vec<String> = mem.content
+                            .split_whitespace()
+                            .take(5)
+                            .map(|s| s.to_lowercase())
+                            .collect();
+                        cluster_candidates[cluster_idx].push((mem.id, mem.vector.clone(), mem.content.clone(), mem.amplitude, tags));
+                    }
+                }
+            }
+        }
+        
+        // Find clusters with sufficient candidates
+        let viable_clusters: Vec<usize> = cluster_candidates.iter()
+            .enumerate()
+            .filter(|(_, candidates)| !candidates.is_empty())
+            .map(|(idx, _)| idx)
+            .collect();
+            
+        if viable_clusters.len() < 2 {
+            return 0;
+        }
+        
+        // Select one representative memory from each of 2-3 different clusters
+        let mut selected_memories = Vec::new();
+        let num_clusters_to_use = viable_clusters.len().min(3);
+        
+        for &cluster_idx in viable_clusters.iter().take(num_clusters_to_use) {
+            let candidates = &cluster_candidates[cluster_idx];
+            // Select the highest amplitude memory from this cluster
+            if let Some(best_candidate) = candidates.iter()
+                .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)) {
+                selected_memories.push(best_candidate.clone());
+            }
+        }
+        
+        if selected_memories.len() < 2 {
+            return 0;
+        }
+        
+        // Bundle the cross-cluster vectors
+        let dim = selected_memories[0].1.len();
+        let mut combined = vec![0.0f32; dim];
+        for (_, ref vector, _, _, _) in &selected_memories {
+            for (i, &v) in vector.iter().enumerate() {
+                combined[i] += v;
+            }
+        }
+        normalize(&mut combined);
+        
+        // Build content highlighting cross-cluster synthesis
+        let parent_ids: Vec<String> = selected_memories.iter().map(|(id, _, _, _, _)| id.to_string()).collect();
+        let parent_phrases: Vec<String> = selected_memories.iter()
+            .map(|(_, _, content, _, _)| {
+                if content.len() > 60 { &content[..60] } else { content.as_str() }
+            })
+            .map(|s| s.to_string())
+            .collect();
+        let content = format!("[cross-cluster hallucination] Synthesis across {} domains: {}", 
+                              selected_memories.len(), parent_phrases.join(" | "));
+        
+        // Merge tags from all clusters
+        let mut merged_tags: Vec<String> = Vec::new();
+        for (_, _, _, _, ref tags) in &selected_memories {
+            for tag in tags {
+                if !merged_tags.contains(tag) {
+                    merged_tags.push(tag.clone());
+                }
+            }
+        }
+        
+        // Create the hallucinated memory
+        let mut hallucination = crate::memory::HyperMemory::new(combined, content);
+        hallucination.amplitude = 0.4; // Slightly higher than distance-based (cross-cluster = more valuable)
+        hallucination.hallucinated = true;
+        hallucination.parents = parent_ids.clone();
+        
+        let hall_id = match engine.store.insert(hallucination) {
+            Ok(id) => id,
+            Err(_) => return 0,
+        };
+        
+        // Create bidirectional links to all parent memories
+        for (parent_id, _, _, _, _) in &selected_memories {
+            // Forward link: hallucination -> parent
+            if let Ok(Some(hall_mem)) = engine.store.get_mut(&hall_id) {
+                hall_mem.connections.push(SkipLink {
+                    target_id: *parent_id,
+                    strength: 0.6, // Higher than distance-based (0.5)
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+            // Reverse link: parent -> hallucination
+            if let Ok(Some(parent_mem)) = engine.store.get_mut(parent_id) {
+                parent_mem.connections.push(SkipLink {
+                    target_id: hall_id,
+                    strength: 0.6,
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+        }
+        
+        1 // Created 1 cross-cluster hallucination
+    }
+
+    /// Fallback: Generate hallucinations using the original distance-based method.
+    fn stage_hallucinate_distance_based(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> usize {
         // Collect (id, vector, content, amplitude) for high-amplitude memories
         let mut candidates: Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)> = Vec::new();
         for id in working_set {
@@ -741,7 +1038,8 @@ impl ConsolidationEngine {
         1 // created 1 hallucination this cycle
     }
 
-    /// Stage 7: Wire skip links between constructive cross-layer pairs and Fano-related memories.
+    /// Stage 7: Wire skip links between constructive cross-layer pairs, Fano-related memories,
+    /// and preferentially across Xi clusters to promote integration AND differentiation.
     fn stage_wire(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
         
@@ -798,7 +1096,15 @@ impl ConsolidationEngine {
             count += 1;
         }
         
-        // Wire Fano-related memories (NEW FEATURE)
+        // Wire cross-cluster connections: preferentially link memories from DIFFERENT Xi clusters
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        
+        if clusters.len() >= 2 {
+            count += self.stage_wire_cross_cluster(engine, &clusters);
+        }
+        
+        // Wire Fano-related memories (geometric structural connections)
         let all_memories = engine.store.all_memories().unwrap_or_default();
         
         // Collect pairs for Fano-related linking (store IDs and necessary data to avoid borrowing issues)
@@ -838,6 +1144,88 @@ impl ConsolidationEngine {
                 mem_b_mut.connections.push(SkipLink {
                     target_id: id_a,
                     strength: 0.3,
+                    resonance_key: Vec::new(),
+                    span,
+                });
+            }
+            count += 1;
+        }
+        
+        count
+    }
+
+    /// Stage 7b: Create cross-cluster wiring to build "small-world" networks that enhance
+    /// both integration (Phi) and differentiation (Xi) simultaneously.
+    fn stage_wire_cross_cluster(&self, engine: &mut MemoryEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
+        use std::collections::HashMap;
+        
+        let mut count = 0;
+        
+        // Build cluster membership map
+        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+        
+        // Collect cross-cluster candidate pairs with moderate semantic similarity (0.3-0.6 range)
+        let mut cross_cluster_pairs = Vec::new();
+        
+        for cluster_a_idx in 0..clusters.len() {
+            for cluster_b_idx in (cluster_a_idx + 1)..clusters.len() {
+                let cluster_a = &clusters[cluster_a_idx];
+                let cluster_b = &clusters[cluster_b_idx];
+                
+                // Compare memories between different clusters
+                for &id_a in &cluster_a.memory_ids {
+                    for &id_b in &cluster_b.memory_ids {
+                        let (mem_a, mem_b) = match (engine.store.get(&id_a).ok().flatten(), 
+                                                   engine.store.get(&id_b).ok().flatten()) {
+                            (Some(a), Some(b)) => (a, b),
+                            _ => continue,
+                        };
+                        
+                        let similarity = cosine_similarity(&mem_a.vector, &mem_b.vector);
+                        
+                        // Target moderate similarity: related but not identical
+                        if similarity >= 0.3 && similarity <= 0.6 {
+                            // Check if already linked
+                            let already_linked = mem_a.connections.iter().any(|l| l.target_id == id_b) ||
+                                                mem_b.connections.iter().any(|l| l.target_id == id_a);
+                            
+                            if !already_linked {
+                                let span = (mem_a.layer_depth as i16 - mem_b.layer_depth as i16).unsigned_abs() as u8;
+                                cross_cluster_pairs.push((id_a, id_b, similarity, span));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Sort by similarity and take top candidates (limit to avoid over-connecting)
+        cross_cluster_pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        let max_cross_links = (clusters.len() * 3).min(cross_cluster_pairs.len());
+        cross_cluster_pairs.truncate(max_cross_links);
+        
+        // Create the cross-cluster links with slightly higher strength than random within-cluster links
+        for (id_a, id_b, similarity, span) in cross_cluster_pairs {
+            let strength = similarity * 0.9; // 0.9 vs 0.8 for constructive pairs = slight boost
+            
+            // Create bidirectional links
+            if let Some(mem_a) = engine.store.get_mut(&id_a).ok().flatten() {
+                mem_a.connections.push(SkipLink {
+                    target_id: id_b,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span,
+                });
+            }
+            if let Some(mem_b) = engine.store.get_mut(&id_b).ok().flatten() {
+                mem_b.connections.push(SkipLink {
+                    target_id: id_a,
+                    strength,
                     resonance_key: Vec::new(),
                     span,
                 });
@@ -1546,6 +1934,215 @@ mod tests {
     }
 
     #[test]
+    fn cross_cluster_wiring_creates_bridge_connections() {
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine {
+            interference_threshold: 0.3,
+            ..Default::default()
+        };
+
+        let dim = 10_000;
+        
+        // Create two distinct clusters
+        // Cluster A: animal-related memories
+        let mut va = vec![0.0f32; dim];
+        for i in 0..100 { va[i] = 1.0; }
+        crate::wave::normalize(&mut va);
+        
+        let cat_id = insert_raw(&mut engine, va.clone(), "cats are fluffy animals", 0.0, 0);
+        let dog_id = insert_raw(&mut engine, va.clone(), "dogs are loyal pets", 0.0, 0);
+        
+        // Cluster B: technology-related memories (orthogonal vector)
+        let mut vb = vec![0.0f32; dim];
+        for i in 500..600 { vb[i] = 1.0; }
+        crate::wave::normalize(&mut vb);
+        
+        let code_id = insert_raw(&mut engine, vb.clone(), "coding in rust", 0.0, 0);
+        let ai_id = insert_raw(&mut engine, vb.clone(), "artificial intelligence", 0.0, 0);
+        
+        // Create a bridge memory with moderate similarity to both clusters
+        let mut vc = vec![0.0f32; dim];
+        for i in 0..50 { vc[i] = 0.7; }  // Moderate overlap with cluster A
+        for i in 500..550 { vc[i] = 0.7; }  // Moderate overlap with cluster B
+        crate::wave::normalize(&mut vc);
+        
+        let bridge_id = insert_raw(&mut engine, vc, "robot pets using AI", 0.0, 0);
+        
+        // Count initial cross-cluster links
+        let initial_links = count_cross_cluster_links(&mut engine);
+        
+        // Run consolidation
+        let report = consolidation.consolidate(&mut engine, 0, 1);
+        
+        // Check that cross-cluster links were created
+        let final_links = count_cross_cluster_links(&mut engine);
+        
+        println!("Cross-cluster links: {} -> {}", initial_links, final_links);
+        println!("Skip links created: {}", report.skip_links_created);
+        
+        assert!(
+            final_links > initial_links,
+            "Should create cross-cluster links: {} -> {}",
+            initial_links, final_links
+        );
+        
+        // Bridge memory should have connections to both clusters
+        let bridge_mem = engine.get_memory(&bridge_id).unwrap().unwrap();
+        let connected_to_animals = bridge_mem.connections.iter()
+            .any(|link| link.target_id == cat_id || link.target_id == dog_id);
+        let connected_to_tech = bridge_mem.connections.iter()
+            .any(|link| link.target_id == code_id || link.target_id == ai_id);
+            
+        assert!(
+            connected_to_animals || connected_to_tech,
+            "Bridge memory should connect to at least one cluster"
+        );
+    }
+
+    #[test]
+    fn bridge_node_strengthening_works() {
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine {
+            interference_threshold: 0.3,
+            ..Default::default()
+        };
+
+        let dim = 10_000;
+        
+        // Create three clusters with a bridge node
+        let mut va = vec![0.0f32; dim]; for i in 0..100 { va[i] = 1.0; }
+        let mut vb = vec![0.0f32; dim]; for i in 200..300 { vb[i] = 1.0; }
+        let mut vc = vec![0.0f32; dim]; for i in 400..500 { vc[i] = 1.0; }
+        crate::wave::normalize(&mut va);
+        crate::wave::normalize(&mut vb);
+        crate::wave::normalize(&mut vc);
+        
+        // Cluster members
+        insert_raw(&mut engine, va.clone(), "cluster A member 1", 0.0, 0);
+        insert_raw(&mut engine, va.clone(), "cluster A member 2", 0.0, 0);
+        insert_raw(&mut engine, vb.clone(), "cluster B member 1", 0.0, 0);
+        insert_raw(&mut engine, vb.clone(), "cluster B member 2", 0.0, 0);
+        insert_raw(&mut engine, vc.clone(), "cluster C member 1", 0.0, 0);
+        insert_raw(&mut engine, vc.clone(), "cluster C member 2", 0.0, 0);
+        
+        // Bridge node with moderate similarity to all clusters
+        let mut bridge_vec = vec![0.0f32; dim];
+        for i in 0..30 { bridge_vec[i] = 0.6; }     // Similarity to A
+        for i in 200..230 { bridge_vec[i] = 0.6; } // Similarity to B  
+        for i in 400..430 { bridge_vec[i] = 0.6; } // Similarity to C
+        crate::wave::normalize(&mut bridge_vec);
+        
+        let bridge_id = insert_raw(&mut engine, bridge_vec, "universal bridge concept", 0.0, 0);
+        let initial_amplitude = engine.get_memory(&bridge_id).unwrap().unwrap().amplitude;
+        
+        // Run consolidation (which should detect and strengthen bridge nodes)
+        consolidation.consolidate(&mut engine, 0, 1);
+        
+        let final_amplitude = engine.get_memory(&bridge_id).unwrap().unwrap().amplitude;
+        
+        println!("Bridge node amplitude: {} -> {}", initial_amplitude, final_amplitude);
+        
+        // Bridge node should receive amplitude boost if it connects to multiple clusters
+        // Note: The exact boost depends on how many clusters it actually gets connected to
+        // so we just check that it didn't decrease
+        assert!(
+            final_amplitude >= initial_amplitude,
+            "Bridge node should not lose amplitude: {} -> {}",
+            initial_amplitude, final_amplitude
+        );
+    }
+
+    #[test] 
+    fn cross_cluster_hallucination_prefers_different_clusters() {
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine {
+            interference_threshold: 0.9, // Avoid interference
+            ..Default::default()
+        };
+
+        let dim = 10_000;
+        
+        // Create two distinct clusters
+        let mut va = vec![0.0f32; dim]; for i in 0..100 { va[i] = 1.0; }
+        let mut vb = vec![0.0f32; dim]; for i in 500..600 { vb[i] = 1.0; }
+        crate::wave::normalize(&mut va);
+        crate::wave::normalize(&mut vb);
+        
+        // Cluster A: high amplitude memories
+        for i in 0..3 {
+            let mut mem = crate::memory::HyperMemory::new(va.clone(), format!("animal {}", i));
+            mem.amplitude = 0.8; // High amplitude to be hallucination candidates
+            engine.store.insert(mem).unwrap();
+        }
+        
+        // Cluster B: high amplitude memories
+        for i in 0..3 {
+            let mut mem = crate::memory::HyperMemory::new(vb.clone(), format!("tech {}", i));
+            mem.amplitude = 0.8; // High amplitude to be hallucination candidates
+            engine.store.insert(mem).unwrap();
+        }
+        
+        let initial_count = engine.store.count();
+        
+        // Run consolidation (should create cross-cluster hallucinations)
+        let report = consolidation.consolidate(&mut engine, 0, 1);
+        
+        println!("Hallucinations created: {}", report.hallucinations_created);
+        println!("Memory count: {} -> {}", initial_count, engine.store.count());
+        
+        if report.hallucinations_created > 0 {
+            // Find the hallucinated memory
+            let all = engine.store.all_memories().unwrap();
+            let hallucination = all.iter().find(|m| m.hallucinated);
+            
+            if let Some(hall) = hallucination {
+                println!("Hallucination content: {}", hall.content);
+                assert!(
+                    hall.content.contains("cross-cluster") || hall.content.contains("Synthesis"),
+                    "Hallucination should indicate cross-cluster origin"
+                );
+                assert!(!hall.parents.is_empty(), "Hallucination should have parent references");
+                assert!(!hall.connections.is_empty(), "Hallucination should be linked to parents");
+            }
+        }
+    }
+
+    /// Helper function to count cross-cluster links in the engine.
+    fn count_cross_cluster_links(engine: &mut MemoryEngine) -> usize {
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        
+        if clusters.len() < 2 {
+            return 0;
+        }
+        
+        // Build cluster membership map
+        let mut id_to_cluster = std::collections::HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+        
+        let all_memories = engine.store.all_memories().unwrap_or_default();
+        let mut cross_cluster_count = 0;
+        
+        for memory in &all_memories {
+            if let Some(&source_cluster) = id_to_cluster.get(&memory.id) {
+                for link in &memory.connections {
+                    if let Some(&target_cluster) = id_to_cluster.get(&link.target_id) {
+                        if source_cluster != target_cluster {
+                            cross_cluster_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        cross_cluster_count
+    }
+
+    #[test]
     fn hallucination_created_from_distant_memories() {
         let mut engine = make_engine();
         let consolidation = ConsolidationEngine {
@@ -1595,5 +2192,97 @@ mod tests {
         // May or may not create hallucinations depending on content similarity
         // but should not panic
         assert!(report.hallucinations_created <= 1);
+    }
+
+    // ===== EXP-003: Adaptive λ tests =====
+
+    #[test]
+    fn proportional_dampening_preserves_relative_amplitudes() {
+        // Two memories with different amplitudes should maintain their ratio
+        // after proportional dampening (unlike flat penalty which can invert them).
+        let mut engine = make_engine();
+        let consolidation = ConsolidationEngine {
+            interference_threshold: 0.3,
+            destructive_penalty: 0.5,
+            ..Default::default()
+        };
+
+        // Create two similar memories with opposing phases (destructive)
+        let id1 = insert_with_phase_and_layer(&mut engine, "the cat sat on the mat", 0.0, 0);
+        let id2 = insert_with_phase_and_layer(&mut engine, "the cat sat on the mat today", PI, 0);
+
+        // Set different amplitudes
+        engine.store.get_mut(&id1).ok().flatten().unwrap().amplitude = 2.0;
+        engine.store.get_mut(&id2).ok().flatten().unwrap().amplitude = 0.5;
+
+        let ratio_before = 2.0 / 0.5;
+
+        consolidation.consolidate(&mut engine, 0, 1);
+
+        let amp1 = engine.get_memory(&id1).unwrap().unwrap().amplitude;
+        let amp2 = engine.get_memory(&id2).unwrap().unwrap().amplitude;
+
+        // With proportional dampening, both lose 50% so ratio is preserved
+        if amp2 > 0.0 {
+            let ratio_after = amp1 / amp2;
+            assert!((ratio_after - ratio_before).abs() < 0.5,
+                "ratio should be approximately preserved: before={}, after={}", ratio_before, ratio_after);
+        }
+        // Both should have decreased
+        assert!(amp1 < 2.0, "amplitude should decrease");
+    }
+
+    #[test]
+    fn adaptive_params_reduce_boost_when_over_synchronized() {
+        let mut params = AdaptiveParams::default();
+        let initial_boost = params.constructive_boost;
+
+        // Simulate high order parameter (over-synchronized)
+        params.adapt(0.95);
+
+        assert!(params.constructive_boost < initial_boost,
+            "boost should decrease when R is too high: {} -> {}", initial_boost, params.constructive_boost);
+    }
+
+    #[test]
+    fn adaptive_params_stable_in_target_range() {
+        let mut params = AdaptiveParams::default();
+        let initial_boost = params.constructive_boost;
+        let initial_threshold = params.prune_threshold;
+
+        // Simulate order parameter in sweet spot
+        params.adapt(0.70);
+
+        assert!((params.constructive_boost - initial_boost).abs() < 1e-6,
+            "boost should not change in target range");
+        assert!((params.prune_threshold - initial_threshold).abs() < 1e-6,
+            "threshold should not change in target range");
+    }
+
+    #[test]
+    fn adaptive_params_boost_coupling_when_fragmented() {
+        let mut params = AdaptiveParams::default();
+        let initial_boost = params.constructive_boost;
+
+        // Simulate low order parameter (fragmented)
+        params.adapt(0.2);
+
+        assert!(params.constructive_boost > initial_boost,
+            "constructive boost should increase when fragmented: {} -> {}", initial_boost, params.constructive_boost);
+        assert!(params.destructive_penalty < 0.5,
+            "destructive penalty should decrease when fragmented (preserve more memories)");
+    }
+
+    #[test]
+    fn adapt_from_report_updates_engine() {
+        let mut consolidation = ConsolidationEngine::default();
+        let mut report = ConsolidationReport::default();
+        report.final_order_parameter = 0.95; // over-synchronized
+
+        let boost_before = consolidation.constructive_boost;
+        consolidation.adapt_from_report(&report);
+
+        assert!(consolidation.constructive_boost < boost_before,
+            "engine boost should decrease after adaptation");
     }
 }

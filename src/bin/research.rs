@@ -429,6 +429,7 @@ fn run_experiment(params: &Params) {
             steps: params.kuramoto_steps,
             coupling_threshold: params.kuramoto_threshold,
         },
+        adaptive: Default::default(),
     };
 
     // Run multiple consolidation cycles
@@ -554,6 +555,7 @@ fn run_experiment_l3(params: &Params) {
             steps: params.kuramoto_steps,
             coupling_threshold: params.kuramoto_threshold,
         },
+        adaptive: Default::default(),
     };
 
     let start = Instant::now();

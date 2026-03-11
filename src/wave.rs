@@ -23,7 +23,17 @@ impl Default for WaveParams {
 
 /// Compute effective strength: S(t) = A · cos(2πf·t + φ) · e^(-λt)
 pub fn compute_strength(params: &WaveParams, age_seconds: f64) -> f32 {
-    let a = params.amplitude as f64;
+    compute_strength_with_retrieval(params, age_seconds, 0)
+}
+
+/// Compute effective strength with retrieval energy (EXP-003):
+/// S(t) = (A + retrieval_energy) · cos(2πf·t + φ) · e^(-λt)
+///
+/// Each retrieval adds diminishing energy: energy = 0.05 · ln(1 + retrieval_count)
+/// This makes retrieval a generative f(x) term in the dx/dt = f(x) - λx system.
+pub fn compute_strength_with_retrieval(params: &WaveParams, age_seconds: f64, retrieval_count: u32) -> f32 {
+    let retrieval_energy = 0.05 * (1.0 + retrieval_count as f64).ln();
+    let a = params.amplitude as f64 + retrieval_energy;
     let f = params.frequency as f64;
     let phi = params.phase as f64;
     let lambda = params.decay_rate as f64;
@@ -96,5 +106,51 @@ mod tests {
         normalize(&mut v);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
+    }
+
+    // EXP-003: Retrieval energy tests
+
+    #[test]
+    fn retrieval_energy_boosts_strength() {
+        let params = WaveParams {
+            amplitude: 1.0,
+            frequency: 0.0,
+            phase: 0.0,
+            decay_rate: 0.001,
+        };
+        let s_no_retrieval = compute_strength_with_retrieval(&params, 100.0, 0);
+        let s_with_retrieval = compute_strength_with_retrieval(&params, 100.0, 10);
+        assert!(s_with_retrieval > s_no_retrieval,
+            "retrieval should boost strength: {} vs {}", s_with_retrieval, s_no_retrieval);
+    }
+
+    #[test]
+    fn retrieval_energy_has_diminishing_returns() {
+        let params = WaveParams {
+            amplitude: 1.0,
+            frequency: 0.0,
+            phase: 0.0,
+            decay_rate: 0.0,
+        };
+        let boost_1_to_10 = compute_strength_with_retrieval(&params, 0.0, 10)
+            - compute_strength_with_retrieval(&params, 0.0, 1);
+        let boost_100_to_110 = compute_strength_with_retrieval(&params, 0.0, 110)
+            - compute_strength_with_retrieval(&params, 0.0, 100);
+        assert!(boost_1_to_10 > boost_100_to_110,
+            "later retrievals should have less effect: {} vs {}", boost_1_to_10, boost_100_to_110);
+    }
+
+    #[test]
+    fn zero_retrieval_matches_original() {
+        let params = WaveParams {
+            amplitude: 1.0,
+            frequency: 0.1,
+            phase: 0.5,
+            decay_rate: 0.001,
+        };
+        let s_original = compute_strength(&params, 500.0);
+        let s_zero = compute_strength_with_retrieval(&params, 500.0, 0);
+        assert!((s_original - s_zero).abs() < 1e-6,
+            "zero retrievals should match original: {} vs {}", s_original, s_zero);
     }
 }

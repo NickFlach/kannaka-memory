@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::geometry::MemoryCoordinates;
 use crate::skip_link::SkipLink;
-use crate::wave::{compute_strength, WaveParams};
+use crate::wave::WaveParams;
 
 // ---------------------------------------------------------------------------
 // Collective memory types (ADR-0011)
@@ -86,6 +86,10 @@ pub struct HyperMemory {
     /// Used by incremental dreaming to identify changed memories.
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Number of times this memory has been retrieved/recalled.
+    /// Each retrieval adds energy to the wave function (EXP-003: f(x) term).
+    #[serde(default)]
+    pub retrieval_count: u32,
 }
 
 impl HyperMemory {
@@ -113,6 +117,7 @@ impl HyperMemory {
             last_consolidated_at: None,
             disputed: false,
             updated_at: None,
+            retrieval_count: 0,
         }
     }
 
@@ -130,10 +135,17 @@ impl HyperMemory {
         }
     }
 
-    /// Compute effective strength at a given time: S(t) = A·cos(2πft+φ)·e^(-λt)
+    /// Compute effective strength at a given time:
+    /// S(t) = (A + retrieval_energy) · cos(2πft+φ) · e^(-λt)
     pub fn effective_strength(&self, now: DateTime<Utc>) -> f32 {
         let age = (now - self.created_at).num_milliseconds().max(0) as f64 / 1000.0;
-        compute_strength(&self.wave_params(), age)
+        crate::wave::compute_strength_with_retrieval(&self.wave_params(), age, self.retrieval_count)
+    }
+
+    /// Record a retrieval event — called on search/recall to boost the f(x) term.
+    pub fn record_retrieval(&mut self) {
+        self.retrieval_count = self.retrieval_count.saturating_add(1);
+        self.touch();
     }
 
     /// Compute the effective vector: S(t) · h

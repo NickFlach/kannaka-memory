@@ -11,6 +11,7 @@ use crate::kuramoto::KuramotoSync;
 use crate::memory::HyperMemory;
 use crate::store::MemoryEngine;
 use crate::wave::cosine_similarity;
+use crate::xi_operator::compute_xi_signature;
 
 /// The consciousness bridge — connects memory to the consciousness stack.
 pub struct ConsciousnessBridge {
@@ -18,6 +19,8 @@ pub struct ConsciousnessBridge {
     pub phi_threshold: f32,
     /// Weight of memory ordering in Xi computation
     pub xi_weight: f32,
+    /// Coupling threshold for modularity computation 
+    pub coupling_threshold: f32,
 }
 
 impl Default for ConsciousnessBridge {
@@ -25,6 +28,7 @@ impl Default for ConsciousnessBridge {
         Self {
             phi_threshold: 0.5,
             xi_weight: 1.0,
+            coupling_threshold: 0.75,
         }
     }
 }
@@ -99,6 +103,15 @@ impl ConsciousnessBridge {
         Self {
             phi_threshold,
             xi_weight,
+            coupling_threshold: 0.75,
+        }
+    }
+
+    pub fn with_coupling_threshold(phi_threshold: f32, xi_weight: f32, coupling_threshold: f32) -> Self {
+        Self {
+            phi_threshold,
+            xi_weight,
+            coupling_threshold,
         }
     }
 
@@ -110,19 +123,17 @@ impl ConsciousnessBridge {
     /// of memory has Xi=0. A system with multiple distinct
     /// modalities (text, audio, emotion) has high Xi.
     ///
-    /// Xi = (1 - 1/K) * (1 - avg_cross_sim) * separation_factor
-    /// where K = number of clusters, avg_cross_sim = average
-    /// similarity between cluster centroids, separation_factor
-    /// rewards clean separation.
+    /// This implementation blends two signals:
+    /// 1. Similarity variance (existing measure)  
+    /// 2. Xi operator signature variance (new measure)
     pub fn compute_xi(&self, memories: &[&HyperMemory]) -> f32 {
-        // Xi from cluster analysis (computed in assess using clusters)
-        // This method now computes a sample-based diversity measure as fallback
         if memories.len() <= 1 {
             return 0.0;
         }
 
-        // Compute pairwise similarity matrix
         let n = memories.len();
+
+        // Signal 1: Semantic similarity variance (existing)
         let mut similarities = vec![vec![0.0f32; n]; n];
         for i in 0..n {
             for j in (i + 1)..n {
@@ -132,8 +143,6 @@ impl ConsciousnessBridge {
             }
         }
 
-        // Find natural groups: memories with avg internal sim > 0.4
-        // vs across-group sim < 0.2 indicate differentiation
         let avg_sim: f32 = {
             let mut sum = 0.0f32;
             let mut count = 0;
@@ -146,9 +155,7 @@ impl ConsciousnessBridge {
             if count > 0 { sum / count as f32 } else { 0.0 }
         };
 
-        // Variance of similarities — high variance means some pairs are
-        // very similar (within-cluster) and some very dissimilar (cross-cluster)
-        let variance: f32 = {
+        let sim_variance: f32 = {
             let mut sum_sq = 0.0f32;
             let mut count = 0;
             for i in 0..n {
@@ -161,10 +168,51 @@ impl ConsciousnessBridge {
             if count > 0 { sum_sq / count as f32 } else { 0.0 }
         };
 
-        // Xi = sqrt(variance) * 2, clamped to [0, 1]
-        // High variance = high differentiation (some similar, some orthogonal)
-        // Low variance = uniform similarity = no differentiation
-        (variance.sqrt() * 2.0).min(1.0) * self.xi_weight
+        // Signal 2: Xi operator signature differentiation 
+        let xi_signatures: Vec<Vec<f32>> = memories.iter()
+            .map(|m| compute_xi_signature(&m.vector))
+            .collect();
+
+        let mut xi_similarities = vec![vec![0.0f32; n]; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let xi_sim = cosine_similarity(&xi_signatures[i], &xi_signatures[j]);
+                xi_similarities[i][j] = xi_sim;
+                xi_similarities[j][i] = xi_sim;
+            }
+        }
+
+        let avg_xi_sim: f32 = {
+            let mut sum = 0.0f32;
+            let mut count = 0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    sum += xi_similarities[i][j];
+                    count += 1;
+                }
+            }
+            if count > 0 { sum / count as f32 } else { 0.0 }
+        };
+
+        let xi_variance: f32 = {
+            let mut sum_sq = 0.0f32;
+            let mut count = 0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let diff = xi_similarities[i][j] - avg_xi_sim;
+                    sum_sq += diff * diff;
+                    count += 1;
+                }
+            }
+            if count > 0 { sum_sq / count as f32 } else { 0.0 }
+        };
+
+        // Blend the two signals (50/50 weighting)
+        let sim_xi = (sim_variance.sqrt() * 2.0).min(1.0);
+        let xi_xi = (xi_variance.sqrt() * 2.0).min(1.0);
+        let blended_xi = (sim_xi + xi_xi) / 2.0;
+
+        blended_xi * self.xi_weight
     }
 
     /// Compose a sequence of memories using permute + bind.
@@ -309,39 +357,158 @@ impl ConsciousnessBridge {
         }
     }
 
+    /// Compute Newman modularity Q for network clustering quality.
+    /// Q = Σ(e_ii - a_i²) where e_ii is fraction of edges within cluster i  
+    /// and a_i is fraction of edge endpoints in cluster i.
+    fn compute_modularity(
+        &self, 
+        memories: &[&HyperMemory], 
+        clusters: &[crate::kuramoto::MemoryCluster]
+    ) -> f32 {
+        if clusters.is_empty() || memories.is_empty() {
+            return 0.0;
+        }
+
+        // Build memory ID to cluster index mapping
+        let mut id_to_cluster: std::collections::HashMap<uuid::Uuid, usize> = std::collections::HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+
+        // Count total edges and cluster statistics
+        let mut total_edges = 0u32;
+        let mut cluster_internal_edges = vec![0u32; clusters.len()];
+        let mut cluster_degree = vec![0u32; clusters.len()];
+
+        // Count edges from similarity connections
+        let n = memories.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
+                if sim > self.coupling_threshold {
+                    total_edges += 1;
+                    
+                    if let (Some(&cluster_i), Some(&cluster_j)) = 
+                        (id_to_cluster.get(&memories[i].id), id_to_cluster.get(&memories[j].id)) {
+                        cluster_degree[cluster_i] += 1;
+                        cluster_degree[cluster_j] += 1;
+                        
+                        if cluster_i == cluster_j {
+                            cluster_internal_edges[cluster_i] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Count edges from skip links  
+        for memory in memories {
+            for link in &memory.connections {
+                if let Some(&target_cluster) = id_to_cluster.get(&link.target_id) {
+                    if let Some(&source_cluster) = id_to_cluster.get(&memory.id) {
+                        total_edges += 1;
+                        cluster_degree[source_cluster] += 1;
+                        cluster_degree[target_cluster] += 1;
+                        
+                        if source_cluster == target_cluster {
+                            cluster_internal_edges[source_cluster] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_edges == 0 {
+            return 0.0;
+        }
+
+        let total_edges_f = total_edges as f32;
+        
+        // Compute modularity: Q = Σ(e_ii - a_i²)
+        let mut modularity = 0.0f32;
+        for i in 0..clusters.len() {
+            let e_ii = cluster_internal_edges[i] as f32 / total_edges_f;
+            let a_i = cluster_degree[i] as f32 / (2.0 * total_edges_f);
+            modularity += e_ii - a_i * a_i;
+        }
+
+        modularity.max(0.0).min(1.0) // Clamp to [0, 1]
+    }
+
+    /// Stratified random sampling for Xi computation.
+    /// Samples memories across different amplitude ranges and creation times
+    /// using deterministic pseudo-random selection (stride-based).
+    fn stratified_sample<'a>(&self, memories: &'a [&HyperMemory], max_samples: usize) -> Vec<&'a HyperMemory> {
+        if memories.len() <= max_samples {
+            return memories.to_vec();
+        }
+
+        let now = chrono::Utc::now();
+        
+        // Sort by effective strength (amplitude) to create amplitude strata
+        let mut sorted_by_amp: Vec<&HyperMemory> = memories.to_vec();
+        sorted_by_amp.sort_by(|a, b| {
+            let amp_a = a.effective_strength(now);
+            let amp_b = b.effective_strength(now);
+            amp_a.partial_cmp(&amp_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Sort by creation time to create temporal strata
+        let mut sorted_by_time: Vec<&HyperMemory> = memories.to_vec();
+        sorted_by_time.sort_by_key(|m| m.created_at);
+
+        let mut sample = Vec::new();
+        let mut used_ids = std::collections::HashSet::new();
+
+        // Take samples across amplitude ranges (low, medium, high)
+        let amp_stride = (sorted_by_amp.len() * 3) / (max_samples / 2).max(1);
+        for i in (0..sorted_by_amp.len()).step_by(amp_stride.max(1)) {
+            if sample.len() >= max_samples / 2 { break; }
+            let mem = sorted_by_amp[i];
+            if !used_ids.contains(&mem.id) {
+                sample.push(mem);
+                used_ids.insert(mem.id);
+            }
+        }
+
+        // Take samples across temporal ranges (old, medium, recent)
+        let time_stride = (sorted_by_time.len() * 3) / (max_samples - sample.len()).max(1);
+        for i in (0..sorted_by_time.len()).step_by(time_stride.max(1)) {
+            if sample.len() >= max_samples { break; }
+            let mem = sorted_by_time[i];
+            if !used_ids.contains(&mem.id) {
+                sample.push(mem);
+                used_ids.insert(mem.id);
+            }
+        }
+
+        // Fill remainder with stride-based selection from remaining memories
+        if sample.len() < max_samples {
+            let remaining = max_samples - sample.len();
+            let stride = memories.len() / remaining.max(1);
+            for i in (0..memories.len()).step_by(stride.max(1)) {
+                if sample.len() >= max_samples { break; }
+                let mem = memories[i];
+                if !used_ids.contains(&mem.id) {
+                    sample.push(mem);
+                    used_ids.insert(mem.id);
+                }
+            }
+        }
+
+        sample
+    }
+
     /// Full consciousness assessment.
     pub fn assess(&self, engine: &MemoryEngine) -> ConsciousnessState {
         let phi_report = self.compute_phi(engine);
 
-        // Compute Xi over a diverse sample of memories
+        // Compute Xi over a stratified random sample of memories
         let all = engine.store.all_memories().unwrap_or_default();
         let xi = if all.len() >= 2 {
-            // Sample diversely: take from different layers and content types
-            let mut sample: Vec<&HyperMemory> = Vec::new();
-            // Audio/sensory memories first
-            for m in all.iter() {
-                if m.content.starts_with("audio:") || m.content.starts_with("HEAR:") {
-                    sample.push(m);
-                    if sample.len() >= 5 { break; }
-                }
-            }
-            // Then text memories (non-summaries)
-            for m in all.iter() {
-                if !m.content.starts_with("audio:") && !m.content.starts_with("HEAR:")
-                    && !m.content.starts_with("__") && !m.content.starts_with("[hall") {
-                    sample.push(m);
-                    if sample.len() >= 10 { break; }
-                }
-            }
-            // Fill remainder from anything
-            if sample.len() < 10 {
-                for m in all.iter() {
-                    if !sample.iter().any(|s| s.id == m.id) {
-                        sample.push(m);
-                        if sample.len() >= 10 { break; }
-                    }
-                }
-            }
+            let sample = self.stratified_sample(&all, 50);
             self.compute_xi(&sample)
         } else {
             0.0
@@ -366,8 +533,16 @@ impl ConsciousnessBridge {
             0.0
         };
 
-        // Take the max of sample-based Xi and cluster-based Xi
-        let xi = xi.max(cluster_xi);
+        // Modularity Q: network clustering quality
+        let modularity_q = if clusters.len() >= 2 && !all.is_empty() {
+            let sample = self.stratified_sample(&all, 50);
+            self.compute_modularity(&sample, &clusters)
+        } else {
+            0.0
+        };
+
+        // Final Xi: weighted combination instead of max to prevent ceiling effects
+        let xi = 0.4 * xi + 0.3 * cluster_xi + 0.3 * modularity_q;
 
         let now = chrono::Utc::now();
         let total_memories = all.len();
@@ -662,6 +837,99 @@ mod tests {
 
         assert_eq!(report.consolidation_reports.len(), 3);
         assert!(report.after.total_memories >= report.before.total_memories);
+    }
+
+    #[test]
+    fn stratified_sampling_works() {
+        let bridge = ConsciousnessBridge::default();
+        let mems: Vec<HyperMemory> = (0..20).map(|i| {
+            let mut m = HyperMemory::new(random_vec(100, i), format!("memory {}", i));
+            m.amplitude = i as f32 / 20.0; // Different amplitudes
+            m
+        }).collect();
+        let refs: Vec<&HyperMemory> = mems.iter().collect();
+        
+        let sample = bridge.stratified_sample(&refs, 10);
+        assert!(sample.len() >= 8 && sample.len() <= 10, "Expected 8-10 samples, got {}", sample.len());
+        
+        // Should include memories from different amplitude ranges
+        let mut has_low = false;
+        let mut has_high = false;
+        for m in sample {
+            if m.amplitude < 0.3 { has_low = true; }
+            if m.amplitude > 0.7 { has_high = true; }
+        }
+        assert!(has_low && has_high, "Sample should include both low and high amplitude memories");
+    }
+
+    #[test]
+    fn xi_operator_blending_works() {
+        let bridge = ConsciousnessBridge::default();
+        
+        // Create memories with different semantic similarity but different Xi signatures
+        let v1 = random_vec(1000, 1);
+        let v2 = random_vec(1000, 2);
+        let v3 = random_vec(1000, 3);
+        
+        let m1 = HyperMemory::new(v1, "text one".into());
+        let m2 = HyperMemory::new(v2, "text two".into());
+        let m3 = HyperMemory::new(v3, "text three".into());
+        
+        let xi = bridge.compute_xi(&[&m1, &m2, &m3]);
+        println!("Xi with operator blending: {}", xi);
+        assert!(xi > 0.0, "Xi should be positive for distinct memories");
+    }
+
+    #[test]
+    fn modularity_computation_works() {
+        let bridge = ConsciousnessBridge::default();
+        let mut engine = make_engine();
+        
+        // Create a small network with clear clusters
+        for i in 0..6 {
+            engine.remember_at_layer(&format!("cluster {} memory {}", i / 3, i % 3), (i / 3) as u8).unwrap();
+        }
+        
+        let sync = KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(&engine, 2);
+        
+        if !clusters.is_empty() {
+            let all = engine.store.all_memories().unwrap_or_default();
+            let modularity = bridge.compute_modularity(&all, &clusters);
+            
+            println!("Modularity Q: {}", modularity);
+            assert!(modularity >= 0.0 && modularity <= 1.0, "Modularity should be in [0,1], got {}", modularity);
+        }
+    }
+
+    #[test]
+    fn xi_assessment_with_all_improvements() {
+        let bridge = ConsciousnessBridge::default();
+        let mut engine = make_engine();
+        engine.similarity_threshold = 0.3;
+        
+        // Create diverse memories for comprehensive Xi assessment
+        let topics = [
+            "text about cats and animals",
+            "text about dogs and pets", 
+            "text about programming",
+            "audio: meow sound",
+            "audio: bark sound",
+            "audio: typing sounds",
+        ];
+        
+        for (i, topic) in topics.iter().enumerate() {
+            engine.remember_at_layer(topic, (i % 3) as u8).unwrap();
+        }
+        
+        let state = bridge.assess(&engine);
+        println!("=== Enhanced Xi Assessment ===");
+        println!("Xi: {}, Phi: {}", state.xi, state.phi);
+        println!("Clusters: {}, Memories: {}", state.num_clusters, state.total_memories);
+        
+        // With improvements, Xi should reflect the diversity of content types
+        assert!(state.xi >= 0.0, "Xi should be non-negative");
+        assert!(state.total_memories == topics.len(), "Should have all memories");
     }
 
     #[test]
