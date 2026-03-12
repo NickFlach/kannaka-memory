@@ -287,7 +287,7 @@ impl MemoryEngine {
     }
 
     /// Encode a query and search with wave-modulated ranking and Xi diversity boosting.
-    pub fn recall(&self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
+    pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
         let qvec = self.pipeline.encode_text(query)?;
         let query_xi = compute_xi_signature(&qvec);
         let now = Utc::now();
@@ -332,7 +332,14 @@ impl MemoryEngine {
         // Re-sort by combined_score after Xi diversity boost may have changed relative ordering
         results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
         results.truncate(top_k);
-            
+
+        // EXP-003: Record retrieval events on returned memories (f(x) term)
+        for r in &results {
+            if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
+                mem.record_retrieval();
+            }
+        }
+
         Ok(results)
     }
 
@@ -420,6 +427,14 @@ impl MemoryEngine {
 
         results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
         results.truncate(top_k);
+
+        // EXP-003: Record retrieval events on returned memories (f(x) term)
+        for r in &results {
+            if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
+                mem.record_retrieval();
+            }
+        }
+
         Ok(results)
     }
 

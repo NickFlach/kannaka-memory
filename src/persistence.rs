@@ -123,6 +123,7 @@ impl From<HyperMemoryV2> for HyperMemory {
             last_consolidated_at: None,
             disputed: false,
             updated_at: None,
+            retrieval_count: 0,
         }
     }
 }
@@ -187,6 +188,7 @@ impl From<HyperMemoryV1> for HyperMemory {
             last_consolidated_at: None,
             disputed: false,
             updated_at: None,
+            retrieval_count: 0,
         }
     }
 }
