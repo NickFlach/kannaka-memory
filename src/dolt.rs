@@ -88,7 +88,7 @@ impl Default for DoltConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 3307,
-            database: "dolt-memory".to_string(),
+            database: "kannaka_memory".to_string(),
             user: "root".to_string(),
             password: String::new(),
             auto_commit: true,
@@ -1011,6 +1011,54 @@ impl DoltMemoryStore {
     /// Returns the set of IDs mutated through `get_mut` but not yet flushed to Dolt.
     pub fn dirty_ids(&self) -> &HashSet<Uuid> {
         &self.dirty_set
+    }
+
+    // -----------------------------------------------------------------------
+    // Transaction support (Issue #7 — dream write safety)
+    // -----------------------------------------------------------------------
+
+    /// Begin a SQL transaction. All subsequent writes will be part of this transaction
+    /// until `transaction_commit()` or `transaction_rollback()` is called.
+    pub fn transaction_begin(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("BEGIN", ())
+            .map_err(|e| StoreError::Other(format!("Failed to BEGIN transaction: {}", e)))?;
+        Ok(())
+    }
+
+    /// Commit the current transaction.
+    pub fn transaction_commit(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("COMMIT", ())
+            .map_err(|e| StoreError::Other(format!("Failed to COMMIT transaction: {}", e)))?;
+        Ok(())
+    }
+
+    /// Rollback the current transaction.
+    pub fn transaction_rollback(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.exec_drop("ROLLBACK", ())
+            .map_err(|e| StoreError::Other(format!("Failed to ROLLBACK transaction: {}", e)))?;
+        Ok(())
+    }
+
+    /// Flush dirty memories within a transaction. Begins a transaction, flushes all dirty
+    /// memories, and commits. On error, rolls back.
+    pub fn flush_dirty_transactional(&mut self) -> Result<usize, StoreError> {
+        self.transaction_begin()?;
+        match self.flush_dirty() {
+            Ok(count) => {
+                self.transaction_commit()?;
+                Ok(count)
+            }
+            Err(e) => {
+                let _ = self.transaction_rollback();
+                Err(e)
+            }
+        }
     }
 
     /// Return the configured default branch name.

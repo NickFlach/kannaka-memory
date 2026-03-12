@@ -41,7 +41,6 @@ pub mod ear;
 #[cfg(feature = "video")]
 pub mod eye;
 
-#[cfg(feature = "dolt")]
 pub mod dolt;
 
 pub mod collective;
@@ -80,7 +79,6 @@ pub use paradox::{
     Resolution, ResolutionReport, ParadoxResolver
 };
 
-#[cfg(feature = "dolt")]
 pub use dolt::DoltMemoryStore;
 
 #[cfg(feature = "glyph")]

@@ -45,7 +45,13 @@ pub fn compute_strength_with_retrieval(params: &WaveParams, age_seconds: f64, re
 
 /// Cosine similarity between two vectors.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+    if a.is_empty() || b.is_empty() {
+        if a.is_empty() || b.is_empty() {
+            eprintln!("[warn] cosine_similarity called with empty vector (missing embeddings?)");
+        }
+        return 0.0;
+    }
+    if a.len() != b.len() {
         return 0.0;
     }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
