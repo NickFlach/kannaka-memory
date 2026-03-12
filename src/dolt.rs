@@ -88,7 +88,7 @@ impl Default for DoltConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 3307,
-            database: "kannaka_memory".to_string(),
+            database: "dolt-memory".to_string(),
             user: "root".to_string(),
             password: String::new(),
             auto_commit: true,
@@ -446,10 +446,9 @@ impl DoltMemoryStore {
                 Vec::new()
             };
 
-            // Deserialize geometry from JSON (optional)
+            // Deserialize geometry from JSON (optional, non-fatal on schema mismatch)
             let geometry = if let Some(geom_json) = geometry_json {
-                Some(serde_json::from_str(&geom_json)
-                    .map_err(|e| StoreError::Other(format!("Failed to deserialize geometry: {}", e)))?)
+                serde_json::from_str(&geom_json).ok()
             } else {
                 None
             };
@@ -488,6 +487,7 @@ impl DoltMemoryStore {
                 last_consolidated_at,
                 disputed,
                 updated_at: None,
+                retrieval_count: 0,
             };
 
             self.cache.insert(uuid, memory);
