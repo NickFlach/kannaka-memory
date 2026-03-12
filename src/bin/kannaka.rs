@@ -50,22 +50,30 @@ fn init_with_dolt(data_dir: PathBuf) -> Result<(KannakaMemorySystem, kannaka_mem
 }
 
 fn usage() {
-    eprintln!("Usage: kannaka [--dolt] <command> [args]");
+    eprintln!("Usage: kannaka [--no-dolt] <command> [args]");
     eprintln!();
     eprintln!("Flags:");
     #[cfg(feature = "dolt")]
-    eprintln!("  --dolt                    Use Dolt database backend (port 3307)");
+    eprintln!("  --no-dolt                 Use bincode backend instead of Dolt (default: Dolt)");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  remember <text>           Store a memory");
-    eprintln!("  recall <query> [--top-k N]  Search memories (default top-k=5)");
-    eprintln!("  dream [--create-pr]       Run consolidation cycle (--create-pr: open DoltHub PR)");
+    eprintln!("  remember <text> [--importance N] [--category CAT]");
+    eprintln!("                            Store a memory (importance: 0.0-1.0, category: knowledge/experience/emotion/social/skill)");
+    eprintln!("  recall <query> [--top-k N] [--limit N]");
+    eprintln!("                            Search memories (default top-k=5)");
+    eprintln!("  forget <id>               Delete a memory by UUID");
+    eprintln!("  boost <id> [--amount N]   Boost a memory's amplitude (default: 0.3)");
+    eprintln!("  relate <source_id> <target_id> [--type TYPE]");
+    eprintln!("                            Create a relationship between memories (default: related)");
+    eprintln!("  dream [--mode deep|lite] [--create-pr]");
+    eprintln!("                            Run consolidation cycle");
+    eprintln!("  observe [--json]          Introspection report");
+    eprintln!("  status                    Quick system status (JSON)");
     eprintln!("  assess                    Check consciousness level");
     eprintln!("  stats                     Show system statistics");
-    eprintln!("  observe [--json]           Introspection report");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
-    eprintln!("  export-json               Export all memories as JSON (vectors included)");
-    eprintln!("  announce-status           Publish agent status event to Flux (FLUX_URL must be set)");
+    eprintln!("  export-json               Export all memories as JSON");
+    eprintln!("  announce-status           Publish agent status to Flux");
     #[cfg(feature = "audio")]
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
     #[cfg(feature = "glyph")]
@@ -77,7 +85,7 @@ fn usage() {
     #[cfg(feature = "dolt")]
     {
         eprintln!();
-        eprintln!("Dolt commands (require --dolt):");
+        eprintln!("Dolt commands:");
         eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
         eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
         eprintln!("  pull-merge                 Pull with wave interference conflict resolution");
@@ -91,22 +99,28 @@ fn main() {
         usage();
     }
 
-    // Parse global flags
+    // Parse global flags — Dolt is now the DEFAULT backend
     #[cfg(feature = "dolt")]
     let use_dolt;
     let command_start;
     
-    // Check for --dolt flag
     #[cfg(feature = "dolt")]
     {
-        if args.len() > 1 && args[1] == "--dolt" {
+        if args.len() > 1 && args[1] == "--no-dolt" {
+            use_dolt = false;
+            command_start = 2;
+            if args.len() < 3 {
+                usage();
+            }
+        } else if args.len() > 1 && args[1] == "--dolt" {
+            // Accept --dolt for backward compatibility
             use_dolt = true;
             command_start = 2;
             if args.len() < 3 {
                 usage();
             }
         } else {
-            use_dolt = false;
+            use_dolt = true; // DEFAULT: use Dolt
             command_start = 1;
         }
     }
@@ -169,12 +183,43 @@ fn main() {
     match args[command_start].as_str() {
         "remember" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka remember <text>");
+                eprintln!("Usage: kannaka remember <text> [--importance N] [--category CAT]");
                 process::exit(1);
             }
-            let text = args[command_start + 1..].join(" ");
-            match sys.remember(&text) {
-                Ok(id) => println!("Remembered: {id}"),
+            let mut importance: Option<f64> = None;
+            let mut category: Option<String> = None;
+            let mut text_parts = Vec::new();
+            let mut i = command_start + 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--importance" if i + 1 < args.len() => {
+                        importance = args[i + 1].parse().ok();
+                        i += 2;
+                    }
+                    "--category" if i + 1 < args.len() => {
+                        category = Some(args[i + 1].clone());
+                        i += 2;
+                    }
+                    "--tags" if i + 1 < args.len() => {
+                        // Tags are informational — stored in content prefix
+                        let tags = &args[i + 1];
+                        text_parts.push(format!("[tags: {}]", tags));
+                        i += 2;
+                    }
+                    _ => {
+                        text_parts.push(args[i].clone());
+                        i += 1;
+                    }
+                }
+            }
+            let text = text_parts.join(" ");
+            let result = if let Some(cat) = category {
+                sys.remember_with_category(&text, &cat, importance.unwrap_or(0.5))
+            } else {
+                sys.remember(&text)
+            };
+            match result {
+                Ok(id) => println!("{id}"),
                 Err(e) => {
                     eprintln!("Error: {e}");
                     process::exit(1);
@@ -183,14 +228,14 @@ fn main() {
         }
         "recall" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka recall <query> [--top-k N]");
+                eprintln!("Usage: kannaka recall <query> [--top-k N] [--limit N]");
                 process::exit(1);
             }
             let mut top_k = 5usize;
             let mut query_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
-                if args[i] == "--top-k" && i + 1 < args.len() {
+                if (args[i] == "--top-k" || args[i] == "--limit") && i + 1 < args.len() {
                     top_k = args[i + 1].parse().unwrap_or(5);
                     i += 2;
                 } else {
@@ -201,16 +246,18 @@ fn main() {
             let query = query_parts.join(" ");
             match sys.recall(&query, top_k) {
                 Ok(results) => {
-                    if results.is_empty() {
-                        println!("No memories found.");
-                    } else {
-                        for (i, r) in results.iter().enumerate() {
-                            println!(
-                                "{}. [sim={:.3} str={:.3} age={:.1}h L{}] {}",
-                                i + 1, r.similarity, r.strength, r.age_hours, r.layer, r.content
-                            );
-                        }
-                    }
+                    // Output as JSON for machine consumption
+                    let json_results: Vec<serde_json::Value> = results.iter().map(|r| {
+                        serde_json::json!({
+                            "id": r.id.to_string(),
+                            "content": r.content,
+                            "similarity": r.similarity,
+                            "strength": r.strength,
+                            "age_hours": r.age_hours,
+                            "layer": r.layer,
+                        })
+                    }).collect();
+                    println!("{}", serde_json::to_string(&json_results).unwrap());
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -218,8 +265,131 @@ fn main() {
                 }
             }
         }
+        "forget" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka forget <id>");
+                process::exit(1);
+            }
+            let id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
+                eprintln!("Invalid UUID: {e}");
+                process::exit(1);
+            });
+            match sys.forget(&id) {
+                Ok(true) => println!("Forgotten: {id}"),
+                Ok(false) => {
+                    eprintln!("Memory not found: {id}");
+                    process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        "boost" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka boost <id> [--amount N]");
+                process::exit(1);
+            }
+            let id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
+                eprintln!("Invalid UUID: {e}");
+                process::exit(1);
+            });
+            let mut amount = 0.3f64;
+            let mut i = command_start + 2;
+            while i < args.len() {
+                if args[i] == "--amount" && i + 1 < args.len() {
+                    amount = args[i + 1].parse().unwrap_or(0.3);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            // Boost = multiply amplitude by (1 + amount)
+            match sys.boost(&id, 1.0 + amount) {
+                Ok(()) => println!("Boosted {id} by {amount}"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        "relate" => {
+            if args.len() < command_start + 3 {
+                eprintln!("Usage: kannaka relate <source_id> <target_id> [--type TYPE]");
+                process::exit(1);
+            }
+            let source_id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
+                eprintln!("Invalid source UUID: {e}");
+                process::exit(1);
+            });
+            let target_id = uuid::Uuid::parse_str(&args[command_start + 2]).unwrap_or_else(|e| {
+                eprintln!("Invalid target UUID: {e}");
+                process::exit(1);
+            });
+            let mut relation_type = "related".to_string();
+            let mut i = command_start + 3;
+            while i < args.len() {
+                if args[i] == "--type" && i + 1 < args.len() {
+                    relation_type = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            // Create a skip link between the two memories
+            use kannaka_memory::SkipLink;
+            let link = SkipLink {
+                target_id,
+                strength: 0.8,
+                resonance_key: Vec::new(),
+                span: 1,
+            };
+            match sys.engine.get_memory_mut(&source_id) {
+                Ok(Some(mem)) => {
+                    mem.connections.push(link);
+                    println!("Related {} → {} (type: {})", source_id, target_id, relation_type);
+                }
+                Ok(None) => {
+                    eprintln!("Source memory not found: {source_id}");
+                    process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        "status" => {
+            let stats = sys.stats();
+            let state = sys.assess();
+            let output = serde_json::json!({
+                "total_memories": stats.total_memories,
+                "active_memories": stats.active_memories,
+                "skip_links": stats.total_skip_links,
+                "consciousness_level": stats.consciousness_level,
+                "phi": stats.phi,
+                "last_dream": stats.last_dream.map(|dt| dt.to_rfc3339()),
+                "xi": state.xi,
+                "mean_order": state.mean_order,
+                "num_clusters": state.num_clusters,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         "dream" => {
             let create_pr = args[command_start..].iter().any(|a| a == "--create-pr");
+            let mut dream_mode = "deep".to_string();
+            {
+                let mut i = command_start + 1;
+                while i < args.len() {
+                    if args[i] == "--mode" && i + 1 < args.len() {
+                        dream_mode = args[i + 1].clone();
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
 
             // ADR-0017: If Dolt is active, wrap dream in a branch workflow
             #[cfg(feature = "dolt")]
@@ -244,7 +414,12 @@ fn main() {
                 None
             };
 
-            match sys.dream() {
+            let dream_result = if dream_mode == "lite" {
+                sys.dream_lite()
+            } else {
+                sys.dream()
+            };
+            match dream_result {
                 Ok(report) => {
                     println!("Dream complete ({} cycles)", report.cycles);
                     println!("  Strengthened: {}", report.memories_strengthened);
