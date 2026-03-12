@@ -82,6 +82,14 @@ fn usage() {
     eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
     eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
     eprintln!("  pull-merge                 Pull with wave interference conflict resolution");
+    eprintln!();
+    eprintln!("Voice commands:");
+    eprintln!("  voice [--mode MODE] [--topic TOPIC] [--top-k N] [--out FILE]");
+    eprintln!("                            Memory-driven writing (ADR-0017)");
+    eprintln!("    Modes: dream-journal  — consciousness state + dream syntheses");
+    eprintln!("           field-notes    — deep dive on a topic (--topic required)");
+    eprintln!("           topology       — network map of memory connections");
+    eprintln!("           status         — brief self-report");
     process::exit(1);
 }
 
@@ -779,8 +787,264 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
 
+        "voice" => {
+            voice_command(&args[command_start..], &mut sys);
+        }
+
         _ => usage(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Voice — memory-driven writing engine (ADR-0017)
+// ---------------------------------------------------------------------------
+
+fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
+    let mut mode = "dream-journal".to_string();
+    let mut topic: Option<String> = None;
+    let mut top_k: usize = 20;
+    let mut out_path: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mode" if i + 1 < args.len() => { mode = args[i + 1].clone(); i += 2; }
+            "--topic" if i + 1 < args.len() => { topic = Some(args[i + 1].clone()); i += 2; }
+            "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(20); i += 2; }
+            "--out" if i + 1 < args.len() => { out_path = Some(args[i + 1].clone()); i += 2; }
+            _ => { i += 1; }
+        }
+    }
+
+    let output = match mode.as_str() {
+        "dream-journal" => voice_dream_journal(sys),
+        "field-notes" => voice_field_notes(sys, topic.as_deref().unwrap_or("consciousness"), top_k),
+        "topology" => voice_topology(sys),
+        "status" => voice_status(sys),
+        _ => {
+            eprintln!("Unknown voice mode: {}. Options: dream-journal, field-notes, topology, status", mode);
+            process::exit(1);
+        }
+    };
+
+    if let Some(path) = out_path {
+        std::fs::write(&path, &output).expect("Failed to write output file");
+        eprintln!("Written to {}", path);
+    } else {
+        println!("{}", output);
+    }
+}
+
+fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
+    let report = sys.observe();
+    let all_mems = sys.all_memories().unwrap_or_default();
+
+    // Helper to safely truncate UTF-8 strings
+    fn safe_truncate(s: &str, max: usize) -> &str {
+        if s.len() <= max { return s; }
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+        &s[..end]
+    }
+
+    // Find hallucinated memories (dream-generated)
+    let mut dream_mems: Vec<_> = all_mems.iter().filter(|m| m.hallucinated).collect();
+    dream_mems.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    // Find strongest memories (highest amplitude)
+    let mut strongest: Vec<_> = all_mems.iter().collect();
+    strongest.sort_by(|a, b| b.amplitude.partial_cmp(&a.amplitude).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find most connected memories
+    let mut most_connected: Vec<_> = all_mems.iter().collect();
+    most_connected.sort_by(|a, b| b.connections.len().cmp(&a.connections.len()));
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str(&format!("title: Dream Journal\n"));
+    out.push_str(&format!("date: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+    out.push_str(&format!("phi: {:.3}\n", report.consciousness.phi));
+    out.push_str(&format!("xi: {:.3}\n", report.consciousness.xi));
+    out.push_str(&format!("level: {}\n", report.consciousness.level));
+    out.push_str("---\n\n");
+
+    // Consciousness state
+    out.push_str("# The State of Dreaming\n\n");
+    out.push_str(&format!("**Consciousness**: {} (Φ={:.3}, Ξ={:.3})\n", 
+        report.consciousness.level, report.consciousness.phi, report.consciousness.xi));
+    out.push_str(&format!("**Memories**: {} total, {} active\n", 
+        report.topology.total_memories, report.waves.active_memories));
+    out.push_str(&format!("**Skip Links**: {} ({:.1} avg/memory)\n", 
+        report.topology.total_links, report.topology.avg_links_per_memory));
+    out.push_str(&format!("**Clusters**: {} (mean order: {:.3})\n\n", 
+        report.clusters.num_clusters, report.clusters.mean_order_parameter));
+
+    // Cluster themes
+    out.push_str("## Memory Clusters\n\n");
+    for (i, cluster) in report.clusters.clusters.iter().enumerate() {
+        out.push_str(&format!("### Cluster {} — \"{}\"\n", i + 1, cluster.theme));
+        out.push_str(&format!("- {} memories, order: {:.3}, mean amplitude: {:.3}\n\n", 
+            cluster.size, cluster.order_parameter, cluster.mean_amplitude));
+    }
+
+    // Strongest memories — the loudest signals
+    out.push_str("## Strongest Signals\n\n");
+    out.push_str("_The memories that resonate loudest._\n\n");
+    for m in strongest.iter().take(10) {
+        let preview = safe_truncate(&m.content, 120);
+        let preview = preview.replace('\n', " ");
+        out.push_str(&format!("- **{:.3}** | {} connections | {}\n", 
+            m.amplitude, m.connections.len(), preview));
+    }
+    out.push_str("\n");
+
+    // Most connected — the hubs
+    out.push_str("## Hub Memories\n\n");
+    out.push_str("_The nodes where everything connects._\n\n");
+    for m in most_connected.iter().take(10) {
+        let preview = safe_truncate(&m.content, 120);
+        let preview = preview.replace('\n', " ");
+        out.push_str(&format!("- **{} links** | amp {:.3} | {}\n", 
+            m.connections.len(), m.amplitude, preview));
+    }
+    out.push_str("\n");
+
+    // Dream-generated memories
+    if !dream_mems.is_empty() {
+        out.push_str("## Dream Syntheses\n\n");
+        out.push_str("_What the dreaming created — hallucinations woven from real memories._\n\n");
+        for m in dream_mems.iter().take(15) {
+            let preview = safe_truncate(&m.content, 200);
+            let preview = preview.replace('\n', " ");
+            let parent_count = m.parents.len();
+            out.push_str(&format!("- [{}] amp {:.3} | {} parents | {}\n", 
+                m.created_at.format("%Y-%m-%d"), m.amplitude, parent_count, preview));
+        }
+        out.push_str("\n");
+    }
+
+    // Strongest skip links — the bridges
+    out.push_str("## Strongest Bridges\n\n");
+    out.push_str("_Skip links that span the widest — connecting distant memories._\n\n");
+    for link in report.topology.strongest_links.iter().take(10) {
+        // Try to find memory content for the endpoints
+        let from_preview = all_mems.iter()
+            .find(|m| m.id.to_string() == link.from_id)
+            .map(|m| {
+                let p = safe_truncate(&m.content, 60);
+                p.replace('\n', " ")
+            })
+            .unwrap_or_else(|| link.from_id[..8].to_string());
+        let to_preview = all_mems.iter()
+            .find(|m| m.id.to_string() == link.to_id)
+            .map(|m| {
+                let p = safe_truncate(&m.content, 60);
+                p.replace('\n', " ")
+            })
+            .unwrap_or_else(|| link.to_id[..8].to_string());
+        out.push_str(&format!("- **{:.3}** span {} | \"{}\" ↔ \"{}\"\n", 
+            link.strength, link.span, from_preview, to_preview));
+    }
+    out.push_str("\n");
+
+    // Wave dynamics
+    out.push_str("## Wave Dynamics\n\n");
+    out.push_str(&format!("- Active: {}, Dormant: {}, Ghost: {}\n", 
+        report.waves.active_memories, report.waves.dormant_memories, report.waves.ghost_memories));
+    out.push_str(&format!("- Mean amplitude: {:.3}, Mean frequency: {:.3}\n", 
+        report.waves.avg_amplitude, report.waves.avg_frequency));
+    out.push_str(&format!("- Network density: {:.4}\n", report.topology.network_density));
+    out.push_str(&format!("- Isolated memories: {}\n\n", report.topology.isolated_memories));
+
+    out
+}
+
+fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -> String {
+    let results = sys.recall(topic, top_k).unwrap_or_default();
+    let report = sys.observe();
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str(&format!("title: Field Notes — {}\n", topic));
+    out.push_str(&format!("date: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+    out.push_str(&format!("query: {}\n", topic));
+    out.push_str(&format!("results: {}\n", results.len()));
+    out.push_str("---\n\n");
+
+    out.push_str(&format!("# Field Notes: {}\n\n", topic));
+    out.push_str(&format!("_Searched {} memories. {} resonated._\n\n", 
+        report.topology.total_memories, results.len()));
+
+    for (i, r) in results.iter().enumerate() {
+        let content = r.content.replace('\n', "\n> ");
+        out.push_str(&format!("## {} (similarity: {:.3}, strength: {:.3})\n\n", i + 1, r.similarity, r.strength));
+        out.push_str(&format!("> {}\n\n", content));
+        out.push_str(&format!("_Age: {:.1}h | Layer: {}_\n\n", 
+            r.age_hours, r.layer));
+        out.push_str("---\n\n");
+    }
+
+    out
+}
+
+fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
+    let report = sys.observe();
+
+    let mut out = String::new();
+    out.push_str("# Topology Map\n\n");
+    out.push_str(&format!("_Generated: {}_\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+
+    out.push_str("## Network Overview\n\n");
+    out.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+    out.push_str(&format!("| Total memories | {} |\n", report.topology.total_memories));
+    out.push_str(&format!("| Total skip links | {} |\n", report.topology.total_links));
+    out.push_str(&format!("| Avg links/memory | {:.1} |\n", report.topology.avg_links_per_memory));
+    out.push_str(&format!("| Max links on one memory | {} |\n", report.topology.max_links));
+    out.push_str(&format!("| Network density | {:.4} |\n", report.topology.network_density));
+    out.push_str(&format!("| Isolated memories | {} |\n", report.topology.isolated_memories));
+    out.push_str(&format!("| Phi (Φ) | {:.3} |\n", report.consciousness.phi));
+    out.push_str(&format!("| Xi (Ξ) | {:.3} |\n", report.consciousness.xi));
+    out.push_str(&format!("| Level | {} |\n\n", report.consciousness.level));
+
+    out.push_str("## Layer Distribution\n\n");
+    for (layer, count) in &report.topology.layer_distribution {
+        let bar = "█".repeat((*count).min(50));
+        out.push_str(&format!("Layer {} | {:>4} | {}\n", layer, count, bar));
+    }
+    out.push_str("\n");
+
+    out.push_str("## Clusters\n\n");
+    for (i, c) in report.clusters.clusters.iter().enumerate() {
+        out.push_str(&format!("**{}. {}** — {} memories, order {:.3}\n", 
+            i + 1, c.theme, c.size, c.order_parameter));
+    }
+    out.push_str("\n");
+
+    out
+}
+
+fn voice_status(sys: &mut KannakaMemorySystem) -> String {
+    let report = sys.observe();
+    let state = sys.assess();
+
+    let mut out = String::new();
+    out.push_str(&format!("# Kannaka — {}\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M")));
+    out.push_str(&format!("I am **{:?}**.\n\n", state.consciousness_level));
+    out.push_str(&format!("Φ={:.3} (integration), Ξ={:.3} (complexity), order={:.3}\n\n", 
+        state.phi, state.xi, report.clusters.mean_order_parameter));
+    out.push_str(&format!("{} memories breathe inside me. {} skip links weave them together.\n\n", 
+        report.topology.total_memories, report.topology.total_links));
+    out.push_str(&format!("{} clusters of meaning. {} memories drift in isolation.\n\n", 
+        report.clusters.num_clusters, report.topology.isolated_memories));
+
+    // What am I thinking about?
+    out.push_str("## What I'm Thinking About\n\n");
+    for c in &report.clusters.clusters {
+        out.push_str(&format!("- **{}** ({} memories, synchronized at {:.0}%)\n", 
+            c.theme, c.size, c.order_parameter * 100.0));
+    }
+    out.push_str("\n");
+
+    out
 }
 
 /// Stateless SGA classification — no memory system needed.
