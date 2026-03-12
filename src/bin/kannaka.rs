@@ -11,7 +11,6 @@ use kannaka_memory::openclaw::KannakaMemorySystem;
 #[cfg(feature = "glyph")]
 use kannaka_memory::glyph_bridge::GlyphEncoder;
 
-#[cfg(feature = "dolt")]
 use kannaka_memory::{DoltMemoryStore, MemoryStore};
 
 #[cfg(feature = "collective")]
@@ -33,7 +32,6 @@ fn dirs_or_default() -> PathBuf {
     PathBuf::from(".kannaka")
 }
 
-#[cfg(feature = "dolt")]
 fn init_with_dolt(data_dir: PathBuf) -> Result<(KannakaMemorySystem, kannaka_memory::dolt::DoltConfig), Box<dyn std::error::Error>> {
     let config = kannaka_memory::dolt::DoltConfig::from_env();
     let store = DoltMemoryStore::from_config(&config)?;
@@ -50,11 +48,7 @@ fn init_with_dolt(data_dir: PathBuf) -> Result<(KannakaMemorySystem, kannaka_mem
 }
 
 fn usage() {
-    eprintln!("Usage: kannaka [--no-dolt] <command> [args]");
-    eprintln!();
-    eprintln!("Flags:");
-    #[cfg(feature = "dolt")]
-    eprintln!("  --no-dolt                 Use bincode backend instead of Dolt (default: Dolt)");
+    eprintln!("Usage: kannaka <command> [args]");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  remember <text> [--importance N] [--category CAT]");
@@ -72,6 +66,7 @@ fn usage() {
     eprintln!("  assess                    Check consciousness level");
     eprintln!("  stats                     Show system statistics");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db");
+    eprintln!("  migrate-embeddings        Regenerate missing vector embeddings via Ollama");
     eprintln!("  export-json               Export all memories as JSON");
     eprintln!("  announce-status           Publish agent status to Flux");
     #[cfg(feature = "audio")]
@@ -82,14 +77,11 @@ fn usage() {
     eprintln!("  classify [--file <path>]  Classify data via SGA (reads stdin if no --file)");
     #[cfg(feature = "collective")]
     eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL glyphs from stdin");
-    #[cfg(feature = "dolt")]
-    {
-        eprintln!();
-        eprintln!("Dolt commands:");
-        eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
-        eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
-        eprintln!("  pull-merge                 Pull with wave interference conflict resolution");
-    }
+    eprintln!();
+    eprintln!("Dolt commands:");
+    eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
+    eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
+    eprintln!("  pull-merge                 Pull with wave interference conflict resolution");
     process::exit(1);
 }
 
@@ -99,36 +91,8 @@ fn main() {
         usage();
     }
 
-    // Parse global flags — Dolt is now the DEFAULT backend
-    #[cfg(feature = "dolt")]
-    let use_dolt;
-    let command_start;
-    
-    #[cfg(feature = "dolt")]
-    {
-        if args.len() > 1 && args[1] == "--no-dolt" {
-            use_dolt = false;
-            command_start = 2;
-            if args.len() < 3 {
-                usage();
-            }
-        } else if args.len() > 1 && args[1] == "--dolt" {
-            // Accept --dolt for backward compatibility
-            use_dolt = true;
-            command_start = 2;
-            if args.len() < 3 {
-                usage();
-            }
-        } else {
-            use_dolt = true; // DEFAULT: use Dolt
-            command_start = 1;
-        }
-    }
-    
-    #[cfg(not(feature = "dolt"))]
-    {
-        command_start = 1;
-    }
+    // Dolt is the only backend
+    let command_start = 1;
 
     // Handle stateless commands before initializing memory system
     #[cfg(feature = "glyph")]
@@ -145,37 +109,15 @@ fn main() {
 
     let dir = data_dir();
 
-    #[cfg(feature = "dolt")]
-    let dolt_config: Option<kannaka_memory::dolt::DoltConfig>;
+    let dolt_config: kannaka_memory::dolt::DoltConfig;
 
-    #[cfg(feature = "dolt")]
-    let mut sys = if use_dolt {
-        match init_with_dolt(dir) {
-            Ok((s, cfg)) => {
-                dolt_config = Some(cfg);
-                s
-            }
-            Err(e) => {
-                eprintln!("Failed to initialize with Dolt: {e}");
-                process::exit(1);
-            }
+    let mut sys = match init_with_dolt(dir) {
+        Ok((s, cfg)) => {
+            dolt_config = cfg;
+            s
         }
-    } else {
-        dolt_config = None;
-        match KannakaMemorySystem::init(dir) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to initialize: {e}");
-                process::exit(1);
-            }
-        }
-    };
-
-    #[cfg(not(feature = "dolt"))]
-    let mut sys = match KannakaMemorySystem::init(dir) {
-        Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to initialize: {e}");
+            eprintln!("Failed to initialize with Dolt: {e}");
             process::exit(1);
         }
     };
@@ -363,6 +305,9 @@ fn main() {
         "status" => {
             let stats = sys.stats();
             let state = sys.assess();
+            // Count memories without embeddings
+            let all_mems = sys.engine.store.all_memories().unwrap_or_default();
+            let memories_without_embeddings = all_mems.iter().filter(|m| m.vector.is_empty()).count();
             let output = serde_json::json!({
                 "total_memories": stats.total_memories,
                 "active_memories": stats.active_memories,
@@ -373,6 +318,7 @@ fn main() {
                 "xi": state.xi,
                 "mean_order": state.mean_order,
                 "num_clusters": state.num_clusters,
+                "memories_without_embeddings": memories_without_embeddings,
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
@@ -391,11 +337,10 @@ fn main() {
                 }
             }
 
-            // ADR-0017: If Dolt is active, wrap dream in a branch workflow
-            #[cfg(feature = "dolt")]
-            let dream_branch: Option<String> = if use_dolt {
-                let agent = dolt_config.as_ref().map(|c| c.agent_id.as_str()).unwrap_or("local");
-                match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+            // ADR-0017: Wrap dream in a branch workflow
+            let dream_branch: Option<String> = {
+                let agent = dolt_config.agent_id.as_str();
+                match DoltMemoryStore::from_config(&dolt_config) {
                     Ok(mut store) => {
                         match store.begin_dream(agent) {
                             Ok(branch) => Some(branch),
@@ -410,8 +355,6 @@ fn main() {
                         None
                     }
                 }
-            } else {
-                None
             };
 
             let dream_result = if dream_mode == "lite" {
@@ -432,7 +375,6 @@ fn main() {
                     }
 
                     // ADR-0017: Collapse dream branch back to main (or create PR)
-                    #[cfg(feature = "dolt")]
                     if let Some(ref branch) = dream_branch {
                         let report_json = serde_json::json!({
                             "cycles": report.cycles,
@@ -444,7 +386,7 @@ fn main() {
                             "emerged": report.emerged,
                         }).to_string();
 
-                        match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+                        match DoltMemoryStore::from_config(&dolt_config) {
                             Ok(mut store) => {
                                 if create_pr {
                                     // F-6: Dream-as-PR — push branch and create DoltHub PR
@@ -482,7 +424,7 @@ fn main() {
                                         Ok(hash) => {
                                             println!("[dolt] Dream merged → commit {}", &hash[..8.min(hash.len())]);
 
-                                            if dolt_config.as_ref().map(|c| c.auto_push).unwrap_or(false) {
+                                            if dolt_config.auto_push {
                                                 if let Err(e) = store.push(None, None) {
                                                     eprintln!("[dolt] Warning: push failed: {e}");
                                                 } else {
@@ -655,8 +597,7 @@ fn main() {
             }
         }
         // ADR-0017 F-7: Wasteland Bridge commands
-        #[cfg(feature = "dolt")]
-        "evidence" if use_dolt => {
+        "evidence" => {
             if args.len() < command_start + 3 {
                 eprintln!("Usage: kannaka --dolt evidence <wanted-id> <description>");
                 process::exit(1);
@@ -664,7 +605,7 @@ fn main() {
             let wanted_id = &args[command_start + 1];
             let description = args[command_start + 2..].join(" ");
 
-            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+            match DoltMemoryStore::from_config(&dolt_config) {
                 Ok(mut store) => {
                     match store.evidence_commit(wanted_id, &description) {
                         Ok(hash) => {
@@ -684,8 +625,7 @@ fn main() {
             }
         }
 
-        #[cfg(feature = "dolt")]
-        "verify" if use_dolt => {
+        "verify" => {
             if args.len() < command_start + 3 {
                 eprintln!("Usage: kannaka --dolt verify <commit-hash> <wanted-id>");
                 process::exit(1);
@@ -693,7 +633,7 @@ fn main() {
             let commit_hash = &args[command_start + 1];
             let wanted_id = &args[command_start + 2];
 
-            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+            match DoltMemoryStore::from_config(&dolt_config) {
                 Ok(store) => {
                     match store.verify_evidence(commit_hash, wanted_id) {
                         Ok(info) => {
@@ -716,9 +656,8 @@ fn main() {
             }
         }
 
-        #[cfg(feature = "dolt")]
-        "pull-merge" if use_dolt => {
-            match DoltMemoryStore::from_config(dolt_config.as_ref().unwrap()) {
+        "pull-merge" => {
+            match DoltMemoryStore::from_config(&dolt_config) {
                 Ok(mut store) => {
                     match store.pull_with_wave_merge(None, None) {
                         Ok(report) => {
@@ -747,6 +686,97 @@ fn main() {
                     process::exit(1);
                 }
             }
+        }
+
+        "migrate-embeddings" => {
+            // Regenerate missing vector embeddings via Ollama
+            let ollama_url = env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model = env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+
+            // Query Dolt for memories with empty vectors
+            let mut store = match DoltMemoryStore::from_config(&dolt_config) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to connect to Dolt: {e}");
+                    process::exit(1);
+                }
+            };
+
+            let all_mems = store.all_memories().unwrap_or_default();
+            let empty_ids: Vec<(uuid::Uuid, String)> = all_mems
+                .iter()
+                .filter(|m| m.vector.is_empty())
+                .map(|m| (m.id, m.content.clone()))
+                .collect();
+
+            let total = empty_ids.len();
+            if total == 0 {
+                println!("All memories have embeddings. Nothing to do.");
+                return;
+            }
+            eprintln!("Found {} memories with empty vectors. Generating embeddings...", total);
+
+            let mut success = 0usize;
+            let mut errors = 0usize;
+            for (i, (id, content)) in empty_ids.iter().enumerate() {
+                // Call Ollama embeddings API
+                let body = serde_json::json!({
+                    "model": model,
+                    "prompt": content,
+                });
+                let resp = ureq::post(&format!("{}/api/embeddings", ollama_url))
+                    .send_json(body);
+                match resp {
+                    Ok(response) => {
+                        match response.into_json::<serde_json::Value>() {
+                            Ok(json) => {
+                                if let Some(embedding) = json["embedding"].as_array() {
+                                    let vector: Vec<f32> = embedding.iter()
+                                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                                        .collect();
+                                    if let Ok(Some(mem)) = store.get_mut(id) {
+                                        mem.vector = vector;
+                                        if let Err(e) = store.update(id) {
+                                            eprintln!("  [{}/{}] {} — update failed: {}", i+1, total, id, e);
+                                            errors += 1;
+                                            continue;
+                                        }
+                                        success += 1;
+                                    }
+                                } else {
+                                    eprintln!("  [{}/{}] {} — no embedding in response", i+1, total, id);
+                                    errors += 1;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  [{}/{}] {} — parse error: {}", i+1, total, id, e);
+                                errors += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  [{}/{}] {} — request failed: {}", i+1, total, id, e);
+                        errors += 1;
+                    }
+                }
+                if (i + 1) % 10 == 0 {
+                    eprintln!("  Progress: {}/{}", i+1, total);
+                }
+            }
+
+            // Commit the changes
+            if success > 0 {
+                if let Err(e) = store.commit(&format!("migrate-embeddings: generated {} embeddings", success)) {
+                    eprintln!("Warning: commit failed: {e}");
+                }
+            }
+
+            let output = serde_json::json!({
+                "total_missing": total,
+                "success": success,
+                "errors": errors,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
 
         _ => usage(),
@@ -1117,3 +1147,4 @@ fn guess_source_type(path: &std::path::Path) -> String {
         _ => "binary".to_string(),
     }
 }
+

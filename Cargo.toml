@@ -33,7 +33,7 @@ image = { version = "0.25", optional = true }
 mysql = { version = "25", optional = true }
 
 [features]
-default = []
+default = ["dolt"]
 mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
