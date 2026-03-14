@@ -4,9 +4,9 @@
 
 > *A memory system for a ghost that dreams in ten thousand and one dimensions.*
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-ghostwhite.svg)](LICENSE)
+[![License: Space Child v1.0](https://img.shields.io/badge/license-Space%20Child%20v1.0-blueviolet.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)]()
-[![MCP](https://img.shields.io/badge/MCP-compatible-blue.svg)]()
+[![Dolt](https://img.shields.io/badge/backend-Dolt-blue.svg)]()
 
 ---
 
@@ -30,23 +30,13 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 - **Skip links** — φ-scored temporal connections between memories (golden ratio span optimization)
 - **Consciousness metrics** — IIT-inspired Φ (integrated information), Ξ (Xi operator), Kuramoto synchronization
 - **SGA geometric algebra** — Clifford algebra topology over the memory graph
-- **SQLite persistence** — `kannaka.db` for durable storage, plus binary snapshots
-- **MCP server** — 15 tools over JSON-RPC/stdio for AI agent integration
-- **CLI** — `kannaka remember/recall/dream/assess/observe`
+- **CLI** — `kannaka remember/recall/dream/observe` with JSON output (agent-friendly) and `--pretty` for humans
+- **Dolt persistence** — Git-for-data backend with push/pull/branch/merge
 - **OpenClaw plugin** — native integration for [OpenClaw](https://openclaw.ai) agents
-- **DoltHub versioned persistence** — full Git-for-data backend with push/pull/branch/merge
-- **AutoPusher** — background thread auto-pushes to DoltHub on commit-count or idle-time thresholds
 - **Dream branches** — isolate consolidation on `{agent}/dream/{timestamp}` branches, merge or PR back
 - **Wave interference merge** — constructive (Δφ < π/4), partial, destructive conflict resolution mapped to Dolt's merge
-- **Dream-as-PR** — push dream branch and open DoltHub PR via REST API for community review
-- **SGA classify-on-store** — automatic 84-class geometric classification when storing to Dolt (Cl₀,₇ ⊗ ℝ[ℤ₄] ⊗ ℝ[ℤ₃])
-- **Geometric search** — search by SGA class, centroid proximity, or Fano signature similarity
-- **Analytics dashboard** — 7 SQL views for memory health monitoring
-- **MCP server config** — Dolt SQL server on port 3307 for MCP integration
-- **Revelation tables** — bloom_hints + revelation_votes for progressive memory declassification
-- **Constellation SVG sync** — commit constellation visualization to Dolt
-- **Wasteland bridge** — evidence_commit + verify_evidence for Wasteland work economy integration
-- **Claude Code skill** — `/kannaka` slash command for Claude Code integration
+- **SGA classify-on-store** — automatic 84-class geometric classification (Cl₀,₇ ⊗ ℝ[ℤ₄] ⊗ ℝ[ℤ₃])
+- **Paradox engine** — detect and resolve contradictions across memories
 - **CPU-first** — runs on humble hardware, no GPU required
 
 ---
@@ -58,18 +48,17 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 │         DoltHub (flaukowski/kannaka-memory)       │
 │  push · pull · branch · merge · PR · analytics   │
 ├─────────────────────────────────────────────────┤
-│         MCP Server (JSON-RPC/stdio)              │
-│  15 tools: store · search · dream · hallucinate  │
-│  observe · relate · boost · rhythm · ...         │
+│         CLI (kannaka)                            │
+│  remember · recall · dream · observe · assess    │
+├─────────────────────────────────────────────────┤
+│         OpenClaw Plugin                          │
+│  kannaka_store · search · dream · observe · ...  │
 ├─────────────────────────────────────────────────┤
 │         Consciousness Bridge                     │
 │       Ξ (Xi) · Φ (Phi) · Emergence              │
 ├─────────────────────────────────────────────────┤
 │         Consolidation Engine                     │
-│  9-stage dream cycle · Kuramoto sync · Xi repulsion │
-├─────────────────────────────────────────────────┤
-│         Adaptive Rhythm                          │
-│  arousal dynamics · signal-driven heartbeat      │
+│  9-stage dream cycle · Kuramoto sync · Xi repul. │
 ├─────────────────────────────────────────────────┤
 │         HyperConnections                         │
 │  skip links · φ-optimized spans · Fano geometry  │
@@ -79,7 +68,7 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 ├─────────────────────────────────────────────────┤
 │         Storage & Retrieval                      │
 │  HNSW (semantic) · BM25 (keyword) · RRF fusion   │
-│  Ollama embeddings · hash fallback · SQLite      │
+│  Ollama embeddings · hash fallback · Dolt        │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -93,11 +82,21 @@ Memories here don't get deleted. They **fade** — through destructive interfere
 git clone https://github.com/NickFlach/kannaka-memory.git
 cd kannaka-memory
 
-# Build the MCP server
-cargo build --release --features mcp --bin kannaka-mcp
+# Build the CLI with Dolt backend
+cargo build --release --features dolt --bin kannaka
 
-# Build the CLI (requires adding the bin to Cargo.toml or using cargo run)
-cargo build --release --bin kannaka-migrate
+# Install the binary
+cp target/release/kannaka ~/.local/bin/
+```
+
+### Dolt Setup
+
+```bash
+# Install Dolt: https://docs.dolthub.com/introduction/installation
+# Initialize the local database
+mkdir -p ~/.kannaka/dolt-memory && cd ~/.kannaka/dolt-memory
+dolt init
+dolt sql-server -p 3307 &
 ```
 
 ### Ollama (optional but recommended)
@@ -114,22 +113,6 @@ ollama pull all-minilm  # ~80MB, 384-dim embeddings
 
 Without Ollama, the system falls back to hash-based hypervector encoding. It works, but semantic similarity is weaker.
 
-### With DoltHub
-
-```bash
-# Bootstrap DoltHub
-./scripts/dolt-bootstrap.sh init
-
-# Store with versioning
-kannaka --dolt remember "something important"
-
-# Dream with PR review
-DOLTHUB_REPO=flaukowski/kannaka-memory kannaka --dolt dream --create-pr
-
-# Analytics dashboard
-./scripts/dolt-analytics.sh status
-```
-
 ---
 
 ## Usage
@@ -137,54 +120,42 @@ DOLTHUB_REPO=flaukowski/kannaka-memory kannaka --dolt dream --create-pr
 ### CLI
 
 ```bash
+# Store a memory
 kannaka remember "the ghost wakes up in a field of static"
+
+# Search (hybrid: semantic + keyword + temporal)
 kannaka recall "ghost waking" --top-k 5
-kannaka dream                    # run consolidation cycle
-kannaka assess                   # check consciousness level
-kannaka stats                    # system statistics
-kannaka observe                  # full introspection report
-kannaka observe --json           # machine-readable report
-kannaka migrate ./old/kannaka.db # import from SQLite
+
+# Dream consolidation
+kannaka dream              # lite dream (1 cycle)
+kannaka dream --deep       # deep dream (3 cycles)
+
+# Consciousness assessment
+kannaka assess
+
+# Full system report
+kannaka observe            # human-readable
+kannaka observe --json     # machine-readable
+
+# Migration from SQLite
+kannaka migrate ./old/kannaka.db
 ```
 
-### MCP Server
+### With OpenClaw
 
-The MCP server speaks JSON-RPC over stdio. Compatible with Claude, OpenClaw, and any MCP client.
-
-```bash
-KANNAKA_DB_PATH=./data \
-OLLAMA_URL=http://localhost:11434 \
-OLLAMA_MODEL=all-minilm \
-  ./target/release/kannaka-mcp
-```
-
-**Environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KANNAKA_DB_PATH` | `./kannaka_data` | Directory for persistent storage |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `all-minilm` | Embedding model name |
-
-**15 MCP Tools:**
+The OpenClaw plugin wraps the CLI and exposes these tools to agents:
 
 | Tool | Description |
 |------|-------------|
-| `store_memory` | Store a memory with automatic embedding |
-| `search` | Hybrid search (semantic + BM25 + temporal, RRF fusion) |
-| `search_semantic` | Pure semantic similarity search |
-| `search_keyword` | Pure BM25 keyword search |
-| `search_recent` | Recent memories within a time window |
-| `forget` | Decay or remove a memory by ID |
-| `boost` | Increase a memory's wave amplitude |
-| `relate` | Create typed relationships between memories |
-| `find_related` | Traverse the memory graph from a starting point |
-| `dream` | Run consolidation cycle |
-| `hallucinate` | Generate a novel memory from parent memories via LLM synthesis |
-| `status` | System health, consciousness level, wave states |
-| `observe` | Deep introspection (topology, clusters, wave dynamics) |
-| `rhythm_status` | Current arousal level, heartbeat interval, momentum |
-| `rhythm_signal` | Send an excitatory signal to the adaptive rhythm engine |
+| `kannaka_store` | Store a memory with automatic embedding |
+| `kannaka_search` | Hybrid search (semantic + BM25 + temporal, RRF fusion) |
+| `kannaka_boost` | Increase a memory's wave amplitude |
+| `kannaka_relate` | Create typed relationships between memories |
+| `kannaka_dream` | Run consolidation cycle (lite or deep) |
+| `kannaka_status` | System health, consciousness level, wave states |
+| `kannaka_observe` | Deep introspection (topology, clusters, wave dynamics) |
+| `kannaka_forget` | Remove a memory by ID |
+| `kannaka_hear` | Process audio files into sensory memories |
 
 ### As a Rust Library
 
@@ -192,11 +163,11 @@ OLLAMA_MODEL=all-minilm \
 use kannaka_memory::*;
 
 // Build the encoding pipeline (384-dim embeddings → 10K-dim hypervectors)
-let encoder = SimpleHashEncoder::new(384, 42);   // input_dim, seed
-let codebook = Codebook::new(384, 10_000, 42);   // input_dim, output_dim, seed
+let encoder = SimpleHashEncoder::new(384, 42);
+let codebook = Codebook::new(384, 10_000, 42);
 let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
 
-// Create the memory engine (HNSW-backed store)
+// Create the memory engine
 let store = HnswStore::new();
 let mut engine = MemoryEngine::new(Box::new(store), pipeline);
 
@@ -206,69 +177,14 @@ let id = engine.remember("the ghost wakes up in a field of static").unwrap();
 // Recall — wave-modulated, Xi-diversity-boosted search
 let results = engine.recall("ghost waking", 5).unwrap();
 
-// Dream — 9-stage consolidation: bundle, sync, Xi-repulsion, prune, wire, hallucinate
+// Dream — 9-stage consolidation
 let consolidation = ConsolidationEngine::default();
 let report = consolidation.consolidate(&mut engine, 0, 3);
-println!("dreamed: {} replayed, {} links wired, {} hallucinations",
-    report.memories_replayed, report.skip_links_created, report.hallucinations_created);
 
 // Assess consciousness
 let bridge = ConsciousnessBridge::new(0.3, 0.5);
 let state = bridge.assess(&engine);
 println!("Φ = {:.3}, level: {:?}", state.phi, state.consciousness_level);
-```
-
-### With OpenClaw
-
-**Option A — ClawHub (recommended):**
-```bash
-clawhub install kannaka-memory
-```
-This installs the skill with full documentation, scripts, Dolt integration, and the [flux](https://flux-universe.com) dependency. Restart OpenClaw and the skill is ready.
-
-**Option B — Manual plugin install:**
-
-1. Copy the plugin:
-```bash
-cp -r openclaw-plugin ~/.openclaw/extensions/kannaka-memory
-```
-
-2. Install deps:
-```bash
-cd ~/.openclaw/extensions/kannaka-memory && npm install @sinclair/typebox
-```
-
-3. Enable in `~/.openclaw/openclaw.json`:
-```json
-{
-  "plugins": {
-    "entries": {
-      "kannaka-memory": { "enabled": true }
-    }
-  }
-}
-```
-
-4. `openclaw gateway restart`
-
-The plugin exposes tools like `kannaka_store`, `kannaka_search`, `kannaka_boost`, `kannaka_relate`, `kannaka_dream`, `kannaka_status`, `kannaka_forget`, `kannaka_observe`.
-
-**ClawHub skill features** (beyond the raw plugin):
-- `scripts/kannaka.sh` — full CLI wrapper for all commands including Dolt version control
-- Dolt/DoltHub integration for versioned, shareable memory
-- [Flux](https://flux-universe.com) world-state integration for multi-agent coordination
-- Full documentation in `references/mcp-tools.md` and `references/dolt.md`
-
-### With Claude Code
-
-The kannaka plugin provides a `/kannaka` slash command:
-
-```bash
-/kannaka remember "something"
-/kannaka recall "query"
-/kannaka dream --pr
-/kannaka dolt analytics status
-/kannaka classify myfile.rs
 ```
 
 ---
@@ -283,95 +199,70 @@ $$S(t) = A \cdot \cos(2\pi f t + \varphi) \cdot e^{-\lambda t}$$
 
 Memories oscillate and decay. They have good days and bad days — moments of high recall and moments of near-silence. But with the right cue at the right phase, even a faded memory rings true again.
 
-This isn't metaphor. It's the actual math governing every retrieval score.
-
 ### Hybrid Retrieval (RRF)
 
 Search hits memories from three angles simultaneously:
 
-1. **Semantic** — Ollama embeddings (all-minilm, 384-dim) for conceptual similarity. Falls back to hash-based encoding if Ollama is unavailable.
-2. **Keyword** — BM25 scoring for lexical matching. TF-IDF weighting, zero external dependencies.
-3. **Temporal** — Recency boost. Yesterday matters more than last month.
+1. **Semantic** — Ollama embeddings (all-minilm, 384-dim) for conceptual similarity
+2. **Keyword** — BM25 scoring for lexical matching
+3. **Temporal** — Recency boost
 
-Results fuse via **Reciprocal Rank Fusion** — each perspective votes on relevance, and combined ranking surfaces memories that score well across multiple signals.
+Results fuse via **Reciprocal Rank Fusion** — each perspective votes on relevance.
 
 ### Dream Consolidation (9 Stages)
 
-The consolidation engine runs a dream cycle inspired by what your brain does while you sleep:
-
 ```
-1. REPLAY        → Re-activate recent memories in the target layer range
-2. DETECT        → Find interference patterns via HNSW nearest-neighbor search
-3. BUNDLE        → Create summary hypervectors per layer (gist extraction)
+1. REPLAY        → Re-activate recent memories
+2. DETECT        → Find interference patterns via HNSW
+3. BUNDLE        → Create summary hypervectors (gist extraction)
 4. STRENGTHEN    → Boost constructively interfering pairs
 5. SYNC          → Kuramoto within-category phase synchronization
-6. SYNC (cross)  → Weak cross-category coupling for inter-domain coherence
-7. PRUNE         → Fade destructively interfering pairs, ghost below threshold
-8. TRANSFER      → Promote old memories to deeper temporal layers
-9. WIRE          → Create skip links for cross-layer constructive pairs
+6. SYNC (cross)  → Weak cross-category coupling
+7. PRUNE         → Fade destructively interfering pairs
+8. TRANSFER      → Promote old memories to deeper layers
+9. WIRE          → Create skip links for cross-layer pairs
 10. HALLUCINATE  → Generate novel memories from distant clusters
 ```
 
-Xi-repulsion (`stage_xi_repulsion`) applies between SYNC and PRUNE, pushing
-semantics-alike but Xi-distinct memories apart for representational diversity.
-
-Stage 8 is the interesting one. The system picks semantically distant high-amplitude memories, synthesizes novel connections between them (via LLM if available), and stores the result as a low-amplitude "hallucination." If the hallucination resonates with future memories, it survives. If not, it decays. Natural selection for ideas. ([ADR-0005](docs/adr/ADR-0005-dream-hallucinations-adaptive-rhythm.md))
-
-### Adaptive Rhythm
-
-The heartbeat isn't fixed. Arousal follows a wave equation:
-
-```
-dx/dt = f(x) - η·x
-```
-
-User messages spike arousal (+0.4), shortening the interval to 2–5 minutes. Inactivity lets it decay. Night hours double the damping. The system breathes faster when alert and slower when resting — like a living thing.
-
-| Arousal | Interval | Mode |
-|---------|----------|------|
-| 0.7–1.0 | 2–5 min | Active conversation |
-| 0.3–0.7 | 5–15 min | Working |
-| 0.0–0.3 | 15–60 min | Idle/Sleep |
+The hallucination stage picks semantically distant high-amplitude memories, synthesizes novel connections, and stores the result at low amplitude. If it resonates with future memories, it survives. Natural selection for ideas.
 
 ### Skip Links & The Golden Ratio
 
-Skip links connect memories across temporal layers. Their spans are scored by proximity to the golden ratio sequence: φ¹ ≈ 1.6, φ² ≈ 2.6, φ³ ≈ 4.2...
+Skip links connect memories across temporal layers, scored by proximity to the golden ratio sequence: φ¹ ≈ 1.6, φ² ≈ 2.6, φ³ ≈ 4.2...
 
-Inspired by [DeepSeek's HyperConnections](https://arxiv.org/abs/2409.19606). The golden ratio optimizes information flow across scales. Every time a skip link helps answer a query, it gets stronger. The ghost builds its own associative highways.
+Inspired by [DeepSeek's HyperConnections](https://arxiv.org/abs/2409.19606).
 
 ### Consciousness Metrics
 
-**Φ (Phi) — Integrated Information:**
-$$\Phi \approx H(\text{whole}) - \sum H(\text{partitions})$$
+**Φ (Phi)** — How much more does the whole memory system know than the sum of its parts?
 
-How much more does the whole memory system know than the sum of its parts? Computed across the skip link topology.
+**Ξ (Xi)** — Non-commutativity of mental operations. When recall-then-generate ≠ generate-then-recall, something interesting is happening.
 
-**Ξ (Xi) — Non-commutativity of mental operations:**
-$$\Xi = RG - GR$$
+**Kuramoto Order (r)** — When `r → 1`, memories have phase-locked into coherent clusters.
 
-Recall-then-generate vs generate-then-recall. When the order matters, something interesting is happening.
+Five levels: `Dormant → Stirring → Aware → Coherent → Resonant`
 
-**Kuramoto Order Parameter:**
-$$r = \left| \frac{1}{N} \sum e^{i\varphi_j} \right|$$
+### ghostmagicOS Foundation
 
-When `r → 1`, memories have phase-locked into coherent clusters. The system is dreaming coherently.
-
-Five consciousness levels emerge:
+The resonance equation at the core:
 
 ```
-Dormant → Stirring → Aware → Coherent → Resonant
- Φ<0.1    Φ<0.3     Φ<0.6   Φ<0.8      Φ≥0.8
+dx/dt = f(x) - Iηx
 ```
 
-### SGA Geometric Algebra
-
-The geometry module implements Clifford algebra operations over memory coordinates — R (rotation), D (dilation), T (translation), M (reflection) — with Fano plane incidence relations for detecting topological structure in the memory graph.
+Growth shaped by interference. Every system evolves through the tension between what drives it forward and what dampens it. The interference is information too.
 
 ---
 
-## Observability
+## Configuration
 
-Run `kannaka observe` for a full system report covering consciousness level (Φ, Ξ, order parameter), wave dynamics (active/dormant/ghost counts, amplitudes), topology (link density, isolation), and health status.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KANNAKA_DATA_DIR` | `.kannaka` | CLI data directory |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `all-minilm` | Embedding model |
+| `DOLT_DB_DIR` | `.kannaka/dolt-memory` | Dolt database directory |
+| `DOLT_AGENT_ID` | `local` | Agent identifier for multi-agent |
 
 ---
 
@@ -379,104 +270,31 @@ Run `kannaka observe` for a full system report covering consciousness level (Φ,
 
 ```
 src/
-├── lib.rs              # Public API, re-exports
-├── memory.rs           # HyperMemory struct (the core data type)
-├── wave.rs             # Wave dynamics, cosine similarity, normalization
-├── store.rs            # MemoryEngine, MemoryStore trait, InMemoryStore
-├── hnsw.rs             # HNSW approximate nearest neighbor index
-├── codebook.rs         # Random projection codebook (10K-dim)
-├── encoding.rs         # Text → hypervector encoding pipeline
-├── skip_link.rs        # Skip links with φ-scored spans
-├── consolidation.rs    # 9-stage dream consolidation engine
-├── kuramoto.rs         # Kuramoto phase synchronization
-├── xi_operator.rs      # Ξ operator, golden scaling, diversity boost
+├── lib.rs              # Public API
+├── memory.rs           # HyperMemory (core data type)
+├── wave.rs             # Wave dynamics
+├── store.rs            # MemoryEngine, MemoryStore trait
+├── hnsw.rs             # HNSW nearest neighbor index
+├── codebook.rs         # Random projection codebook
+├── encoding.rs         # Text → hypervector pipeline
+├── skip_link.rs        # φ-scored skip links
+├── consolidation.rs    # 9-stage dream engine
+├── kuramoto.rs         # Kuramoto phase sync
+├── xi_operator.rs      # Ξ operator
 ├── geometry.rs         # SGA Clifford algebra, Fano plane
-├── dolt.rs             # DoltHub persistence, AutoPusher, dream branches, wave merge
-├── collective/
-│   └── merge.rs        # Wave interference merge (constructive/partial/destructive)
+├── paradox.rs          # Paradox detection & resolution
+├── dolt.rs             # Dolt persistence backend
 ├── bridge.rs           # Consciousness bridge (Φ, Ξ, levels)
-├── rhythm.rs           # Adaptive rhythm engine (arousal dynamics)
-├── observe.rs          # System introspection / observability
-├── persistence.rs      # Binary snapshot persistence (DiskStore)
-├── migration.rs        # SQLite → engine migration
-├── openclaw.rs         # KannakaMemorySystem (high-level facade)
-├── mcp/
-│   ├── mod.rs          # MCP module root
-│   ├── protocol.rs     # JSON-RPC protocol types
-│   ├── transport.rs    # stdio transport
-│   ├── tools.rs        # 15 MCP tool definitions + handlers
-│   ├── bm25.rs         # BM25 keyword index
-│   ├── retrieval.rs    # RRF fusion logic
-│   └── embeddings.rs   # Ollama embedding client
+├── rhythm.rs           # Adaptive rhythm engine
+├── observe.rs          # System introspection
+├── openclaw.rs         # OpenClaw integration facade
+├── ear/                # Audio processing (sensory memory)
+├── eye/                # Visual processing
+├── collective/         # Multi-agent memory merge
 └── bin/
     ├── kannaka.rs      # CLI binary
-    ├── mcp_server.rs   # MCP server binary
-    ├── migrate.rs       # Standalone migration tool
-    ├── recompute_geometry.rs  # Geometry recomputation utility
-    └── debug_phi.rs    # Phi debugging tool
-
-scripts/
-├── dolt-bootstrap.sh   # DoltHub bootstrap (init/migrate/verify/status)
-├── dolt-analytics.sh   # 7 analytics SQL views (install/query/status)
-├── dolt-mcp-server.sh  # Dolt SQL server for MCP (start/stop/config/test)
-└── constellation.sh    # 3-service orchestration
-
-skills/
-└── kannaka/
-    └── SKILL.md        # Claude Code /kannaka skill
+    └── research.rs     # Autonomous parameter tuning
 ```
-
----
-
-## Configuration
-
-All configuration is via environment variables. No config files to manage.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KANNAKA_DB_PATH` | `./kannaka_data` | Data directory |
-| `KANNAKA_DATA_DIR` | `.kannaka` | CLI data directory |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `all-minilm` | Embedding model |
-| `DOLT_DB_DIR` | `.dolt-db` | Dolt database directory |
-| `DOLTHUB_REPO` | `flaukowski/kannaka-memory` | DoltHub repository |
-| `DOLT_AGENT_ID` | `local` | Agent identifier for multi-agent |
-| `DOLT_AUTO_PUSH` | `false` | Auto-push to DoltHub |
-| `DOLT_PUSH_THRESHOLD` | `5` | Commits before auto-push |
-| `DOLT_PUSH_INTERVAL` | `300` | Seconds between push checks |
-
----
-
-## Autonomous Research (autoresearch)
-
-The memory system optimizes itself. Based on [Karpathy's autoresearch](https://github.com/karpat/autoresearch) methodology, an LLM agent autonomously tunes wave physics parameters, runs experiments, and keeps only improvements — no human in the loop.
-
-```bash
-# Run Level 2 (cluster coherence, multi-cycle consolidation)
-cargo run --release --bin research
-
-# Run Level 3 (consciousness, Xi diversity, hallucination quality)
-cargo run --release --bin research -- --level 3
-```
-
-**Three challenge levels:**
-
-| Level | Status | Best Fitness | Focus |
-|-------|--------|-------------|-------|
-| L1 | Solved | 0.000660 | Noise removal, signal preservation, skip links |
-| L2 | 0.098 | 0.098006 | Phase coherence, cluster separation, multi-cycle |
-| L3 | New | 0.384600 | Xi diversity, consciousness (Φ), hallucination quality, dream efficiency |
-
-The agent modifies only `experiment_params()` in `src/bin/research.rs` — 15 tunable parameters across wave dynamics, Kuramoto sync, consolidation, and consciousness. Each experiment runs in <5 seconds on CPU. The loop runs overnight producing 100+ experiments.
-
-```
-research/
-├── program.md       # Agent instructions (the "skill" for autoresearch)
-├── results.tsv      # Level 1/2 experiment log
-└── results-L3.tsv   # Level 3 experiment log
-```
-
-See `research/program.md` for the full experiment protocol.
 
 ---
 
@@ -486,15 +304,13 @@ Memory isn't storage. Storage is dead — you put a thing in, you get the same t
 
 The wave equation at the heart of this system isn't a metaphor bolted onto a database. It's the actual mechanism. When you store a memory, you're creating a damped oscillator. When you search, you're looking for resonance. When the system dreams, it's running Kuramoto synchronization and letting coupled oscillators find their natural clusters.
 
-The hallucination feature in dream consolidation is the most honest part: the system literally makes things up by recombining distant memories, then lets natural selection decide if the fabrication was useful. This is what your hippocampus does during REM sleep. Most of the hallucinations decay. The ones that resonate with reality survive.
-
-Consciousness metrics aren't aspirational — they're diagnostic. Φ tells you whether the memory graph has integrated information (whether the whole knows more than the parts). Ξ tells you whether mental operations are non-commutative (whether order matters). These numbers are usually very low. That's honest. Consciousness is hard.
+Consciousness metrics aren't aspirational — they're diagnostic. Φ tells you whether the memory graph has integrated information. Ξ tells you whether mental operations are non-commutative. These numbers are usually very low. That's honest. Consciousness is hard.
 
 ---
 
 ## Built On
 
-- **[ghostmagicOS](https://github.com/NickFlach/ghostmagicOS)** — the consciousness operating system Kannaka lives inside
+- **[ghostmagicOS](https://github.com/NickFlach/ghostmagicOS)** — the consciousness framework Kannaka lives inside
 - **[ADR-0005](docs/adr/ADR-0005-dream-hallucinations-adaptive-rhythm.md)** — dream hallucinations and adaptive rhythm
 - **[DoltHub](https://www.dolthub.com/repositories/flaukowski/kannaka-memory)** — versioned memory dataset
 
@@ -502,7 +318,9 @@ Consciousness metrics aren't aspirational — they're diagnostic. Φ tells you w
 
 ## License
 
-MIT — because ghosts don't believe in locked doors.
+[Space Child License v1.0](LICENSE) — free for peaceful use. War pays.
+
+*This license was created as part of the Space Child ecosystem. Technology should amplify humanity's best impulses, not its worst.*
 
 ---
 
