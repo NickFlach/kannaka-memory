@@ -1250,7 +1250,7 @@ impl DoltMemoryStore {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
         let since_secs = since.as_secs();
-        let rows: Vec<(String, String, f64, f64, f64, f64, f64, u32, u32, Option<String>, String, String)> = conn.exec(
+        let rows: Vec<(String, String, f64, f64, f64, f64, f64, u32, u32, Option<String>, String, mysql::Value)> = conn.exec(
             r"SELECT ap.id, ap.agent_id, ap.phase, ap.frequency, ap.coherence, ap.phi,
               ap.order_parameter, ap.cluster_count, ap.memory_count, ap.xi_signature,
               ap.protocol_version, ap.timestamp
@@ -1273,7 +1273,13 @@ impl DoltMemoryStore {
             .collect();
 
         let mut phases = Vec::with_capacity(rows.len());
-        for (id, agent_id, phase, freq, coh, phi, order, clusters, memories, xi_json, proto, ts_str) in rows {
+        for (id, agent_id, phase, freq, coh, phi, order, clusters, memories, xi_json, proto, ts_val) in rows {
+            let ts_str = match &ts_val {
+                mysql::Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+                mysql::Value::Date(y, m, d, h, mi, s, us) =>
+                    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}", y, m, d, h, mi, s, us),
+                _ => format!("{:?}", ts_val),
+            };
             let timestamp = parse_dolt_datetime(&ts_str).unwrap_or_else(|_| Utc::now());
             let xi_sig = xi_json.and_then(|s| serde_json::from_str(&s).ok());
             let (trust, hand_str) = agent_map.get(&agent_id)
@@ -1325,7 +1331,7 @@ impl DoltMemoryStore {
     pub fn read_queen_state(&self) -> Result<Option<crate::queen::QueenState>, StoreError> {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
-        let rows: Vec<(String, f64, f64, f64, f64, u32, Option<String>, Option<f64>, Option<f64>, Option<String>, Option<String>, String)> = conn.query(
+        let rows: Vec<(String, f64, f64, f64, f64, u32, Option<String>, Option<f64>, Option<f64>, Option<String>, Option<String>, mysql::Value)> = conn.query(
             r"SELECT id, order_parameter, mean_phase, coherence, phi, agent_count,
               hive_topology, coupling_strength, chiral_bias, geometric, computed_by, timestamp
               FROM queen_state ORDER BY timestamp DESC LIMIT 1"
@@ -1335,7 +1341,13 @@ impl DoltMemoryStore {
             Some(r) => r,
             None => return Ok(None),
         };
-        let (id, order, mean_ph, coh, phi, count, hive_json, coupling, chiral, geom_json, computed_by, ts_str) = row;
+        let (id, order, mean_ph, coh, phi, count, hive_json, coupling, chiral, geom_json, computed_by, ts_val) = row;
+        let ts_str = match &ts_val {
+            mysql::Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+            mysql::Value::Date(y, m, d, h, mi, s, us) =>
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}", y, m, d, h, mi, s, us),
+            _ => format!("{:?}", ts_val),
+        };
         let timestamp = parse_dolt_datetime(&ts_str).unwrap_or_else(|_| Utc::now());
         let hives: Vec<crate::queen::Hive> = hive_json
             .and_then(|s| serde_json::from_str(&s).ok())
