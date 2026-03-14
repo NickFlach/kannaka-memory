@@ -45,6 +45,7 @@ pub mod dolt;
 
 pub mod collective;
 pub mod paradox;
+pub mod queen;
 
 // Re-export key types
 pub use codebook::Codebook;
@@ -80,6 +81,7 @@ pub use paradox::{
 };
 
 pub use dolt::DoltMemoryStore;
+pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, Handedness, SwarmAgent};
 
 #[cfg(feature = "glyph")]
 pub use glyph_bridge::{

@@ -78,6 +78,15 @@ fn usage() {
     #[cfg(feature = "collective")]
     eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL glyphs from stdin");
     eprintln!();
+    eprintln!("Swarm commands (ADR-0018 Queen Sync):");
+    eprintln!("  swarm join [--agent-id ID] [--display-name NAME]  Join the swarm");
+    eprintln!("  swarm status              Show local phase + swarm overview");
+    eprintln!("  swarm sync                Pull phases, Kuramoto step, push");
+    eprintln!("  swarm queen               View emergent Queen state");
+    eprintln!("  swarm hives               Hive topology (JSON)");
+    eprintln!("  swarm publish             Publish current phase only");
+    eprintln!("  swarm leave               Unregister from swarm");
+    eprintln!();
     eprintln!("Dolt commands:");
     eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
     eprintln!("  verify <commit> <wanted-id>  Verify a completion's Dolt evidence");
@@ -659,6 +668,194 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+
+        "swarm" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave>");
+                process::exit(1);
+            }
+            match args[command_start + 1].as_str() {
+                "join" => {
+                    let mut agent_id = dolt_config.agent_id.clone();
+                    let mut display_name = String::new();
+                    let mut i = command_start + 2;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--agent-id" if i + 1 < args.len() => { agent_id = args[i + 1].clone(); i += 2; }
+                            "--display-name" if i + 1 < args.len() => { display_name = args[i + 1].clone(); i += 2; }
+                            "--remote" if i + 1 < args.len() => { i += 2; } // consumed but remote is from dolt config
+                            _ => { i += 1; }
+                        }
+                    }
+                    if display_name.is_empty() {
+                        display_name = agent_id.clone();
+                    }
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            let agent = kannaka_memory::SwarmAgent {
+                                agent_id: agent_id.clone(),
+                                display_name: Some(display_name.clone()),
+                                trust_score: 0.5,
+                                swarm_role: "member".to_string(),
+                                protocol_version: "1.0".to_string(),
+                                handedness: kannaka_memory::Handedness::Achiral,
+                                natural_frequency: 0.5,
+                            };
+                            match store.register_swarm_agent(&agent) {
+                                Ok(()) => {
+                                    println!("Joined swarm as '{}' ({})", display_name, agent_id);
+                                }
+                                Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "leave" => {
+                    // Unregister by setting swarm_role to 'inactive'
+                    let agent_id = dolt_config.agent_id.clone();
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            let agent = kannaka_memory::SwarmAgent {
+                                agent_id: agent_id.clone(),
+                                display_name: None,
+                                trust_score: 0.0,
+                                swarm_role: "inactive".to_string(),
+                                protocol_version: "1.0".to_string(),
+                                handedness: kannaka_memory::Handedness::Achiral,
+                                natural_frequency: 0.0,
+                            };
+                            match store.register_swarm_agent(&agent) {
+                                Ok(()) => println!("Left swarm ({})", agent_id),
+                                Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "status" => {
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            let phases = store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)).unwrap_or_default();
+                            let agents = store.read_swarm_agents().unwrap_or_default();
+                            let queen_state = store.read_queen_state().unwrap_or(None);
+                            let my_phase = phases.iter().find(|p| p.agent_id == dolt_config.agent_id);
+                            let output = serde_json::json!({
+                                "agent_id": dolt_config.agent_id,
+                                "local_phase": my_phase.map(|p| serde_json::json!({
+                                    "phase": p.phase, "frequency": p.frequency,
+                                    "coherence": p.coherence, "phi": p.phi,
+                                    "memory_count": p.memory_count,
+                                })),
+                                "swarm": {
+                                    "agent_count": agents.len(),
+                                    "active_phases": phases.len(),
+                                },
+                                "queen": queen_state.as_ref().map(|q| serde_json::json!({
+                                    "order_parameter": q.order_parameter,
+                                    "mean_phase": q.mean_phase,
+                                    "phi": q.phi,
+                                    "coherence": q.coherence,
+                                })),
+                            });
+                            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "sync" => {
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            let phases = match store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)) {
+                                Ok(p) => p,
+                                Err(e) => { eprintln!("Error reading phases: {e}"); process::exit(1); }
+                            };
+                            if phases.is_empty() {
+                                eprintln!("No swarm phases found. Publish first with 'swarm publish'.");
+                                process::exit(1);
+                            }
+                            // Derive local state and run queen sync step
+                            let mut queen = kannaka_memory::QueenSync::new(
+                                kannaka_memory::QueenConfig::default(),
+                                &dolt_config.agent_id,
+                            );
+                            // Set phase from our latest published phase if available
+                            if let Some(my) = phases.iter().find(|p| p.agent_id == dolt_config.agent_id) {
+                                queen.phase = my.phase;
+                                queen.frequency = my.frequency;
+                                queen.coherence = my.coherence;
+                            }
+                            let state = queen.queen_sync_step(&phases);
+                            // Publish updated phase
+                            let updated_phase = queen.to_agent_phase(
+                                phases.iter().find(|p| p.agent_id == dolt_config.agent_id)
+                                    .map(|p| p.cluster_count).unwrap_or(0),
+                                sys.engine.store.count(),
+                            );
+                            if let Err(e) = store.publish_phase(&updated_phase) {
+                                eprintln!("Warning: failed to publish phase: {e}");
+                            }
+                            if let Err(e) = store.write_queen_state(&state) {
+                                eprintln!("Warning: failed to write queen state: {e}");
+                            }
+                            println!("{}", serde_json::to_string_pretty(&state).unwrap());
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "queen" => {
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            match store.read_queen_state() {
+                                Ok(Some(state)) => println!("{}", serde_json::to_string_pretty(&state).unwrap()),
+                                Ok(None) => { eprintln!("No queen state found. Run 'swarm sync' first."); process::exit(1); }
+                                Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "hives" => {
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            match store.read_queen_state() {
+                                Ok(Some(state)) => println!("{}", serde_json::to_string(&state.hives).unwrap()),
+                                Ok(None) => println!("[]"),
+                                Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "publish" => {
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            // Derive phase from local state
+                            let mut queen = kannaka_memory::QueenSync::new(
+                                kannaka_memory::QueenConfig::default(),
+                                &dolt_config.agent_id,
+                            );
+                            queen.derive_local_state(&sys.engine);
+                            let phase = queen.to_agent_phase(
+                                0, // cluster count will be derived
+                                sys.engine.store.count(),
+                            );
+                            match store.publish_phase(&phase) {
+                                Ok(()) => println!("Published phase: θ={:.3}, ω={:.3}, coherence={:.3}",
+                                    phase.phase, phase.frequency, phase.coherence),
+                                Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                other => {
+                    eprintln!("Unknown swarm command: {other}");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave>");
                     process::exit(1);
                 }
             }
