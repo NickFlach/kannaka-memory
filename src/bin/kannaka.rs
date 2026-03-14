@@ -79,13 +79,16 @@ fn usage() {
     eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL glyphs from stdin");
     eprintln!();
     eprintln!("Swarm commands (ADR-0018 Queen Sync):");
-    eprintln!("  swarm join [--agent-id ID] [--display-name NAME]  Join the swarm");
-    eprintln!("  swarm status              Show local phase + swarm overview");
-    eprintln!("  swarm sync                Pull phases, Kuramoto step, push");
+    eprintln!("  swarm join [--agent-id ID] [--display-name NAME] [--nats-url URL]");
+    eprintln!("                            Join the swarm (announces via NATS if available)");
+    eprintln!("  swarm status [--nats-url URL]  Show local phase + swarm overview + NATS state");
+    eprintln!("  swarm sync [--nats-url URL]    Pull phases (NATS+Dolt), Kuramoto step, push");
     eprintln!("  swarm queen               View emergent Queen state");
     eprintln!("  swarm hives               Hive topology (JSON)");
     eprintln!("  swarm publish             Publish current phase only");
-    eprintln!("  swarm leave               Unregister from swarm");
+    eprintln!("  swarm leave [--nats-url URL]   Unregister from swarm");
+    eprintln!("  swarm listen [--nats-url URL] [--auto-sync]");
+    eprintln!("                            Subscribe to live phase updates");
     eprintln!();
     eprintln!("Dolt commands:");
     eprintln!("  evidence <wanted-id> <desc> Generate Dolt commit as wasteland evidence");
@@ -100,6 +103,37 @@ fn usage() {
     eprintln!("           topology       — network map of memory connections");
     eprintln!("           status         — brief self-report");
     process::exit(1);
+}
+
+/// Resolve NATS URL from --nats-url arg, KANNAKA_NATS_URL env, or default.
+#[cfg(feature = "nats")]
+fn resolve_nats_url(args: &[String], start: usize) -> String {
+    // Check args for --nats-url
+    let mut i = start;
+    while i < args.len() {
+        if args[i] == "--nats-url" && i + 1 < args.len() {
+            return args[i + 1].clone();
+        }
+        i += 1;
+    }
+    // Check env
+    env::var("KANNAKA_NATS_URL")
+        .unwrap_or_else(|_| kannaka_memory::nats::DEFAULT_NATS_URL.to_string())
+}
+
+/// Try connecting to NATS, returning None on failure (with warning printed).
+#[cfg(feature = "nats")]
+fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
+    match kannaka_memory::nats::SwarmTransport::connect(url) {
+        Ok(t) => {
+            eprintln!("[nats] Connected to {}", url);
+            Some(t)
+        }
+        Err(e) => {
+            eprintln!("[nats] Warning: could not connect to {}: {}", url, e);
+            None
+        }
+    }
 }
 
 fn main() {
@@ -687,7 +721,8 @@ fn main() {
                         match args[i].as_str() {
                             "--agent-id" if i + 1 < args.len() => { agent_id = args[i + 1].clone(); i += 2; }
                             "--display-name" if i + 1 < args.len() => { display_name = args[i + 1].clone(); i += 2; }
-                            "--remote" if i + 1 < args.len() => { i += 2; } // consumed but remote is from dolt config
+                            "--remote" if i + 1 < args.len() => { i += 2; }
+                            "--nats-url" if i + 1 < args.len() => { i += 2; } // consumed by resolve_nats_url
                             _ => { i += 1; }
                         }
                     }
@@ -714,9 +749,31 @@ fn main() {
                         }
                         Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
                     }
+
+                    // NATS: announce join and publish initial phase
+                    #[cfg(feature = "nats")]
+                    {
+                        let nats_url = resolve_nats_url(&args, command_start);
+                        if let Some(transport) = try_nats_connect(&nats_url) {
+                            if let Err(e) = transport.announce_join(&agent_id) {
+                                eprintln!("[nats] Warning: announce failed: {}", e);
+                            }
+                            // Publish initial phase
+                            let mut queen = kannaka_memory::QueenSync::new(
+                                kannaka_memory::QueenConfig::default(),
+                                &agent_id,
+                            );
+                            queen.derive_local_state(&sys.engine);
+                            let phase = queen.to_agent_phase(0, sys.engine.store.count());
+                            if let Err(e) = transport.publish_phase(&phase) {
+                                eprintln!("[nats] Warning: initial phase publish failed: {}", e);
+                            } else {
+                                println!("[nats] Published initial phase θ={:.3}", phase.phase);
+                            }
+                        }
+                    }
                 }
                 "leave" => {
-                    // Unregister by setting swarm_role to 'inactive'
                     let agent_id = dolt_config.agent_id.clone();
                     match DoltMemoryStore::from_config(&dolt_config) {
                         Ok(store) => {
@@ -736,6 +793,75 @@ fn main() {
                         }
                         Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
                     }
+                    // NATS: announce leave
+                    #[cfg(feature = "nats")]
+                    {
+                        let nats_url = resolve_nats_url(&args, command_start);
+                        if let Some(transport) = try_nats_connect(&nats_url) {
+                            if let Err(e) = transport.announce_leave(&agent_id) {
+                                eprintln!("[nats] Warning: leave announce failed: {}", e);
+                            }
+                        }
+                    }
+                }
+                #[cfg(feature = "nats")]
+                "listen" => {
+                    let nats_url = resolve_nats_url(&args, command_start);
+                    let auto_sync = args[command_start..].iter().any(|a| a == "--auto-sync");
+
+                    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            process::exit(1);
+                        }
+                    };
+                    eprintln!("[nats] Listening for phase updates on {} (Ctrl+C to stop)", nats_url);
+                    if auto_sync {
+                        eprintln!("[nats] Auto-sync enabled — will run Kuramoto step on each update");
+                    }
+
+                    let mut sub = match transport.subscribe_phases() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Failed to subscribe: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    // Remove read timeout for long-running listen
+                    let _ = sub.set_timeout(None);
+
+                    let mut queen = kannaka_memory::QueenSync::new(
+                        kannaka_memory::QueenConfig::default(),
+                        &dolt_config.agent_id,
+                    );
+
+                    while let Some(msg) = sub.next_message() {
+                        if msg.subject.starts_with("queen.phase.") {
+                            if let Some(phase) = msg.as_phase() {
+                                println!("[{}] θ={:.3} ω={:.3} coherence={:.3} phi={:.3} memories={}",
+                                    phase.agent_id, phase.phase, phase.frequency,
+                                    phase.coherence, phase.phi, phase.memory_count);
+
+                                if auto_sync && phase.agent_id != dolt_config.agent_id {
+                                    // Quick sync step with just this peer
+                                    let my_phase = queen.to_agent_phase(0, sys.engine.store.count());
+                                    let swarm = vec![my_phase, phase];
+                                    let state = queen.queen_sync_step(&swarm);
+                                    println!("  → synced: r={:.3} ψ={:.3} K={:.3}",
+                                        state.order_parameter, state.mean_phase, state.coupling_strength);
+                                }
+                            }
+                        } else if msg.subject == "queen.announce" {
+                            if let Some(json) = msg.as_json() {
+                                let event = json["event"].as_str().unwrap_or("unknown");
+                                let agent = json["agent_id"].as_str().unwrap_or("?");
+                                println!("[announce] {} {}", agent, event);
+                            }
+                        }
+                    }
+                    eprintln!("[nats] Connection closed");
                 }
                 "status" => {
                     match DoltMemoryStore::from_config(&dolt_config) {
@@ -744,6 +870,30 @@ fn main() {
                             let agents = store.read_swarm_agents().unwrap_or_default();
                             let queen_state = store.read_queen_state().unwrap_or(None);
                             let my_phase = phases.iter().find(|p| p.agent_id == dolt_config.agent_id);
+
+                            // NATS status
+                            let mut nats_status = serde_json::json!("disabled");
+                            #[cfg(feature = "nats")]
+                            {
+                                let nats_url = resolve_nats_url(&args, command_start);
+                                match try_nats_connect(&nats_url) {
+                                    Some(transport) => {
+                                        let nats_phases = transport.get_all_phases().unwrap_or_default();
+                                        nats_status = serde_json::json!({
+                                            "connected": true,
+                                            "url": nats_url,
+                                            "peers": nats_phases.len(),
+                                        });
+                                    }
+                                    None => {
+                                        nats_status = serde_json::json!({
+                                            "connected": false,
+                                            "url": nats_url,
+                                        });
+                                    }
+                                }
+                            }
+
                             let output = serde_json::json!({
                                 "agent_id": dolt_config.agent_id,
                                 "local_phase": my_phase.map(|p| serde_json::json!({
@@ -761,6 +911,7 @@ fn main() {
                                     "phi": q.phi,
                                     "coherence": q.coherence,
                                 })),
+                                "nats": nats_status,
                             });
                             println!("{}", serde_json::to_string_pretty(&output).unwrap());
                         }
@@ -778,19 +929,40 @@ fn main() {
                                 eprintln!("No swarm phases found. Publish first with 'swarm publish'.");
                                 process::exit(1);
                             }
-                            // Derive local state and run queen sync step
                             let mut queen = kannaka_memory::QueenSync::new(
                                 kannaka_memory::QueenConfig::default(),
                                 &dolt_config.agent_id,
                             );
-                            // Set phase from our latest published phase if available
                             if let Some(my) = phases.iter().find(|p| p.agent_id == dolt_config.agent_id) {
                                 queen.phase = my.phase;
                                 queen.frequency = my.frequency;
                                 queen.coherence = my.coherence;
                             }
-                            let state = queen.queen_sync_step(&phases);
-                            // Publish updated phase
+
+                            // Try NATS-augmented sync, fall back to Dolt-only
+                            let state;
+                            #[cfg(feature = "nats")]
+                            {
+                                let nats_url = resolve_nats_url(&args, command_start);
+                                match try_nats_connect(&nats_url) {
+                                    Some(transport) => {
+                                        let (s, warning) = queen.sync_with_nats(&phases, &transport);
+                                        state = s;
+                                        if let Some(w) = warning {
+                                            eprintln!("[nats] {}", w);
+                                        }
+                                    }
+                                    None => {
+                                        state = queen.queen_sync_step(&phases);
+                                    }
+                                }
+                            }
+                            #[cfg(not(feature = "nats"))]
+                            {
+                                state = queen.queen_sync_step(&phases);
+                            }
+
+                            // Publish to Dolt (authoritative store)
                             let updated_phase = queen.to_agent_phase(
                                 phases.iter().find(|p| p.agent_id == dolt_config.agent_id)
                                     .map(|p| p.cluster_count).unwrap_or(0),
@@ -855,7 +1027,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
                     process::exit(1);
                 }
             }
