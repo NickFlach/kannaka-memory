@@ -847,12 +847,14 @@ impl ConsolidationEngine {
             return 0;
         }
         
-        // Bundle the cross-cluster vectors
-        let dim = selected_memories[0].1.len();
+        // Bundle the cross-cluster vectors (use max dimension for safety)
+        let dim = selected_memories.iter().map(|(_, v, _, _, _)| v.len()).max().unwrap_or(384);
         let mut combined = vec![0.0f32; dim];
         for (_, ref vector, _, _, _) in &selected_memories {
             for (i, &v) in vector.iter().enumerate() {
-                combined[i] += v;
+                if i < combined.len() {
+                    combined[i] += v;
+                }
             }
         }
         normalize(&mut combined);
@@ -972,11 +974,13 @@ impl ConsolidationEngine {
         };
 
         // Bundle parent vectors (element-wise addition + normalize)
-        let dim = candidates[parent_indices[0]].1.len();
+        let dim = parent_indices.iter().map(|&i| candidates[i].1.len()).max().unwrap_or(384);
         let mut combined = vec![0.0f32; dim];
         for &idx in &parent_indices {
             for (i, &v) in candidates[idx].1.iter().enumerate() {
-                combined[i] += v;
+                if i < combined.len() {
+                    combined[i] += v;
+                }
             }
         }
         normalize(&mut combined);
