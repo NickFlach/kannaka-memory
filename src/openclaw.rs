@@ -375,10 +375,18 @@ impl KannakaMemorySystem {
     }
 
     /// Persist to disk (engine state + working memory JSON).
-    pub fn save(&self) -> Result<(), SystemError> {
+    pub fn save(&mut self) -> Result<(), SystemError> {
         let bin_path = self.data_dir.join("kannaka.bin");
         self.engine.save_state(&bin_path)?;
         self.working_memory.save_json(&self.data_dir)?;
+        // ADR-0016: Flush all memories (including skip links) to Dolt backend.
+        // This is critical after dreams — connections are modified in-memory
+        // but were never persisted to the skip_links table without this call.
+        let flushed = self.engine.store.flush()
+            .map_err(|e| SystemError::Engine(crate::store::EngineError::Store(e)))?;
+        if flushed > 0 {
+            eprintln!("[dolt] Flushed {} memories with skip links", flushed);
+        }
         Ok(())
     }
 

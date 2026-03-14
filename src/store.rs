@@ -67,6 +67,13 @@ pub trait MemoryStore: Send + Sync {
     fn all_ids(&self) -> Result<Vec<Uuid>, StoreError>;
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
     fn count(&self) -> usize;
+
+    /// Flush all dirty/in-memory state to the backing store.
+    /// Default is a no-op for stores that don't need it (e.g. InMemoryStore).
+    /// DoltMemoryStore overrides this to write all memories + skip links to SQL.
+    fn flush(&mut self) -> Result<usize, StoreError> {
+        Ok(0)
+    }
 }
 
 // ---------------------------------------------------------------------------

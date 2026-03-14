@@ -2277,6 +2277,25 @@ impl MemoryStore for DoltMemoryStore {
     fn count(&self) -> usize {
         self.cache.len()
     }
+
+    /// Flush ALL in-memory memories to Dolt, including skip links.
+    /// This is critical after dreams, which modify connections on many memories
+    /// without marking them individually dirty.
+    fn flush(&mut self) -> Result<usize, StoreError> {
+        let all_ids: Vec<Uuid> = self.cache.keys().copied().collect();
+        let count = all_ids.len();
+        for id in all_ids {
+            let memory = self.cache.get(&id)
+                .ok_or_else(|| StoreError::NotFound(id))?;
+            let memory = memory.clone();
+            self.sync_memory_to_dolt(&memory)?;
+        }
+        self.dirty_set.clear();
+        // Commit the flush
+        let msg = format!("flush: synced {} memories with skip links to Dolt", count);
+        let _ = self.commit(&msg);
+        Ok(count)
+    }
 }
 
 // ---------------------------------------------------------------------------

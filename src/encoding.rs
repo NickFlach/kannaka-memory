@@ -327,14 +327,19 @@ impl EncodingPipeline {
     /// Bundling operation ⊕: element-wise sum + normalize.
     pub fn bundle(&self, vectors: &[Vec<f32>]) -> Vec<f32> {
         assert!(!vectors.is_empty());
-        let dim = vectors.iter().map(|v| v.len()).max().unwrap_or(384);
+        // Find dimension from first non-empty vector; skip empty vectors gracefully
+        let dim = vectors.iter().find(|v| !v.is_empty()).map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return Vec::new();
+        }
         let mut result = vec![0.0f32; dim];
         for v in vectors {
-            for (i, val) in v.iter().enumerate() {
-                if i < result.len() {
+            if v.len() == dim {
+                for (i, val) in v.iter().enumerate() {
                     result[i] += val;
                 }
             }
+            // Skip vectors with wrong dimensionality (empty or mismatched)
         }
         normalize(&mut result);
         result
