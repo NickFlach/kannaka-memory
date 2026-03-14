@@ -742,6 +742,10 @@ fn main() {
                             };
                             match store.register_swarm_agent(&agent) {
                                 Ok(()) => {
+                                    // Persist agent_id so subsequent commands use it
+                                    if let Err(e) = kannaka_memory::dolt::DoltConfig::persist_agent_id(&agent_id) {
+                                        eprintln!("Warning: could not persist agent_id: {e}");
+                                    }
                                     println!("Joined swarm as '{}' ({})", display_name, agent_id);
                                 }
                                 Err(e) => { eprintln!("Error: {e}"); process::exit(1); }

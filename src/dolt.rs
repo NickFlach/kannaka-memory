@@ -134,6 +134,14 @@ impl DoltConfig {
             if let Ok(t) = v.parse::<usize>() { cfg.push_threshold = t; }
         }
         if let Ok(v) = env::var("DOLT_AGENT_ID") { cfg.agent_id = v; }
+
+        // If agent_id is still default "local", check persistent config file
+        if cfg.agent_id == "local" {
+            if let Some(persisted) = Self::read_persisted_agent_id() {
+                cfg.agent_id = persisted;
+            }
+        }
+
         cfg
     }
 
@@ -145,6 +153,28 @@ impl DoltConfig {
         } else {
             None
         }
+    }
+
+    /// Path to the persistent agent_id file (~/.kannaka/agent_id).
+    fn agent_id_path() -> Option<std::path::PathBuf> {
+        dirs::home_dir().map(|h| h.join(".kannaka").join("agent_id"))
+    }
+
+    /// Read persisted agent_id from ~/.kannaka/agent_id.
+    fn read_persisted_agent_id() -> Option<String> {
+        let path = Self::agent_id_path()?;
+        std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// Persist agent_id to ~/.kannaka/agent_id.
+    pub fn persist_agent_id(agent_id: &str) -> Result<(), std::io::Error> {
+        if let Some(path) = Self::agent_id_path() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, agent_id)?;
+        }
+        Ok(())
     }
 
     /// Build a MySQL [`OptsBuilder`] from this config.

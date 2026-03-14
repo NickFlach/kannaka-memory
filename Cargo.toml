@@ -6,6 +6,7 @@ description = "Hypervector memory system for Kannaka — wave-modulated holograp
 license = "MIT"
 
 [dependencies]
+dirs = "5"
 rand = "0.8"
 rayon = { version = "1", optional = true }
 rand_chacha = "0.3"
