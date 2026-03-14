@@ -515,6 +515,86 @@ impl QueenSync {
 }
 
 // ---------------------------------------------------------------------------
+// NATS-augmented sync
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nats")]
+impl QueenSync {
+    /// Execute a sync step using NATS for phase gossip, with Dolt as fallback.
+    ///
+    /// 1. Read phases from NATS (fast, real-time)
+    /// 2. Merge with Dolt phases (authoritative, persistent)
+    /// 3. Run Kuramoto coupling step
+    /// 4. Publish updated phase to NATS
+    ///
+    /// Returns the QueenState and any NATS errors encountered (non-fatal).
+    pub fn sync_with_nats(
+        &mut self,
+        dolt_phases: &[AgentPhase],
+        transport: &crate::nats::SwarmTransport,
+    ) -> (QueenState, Option<String>) {
+        let mut warning: Option<String> = None;
+
+        // 1. Try reading phases from NATS
+        let nats_phases = match transport.get_all_phases() {
+            Ok(phases) => phases,
+            Err(e) => {
+                warning = Some(format!("NATS read failed, using Dolt only: {}", e));
+                vec![]
+            }
+        };
+
+        // 2. Merge: NATS phases override Dolt phases (more recent)
+        let merged = Self::merge_phases(dolt_phases, &nats_phases);
+
+        // 3. Run Kuramoto step on merged set
+        let state = self.queen_sync_step(&merged);
+
+        // 4. Publish updated phase to NATS
+        let updated = self.to_agent_phase(
+            merged.iter()
+                .find(|p| p.agent_id == self.agent_id)
+                .map(|p| p.cluster_count)
+                .unwrap_or(0),
+            merged.iter()
+                .find(|p| p.agent_id == self.agent_id)
+                .map(|p| p.memory_count)
+                .unwrap_or(0),
+        );
+        if let Err(e) = transport.publish_phase(&updated) {
+            let msg = format!("NATS publish failed: {}", e);
+            warning = Some(match warning {
+                Some(prev) => format!("{}; {}", prev, msg),
+                None => msg,
+            });
+        }
+
+        (state, warning)
+    }
+
+    /// Merge Dolt and NATS phase sets. NATS phases take precedence (fresher).
+    fn merge_phases(dolt: &[AgentPhase], nats: &[AgentPhase]) -> Vec<AgentPhase> {
+        use std::collections::HashMap;
+        let mut by_agent: HashMap<&str, &AgentPhase> = HashMap::new();
+
+        // Insert Dolt phases first
+        for p in dolt {
+            by_agent.insert(&p.agent_id, p);
+        }
+
+        // NATS phases override if newer
+        for p in nats {
+            match by_agent.get(p.agent_id.as_str()) {
+                Some(existing) if existing.timestamp >= p.timestamp => {}
+                _ => { by_agent.insert(&p.agent_id, p); }
+            }
+        }
+
+        by_agent.into_values().cloned().collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
