@@ -327,11 +327,13 @@ impl EncodingPipeline {
     /// Bundling operation ⊕: element-wise sum + normalize.
     pub fn bundle(&self, vectors: &[Vec<f32>]) -> Vec<f32> {
         assert!(!vectors.is_empty());
-        let dim = vectors[0].len();
+        let dim = vectors.iter().map(|v| v.len()).max().unwrap_or(384);
         let mut result = vec![0.0f32; dim];
         for v in vectors {
             for (i, val) in v.iter().enumerate() {
-                result[i] += val;
+                if i < result.len() {
+                    result[i] += val;
+                }
             }
         }
         normalize(&mut result);
