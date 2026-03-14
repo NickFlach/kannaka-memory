@@ -77,8 +77,15 @@ impl SwarmTransport {
     pub fn connect(url: &str) -> Result<Self, NatsError> {
         let (host, port) = parse_nats_url(url)?;
         let addr = format!("{}:{}", host, port);
+        // Resolve hostname to socket address (DNS lookup)
+        use std::net::ToSocketAddrs;
+        let socket_addr = addr
+            .to_socket_addrs()
+            .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
+            .next()
+            .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
         let stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| NatsError::Connect(format!("bad address {}: {}", addr, e)))?,
+            &socket_addr,
             Duration::from_secs(5),
         )
         .map_err(|e| NatsError::Connect(format!("failed to connect to {}: {}", addr, e)))?;
