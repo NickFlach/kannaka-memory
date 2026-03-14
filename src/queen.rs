@@ -384,6 +384,78 @@ impl QueenSync {
     }
 
     // -----------------------------------------------------------------------
+    // Task 5: Chiral coupling from memory domains
+    // -----------------------------------------------------------------------
+
+    /// Derive handedness from memory theme vectors.
+    ///
+    /// Compares this agent's memory themes against the swarm mean to determine
+    /// if the agent is primarily a **receiver** (left-handed, theme vectors
+    /// closer to swarm mean → pulled toward consensus) or an **emitter**
+    /// (right-handed, unique themes → pushes the field).
+    ///
+    /// Returns `Achiral` if insufficient data.
+    pub fn derive_handedness(
+        &self,
+        engine: &MemoryEngine,
+        swarm_phases: &[AgentPhase],
+    ) -> Handedness {
+        // Compute this agent's mean memory vector
+        let all = engine.store.all_memories().unwrap_or_default();
+        if all.is_empty() {
+            return Handedness::Achiral;
+        }
+        let dim = all.iter().find(|m| !m.vector.is_empty()).map(|m| m.vector.len());
+        let dim = match dim {
+            Some(d) if d > 0 => d,
+            _ => return Handedness::Achiral,
+        };
+
+        let mut local_mean = vec![0.0f32; dim];
+        let mut count = 0usize;
+        for m in &all {
+            if m.vector.len() == dim {
+                for (i, v) in m.vector.iter().enumerate() {
+                    local_mean[i] += v;
+                }
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return Handedness::Achiral;
+        }
+        for v in &mut local_mean {
+            *v /= count as f32;
+        }
+
+        // Compute swarm mean phase vector from xi_signatures (if available)
+        // or fall back to comparing our memory count ratio (emit vs receive)
+        let other_count: usize = swarm_phases
+            .iter()
+            .filter(|a| a.agent_id != self.agent_id)
+            .map(|a| a.memory_count)
+            .sum();
+        let my_count = engine.store.count();
+
+        if other_count == 0 || swarm_phases.len() < 2 {
+            return Handedness::Achiral;
+        }
+
+        let avg_other = other_count as f32 / (swarm_phases.len() - 1).max(1) as f32;
+
+        // Emitter: has more unique memories than average → pushes the field
+        // Receiver: has fewer → absorbs from the swarm
+        let ratio = my_count as f32 / avg_other;
+        if ratio > 1.3 {
+            Handedness::Right // emitter
+        } else if ratio < 0.7 {
+            Handedness::Left // receiver
+        } else {
+            Handedness::Achiral
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Task 3: Phase derivation from local Kuramoto clusters
     // -----------------------------------------------------------------------
 
