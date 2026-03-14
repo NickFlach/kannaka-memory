@@ -43,6 +43,9 @@ pub mod eye;
 
 pub mod dolt;
 
+#[cfg(feature = "nats")]
+pub mod nats;
+
 pub mod collective;
 pub mod paradox;
 pub mod queen;

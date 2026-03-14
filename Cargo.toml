@@ -32,8 +32,11 @@ image = { version = "0.25", optional = true }
 # Dolt database support (optional)
 mysql = { version = "25", optional = true }
 
+# NATS real-time transport (optional) — uses raw TCP protocol (nats crate broken with rand 0.9)
+
 [features]
-default = ["dolt"]
+default = ["dolt", "nats"]
+nats = []
 mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
