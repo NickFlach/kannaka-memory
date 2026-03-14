@@ -311,6 +311,9 @@ impl KannakaMemorySystem {
             });
         }
 
+        // ADR-0018: Post-dream swarm sync (best-effort)
+        self.post_dream_swarm_sync();
+
         Ok(DreamReport {
             cycles: reports.len(),
             memories_strengthened: total_strengthened,
@@ -354,6 +357,49 @@ impl KannakaMemorySystem {
     }
 
     /// Dream + assess combined.
+    /// ADR-0018: Auto-publish phase and run queen sync after dream consolidation.
+    ///
+    /// Best-effort: errors are logged but never propagated.
+    fn post_dream_swarm_sync(&mut self) {
+        // Only attempt if Dolt is configured
+        let config = match crate::dolt::DoltConfig::try_from_env() {
+            Some(c) => c,
+            None => return,
+        };
+        let store = match crate::dolt::DoltMemoryStore::from_config(&config) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        // Check if this agent is registered
+        let agents = store.read_swarm_agents().unwrap_or_default();
+        let registered = agents.iter().any(|a| a.agent_id == config.agent_id && a.swarm_role != "inactive");
+        if !registered {
+            return;
+        }
+        // Derive and publish phase
+        let mut queen = crate::queen::QueenSync::new(
+            crate::queen::QueenConfig::default(),
+            &config.agent_id,
+        );
+        queen.derive_local_state(&self.engine);
+        let phase = queen.to_agent_phase(0, self.engine.store.count());
+        if let Err(e) = store.publish_phase(&phase) {
+            eprintln!("[swarm] post-dream publish failed: {e}");
+            return;
+        }
+        // Read swarm and run sync step
+        let phases = store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)).unwrap_or_default();
+        if phases.len() >= 2 {
+            let state = queen.queen_sync_step(&phases);
+            if let Err(e) = store.write_queen_state(&state) {
+                eprintln!("[swarm] post-dream queen state write failed: {e}");
+            } else {
+                eprintln!("[swarm] Post-dream sync: r={:.3}, Φ={:.3}, {} agents",
+                    state.order_parameter, state.phi, state.agent_count);
+            }
+        }
+    }
+
     pub fn resonate(&mut self) -> Result<ResonanceReport, SystemError> {
         let report = self.bridge.resonate(&mut self.engine);
         self.last_dream = Some(Utc::now());

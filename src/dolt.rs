@@ -1143,7 +1143,277 @@ impl DoltMemoryStore {
             eprintln!("[dolt] Note: glyph_content column may already exist: {}", e);
         });
 
+        // ADR-0018: Queen Synchronization Protocol tables
+        self.create_queen_tables()?;
+
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0018: Queen Synchronization Protocol tables
+    // -----------------------------------------------------------------------
+
+    /// Create the Queen Sync tables (`agent_phases`, `queen_state`) and extend
+    /// the `agents` table with swarm columns.
+    ///
+    /// Safe to call repeatedly — uses `CREATE TABLE IF NOT EXISTS` and non-fatal
+    /// `ALTER TABLE` for column additions.
+    pub fn create_queen_tables(&self) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+
+        // Agent phase state (published periodically by each agent)
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS agent_phases (
+                id                VARCHAR(36)  NOT NULL PRIMARY KEY,
+                agent_id          VARCHAR(64)  NOT NULL,
+                phase             DOUBLE       NOT NULL,
+                frequency         DOUBLE       NOT NULL,
+                coherence         DOUBLE       NOT NULL,
+                phi               DOUBLE       DEFAULT 0,
+                order_parameter   DOUBLE       DEFAULT 0,
+                cluster_count     INT          DEFAULT 0,
+                memory_count      INT          DEFAULT 0,
+                xi_signature      JSON,
+                protocol_version  VARCHAR(8)   DEFAULT '1.0',
+                timestamp         DATETIME(6)  NOT NULL,
+                INDEX idx_agent (agent_id),
+                INDEX idx_time  (timestamp)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create agent_phases: {}", e)))?;
+
+        // Emergent Queen state (computed, not assigned)
+        conn.exec_drop(r"
+            CREATE TABLE IF NOT EXISTS queen_state (
+                id                VARCHAR(36)  NOT NULL PRIMARY KEY,
+                order_parameter   DOUBLE       NOT NULL,
+                mean_phase        DOUBLE       NOT NULL,
+                coherence         DOUBLE       NOT NULL,
+                phi               DOUBLE       NOT NULL,
+                agent_count       INT          NOT NULL,
+                hive_topology     JSON,
+                coupling_strength DOUBLE,
+                chiral_bias       DOUBLE,
+                geometric         JSON,
+                computed_by       VARCHAR(64),
+                timestamp         DATETIME(6)  NOT NULL,
+                INDEX idx_time (timestamp)
+            )", ()).map_err(|e| StoreError::Other(format!("Failed to create queen_state: {}", e)))?;
+
+        // Extend agents table with swarm columns (non-fatal if they already exist)
+        let alter_statements = [
+            "ALTER TABLE agents ADD COLUMN swarm_role VARCHAR(16) DEFAULT 'member'",
+            "ALTER TABLE agents ADD COLUMN protocol_version VARCHAR(8) DEFAULT '1.0'",
+            "ALTER TABLE agents ADD COLUMN handedness VARCHAR(8) DEFAULT 'achiral'",
+            "ALTER TABLE agents ADD COLUMN natural_frequency DOUBLE DEFAULT 0.5",
+        ];
+        for stmt in &alter_statements {
+            let _ = conn.exec_drop(stmt, ());
+            // Non-fatal: columns may already exist
+        }
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0018: Queen Sync read/write
+    // -----------------------------------------------------------------------
+
+    /// Publish this agent's phase state to the `agent_phases` table.
+    pub fn publish_phase(&self, phase: &crate::queen::AgentPhase) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let timestamp = format_dolt_datetime(&phase.timestamp);
+        let xi_json = phase.xi_signature.as_ref().and_then(|v| serde_json::to_string(v).ok());
+        conn.exec_drop(
+            r"INSERT INTO agent_phases (id, agent_id, phase, frequency, coherence, phi,
+              order_parameter, cluster_count, memory_count, xi_signature, protocol_version, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+              phase = VALUES(phase), frequency = VALUES(frequency), coherence = VALUES(coherence),
+              phi = VALUES(phi), order_parameter = VALUES(order_parameter),
+              cluster_count = VALUES(cluster_count), memory_count = VALUES(memory_count),
+              xi_signature = VALUES(xi_signature), timestamp = VALUES(timestamp)",
+            (
+                &phase.id, &phase.agent_id, phase.phase as f64, phase.frequency as f64,
+                phase.coherence as f64, phase.phi as f64, phase.order_parameter as f64,
+                phase.cluster_count as u32, phase.memory_count as u32,
+                &xi_json, &phase.protocol_version, &timestamp,
+            ),
+        ).map_err(|e| StoreError::Other(format!("Failed to publish phase: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read all swarm agent phases published within `since` duration.
+    ///
+    /// Returns the most recent phase entry per agent.
+    pub fn read_swarm_phases(&self, since: std::time::Duration) -> Result<Vec<crate::queen::AgentPhase>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let since_secs = since.as_secs();
+        let rows: Vec<(String, String, f64, f64, f64, f64, f64, u32, u32, Option<String>, String, mysql::Value)> = conn.exec(
+            r"SELECT ap.id, ap.agent_id, ap.phase, ap.frequency, ap.coherence, ap.phi,
+              ap.order_parameter, ap.cluster_count, ap.memory_count, ap.xi_signature,
+              ap.protocol_version, ap.timestamp
+              FROM agent_phases ap
+              INNER JOIN (
+                  SELECT agent_id, MAX(timestamp) as max_ts
+                  FROM agent_phases
+                  WHERE timestamp > DATE_SUB(NOW(6), INTERVAL ? SECOND)
+                  GROUP BY agent_id
+              ) latest ON ap.agent_id = latest.agent_id AND ap.timestamp = latest.max_ts",
+            (since_secs,),
+        ).map_err(|e| StoreError::Other(format!("Failed to read swarm phases: {}", e)))?;
+
+        // Also read trust scores and handedness from agents table
+        let agents: Vec<(String, f32, Option<String>)> = conn.query(
+            "SELECT agent_id, trust_score, handedness FROM agents"
+        ).unwrap_or_default();
+        let agent_map: std::collections::HashMap<String, (f32, String)> = agents.into_iter()
+            .map(|(id, trust, hand)| (id, (trust, hand.unwrap_or_else(|| "achiral".to_string()))))
+            .collect();
+
+        let mut phases = Vec::with_capacity(rows.len());
+        for (id, agent_id, phase, freq, coh, phi, order, clusters, memories, xi_json, proto, ts_val) in rows {
+            let ts_str = match &ts_val {
+                mysql::Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+                mysql::Value::Date(y, m, d, h, mi, s, us) =>
+                    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}", y, m, d, h, mi, s, us),
+                _ => format!("{:?}", ts_val),
+            };
+            let timestamp = parse_dolt_datetime(&ts_str).unwrap_or_else(|_| Utc::now());
+            let xi_sig = xi_json.and_then(|s| serde_json::from_str(&s).ok());
+            let (trust, hand_str) = agent_map.get(&agent_id)
+                .cloned()
+                .unwrap_or((0.5, "achiral".to_string()));
+            phases.push(crate::queen::AgentPhase {
+                id,
+                agent_id,
+                phase: phase as f32,
+                frequency: freq as f32,
+                coherence: coh as f32,
+                phi: phi as f32,
+                order_parameter: order as f32,
+                cluster_count: clusters as usize,
+                memory_count: memories as usize,
+                xi_signature: xi_sig,
+                protocol_version: proto,
+                timestamp,
+                trust_score: trust,
+                handedness: crate::queen::Handedness::from_str(&hand_str),
+            });
+        }
+        Ok(phases)
+    }
+
+    /// Write the computed QueenState to the `queen_state` table.
+    pub fn write_queen_state(&self, state: &crate::queen::QueenState) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let timestamp = format_dolt_datetime(&state.timestamp);
+        let hive_json = serde_json::to_string(&state.hives).ok();
+        let geom_json = state.geometric.as_ref().and_then(|v| serde_json::to_string(v).ok());
+        conn.exec_drop(
+            r"INSERT INTO queen_state (id, order_parameter, mean_phase, coherence, phi,
+              agent_count, hive_topology, coupling_strength, chiral_bias, geometric,
+              computed_by, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                &state.id, state.order_parameter as f64, state.mean_phase as f64,
+                state.coherence as f64, state.phi as f64, state.agent_count as u32,
+                &hive_json, state.coupling_strength as f64, state.chiral_bias as f64,
+                &geom_json, &state.computed_by, &timestamp,
+            ),
+        ).map_err(|e| StoreError::Other(format!("Failed to write queen state: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the most recent QueenState from the `queen_state` table.
+    pub fn read_queen_state(&self) -> Result<Option<crate::queen::QueenState>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let rows: Vec<(String, f64, f64, f64, f64, u32, Option<String>, Option<f64>, Option<f64>, Option<String>, Option<String>, mysql::Value)> = conn.query(
+            r"SELECT id, order_parameter, mean_phase, coherence, phi, agent_count,
+              hive_topology, coupling_strength, chiral_bias, geometric, computed_by, timestamp
+              FROM queen_state ORDER BY timestamp DESC LIMIT 1"
+        ).map_err(|e| StoreError::Other(format!("Failed to read queen state: {}", e)))?;
+
+        let row = match rows.into_iter().next() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let (id, order, mean_ph, coh, phi, count, hive_json, coupling, chiral, geom_json, computed_by, ts_val) = row;
+        let ts_str = match &ts_val {
+            mysql::Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+            mysql::Value::Date(y, m, d, h, mi, s, us) =>
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}", y, m, d, h, mi, s, us),
+            _ => format!("{:?}", ts_val),
+        };
+        let timestamp = parse_dolt_datetime(&ts_str).unwrap_or_else(|_| Utc::now());
+        let hives: Vec<crate::queen::Hive> = hive_json
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        let geometric = geom_json.and_then(|s| serde_json::from_str(&s).ok());
+
+        Ok(Some(crate::queen::QueenState {
+            id,
+            order_parameter: order as f32,
+            mean_phase: mean_ph as f32,
+            coherence: coh as f32,
+            phi: phi as f32,
+            agent_count: count as usize,
+            hives,
+            coupling_strength: coupling.unwrap_or(0.5) as f32,
+            chiral_bias: chiral.unwrap_or(0.1) as f32,
+            geometric,
+            computed_by: computed_by.unwrap_or_default(),
+            timestamp,
+        }))
+    }
+
+    /// Register an agent in the swarm (upserts into `agents` with queen sync columns).
+    pub fn register_swarm_agent(&self, agent: &crate::queen::SwarmAgent) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let now = format_dolt_datetime(&Utc::now());
+        conn.exec_drop(
+            r"INSERT INTO agents (agent_id, display_name, trust_score, swarm_role,
+              protocol_version, handedness, natural_frequency, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+              display_name = VALUES(display_name), trust_score = VALUES(trust_score),
+              swarm_role = VALUES(swarm_role), protocol_version = VALUES(protocol_version),
+              handedness = VALUES(handedness), natural_frequency = VALUES(natural_frequency),
+              last_sync = ?",
+            (
+                &agent.agent_id, &agent.display_name, agent.trust_score,
+                &agent.swarm_role, &agent.protocol_version,
+                agent.handedness.as_str(), agent.natural_frequency as f64,
+                &now, &now,
+            ),
+        ).map_err(|e| StoreError::Other(format!("Failed to register swarm agent: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read all registered swarm agents.
+    pub fn read_swarm_agents(&self) -> Result<Vec<crate::queen::SwarmAgent>, StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        let rows: Vec<(String, Option<String>, f32, Option<String>, Option<String>, Option<String>, Option<f64>)> = conn.query(
+            r"SELECT agent_id, display_name, trust_score, swarm_role, protocol_version,
+              handedness, natural_frequency FROM agents"
+        ).map_err(|e| StoreError::Other(format!("Failed to read swarm agents: {}", e)))?;
+
+        Ok(rows.into_iter().map(|(id, name, trust, role, proto, hand, freq)| {
+            crate::queen::SwarmAgent {
+                agent_id: id,
+                display_name: name,
+                trust_score: trust,
+                swarm_role: role.unwrap_or_else(|| "member".to_string()),
+                protocol_version: proto.unwrap_or_else(|| "1.0".to_string()),
+                handedness: crate::queen::Handedness::from_str(&hand.unwrap_or_else(|| "achiral".to_string())),
+                natural_frequency: freq.unwrap_or(0.5) as f32,
+            }
+        }).collect())
     }
 
     /// Insert a row into `sync_events` (fire-and-forget — errors are logged, not fatal).
