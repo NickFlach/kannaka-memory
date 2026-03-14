@@ -86,6 +86,8 @@ fn usage() {
     eprintln!("  swarm queen               View emergent Queen state");
     eprintln!("  swarm hives               Hive topology (JSON)");
     eprintln!("  swarm publish             Publish current phase only");
+    eprintln!("  swarm push [--remote NAME]    Commit & push phase data to DoltHub");
+    eprintln!("  swarm pull [--remote NAME]    Pull phase data from DoltHub");
     eprintln!("  swarm leave [--nats-url URL]   Unregister from swarm");
     eprintln!("  swarm listen [--nats-url URL] [--auto-sync]");
     eprintln!("                            Subscribe to live phase updates");
@@ -709,7 +711,7 @@ fn main() {
 
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|push|pull|leave|listen>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
@@ -1029,9 +1031,62 @@ fn main() {
                         Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
                     }
                 }
+                "push" => {
+                    let mut remote = None;
+                    let mut i = command_start + 2;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--remote" if i + 1 < args.len() => { remote = Some(args[i + 1].clone()); i += 2; }
+                            _ => { i += 1; }
+                        }
+                    }
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            println!("Committing swarm data...");
+                            if let Err(e) = store.commit_swarm_data(&dolt_config.agent_id) {
+                                eprintln!("Warning: commit failed (may be clean): {}", e);
+                            }
+                            let remote_name = remote.as_deref().unwrap_or(&dolt_config.remote);
+                            println!("Pushing to {}...", remote_name);
+                            match store.push(remote.as_deref(), None) {
+                                Ok(()) => println!("Pushed swarm data to {}", remote_name),
+                                Err(e) => { eprintln!("Error pushing: {}", e); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
+                "pull" => {
+                    let mut remote = None;
+                    let mut i = command_start + 2;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--remote" if i + 1 < args.len() => { remote = Some(args[i + 1].clone()); i += 2; }
+                            _ => { i += 1; }
+                        }
+                    }
+                    match DoltMemoryStore::from_config(&dolt_config) {
+                        Ok(store) => {
+                            let remote_name = remote.as_deref().unwrap_or(&dolt_config.remote);
+                            println!("Pulling from {}...", remote_name);
+                            match store.pull(remote.as_deref(), None) {
+                                Ok(()) => {
+                                    let phases = store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)).unwrap_or_default();
+                                    println!("Pulled from {}. Found {} agent phase(s):", remote_name, phases.len());
+                                    for p in &phases {
+                                        println!("  [{}] θ={:.3} ω={:.3} coherence={:.3} phi={:.3} memories={}",
+                                            p.agent_id, p.phase, p.frequency, p.coherence, p.phi, p.memory_count);
+                                    }
+                                }
+                                Err(e) => { eprintln!("Error pulling: {}", e); process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                    }
+                }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|push|pull|leave|listen>");
                     process::exit(1);
                 }
             }

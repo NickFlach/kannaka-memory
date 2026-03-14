@@ -897,6 +897,23 @@ impl DoltMemoryStore {
         Ok(())
     }
 
+    /// Stage and commit swarm-related tables (agent_phases, queen_state, agents).
+    ///
+    /// Used by the CLI `swarm push` command before pushing to a remote.
+    /// Uses `--allow-empty` so it won't fail if there are no changes.
+    pub fn commit_swarm_data(&self, agent_id: &str) -> Result<(), StoreError> {
+        let mut conn = self.pool.get_conn()
+            .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
+        conn.query_drop("CALL DOLT_ADD('agent_phases', 'queen_state', 'agents')")
+            .map_err(|e| StoreError::Other(format!("Failed to stage swarm tables: {}", e)))?;
+        conn.query_drop(&format!(
+            "CALL DOLT_COMMIT('--allow-empty', '-m', 'swarm: phase data for {}')",
+            agent_id
+        ))
+            .map_err(|e| StoreError::Other(format!("Failed to commit: {}", e)))?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Phase 4: Diff and merge
     // -----------------------------------------------------------------------
