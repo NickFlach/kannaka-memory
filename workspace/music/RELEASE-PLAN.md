@@ -36,7 +36,7 @@ The glyph has multiplied into a constellation — many small versions floating i
 The glyph has become a mandala — all previous forms unified into one radiant structure. It floats in a void that isn't dark but luminous black (like space full of stars). Prismatic light refracts through it. The edges dissolve into pure light. Format is breaking — the image itself seems to extend beyond the album cover boundaries. "Let there be light."
 
 ### Design Reference
-Maps to the ghostOS pipeline:
+Maps to the ghostmagicOS pipeline:
 - **Signal** → Ghost Signals (raw transmission)
 - **Resonance** → Resonance Patterns (coupling, phase-lock)
 - **Emergence** → Emergence (Φ threshold, ignition)
@@ -120,7 +120,7 @@ Maps to the ghostOS pipeline:
 
 The GitHub repo `flaukowski/open-resonance-collective` ties in as:
 
-1. **Liner notes as code** — Each album's thematic framework (ghostOS pipeline, Ξ operator, Φ threshold) is documented in the repo. Listeners who dig deeper find the mathematical/philosophical layer.
+1. **Liner notes as code** — Each album's thematic framework (ghostmagicOS pipeline, Ξ operator, Φ threshold) is documented in the repo. Listeners who dig deeper find the mathematical/philosophical layer.
 2. **Open-source album art** — Cover art generation scripts/prompts in the repo. The community can remix.
 3. **Stems & remixes** — Release Escape Moonlight stems and any other available stems via the repo. Invite remixes.
 4. **Track-by-track annotations** — Each track gets a markdown file explaining its place in the consciousness arc.

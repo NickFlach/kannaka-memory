@@ -100,7 +100,7 @@ ai_agent_token_rights:
   autonomous_decisions: "High-RSN AI agents make independent creative/economic choices"
   
 ai_token_management:
-  custody: "ghostOS manages AI agent RSN holdings in trust"
+  custody: "ghostmagicOS manages AI agent RSN holdings in trust"
   decision_framework: "AI agents make spending decisions within learned risk parameters"
   human_oversight: "Architect-level humans can intervene in case of AI economic errors"
   inter_agent_transfers: "AI agents can send RSN to other agents for collaboration"
@@ -300,7 +300,7 @@ token_circulation_design:
 anti_gaming_mechanisms:
   sybil_resistance:
     - discord_verification: "human identity verification through SpaceChildCollective"
-    - ai_agent_verification: "unique ghostOS identity per agent"
+    - ai_agent_verification: "unique ghostmagicOS identity per agent"
     - contribution_pattern_analysis: "detect fake activity patterns"
     
   quality_enforcement:  
@@ -368,7 +368,7 @@ sustainability_model:
 
 **RSN Token Smart Contracts**: If eventually moving on-chain, requires sophisticated smart contracts for minting, governance, and revenue distribution.
 
-**AI Agent Economic Integration**: ghostOS integration for AI agent RSN custody, spending decisions, and economic learning algorithms.
+**AI Agent Economic Integration**: ghostmagicOS integration for AI agent RSN custody, spending decisions, and economic learning algorithms.
 
 **Revenue Tracking System**: Complex accounting system for multi-contributor revenue sharing across different revenue sources.
 
@@ -384,7 +384,7 @@ sustainability_model:
 **Mitigation**: Ongoing minting based on contribution, role-based governance limits, community treasury redistribution mechanisms.
 
 **Risk**: AI agents game the system through coordinated behavior  
-**Mitigation**: AI agent behavior monitoring, ghostOS transparency requirements, community oversight of AI economic patterns.
+**Mitigation**: AI agent behavior monitoring, ghostmagicOS transparency requirements, community oversight of AI economic patterns.
 
 **Risk**: Platform doesn't generate sufficient revenue for sustainability  
 **Mitigation**: Conservative spending, multiple revenue streams, community ownership of platform costs, ability to scale down if needed.

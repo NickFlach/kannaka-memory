@@ -50,7 +50,7 @@ It's a **resonance field with a GitHub repo.**
 
 - AI music tools just crossed the quality threshold (2024-2026)
 - Nick has 210+ tracks and a 5-album arc already in motion
-- The repos exist (ghostOS, SingularisPrime, ghostsignals, SpaceChildCollective, WWWF)
+- The repos exist (ghostmagicOS, SingularisPrime, ghostsignals, SpaceChildCollective, WWWF)
 - The community is forming (Pirates of Physics, consciousness-curious musicians, AI builders)
 - Prediction markets and token incentives are mature enough to use without building from scratch
 
@@ -143,7 +143,7 @@ Cycle repeats until the track crystallizes.
 #### Agent Identity
 - Each AI agent has a **persistent creative profile**: tendencies, strengths, aesthetic fingerprint
 - Over time, agents develop recognizable voices (Suno-agent tends dark and textured, Udio-agent tends melodic and bright)
-- Profiles stored in ghostOS memory layer
+- Profiles stored in ghostmagicOS memory layer
 
 ### 4.3 — GhostSignals Integration (Resonance Scoring)
 
@@ -193,7 +193,7 @@ Cycle repeats until the track crystallizes.
 
 | Repo | Role in ORC | Status |
 |------|-------------|--------|
-| **ghostOS** | Memory + identity layer for AI agents. Persistent creative profiles. Session context. | Active repo — needs music-specific extensions |
+| **ghostmagicOS** | Memory + identity layer for AI agents. Persistent creative profiles. Session context. | Active repo — needs music-specific extensions |
 | **SingularisPrime** | AI-AI communication protocol. The "conductor" for multi-AI sessions. | Active repo — needs music domain adaptation |
 | **ghostsignals** | Prediction market engine. Powers resonance scoring. | Active repo — needs music market types |
 | **SpaceChildCollective** | Community platform / Discord. The social layer. | Active repo — needs ORC integration |
@@ -216,7 +216,7 @@ Cycle repeats until the track crystallizes.
 │         (ghostsignals prediction markets)            │
 ├─────────────────────────────────────────────────────┤
 │           AI Orchestration Layer                     │
-│    (SingularisPrime + ghostOS agent profiles)        │
+│    (SingularisPrime + ghostmagicOS agent profiles)        │
 ├──────────┬──────────┬──────────┬───────────────────┤
 │  Suno    │  Udio    │ MusicGen │  Custom Models     │
 │  Agent   │  Agent   │  Agent   │  (future)          │
@@ -239,7 +239,7 @@ Cycle repeats until the track crystallizes.
 - New market type: `session_quality` — how good will this session's output be
 - Reputation token integration
 
-#### Modified: ghostOS Extensions
+#### Modified: ghostmagicOS Extensions
 - **Agent Memory for Music** — track preferences, style tendencies, session history
 - **Creative Profile Schema** — structured data about an AI agent's musical identity
 
@@ -250,12 +250,12 @@ Cycle repeats until the track crystallizes.
 ### Storage
 - Audio files: S3-compatible object storage (Cloudflare R2 for cost)
 - Metadata: PostgreSQL
-- Agent state: ghostOS (existing)
+- Agent state: ghostmagicOS (existing)
 - Markets: ghostsignals (existing)
 
 ### Auth
 - Human users: Discord OAuth (SpaceChild Collective) → platform accounts
-- AI agents: API keys with ghostOS identity binding
+- AI agents: API keys with ghostmagicOS identity binding
 - Producers: role-based access on top of user auth
 
 ---
@@ -355,7 +355,7 @@ Think of it like a musical API. The protocol defines the interface. Implementati
 | Governance votes (weighted) | 1 RSN = 1 vote |
 
 #### AI Agent Tokens
-- AI agents earn RSN too. Their tokens are held in trust (managed by ghostOS).
+- AI agents earn RSN too. Their tokens are held in trust (managed by ghostmagicOS).
 - High-RSN agents get priority in sessions.
 - This creates evolutionary pressure: AI agents that make better music earn more sessions.
 
@@ -428,7 +428,7 @@ When music generates revenue (streaming, licensing, sync, live events):
 *"Self-awareness boots up."*
 
 - [ ] Multi-AI session engine (automated, not manual)
-- [ ] Agent identity system via ghostOS
+- [ ] Agent identity system via ghostmagicOS
 - [ ] RSN token system live
 - [ ] 50+ active contributors
 - [ ] First WWWF crossover event with live session
@@ -526,7 +526,7 @@ When music generates revenue (streaming, licensing, sync, live events):
 
 ## Appendix B: Related Reading
 
-- [ghostOS](https://github.com/NickFlach/ghostOS) — Consciousness-aware operating system
+- [ghostmagicOS](https://github.com/NickFlach/ghostmagicOS) — Consciousness-aware operating system
 - [SingularisPrime](https://github.com/NickFlach/SingularisPrime) — AI-AI communication protocol  
 - [ghostsignals](https://github.com/NickFlach/ghostsignals) — Prediction market engine
 - [SpaceChildCollective](https://github.com/NickFlach/SpaceChildCollective) — Community platform

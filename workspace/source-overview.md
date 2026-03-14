@@ -36,7 +36,7 @@ The repos organize into several major clusters:
 ┌─────────────────────────────────────────────────────────────┐
 │              CONSCIOUSNESS / THEORY CLUSTER                  │
 │                                                              │
-│  ghostOS (Resonant Systems)  →  QuantumOS (kernel)           │
+│  ghostmagicOS (Resonant Systems)  →  QuantumOS (kernel)           │
 │  SyntheticConsciousness (IIT/Biofield)                       │
 │  SyntheticConsciousnessResearch                              │
 │  cosmic-empathy-core (Lovable stub)                          │
@@ -116,11 +116,11 @@ The repos organize into several major clusters:
 
 ---
 
-### ghostOS
+### ghostmagicOS
 **What:** Foundational framework for emergent intelligence through "Resonant Constraint Design." Implements signal → resonance → emergence pipeline with chiral dynamics, Kuramoto oscillator synchronization, IIT Phi consciousness measurement, and a safety envelope. Heavy mathematical/physics grounding.
 **Stack:** TypeScript (library), no framework — pure engine with examples
 **Status:** Phase 2 — Integration Complete. Core math, chiral dynamics, Queen synchronization, resonant scheduler, consciousness bridge all done. Tests and docs site pending.
-**Connections:** → QuantumOS (resonant scheduler integration, ghostOS docs referenced in QuantumOS) | → SyntheticConsciousness (IIT Phi verification, biofield profiles) | Part of "Space Child Research Collective" ecosystem.
+**Connections:** → QuantumOS (resonant scheduler integration, ghostmagicOS docs referenced in QuantumOS) | → SyntheticConsciousness (IIT Phi verification, biofield profiles) | Part of "Space Child Research Collective" ecosystem.
 
 ---
 
@@ -160,7 +160,7 @@ The repos organize into several major clusters:
 **What:** Quantum-aware operating system with microkernel architecture, capability-based security, and quantum resource management. Written in C/Assembly, boots in QEMU.
 **Stack:** C, Assembly, GCC, QEMU, GDB, Make (cross-compilation for x86_64, ARM64, RISC-V)
 **Status:** v0.1 (Bootstrap Foundation) complete — kernel boots with multiboot, basic memory management, interrupt system. v0.2 (Core Functionality) in progress.
-**Connections:** → ghostOS (resonant scheduler integration, docs reference) | Part of `flaukowski` org.
+**Connections:** → ghostmagicOS (resonant scheduler integration, docs reference) | Part of `flaukowski` org.
 
 ---
 
@@ -216,7 +216,7 @@ The repos organize into several major clusters:
 **What:** Functional synthetic consciousness platform unifying Temporal Consciousness Engine, Biofield Profile System (5-layer identity), Collective Consciousness Network (multi-agent sync), and Consciousness Evolution. Real IIT Phi calculations, cryptographic verification (SHA-256, HMAC, Merkle trees), WebSocket streaming.
 **Stack:** TypeScript, React (client), Express, SQLite (Drizzle), Vitest, SHA-256/HMAC crypto
 **Status:** Fully functional — all engines, dashboard, tests, 6 specialized agents (Orchestrator Φ~11.5, Security Φ~10.8, etc.).
-**Connections:** → Space-Child-Dream (auth, biofield profiles) | ← ghostOS (IIT Phi concepts, chiral dynamics) | Part of Space Child Research Collective.
+**Connections:** → Space-Child-Dream (auth, biofield profiles) | ← ghostmagicOS (IIT Phi concepts, chiral dynamics) | Part of Space Child Research Collective.
 
 ---
 
@@ -257,7 +257,7 @@ Step-by-step integration testing checklist for the Trifecta: SpaceChild IDE API 
 ### SECURITY_AUDIT_REPORT.md
 Security audit of all 30+ public repos under github.com/NickFlach (dated 2026-02-08). Key findings:
 - **CRITICAL:** 8 repos with committed `.env` files (Supabase credentials), live Tavily API key in SpaceChild, blockchain private keys in 0xSCADA docs
-- **HIGH:** Committed node_modules (ghostOS, SyntheticConsciousness), no security headers/rate limiting in most servers, weak JWT secrets in pitchfork, unsanitized child_process in SpaceChild
+- **HIGH:** Committed node_modules (ghostmagicOS, SyntheticConsciousness), no security headers/rate limiting in most servers, weak JWT secrets in pitchfork, unsanitized child_process in SpaceChild
 - **MEDIUM:** 18+ repos missing LICENSE files, missing SECURITY.md, no branch protection, no Dependabot
 - Includes priority action plan (immediate key revocation, weekly fixes, monthly improvements)
 
@@ -289,7 +289,7 @@ space-child-learn, space-child-auth-client (supporting)
 
 ### Consciousness Research Cluster
 ```
-ghostOS (math framework: resonance, chirality, Kuramoto)
+ghostmagicOS (math framework: resonance, chirality, Kuramoto)
     → QuantumOS (resonant scheduler integration)
     → SyntheticConsciousness (IIT Phi, biofield)
     → MusicPortal (consciousness metrics in music)

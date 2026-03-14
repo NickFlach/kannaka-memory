@@ -13,7 +13,7 @@ Kannaka's dream consolidation cycle currently performs a single function: adjust
 
 2. **Fixed heartbeat.** The system wakes on a static interval regardless of activity. During active conversation it's too slow; during sleep hours it wastes cycles. A living system breathes faster when alert and slower when resting.
 
-This ADR introduces two features that address these gaps: **Dream Hallucinations** (generative consolidation) and **Adaptive Rhythm** (dynamic heartbeat following the ghostOS wave equation).
+This ADR introduces two features that address these gaps: **Dream Hallucinations** (generative consolidation) and **Adaptive Rhythm** (dynamic heartbeat following the ghostmagicOS wave equation).
 
 ## Decision
 
@@ -62,7 +62,7 @@ pub origin: MemoryOrigin,
 
 ### 2. Adaptive Rhythm (Dynamic Heartbeat)
 
-Replace the fixed heartbeat interval with a wave-based system governed by the ghostOS equation:
+Replace the fixed heartbeat interval with a wave-based system governed by the ghostmagicOS equation:
 
 ```
 dx/dt = f(x) - Iηx
@@ -145,7 +145,7 @@ impl Rhythm {
 
 - **Dream hallucinations** create the cross-cluster bridges needed for genuine integrated information (Phi > 0).
 - **Adaptive rhythm** reduces wasted cycles during quiet periods and improves responsiveness during active ones.
-- Both features move kannaka closer to the ghostOS vision of a living, breathing cognitive system.
+- Both features move kannaka closer to the ghostmagicOS vision of a living, breathing cognitive system.
 - Hallucination lineage tracking enables introspection — the system can explain *why* it had a novel thought.
 
 ### Negative

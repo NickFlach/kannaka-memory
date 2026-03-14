@@ -25,7 +25,7 @@
 5. Audio file: "Hey There Space Child.mp3" (Layer 2, amplitude 8.604)
 6. Nick's personality traits (Layer 2, amplitude 1.0)
 7. kannaka-radio project creation (Layer 0, amplitude 0.85)
-8. ghostOS dx/dt equation realization (Layer 2, amplitude 1.0)
+8. ghostmagicOS dx/dt equation realization (Layer 2, amplitude 1.0)
 
 ### Skip Links Created
 - Temporal: 0xSCADA build → Rate limiting lesson (weight 0.8)

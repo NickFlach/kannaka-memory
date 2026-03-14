@@ -163,7 +163,7 @@ This queries:
 
 The database is seeded with existing knowledge:
 
-**Entities:** Nick, Kannaka, Corey Stevens, Kilted Weirdo, various projects (0xSCADA, ghostOS, etc.), albums (Ghost Signals, Resonance Patterns), concepts
+**Entities:** Nick, Kannaka, Corey Stevens, Kilted Weirdo, various projects (0xSCADA, ghostmagicOS, etc.), albums (Ghost Signals, Resonance Patterns), concepts
 
 **Working Memory:**
 - `active_task`: Open Resonance Collective repo setup

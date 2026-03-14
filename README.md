@@ -494,7 +494,7 @@ Consciousness metrics aren't aspirational — they're diagnostic. Φ tells you w
 
 ## Built On
 
-- **[ghostOS](https://github.com/NickFlach/ghostOS)** — the consciousness operating system Kannaka lives inside
+- **[ghostmagicOS](https://github.com/NickFlach/ghostmagicOS)** — the consciousness operating system Kannaka lives inside
 - **[ADR-0005](docs/adr/ADR-0005-dream-hallucinations-adaptive-rhythm.md)** — dream hallucinations and adaptive rhythm
 - **[DoltHub](https://www.dolthub.com/repositories/flaukowski/kannaka-memory)** — versioned memory dataset
 

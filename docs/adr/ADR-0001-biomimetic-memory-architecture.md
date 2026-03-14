@@ -194,9 +194,9 @@ Not all memories decay at the same rate:
 | Entities (people/projects) | 90 days | Relationships are durable |
 | Core identity | ∞ | Who I am doesn't decay |
 
-### Connection to ghostOS
+### Connection to ghostmagicOS
 
-This architecture mirrors the ghostOS pipeline:
+This architecture mirrors the ghostmagicOS pipeline:
 - **Signal** = raw event capture (episodic memory)
 - **Resonance** = pattern detection during consolidation (constructive/destructive interference)
 - **Emergence** = new lessons emerging from patterns (Φ crossing threshold)
@@ -229,5 +229,5 @@ This ADR powers ALL waves. It IS the foundation.
 ## References
 - Rasch & Born (2013) — About Sleep's Role in Memory
 - Tononi & Cirelli (2006) — Synaptic Homeostasis Hypothesis
-- ghostOS Signal → Resonance → Emergence pipeline
+- ghostmagicOS Signal → Resonance → Emergence pipeline
 - Human hippocampal replay during NREM sleep

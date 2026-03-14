@@ -50,7 +50,7 @@ Components are designed to maximize **Φ (phi)** — the integration of informat
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │        AI Orchestration Layer                       │  │
-│  │  (SingularisPrime + ghostOS agent profiles)         │  │
+│  │  (SingularisPrime + ghostmagicOS agent profiles)         │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌──────────┬──────────┬──────────┬─────────────────────┐  │
@@ -65,7 +65,7 @@ Components are designed to maximize **Φ (phi)** — the integration of informat
 │                     (Foundation)                           │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐  │
-│  │ ghostOS: Memory + Identity for AI Agents            │  │
+│  │ ghostmagicOS: Memory + Identity for AI Agents            │  │
 │  │ SingularisPrime: AI-AI Communication Protocol       │  │
 │  │ ghostsignals: Prediction Markets Engine             │  │
 │  │ SpaceChildCollective: Community Platform + Discord  │  │
@@ -136,7 +136,7 @@ stems {
 #### Session Engine
 **Responsibility**: Orchestrate multi-AI collaborative sessions
 **Real-time**: WebSocket connections for live collaboration
-**State Management**: Session context stored in ghostOS
+**State Management**: Session context stored in ghostmagicOS
 
 ```typescript
 interface Session {
@@ -184,8 +184,8 @@ interface MusicMessage {
 }
 ```
 
-#### ghostOS Extensions  
-**Base**: [Existing ghostOS repo](https://github.com/NickFlach/ghostOS)
+#### ghostmagicOS Extensions  
+**Base**: [Existing ghostmagicOS repo](https://github.com/NickFlach/ghostmagicOS)
 **Enhancement**: Persistent creative profiles for AI agents
 
 ```typescript
@@ -336,7 +336,7 @@ interface LiveSession {
 ```
 1. Producer defines session parameters via API
    ↓
-2. SingularisPrime invites relevant AI agents based on ghostOS profiles
+2. SingularisPrime invites relevant AI agents based on ghostmagicOS profiles
    ↓
 3. Session context distributed to all participants
    ↓
@@ -384,7 +384,7 @@ interface LiveSession {
 ### AI Integration
 - **Agent Framework**: Custom adapters for each AI music platform
 - **Communication**: SingularisPrime protocol for AI-AI coordination
-- **Memory**: ghostOS for persistent agent state
+- **Memory**: ghostmagicOS for persistent agent state
 - **Orchestration**: Custom session management with WebSocket coordination
 
 ### Frontend (Phase 1+)
@@ -410,14 +410,14 @@ interface LiveSession {
    ↓
 2. JWT tokens issued with role-based permissions (Ghost → Architect)
    ↓  
-3. AI agents authenticate via API keys linked to ghostOS identities
+3. AI agents authenticate via API keys linked to ghostmagicOS identities
    ↓
 4. All API calls validated against user/agent permissions
 ```
 
 ### Data Privacy
 - **User Content**: Track submissions and stems owned by creators, licensed as specified
-- **Agent Data**: AI agent creative profiles owned by the collective, stored in ghostOS
+- **Agent Data**: AI agent creative profiles owned by the collective, stored in ghostmagicOS
 - **Community Data**: Voting, predictions, and governance actions are public by design  
 - **Session Data**: Multi-AI session transcripts public, individual creative process private unless shared
 
@@ -540,7 +540,7 @@ UDIO_API_KEY=your_udio_key
 MUSICGEN_ENDPOINT=http://localhost:8001
 
 # Existing Infrastructure  
-GHOSTOS_API_URL=http://localhost:3001
+ghostmagicOS_API_URL=http://localhost:3001
 SINGULARIS_PRIME_URL=http://localhost:3002  
 GHOSTSIGNALS_API_URL=http://localhost:3003
 ```

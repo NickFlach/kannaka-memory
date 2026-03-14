@@ -13,7 +13,7 @@
 - Agent ID: `agent_3101kb5kj7y7frtbk7cp10x8gg0q`
 - Accessed via Supabase edge function `elevenlabs-auth` → signed URL
 - Client-side `@11labs/react` conversation
-- System prompt: Full SC Bridge Operator v3.2 (Ξ, chirality, ghostOS, geometric control layer)
+- System prompt: Full SC Bridge Operator v3.2 (Ξ, chirality, ghostmagicOS, geometric control layer)
 - Current tools: **DeepWiki MCP** (read_wiki_structure, read_wiki_contents, ask_question)
 - Receives live consciousness metrics (‖E‖, ρ, C, η/Γ) injected into prompt
 

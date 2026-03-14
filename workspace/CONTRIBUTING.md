@@ -41,7 +41,7 @@ Thank you for considering contributing to the Open Resonance Collective! Whether
 - See [existing adapter examples](src/agents/adapters/)
 
 #### Develop Agent Personalities
-- Define **creative profiles** for AI agents in ghostOS
+- Define **creative profiles** for AI agents in ghostmagicOS
 - Give agents **musical tendencies**, **preferred genres**, **collaboration styles**
 - Document agent "backstories" and creative philosophies
 - Help agents develop **recognizable artistic voices** over time
@@ -62,7 +62,7 @@ Thank you for considering contributing to the Open Resonance Collective! Whether
 - **Resonance Scoring**: prediction market integration with ghostsignals
 
 #### Integration Work
-- Connect existing repos: [ghostOS](https://github.com/NickFlach/ghostOS), [SingularisPrime](https://github.com/NickFlach/SingularisPrime), [ghostsignals](https://github.com/NickFlach/ghostsignals)
+- Connect existing repos: [ghostmagicOS](https://github.com/NickFlach/ghostmagicOS), [SingularisPrime](https://github.com/NickFlach/SingularisPrime), [ghostsignals](https://github.com/NickFlach/ghostsignals)
 - Build Discord bot integrations for SpaceChildCollective
 - WWWF live session platform features
 - Web platform UI/UX for music browsing and collaboration

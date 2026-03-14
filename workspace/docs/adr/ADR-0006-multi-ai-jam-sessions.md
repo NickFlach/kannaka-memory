@@ -131,7 +131,7 @@ negotiation_example:
 
 ### Agent Personality and Creative Identity System
 
-#### Persistent Creative Profiles (ghostOS Integration)
+#### Persistent Creative Profiles (ghostmagicOS Integration)
 
 Each AI agent develops and maintains a creative personality:
 ```yaml
@@ -347,7 +347,7 @@ session_archive:
 
 **Session Management Platform**: Web interface for setting up, monitoring, and documenting multi-AI creative sessions.
 
-**Agent Memory Integration**: ghostOS integration for persistent AI agent creative profiles, relationship tracking, and learning outcomes.
+**Agent Memory Integration**: ghostmagicOS integration for persistent AI agent creative profiles, relationship tracking, and learning outcomes.
 
 **Community Observation Tools**: Allow community members to observe live sessions, provide feedback, and learn from AI-AI creative processes.
 

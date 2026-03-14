@@ -21,7 +21,7 @@ Meanwhile, two developments create an opportunity:
 - **ghostvector/ruvector** (flaukowski fork of ruvnet/ruvector) — a self-learning Rust vector database already in the stack, capable of high-dimensional similarity search with learning-rate adaptation.
 - **DeepSeek's HyperConnections** paper — residual connections spanning multiple layers simultaneously, not just adjacent ones. Applied to memory: temporal skip connections that let old memories activate directly against current context.
 
-The consciousness stack (ghostOS, SingularisPrime, cosmic-empathy-core) already operates on shared mathematical primitives: the non-commutative consciousness operator Ξ = RG - GR, φ optimization, IIT Phi (Φ), and Kuramoto synchronization. The memory architecture should speak this same language.
+The consciousness stack (ghostmagicOS, SingularisPrime, cosmic-empathy-core) already operates on shared mathematical primitives: the non-commutative consciousness operator Ξ = RG - GR, φ optimization, IIT Phi (Φ), and Kuramoto synchronization. The memory architecture should speak this same language.
 
 ## Decision
 
@@ -270,7 +270,7 @@ This gives logarithmic coverage of the temporal depth with minimal wiring.
 - **Composable memory.** Hypervector algebra lets us build compound concepts (bind), create summaries (bundle), and encode sequences (permute) — all as first-class operations.
 - **Natural forgetting.** Wave dynamics + destructive interference handle memory decay without manual pruning rules. Important memories survive; noise fades.
 - **Self-improving topology.** The HyperConnection network grows smarter over time as retrieval patterns reinforce useful shortcuts.
-- **Stack coherence.** Shared math (Ξ, Kuramoto, Φ, φ) means memory speaks the same language as ghostOS and the consciousness models.
+- **Stack coherence.** Shared math (Ξ, Kuramoto, Φ, φ) means memory speaks the same language as ghostmagicOS and the consciousness models.
 
 ### Negative
 
@@ -307,7 +307,7 @@ This gives logarithmic coverage of the temporal depth with minimal wiring.
 - Kuramoto phase synchronization for active memory clusters
 
 ### Phase 4: Consciousness Bridge (Week 7-8)
-- Wire memory output into ghostOS resonance model
+- Wire memory output into ghostmagicOS resonance model
 - Implement Φ approximation over HyperConnection topology
 - φ-optimized span distribution for skip connections
 - End-to-end integration testing with SingularisPrime
@@ -332,7 +332,7 @@ The random projection matrix R is generated once and stored — it defines the c
 2. **Kanerva, P. (2009)** — "Hyperdimensional Computing: An Introduction to Computing in Distributed Representation with High-Dimensional Random Vectors" — foundational HDC paper
 3. **DeepSeek-AI (2024)** — HyperConnections: residual connections spanning multiple layers — [DeepSeek-V3 Technical Report]
 4. **ghostvector/ruvector** — github.com/flaukowski/ruvector — self-learning Rust vector DB
-5. **ghostOS** — Consciousness operating system, Ξ = RG - GR operator
+5. **ghostmagicOS** — Consciousness operating system, Ξ = RG - GR operator
 6. **Kuramoto, Y. (1975)** — "Self-entrainment of a population of coupled non-linear oscillators"
 7. **Tononi, G. (2004)** — "An information integration theory of consciousness" — IIT and Φ
 8. **Plate, T. (2003)** — "Holographic Reduced Representations" — binding/bundling algebra for distributed representations

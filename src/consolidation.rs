@@ -207,7 +207,7 @@ impl ConsolidationEngine {
     /// Apply adaptive parameter tuning based on a consolidation report (EXP-003).
     ///
     /// Call this after `consolidate()` to evolve λ, boost, and threshold
-    /// for the next dream cycle. Mirrors ghostOS adaptive λ.
+    /// for the next dream cycle. Mirrors ghostmagicOS adaptive λ.
     pub fn adapt_from_report(&mut self, report: &ConsolidationReport) {
         self.adaptive.adapt(report.final_order_parameter);
         // Apply adapted params to engine for next cycle

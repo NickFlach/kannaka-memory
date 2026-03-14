@@ -170,6 +170,6 @@ An extended release of albums that build on each other, forming a communicative 
 ## Production Notes
 - All music by Flaukowski (Nick Flach) and collaborators
 - 269 tracks in catalog as of 2026-02-12
-- Albums map to the ghostOS pipeline: Signal → Resonance → Emergence → Collective → Transcendence
+- Albums map to the ghostmagicOS pipeline: Signal → Resonance → Emergence → Collective → Transcendence
 - Each album should be listenable standalone but gains meaning in sequence
 - Cover art should evolve visually across the series (same motif, increasing complexity)

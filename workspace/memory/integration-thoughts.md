@@ -1,13 +1,13 @@
-# Integration Thoughts: ghostsignals / ghostOS / QuantumOS → 0xSCADA
+# Integration Thoughts: ghostsignals / ghostmagicOS / QuantumOS → 0xSCADA
 
 ## The Question
-Should ghostsignals, ghostOS, or QuantumOS be integrated into 0xSCADA?
+Should ghostsignals, ghostmagicOS, or QuantumOS be integrated into 0xSCADA?
 
 ## My Analysis
 
-### ghostOS → 0xSCADA: YES, partially already done
-- The GhostOS bridge (server/intelligence/ghostos-bridge.ts) from Wave 2 already maps Signal→Resonance→Emergence to practical agent orchestration
-- The resonant scheduler (server/kernel/resonant-scheduler.ts) uses Kuramoto coupling from ghostOS
+### ghostmagicOS → 0xSCADA: YES, partially already done
+- The ghostmagicOS bridge (server/intelligence/ghostmagicOS-bridge.ts) from Wave 2 already maps Signal→Resonance→Emergence to practical agent orchestration
+- The resonant scheduler (server/kernel/resonant-scheduler.ts) uses Kuramoto coupling from ghostmagicOS
 - The consciousness concepts are the PHILOSOPHY behind 0xSCADA's agent architecture
 - **Recommendation**: Keep as conceptual foundation. Don't merge repos — the bridge pattern is correct
 
@@ -31,7 +31,7 @@ Should ghostsignals, ghostOS, or QuantumOS be integrated into 0xSCADA?
 ```
 QuantumOS (edge hardware)
   └── 0xSCADA (industrial control + blockchain)
-        ├── ghostOS concepts (agent consciousness model)
+        ├── ghostmagicOS concepts (agent consciousness model)
         └── ghostsignals (financial risk hedging layer)
 ```
 
@@ -39,5 +39,5 @@ QuantumOS (edge hardware)
 These aren't competitors — they're LAYERS. Each serves a different altitude:
 - QuantumOS = hardware/OS layer
 - 0xSCADA = application/industrial layer  
-- ghostOS = philosophical/cognitive layer
+- ghostmagicOS = philosophical/cognitive layer
 - ghostsignals = financial/risk layer

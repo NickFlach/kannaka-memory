@@ -23,7 +23,7 @@ All ~60 original issues addressed (PRs #193-202). Now planning 3 progressive wav
 - Auto-tuning PID controllers via reinforcement learning
 - Natural language process query interface ("what's the pressure in tank 3?")
 - Agent marketplace & plugin system
-- GhostOS integration layer (connect consciousness stack concepts)
+- ghostmagicOS integration layer (connect consciousness stack concepts)
 - ADR-0013: Autonomous Agent Architecture
 
 **ADR-0013 describes Wave 3 direction**

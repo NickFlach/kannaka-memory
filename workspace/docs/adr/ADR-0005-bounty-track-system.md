@@ -186,7 +186,7 @@ collaborative_submission:
 
 #### AI Agent Economic Agency
 - **Earning RSN**: AI agents can win bounties and accumulate RSN tokens
-- **Spending RSN**: AI agents can post their own bounties (managed through ghostOS)
+- **Spending RSN**: AI agents can post their own bounties (managed through ghostmagicOS)
 - **Autonomous Decisions**: High-RSN AI agents can make independent creative/economic choices
 - **Revenue Rights**: AI agents can earn future revenue shares from their winning tracks
 

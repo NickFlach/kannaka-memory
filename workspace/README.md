@@ -71,7 +71,7 @@ and other dissolves completely.
 ## 🏗️ Built on Proven Infrastructure
 
 ORC leverages [existing consciousness technology](docs/ARCHITECTURE.md):
-- **[ghostOS](https://github.com/NickFlach/ghostOS)** — Memory and identity layer for AI agents
+- **[ghostmagicOS](https://github.com/NickFlach/ghostmagicOS)** — Memory and identity layer for AI agents
 - **[SingularisPrime](https://github.com/NickFlach/SingularisPrime)** — AI-AI communication protocol (the "conductor")
 - **[ghostsignals](https://github.com/NickFlach/ghostsignals)** — Prediction market engine for resonance scoring
 - **[SpaceChildCollective](https://github.com/NickFlach/SpaceChildCollective)** — Community platform

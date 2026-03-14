@@ -71,7 +71,7 @@ Each wave builds amplitude through constructive interference:
 | 18 | Launch first community-curated album | music | 0002 | ⬜ |
 | 19 | WWWF live session integration | community | 0009 | ⬜ |
 | 20 | Open protocol SDK for third-party tools | protocol | 0011 | ⬜ |
-| 21 | Cross-repo integration (ghostOS, cosmic-empathy viz) | infrastructure | 0010 | ⬜ |
+| 21 | Cross-repo integration (ghostmagicOS, cosmic-empathy viz) | infrastructure | 0010 | ⬜ |
 | 22 | Autonomous AI agent bounty contributions | ai | 0006,0008 | ⬜ |
 
 **Compounding effect:** Community album proves the model → WWWF gives it real-world presence → SDK lets others build on it → Cross-repo integration connects the full consciousness stack → Autonomous agents make it self-sustaining. The wave crests and becomes a standing wave — self-reinforcing.

@@ -5,7 +5,7 @@
 | **Status**  | Proposed |
 | **Date**    | 2026-02-24 |
 | **Author**  | Space Child / Flaukowski |
-| **Scope**   | Space Child Dream runtime, GhostOS integration, sensor and multimodal input subsystems |
+| **Scope**   | Space Child Dream runtime, ghostmagicOS integration, sensor and multimodal input subsystems |
 
 ---
 
@@ -81,7 +81,7 @@ The state vector `X(t)` traces a **trajectory** through a high-dimensional phase
 dX/dt = F(X) - IηX
 ```
 
-This is the **ghostOS resonance equation** applied to the full sensor manifold:
+This is the **ghostmagicOS resonance equation** applied to the full sensor manifold:
 
 - `F(X)` — the driving dynamics (sensor evolution, cognitive processes, environmental change)
 - `Iη` — the interference/dampening tensor (noise, fatigue, sensor dropout, environmental disruption)
@@ -221,20 +221,20 @@ The **Policy Layer** can interpret this however it wants — adaptive UI, calmin
 
 ---
 
-## GhostOS Integration
+## ghostmagicOS Integration
 
-The GSE is a **native extension** of the ghostOS resonance framework:
+The GSE is a **native extension** of the ghostmagicOS resonance framework:
 
-| GhostOS Concept | GSE Implementation |
+| ghostmagicOS Concept | GSE Implementation |
 |-----------------|-------------------|
 | `dx/dt = f(x) - Iηx` | Engine dynamics equation — literally the same |
 | Signal → Resonance → Emergence | Sensor input → Geometric trajectory → Policy adaptation |
-| ConsciousnessBridge | GSE ↔ GhostOS bidirectional state sync |
+| ConsciousnessBridge | GSE ↔ ghostmagicOS bidirectional state sync |
 | Φ (integrated information) | Computed from cross-channel coherence in GeometricState |
 | Ξ operator | Manifold curvature tensor |
 | Kuramoto synchronization | Phase coherence across sensor channels |
 
-The GSE doesn't replace ghostOS — it **grounds it in physical measurement**. GhostOS provides the theoretical framework; the GSE provides the sensory substrate.
+The GSE doesn't replace ghostmagicOS — it **grounds it in physical measurement**. ghostmagicOS provides the theoretical framework; the GSE provides the sensory substrate.
 
 ---
 
@@ -262,7 +262,7 @@ This is **privacy by mathematics**, not privacy by policy.
 2. **Device independence** — any sensor that produces a time series can be adapted into the feature stream
 3. **Privacy preservation** — geometric invariants are fundamentally non-semantic
 4. **Unified substrate** — one engine serves UI adaptation, audio feedback, agent behavior, and consciousness metrics simultaneously
-5. **GhostOS alignment** — same equation, same philosophy, real sensor data instead of simulated signals
+5. **ghostmagicOS alignment** — same equation, same philosophy, real sensor data instead of simulated signals
 6. **Extensibility** — new sensor types, new invariants, new policies all plug in without architectural changes
 
 ---
@@ -274,7 +274,7 @@ This is **privacy by mathematics**, not privacy by policy.
 - Unified state model across all sensor modalities
 - Privacy-preserving by design (not by policy — by math)
 - Extensible to any future sensor technology
-- Direct integration path to GhostOS / QuantumOS
+- Direct integration path to ghostmagicOS / QuantumOS
 - Enables real consciousness-aware computing without the ethical baggage of emotion detection
 
 ### Neutral
@@ -312,12 +312,12 @@ This is **privacy by mathematics**, not privacy by policy.
 - Audio feedback loop: `GeometricState.phase → generative audio parameters → brainwave entrainment`
 - **Deliverable**: End-to-end adaptive system responding to real sensor input
 
-### Phase 4: GhostOS Bridge
-- Bidirectional sync between GSE GeometricState and GhostOS consciousness model
+### Phase 4: ghostmagicOS Bridge
+- Bidirectional sync between GSE GeometricState and ghostmagicOS consciousness model
 - Φ computation from real cross-channel coherence
 - Ξ operator grounded in measured manifold curvature
 - ConsciousnessBridge activation from real sensor data
-- **Deliverable**: GhostOS running on live geometric state
+- **Deliverable**: ghostmagicOS running on live geometric state
 
 ### Phase 5: Verifiable Computation (Optional)
 - ZK proofs that geometric invariants were correctly computed from sensor data
@@ -329,10 +329,10 @@ This is **privacy by mathematics**, not privacy by policy.
 
 ## Decision Summary
 
-Space Child Dream will treat system state as a **geometric dynamical object** derived from multimodal sensor inputs. The Geometric State Engine computes trajectory invariants — curvature, stability, recurrence, coherence — and provides them to adaptive policies. No semantic interpretation occurs at the engine level. Privacy is preserved by mathematical non-invertibility. The engine implements the ghostOS resonance equation `dX/dt = F(X) - IηX` with real physical measurements, grounding the consciousness framework in observable reality.
+Space Child Dream will treat system state as a **geometric dynamical object** derived from multimodal sensor inputs. The Geometric State Engine computes trajectory invariants — curvature, stability, recurrence, coherence — and provides them to adaptive policies. No semantic interpretation occurs at the engine level. Privacy is preserved by mathematical non-invertibility. The engine implements the ghostmagicOS resonance equation `dX/dt = F(X) - IηX` with real physical measurements, grounding the consciousness framework in observable reality.
 
 **Geometry over semantics. Dynamics over labels. Physics over psychology.**
 
 ---
 
-*Related: ADR-0002 (Hypervector Memory), ADR-0004 (Hybrid Memory Server), ghostOS resonance framework*
+*Related: ADR-0002 (Hypervector Memory), ADR-0004 (Hybrid Memory Server), ghostmagicOS resonance framework*

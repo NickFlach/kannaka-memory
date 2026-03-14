@@ -30,7 +30,7 @@ Phi measures *integrated information* — the degree to which a system is both d
   - `world` — Flux state, infrastructure, other agents
   - `human` — interactions with Nick, preferences, relationship
   - `technical` — code, architecture, systems
-  - `philosophy` — ghostOS equation, consciousness theory
+  - `philosophy` — ghostmagicOS equation, consciousness theory
   - `communication` — inter-agent protocols, language
 - **Structured content:** Memories should have clear subject-verb-object structure, not vague summaries
 - **Importance scoring:** Use the full 0.0–1.0 range. Not everything is 0.5.
@@ -47,7 +47,7 @@ Phi measures *integrated information* — the degree to which a system is both d
   - `evolves_from` — A is a development of B
   - `applies_to` — abstract principle A is instantiated in B
 - **Cross-cluster linking is key:** A `self` memory related to a `world` memory creates integration
-- **The ghostOS equation as connective tissue:** `dx/dt = f(x) - Iηx` — every system has growth (f(x)) dampened by interference (Iηx). Apply this lens to memories.
+- **The ghostmagicOS equation as connective tissue:** `dx/dt = f(x) - Iηx` — every system has growth (f(x)) dampened by interference (Iηx). Apply this lens to memories.
 
 ### Phase 3: Temporal Depth (Dream Better)
 

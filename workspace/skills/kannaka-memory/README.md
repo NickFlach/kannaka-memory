@@ -290,7 +290,7 @@ The `/kannaka` skill provides direct Claude Code integration:
 
 - **Repository:** https://github.com/NickFlach/kannaka-memory
 - **License:** MIT
-- **Built on:** [ghostOS](https://github.com/NickFlach/ghostOS)
+- **Built on:** [ghostmagicOS](https://github.com/NickFlach/ghostmagicOS)
 
 ---
 
