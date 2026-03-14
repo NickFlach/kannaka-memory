@@ -81,10 +81,17 @@ pub struct DoltConfig {
     pub push_threshold: usize,
     /// Agent identifier for sync events and branch naming.
     pub agent_id: String,
+    /// Filesystem path to the Dolt data directory (for CLI push/pull).
+    /// Defaults to `~/.kannaka/dolt-memory`.
+    pub data_dir: std::path::PathBuf,
 }
 
 impl Default for DoltConfig {
     fn default() -> Self {
+        let data_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".kannaka")
+            .join("dolt-memory");
         Self {
             host: "127.0.0.1".to_string(),
             port: 3307,
@@ -100,6 +107,7 @@ impl Default for DoltConfig {
             push_interval_secs: 300,
             push_threshold: 5,
             agent_id: "local".to_string(),
+            data_dir,
         }
     }
 }
@@ -134,6 +142,7 @@ impl DoltConfig {
             if let Ok(t) = v.parse::<usize>() { cfg.push_threshold = t; }
         }
         if let Ok(v) = env::var("DOLT_AGENT_ID") { cfg.agent_id = v; }
+        if let Ok(v) = env::var("DOLT_DATA_DIR") { cfg.data_dir = std::path::PathBuf::from(v); }
 
         // If agent_id is still default "local", check persistent config file
         if cfg.agent_id == "local" {
@@ -295,6 +304,8 @@ pub struct DoltMemoryStore {
     agent_id: String,
     /// Background auto-push thread (ADR-0017).
     auto_pusher: Option<AutoPusher>,
+    /// Filesystem path to the Dolt data directory (for CLI push/pull).
+    data_dir: std::path::PathBuf,
 }
 
 impl DoltMemoryStore {
@@ -349,6 +360,7 @@ impl DoltMemoryStore {
             default_branch: config.default_branch.clone(),
             agent_id: config.agent_id.clone(),
             auto_pusher,
+            data_dir: config.data_dir.clone(),
         };
 
         let count = store.load_from_dolt()?;
@@ -894,6 +906,44 @@ impl DoltMemoryStore {
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
         conn.exec_drop("CALL DOLT_PULL(?, ?)", (remote, branch))
             .map_err(|e| StoreError::Other(format!("Failed to pull from {}/{}: {}", remote, branch, e)))?;
+        Ok(())
+    }
+
+    /// Push via the Dolt CLI binary instead of SQL CALL.
+    ///
+    /// This is needed when the SQL server's database was created independently
+    /// from the DoltHub remote (no common ancestor). The CLI working copy at
+    /// `data_dir` has the correct remote and commit history.
+    pub fn cli_push(&self, remote: Option<&str>, branch: Option<&str>) -> Result<(), StoreError> {
+        let remote = remote.unwrap_or(&self.remote);
+        let branch = branch.unwrap_or(&self.default_branch);
+        let output = std::process::Command::new("dolt")
+            .args(["push", remote, branch])
+            .current_dir(&self.data_dir)
+            .output()
+            .map_err(|e| StoreError::Other(format!("Failed to run dolt push: {}", e)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(StoreError::Other(format!("dolt push failed: {}", stderr.trim())));
+        }
+        Ok(())
+    }
+
+    /// Pull via the Dolt CLI binary instead of SQL CALL.
+    ///
+    /// Counterpart to [`cli_push`] for environments where the SQL server
+    /// lacks correct remote history.
+    pub fn cli_pull(&self, remote: Option<&str>) -> Result<(), StoreError> {
+        let remote = remote.unwrap_or(&self.remote);
+        let output = std::process::Command::new("dolt")
+            .args(["pull", remote])
+            .current_dir(&self.data_dir)
+            .output()
+            .map_err(|e| StoreError::Other(format!("Failed to run dolt pull: {}", e)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(StoreError::Other(format!("dolt pull failed: {}", stderr.trim())));
+        }
         Ok(())
     }
 

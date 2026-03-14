@@ -1047,9 +1047,10 @@ fn main() {
                                 eprintln!("Warning: commit failed (may be clean): {}", e);
                             }
                             let remote_name = remote.as_deref().unwrap_or(&dolt_config.remote);
-                            println!("Pushing to {}...", remote_name);
-                            match store.push(remote.as_deref(), None) {
-                                Ok(()) => println!("Pushed swarm data to {}", remote_name),
+                            let branch = format!("kannaka/working");
+                            println!("Pushing to {}/{}...", remote_name, branch);
+                            match store.cli_push(remote.as_deref(), Some(&branch)) {
+                                Ok(()) => println!("Pushed swarm data to {}/{}", remote_name, branch),
                                 Err(e) => { eprintln!("Error pushing: {}", e); process::exit(1); }
                             }
                         }
@@ -1069,7 +1070,7 @@ fn main() {
                         Ok(store) => {
                             let remote_name = remote.as_deref().unwrap_or(&dolt_config.remote);
                             println!("Pulling from {}...", remote_name);
-                            match store.pull(remote.as_deref(), None) {
+                            match store.cli_pull(remote.as_deref()) {
                                 Ok(()) => {
                                     let phases = store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)).unwrap_or_default();
                                     println!("Pulled from {}. Found {} agent phase(s):", remote_name, phases.len());
