@@ -20,7 +20,7 @@ use kannaka_memory::bridge::ConsciousnessBridge;
 use kannaka_memory::memory::HyperMemory;
 use kannaka_memory::store::{InMemoryStore, MemoryEngine};
 use kannaka_memory::wave::cosine_similarity;
-use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost};
+use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_repulsive_force};
 
 // ============================================================================
 // EXPERIMENT PARAMETERS — THIS IS WHAT THE AGENT MODIFIES
@@ -53,6 +53,7 @@ fn experiment_params() -> Params {
         consciousness_phi_target: 0.2,
         hallucination_amplitude: 0.3,
         phase_spread: 0.2,
+        chiral_perturbation: 0.3,
     }
 }
 
@@ -79,6 +80,7 @@ struct Params {
     consciousness_phi_target: f32,
     hallucination_amplitude: f32,
     phase_spread: f32,
+    chiral_perturbation: f32,
 }
 
 // ============================================================================
@@ -294,20 +296,51 @@ fn eval_xi_diversity(engine: &MemoryEngine) -> f32 {
     // Sample pairwise Xi diversity boosts
     let mut total_boost = 0.0f32;
     let mut count = 0;
+    let mut high_sim_count = 0;
+    let mut high_repulsion_count = 0;
+    let mut boost_count = 0;
+    let mut max_sim_with_repulsion = 0.0f32;
+    let mut max_repulsion_with_sim = 0.0f32;
+    
     for i in 0..active.len().min(15) {
         for j in (i+1)..active.len().min(15) {
             let xi_a = compute_xi_signature(&active[i].vector);
             let xi_b = compute_xi_signature(&active[j].vector);
             let base_sim = cosine_similarity(&active[i].vector, &active[j].vector);
+            let repulsion = xi_repulsive_force(&xi_a, &xi_b);
             let boosted = xi_diversity_boost(base_sim, &xi_a, &xi_b);
+            
+            if base_sim > 0.3 { high_sim_count += 1; }
+            if repulsion > 0.15 { 
+                high_repulsion_count += 1;
+                if base_sim > max_sim_with_repulsion {
+                    max_sim_with_repulsion = base_sim;
+                }
+            }
+            if base_sim > 0.3 && repulsion > max_repulsion_with_sim {
+                max_repulsion_with_sim = repulsion;
+            }
+            if boosted > base_sim { boost_count += 1; }
+            
             // If Xi changes the ranking, diversity is working
             total_boost += (boosted - base_sim).abs();
             count += 1;
         }
     }
+    
+    println!("DEBUG Xi thresholds: max_sim_with_repulsion={:.3}, max_repulsion_with_sim={:.3}", 
+             max_sim_with_repulsion, max_repulsion_with_sim);
+    
+    println!("DEBUG Xi details: high_sim_count={}, high_repulsion_count={}, boost_count={}", 
+             high_sim_count, high_repulsion_count, boost_count);
 
     if count == 0 { return 0.0; }
     let avg_boost = total_boost / count as f32;
+    
+    // DEBUG: Print Xi diversity details
+    println!("DEBUG Xi diversity: active_memories={}, pairwise_comparisons={}, total_boost={:.6}, avg_boost={:.6}", 
+             active.len(), count, total_boost, avg_boost);
+    
     // Normalize: 0.05+ average boost = good diversity
     (avg_boost / 0.05).min(1.0)
 }
@@ -430,6 +463,7 @@ fn run_experiment(params: &Params) {
             coupling_threshold: params.kuramoto_threshold,
         },
         adaptive: Default::default(),
+        chiral_perturbation: params.chiral_perturbation,
     };
 
     // Run multiple consolidation cycles
@@ -556,6 +590,7 @@ fn run_experiment_l3(params: &Params) {
             coupling_threshold: params.kuramoto_threshold,
         },
         adaptive: Default::default(),
+        chiral_perturbation: params.chiral_perturbation,
     };
 
     let start = Instant::now();

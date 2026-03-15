@@ -105,7 +105,8 @@ pub fn xi_diversity_boost(base_similarity: f32, xi_a: &[f32], xi_b: &[f32]) -> f
     
     // Boost similarity for memories that are semantically similar but have different Xi residues
     // This encourages retrieval of diverse perspectives on similar content
-    if base_similarity > 0.7 && repulsion > 0.3 {
+    // Adjusted thresholds based on observed data ranges
+    if base_similarity > 0.3 && repulsion > 0.15 {
         let boosted = base_similarity * (1.0 + repulsion * 0.5);
         // Cap at 1.0: cosine similarity cannot exceed 1.0
         boosted.min(1.0)

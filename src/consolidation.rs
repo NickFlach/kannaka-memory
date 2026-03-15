@@ -133,6 +133,8 @@ pub struct ConsolidationEngine {
     pub kuramoto: KuramotoSync,
     /// Adaptive parameters that evolve between dream cycles (EXP-003)
     pub adaptive: AdaptiveParams,
+    /// Chiral perturbation strength (0.0 = disabled)
+    pub chiral_perturbation: f32,
 }
 
 impl Default for ConsolidationEngine {
@@ -145,6 +147,7 @@ impl Default for ConsolidationEngine {
             destructive_penalty: 0.5,
             kuramoto: KuramotoSync::default(),
             adaptive: AdaptiveParams::default(),
+            chiral_perturbation: 0.0,
         }
     }
 }
@@ -195,6 +198,12 @@ impl ConsolidationEngine {
 
         // Stage 8: HALLUCINATE — generate novel memories from distant clusters
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
+
+        // Stage 9: CHIRAL_PERTURBATION — break lock-step synchronization with asymmetric phase offsets
+        if self.chiral_perturbation > 0.0 {
+            // println!("DEBUG: Applying chiral perturbation with strength {}", self.chiral_perturbation);
+            self.stage_chiral_perturbation(engine, &working_set);
+        }
 
         // EXP-003: Compute final order parameter and record it
         let final_r = self.compute_global_order_parameter(engine, &working_set);
@@ -1238,6 +1247,183 @@ impl ConsolidationEngine {
         }
         
         count
+    }
+
+    /// Stage 9: Apply chiral perturbation to break over-synchronization.
+    ///
+    /// When order parameter R is high (over-synchronized), applies asymmetric phase
+    /// offsets AND small vector modifications to memories based on their cluster membership. 
+    /// Left-cluster memories get +η·sin(2·phase), right-cluster get -η·sin(2·phase), 
+    /// matching queen.rs chirality math. Vector perturbations create Xi diversity.
+    fn stage_chiral_perturbation(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) {
+        if self.chiral_perturbation == 0.0 {
+            return;
+        }
+
+        // Compute current order parameter to scale perturbation
+        let order_parameter = self.compute_global_order_parameter(engine, working_set);
+        
+        // Apply perturbation regardless of order parameter to maximize Xi diversity effect
+        let eta = self.chiral_perturbation;
+
+        // Get clusters for handedness assignment
+        let sync = KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+
+        if clusters.len() < 2 {
+            // Fallback: alternate handedness by memory ID for deterministic behavior
+            for &memory_id in working_set {
+                if let Ok(Some(mem)) = engine.store.get_mut(&memory_id) {
+                    let handedness = if memory_id.as_u128() % 2 == 0 { 1.0 } else { -1.0 };
+                    
+                    // Phase perturbation
+                    let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
+                    mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
+                    if mem.phase < 0.0 {
+                        mem.phase += 2.0 * PI;
+                    }
+                    
+                    // Vector perturbation to create Xi diversity
+                    self.apply_chiral_vector_perturbation(&mut mem.vector, handedness, eta);
+                }
+            }
+            return;
+        }
+
+        // Cluster-based handedness: assign chirality based on cluster index
+        use std::collections::HashMap;
+        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, cluster_idx);
+            }
+        }
+
+        // Apply targeted chiral perturbation for similar memory pairs
+        self.apply_targeted_chiral_perturbation(engine, working_set, &id_to_cluster, eta);
+        
+        // Also apply cluster-based perturbation for remaining memories
+        for &memory_id in working_set {
+            if let Ok(Some(mem)) = engine.store.get_mut(&memory_id) {
+                if let Some(&cluster_idx) = id_to_cluster.get(&memory_id) {
+                    // Alternate handedness by cluster: even = left (+), odd = right (-)
+                    let handedness = if cluster_idx % 2 == 0 { 1.0 } else { -1.0 };
+                    
+                    // Phase perturbation: ±η·sin(2·phase)
+                    let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
+                    mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
+                    if mem.phase < 0.0 {
+                        mem.phase += 2.0 * PI;
+                    }
+                    
+                    // Vector perturbation to create Xi diversity
+                    self.apply_chiral_vector_perturbation(&mut mem.vector, handedness, eta);
+                } else {
+                    // Memory not in any cluster: apply weak neutral perturbation
+                    let neutral_perturbation = eta * 0.1 * (3.0 * mem.phase).cos();
+                    mem.phase = (mem.phase + neutral_perturbation) % (2.0 * PI);
+                    if mem.phase < 0.0 {
+                        mem.phase += 2.0 * PI;
+                    }
+                    
+                    // Weak vector perturbation for unclustered memories
+                    self.apply_chiral_vector_perturbation(&mut mem.vector, 0.0, eta * 0.1);
+                }
+            }
+        }
+    }
+
+    /// Apply chiral vector perturbation to create Xi signature diversity.
+    ///
+    /// For left-handed (handedness > 0): apply slight rotation-like transform
+    /// For right-handed (handedness < 0): apply slight scaling-like transform
+    /// This creates different Xi signatures while preserving semantic structure.
+    fn apply_chiral_vector_perturbation(&self, vector: &mut Vec<f32>, handedness: f32, eta: f32) {
+        use crate::xi_operator::{apply_rotation, apply_golden_scaling};
+        
+        // Balanced perturbation strength to create Xi diversity while preserving similarity
+        let vector_eta = eta * 0.3;
+        
+        if handedness > 0.0 {
+            // Left-handed: apply small rotation-like perturbation
+            let rotation_component = apply_rotation(vector);
+            for i in 0..vector.len() {
+                vector[i] += vector_eta * rotation_component[i];
+            }
+        } else if handedness < 0.0 {
+            // Right-handed: apply small scaling-like perturbation  
+            let scaling_component = apply_golden_scaling(vector);
+            for i in 0..vector.len() {
+                vector[i] += vector_eta * (scaling_component[i] - vector[i]);
+            }
+        } else {
+            // Neutral: apply tiny random-like perturbation based on vector content
+            for i in 0..vector.len() {
+                let pseudo_random = (vector[i] * 1000.0).sin();
+                vector[i] += vector_eta * pseudo_random * 0.1;
+            }
+        }
+        
+        // Renormalize to preserve vector magnitude roughly
+        normalize(vector);
+    }
+
+    /// Apply targeted chiral perturbation to semantically similar memory pairs.
+    /// 
+    /// Finds pairs of memories with high cosine similarity (>0.6) and applies
+    /// opposite chiral perturbations to create Xi signature diversity while
+    /// maintaining semantic similarity.
+    fn apply_targeted_chiral_perturbation(
+        &self,
+        engine: &mut MemoryEngine,
+        working_set: &[Uuid],
+        id_to_cluster: &std::collections::HashMap<Uuid, usize>,
+        eta: f32,
+    ) {
+        // Find similar memory pairs
+        let mut similar_pairs = Vec::new();
+        
+        for i in 0..working_set.len() {
+            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(n²) blowup
+                let id_a = working_set[i];
+                let id_b = working_set[j];
+                
+                let similarity = {
+                    let mem_a = match engine.store.get(&id_a).ok().flatten() {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    let mem_b = match engine.store.get(&id_b).ok().flatten() {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    cosine_similarity(&mem_a.vector, &mem_b.vector)
+                };
+                
+                // Target pairs with moderate-to-high similarity
+                if similarity > 0.6 {
+                    similar_pairs.push((id_a, id_b, similarity));
+                }
+            }
+        }
+        
+        // Sort by similarity and take top pairs
+        similar_pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        similar_pairs.truncate(20); // Limit to top 20 most similar pairs
+        
+        // println!("DEBUG: Found {} similar pairs for targeted chiral perturbation", similar_pairs.len());
+        
+        // Apply opposite chirality to each pair
+        for (id_a, id_b, similarity) in similar_pairs {
+            // Apply left chirality to first memory
+            if let Ok(Some(mem)) = engine.store.get_mut(&id_a) {
+                self.apply_chiral_vector_perturbation(&mut mem.vector, 1.0, eta * similarity);
+            }
+            // Apply right chirality to second memory
+            if let Ok(Some(mem)) = engine.store.get_mut(&id_b) {
+                self.apply_chiral_vector_perturbation(&mut mem.vector, -1.0, eta * similarity);
+            }
+        }
     }
 }
 
