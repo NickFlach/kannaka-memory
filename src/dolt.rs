@@ -694,7 +694,7 @@ impl DoltMemoryStore {
         for link in &memory.connections {
             let link_type = format!("span_{}", link.span);
             conn.exec_drop(
-                "INSERT INTO skip_links (source_id, target_id, weight, link_type, created_at) VALUES (?, ?, ?, ?, NOW())",
+                "INSERT INTO skip_links (source_id, target_id, weight, link_type, created_at) VALUES (?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE weight = VALUES(weight), link_type = VALUES(link_type)",
                 (&memory.id.to_string(), &link.target_id.to_string(), link.strength, &link_type)
             ).map_err(|e| StoreError::Other(format!("Failed to insert skip_link: {}", e)))?;
         }
