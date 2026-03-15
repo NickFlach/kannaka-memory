@@ -69,6 +69,8 @@ fn usage() {
     eprintln!("  migrate-embeddings        Regenerate missing vector embeddings via Ollama");
     eprintln!("  export-json               Export all memories as JSON");
     eprintln!("  announce-status           Publish agent status to Flux");
+    eprintln!("  invariant [TOLERANCE]     Show δ-invariant memory clusters (default tolerance: 0.1)");
+    eprintln!("  cmf                       Detect Conservative Memory Fields");
     #[cfg(feature = "audio")]
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
     #[cfg(feature = "glyph")]
@@ -1229,6 +1231,88 @@ fn main() {
 
         "voice" => {
             voice_command(&args[command_start..], &mut sys);
+        }
+
+        "invariant" => {
+            let tolerance = if args.len() > command_start + 1 {
+                args[command_start + 1].parse().unwrap_or(0.1)
+            } else {
+                0.1
+            };
+            
+            match sys.invariant_clusters(tolerance) {
+                Ok(clusters) => {
+                    println!("δ-Invariant Memory Clusters (tolerance: {}):", tolerance);
+                    println!("═════════════════════════════════════════");
+                    
+                    for (i, cluster) in clusters.iter().enumerate() {
+                        println!("Cluster {}: δ={:.3}, coherence={:.3}, {} memories", 
+                                 i + 1, cluster.representative_delta, cluster.coherence, cluster.memory_ids.len());
+                        
+                        for &memory_id in &cluster.memory_ids {
+                            if let Ok(Some(memory)) = sys.get_memory(&memory_id) {
+                                let preview = if memory.content.len() > 60 {
+                                    format!("{}...", &memory.content[..60])
+                                } else {
+                                    memory.content.clone()
+                                };
+                                println!("  {} | {}", memory_id, preview);
+                            }
+                        }
+                        println!();
+                    }
+                    
+                    if clusters.is_empty() {
+                        println!("No δ-clusters found. Try a larger tolerance or ensure you have enough memories.");
+                    }
+                }
+                Err(e) => eprintln!("Error computing invariant clusters: {}", e),
+            }
+        }
+
+        "cmf" => {
+            match sys.detect_cmfs() {
+                Ok(cmfs) => {
+                    println!("Conservative Memory Fields Detected:");
+                    println!("═══════════════════════════════════");
+                    
+                    if cmfs.is_empty() {
+                        println!("No Conservative Memory Fields detected.");
+                        println!("CMFs require at least 3 memories per cluster and path-independent structure.");
+                    } else {
+                        for (i, cmf) in cmfs.iter().enumerate() {
+                            println!("CMF {} ({}): explanatory_power={:.2}, basis_vectors={}, path_deviation={:.3}",
+                                     i + 1, cmf.id, cmf.explanatory_power, 
+                                     cmf.basis_vectors.len(), cmf.path_constraints.max_deviation);
+                            
+                            println!("  Trajectory: step_size={:.3}, curvature={:.3}",
+                                     cmf.trajectory_params.step_size,
+                                     cmf.trajectory_params.curvature.get(0).unwrap_or(&0.0));
+                            
+                            println!("  Path independence: {} verified paths",
+                                     cmf.path_constraints.verified_paths.len());
+                            
+                            // Test a few memories against this CMF
+                            if let Ok(all_memories) = sys.all_memories() {
+                                println!("  Sample memberships:");
+                                for (j, memory) in all_memories.iter().take(5).enumerate() {
+                                    let membership = kannaka_memory::cmf_membership(memory, cmf);
+                                    if membership.fitness > 0.1 {
+                                        let preview = if memory.content.len() > 40 {
+                                            format!("{}...", &memory.content[..40])
+                                        } else {
+                                            memory.content.clone()
+                                        };
+                                        println!("    {} | fitness={:.2} | {}", memory.id, membership.fitness, preview);
+                                    }
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Error detecting CMFs: {}", e),
+            }
         }
 
         _ => usage(),

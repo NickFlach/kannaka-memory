@@ -49,6 +49,8 @@ pub mod nats;
 pub mod collective;
 pub mod paradox;
 pub mod queen;
+pub mod invariant;
+pub mod cmf;
 
 // Re-export key types
 pub use codebook::Codebook;
@@ -85,6 +87,14 @@ pub use paradox::{
 
 pub use dolt::DoltMemoryStore;
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, Handedness, SwarmAgent};
+pub use invariant::{
+    InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
+    compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance
+};
+pub use cmf::{
+    ConservativeMemoryField, TrajectoryParams, PathConstraints, CMFMembership,
+    detect_cmf, cmf_membership, generate_trajectory
+};
 
 #[cfg(feature = "glyph")]
 pub use glyph_bridge::{

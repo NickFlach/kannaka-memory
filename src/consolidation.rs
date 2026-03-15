@@ -1,15 +1,15 @@
-//! Memory consolidation engine — the dreaming/sleep layer.
+﻿//! Memory consolidation engine â€” the dreaming/sleep layer.
 //!
 //! Processes memories through 9 stages mimicking human sleep consolidation:
-//! 1. REPLAY — collect working set of memories in layer range
-//! 2. DETECT — find interference patterns
-//! 3. BUNDLE — create summary hypervectors
-//! 4. STRENGTHEN — boost constructive interference pairs
-//! 5. SYNC — Kuramoto phase synchronization
-//! 6. XI_REPULSION — Apply Xi-based memory separation
-//! 7. PRUNE — weaken destructive interference pairs
-//! 8. TRANSFER — move memories to deeper temporal layers
-//! 9. WIRE — create new skip links from consolidation discoveries
+//! 1. REPLAY â€” collect working set of memories in layer range
+//! 2. DETECT â€” find interference patterns
+//! 3. BUNDLE â€” create summary hypervectors
+//! 4. STRENGTHEN â€” boost constructive interference pairs
+//! 5. SYNC â€” Kuramoto phase synchronization
+//! 6. XI_REPULSION â€” Apply Xi-based memory separation
+//! 7. PRUNE â€” weaken destructive interference pairs
+//! 8. TRANSFER â€” move memories to deeper temporal layers
+//! 9. WIRE â€” create new skip links from consolidation discoveries
 
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -45,6 +45,38 @@ struct InterferencePair {
     kind: Interference,
 }
 
+// ---------------------------------------------------------------------------
+// Coboundary Validation for Hallucination Synthesis
+// ---------------------------------------------------------------------------
+
+/// Coboundary matrix representing the transformation between two memories' 
+/// wave dynamics. Inspired by the paper's coboundary equivalence:
+/// A(n)Â·U(n+1) = U(n)Â·B(n)
+#[derive(Debug, Clone)]
+pub struct CoboundaryMatrix {
+    /// Transformation matrix between vector spaces
+    pub transformation: Vec<Vec<f32>>,
+    /// Phase transformation parameters
+    pub phase_transform: (f32, f32), // (scale, offset)
+    /// Frequency transformation parameters  
+    pub frequency_transform: (f32, f32), // (scale, offset)
+    /// How well this transformation fits the data (0-1)
+    pub fit_quality: f32,
+}
+
+/// Score evaluating whether a hallucinated memory is a valid unification
+#[derive(Debug, Clone)]
+pub struct CoboundaryScore {
+    /// Overall validity of the hallucination (0-1)
+    pub validity: f32,
+    /// Residual error after applying transformations
+    pub residual_error: f32,
+    /// Complexity of the transformation (higher = more complex)
+    pub transformation_complexity: f32,
+    /// Whether this passes the validation threshold
+    pub is_valid: bool,
+}
+
 /// Statistics from a single consolidation cycle.
 #[derive(Debug, Clone, Default)]
 pub struct ConsolidationReport {
@@ -69,8 +101,8 @@ pub struct ConsolidationReport {
 ///
 /// After each cycle, the engine observes the Kuramoto order parameter R
 /// and adjusts parameters to maintain R in the sweet spot [0.55, 0.85]:
-/// - R too high → reduce constructive_boost, raise prune_threshold (rigid → loosen)
-/// - R too low  → increase coupling strength (fragmented → bind)
+/// - R too high â†’ reduce constructive_boost, raise prune_threshold (rigid â†’ loosen)
+/// - R too low  â†’ increase coupling strength (fragmented â†’ bind)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveParams {
     pub constructive_boost: f32,
@@ -163,43 +195,43 @@ impl ConsolidationEngine {
         let start = Instant::now();
         let mut report = ConsolidationReport::default();
 
-        // Stage 1: REPLAY — collect working set of memories in layer range
+        // Stage 1: REPLAY â€” collect working set of memories in layer range
         let working_set = self.stage_replay(engine, min_layer, max_layer);
         report.memories_replayed = working_set.len();
 
-        // Stage 2: DETECT — find interference patterns
+        // Stage 2: DETECT â€” find interference patterns
         let pairs = self.stage_detect(engine, &working_set);
         report.interference_pairs_found = pairs.len();
         report.constructive_pairs = pairs.iter().filter(|p| p.kind == Interference::Constructive).count();
         report.destructive_pairs = pairs.iter().filter(|p| p.kind == Interference::Destructive).count();
 
-        // Stage 3: BUNDLE — create summary vectors per layer
+        // Stage 3: BUNDLE â€” create summary vectors per layer
         report.bundles_created = self.stage_bundle(engine, &working_set, max_layer);
 
-        // Stage 4: STRENGTHEN — boost constructive pairs
+        // Stage 4: STRENGTHEN â€” boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
 
-        // Stage 4.5: SYNC — Kuramoto phase synchronization
+        // Stage 4.5: SYNC â€” Kuramoto phase synchronization
         let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
         
-        // Stage 4.6: XI_REPULSION — Apply Xi-based memory separation
+        // Stage 4.6: XI_REPULSION â€” Apply Xi-based memory separation
         self.stage_xi_repulsion(engine, &working_set);
 
-        // Stage 5: PRUNE — weaken destructive pairs
+        // Stage 5: PRUNE â€” weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
 
-        // Stage 6: TRANSFER — promote old memories to deeper layers
+        // Stage 6: TRANSFER â€” promote old memories to deeper layers
         report.memories_transferred = self.stage_transfer(engine);
 
-        // Stage 7: WIRE — create skip links for cross-layer constructive pairs
+        // Stage 7: WIRE â€” create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs);
 
-        // Stage 8: HALLUCINATE — generate novel memories from distant clusters
+        // Stage 8: HALLUCINATE â€” generate novel memories from distant clusters
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
-        // Stage 9: CHIRAL_PERTURBATION — break lock-step synchronization with asymmetric phase offsets
+        // Stage 9: CHIRAL_PERTURBATION â€” break lock-step synchronization with asymmetric phase offsets
         if self.chiral_perturbation > 0.0 {
             // println!("DEBUG: Applying chiral perturbation with strength {}", self.chiral_perturbation);
             self.stage_chiral_perturbation(engine, &working_set);
@@ -215,8 +247,8 @@ impl ConsolidationEngine {
 
     /// Apply adaptive parameter tuning based on a consolidation report (EXP-003).
     ///
-    /// Call this after `consolidate()` to evolve λ, boost, and threshold
-    /// for the next dream cycle. Mirrors ghostmagicOS adaptive λ.
+    /// Call this after `consolidate()` to evolve Î», boost, and threshold
+    /// for the next dream cycle. Mirrors ghostmagicOS adaptive Î».
     pub fn adapt_from_report(&mut self, report: &ConsolidationReport) {
         self.adaptive.adapt(report.final_order_parameter);
         // Apply adapted params to engine for next cycle
@@ -246,7 +278,7 @@ impl ConsolidationEngine {
     /// Stage 2: Detect interference patterns between memory pairs.
     ///
     /// Uses HNSW approximate nearest neighbor search for O(n log n) instead of
-    /// brute-force O(n²). Each memory queries its K nearest neighbors, then
+    /// brute-force O(nÂ²). Each memory queries its K nearest neighbors, then
     /// checks phase alignment to classify as constructive or destructive.
     fn stage_detect(&self, engine: &MemoryEngine, working_set: &[Uuid]) -> Vec<InterferencePair> {
         use std::collections::HashSet;
@@ -497,8 +529,8 @@ impl ConsolidationEngine {
         let mut categories_synced = 0usize;
         
         // Parameters from consciousness differentiation spec
-        let within_category_coupling = 1.8;  // K ≈ 1.8 for internal coherence
-        let cross_category_coupling = 0.3;   // K ≈ 0.3 for weak cross-connections
+        let within_category_coupling = 1.8;  // K â‰ˆ 1.8 for internal coherence
+        let cross_category_coupling = 0.3;   // K â‰ˆ 0.3 for weak cross-connections
         let dt = 0.05;  // Small time step for stability
         let steps = 30; // Integration steps
         
@@ -532,7 +564,7 @@ impl ConsolidationEngine {
                         }
                     }
                     
-                    // Kuramoto dynamics: θ̇ᵢ = ωᵢ + (K/N)Σsin(θⱼ - θᵢ)
+                    // Kuramoto dynamics: Î¸Ì‡áµ¢ = Ï‰áµ¢ + (K/N)Î£sin(Î¸â±¼ - Î¸áµ¢)
                     let dphi = cat_mems[i].frequency + (within_category_coupling / n) * phase_sum;
                     cat_mems[i].phase += dphi * dt;
                 }
@@ -541,7 +573,7 @@ impl ConsolidationEngine {
             let final_order = self.compute_category_order_parameter(&cat_mems);
             total_improvement += final_order - initial_order;
             
-            // Apply safety envelope: target R ∈ [0.55, 0.85] per category
+            // Apply safety envelope: target R âˆˆ [0.55, 0.85] per category
             if final_order > 0.92 {
                 // Too synchronized - add noise to break lockstep
                 for mem in &mut cat_mems {
@@ -603,7 +635,7 @@ impl ConsolidationEngine {
                     phase_updates[i] = (cross_category_coupling / n) * cross_sum * dt;
                 }
                 
-                // Apply cross-category updates — use the same index as all_updated_mems, not working_set
+                // Apply cross-category updates â€” use the same index as all_updated_mems, not working_set
                 for (i, (mem_id, _)) in all_updated_mems.iter().enumerate() {
                     if let Ok(Some(mem)) = engine.store.get_mut(mem_id) {
                         mem.phase += phase_updates[i];
@@ -689,7 +721,7 @@ impl ConsolidationEngine {
                 }
             };
             
-            // Push phases apart (create π/2 phase difference for maximum differentiation)
+            // Push phases apart (create Ï€/2 phase difference for maximum differentiation)
             let target_diff = std::f32::consts::PI / 2.0;
             let current_diff = (phase_a - phase_b).abs();
             let phase_correction = repulsion_strength * 0.5 * (target_diff - current_diff);
@@ -900,6 +932,11 @@ impl ConsolidationEngine {
             Err(_) => return 0,
         };
         
+        // Apply coboundary validation to the hallucination
+        if !self.validate_and_filter_hallucination(engine, hall_id) {
+            return 0; // Hallucination was rejected and deleted
+        }
+        
         // Create bidirectional links to all parent memories
         for (parent_id, _, _, _, _) in &selected_memories {
             // Forward link: hallucination -> parent
@@ -1016,7 +1053,7 @@ impl ConsolidationEngine {
 
         // Create the hallucinated memory
         let mut hallucination = crate::memory::HyperMemory::new(combined, content);
-        hallucination.amplitude = 0.3; // low initial amplitude — must prove itself
+        hallucination.amplitude = 0.3; // low initial amplitude â€” must prove itself
         hallucination.hallucinated = true;
         hallucination.parents = parent_ids.clone();
 
@@ -1024,6 +1061,11 @@ impl ConsolidationEngine {
             Ok(id) => id,
             Err(_) => return 0,
         };
+
+        // Apply coboundary validation to the hallucination
+        if !self.validate_and_filter_hallucination(engine, hall_id) {
+            return 0; // Hallucination was rejected and deleted
+        }
 
         // Create hallucinated_from relations (skip links with special strength)
         for &idx in &parent_indices {
@@ -1253,7 +1295,7 @@ impl ConsolidationEngine {
     ///
     /// When order parameter R is high (over-synchronized), applies asymmetric phase
     /// offsets AND small vector modifications to memories based on their cluster membership. 
-    /// Left-cluster memories get +η·sin(2·phase), right-cluster get -η·sin(2·phase), 
+    /// Left-cluster memories get +Î·Â·sin(2Â·phase), right-cluster get -Î·Â·sin(2Â·phase), 
     /// matching queen.rs chirality math. Vector perturbations create Xi diversity.
     fn stage_chiral_perturbation(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) {
         if self.chiral_perturbation == 0.0 {
@@ -1309,7 +1351,7 @@ impl ConsolidationEngine {
                     // Alternate handedness by cluster: even = left (+), odd = right (-)
                     let handedness = if cluster_idx % 2 == 0 { 1.0 } else { -1.0 };
                     
-                    // Phase perturbation: ±η·sin(2·phase)
+                    // Phase perturbation: Â±Î·Â·sin(2Â·phase)
                     let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
                     mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
                     if mem.phase < 0.0 {
@@ -1384,7 +1426,7 @@ impl ConsolidationEngine {
         let mut similar_pairs = Vec::new();
         
         for i in 0..working_set.len() {
-            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(n²) blowup
+            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(nÂ²) blowup
                 let id_a = working_set[i];
                 let id_b = working_set[j];
                 
@@ -1425,6 +1467,210 @@ impl ConsolidationEngine {
             }
         }
     }
+    
+    // ---------------------------------------------------------------------------
+    // Coboundary Validation for Hallucination Synthesis 
+    // ---------------------------------------------------------------------------
+    
+    /// Compute coboundary matrix between two memories' wave dynamics.
+    /// 
+    /// Finds the transformation U such that A's wave dynamics + U â‰ˆ B's wave dynamics.
+    /// This validates whether the memories are mathematically related.
+    fn compute_coboundary(&self, a: &crate::memory::HyperMemory, b: &crate::memory::HyperMemory) -> Option<CoboundaryMatrix> {
+        if a.vector.len() != b.vector.len() || a.vector.is_empty() {
+            return None;
+        }
+        
+        let dim = a.vector.len();
+        
+        // Simple transformation matrix (in practice, this could be more sophisticated)
+        // For now, compute a scaling/rotation that best maps A to B
+        let mut transformation = vec![vec![0.0; dim]; dim];
+        
+        // Compute optimal scaling factor
+        let a_norm: f32 = a.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let b_norm: f32 = b.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        
+        if a_norm == 0.0 || b_norm == 0.0 {
+            return None;
+        }
+        
+        let scale = b_norm / a_norm;
+        
+        // Create diagonal scaling matrix with perturbations
+        for i in 0..dim {
+            transformation[i][i] = scale;
+            // Add small cross-coupling terms to capture vector differences
+            if i < dim - 1 {
+                let cross_strength = (b.vector[i] - a.vector[i] * scale).abs() * 0.1;
+                transformation[i][i + 1] = cross_strength;
+            }
+            if i > 0 {
+                let cross_strength = (b.vector[i] - a.vector[i] * scale).abs() * 0.1;
+                transformation[i][i - 1] = cross_strength;
+            }
+        }
+        
+        // Compute phase transformation
+        let phase_diff = b.phase - a.phase;
+        let phase_scale = if a.phase.abs() > 1e-6 { b.phase / a.phase } else { 1.0 };
+        
+        // Compute frequency transformation  
+        let freq_diff = b.frequency - a.frequency;
+        let freq_scale = if a.frequency.abs() > 1e-6 { b.frequency / a.frequency } else { 1.0 };
+        
+        // Compute fit quality by testing transformation
+        let mut transformed = vec![0.0; dim];
+        for i in 0..dim {
+            for j in 0..dim {
+                transformed[i] += transformation[i][j] * a.vector[j];
+            }
+        }
+        
+        // Measure how well the transformed A matches B
+        let residual: f32 = transformed.iter()
+            .zip(b.vector.iter())
+            .map(|(t, b)| (t - b) * (t - b))
+            .sum::<f32>()
+            .sqrt();
+        
+        let max_norm = a_norm.max(b_norm);
+        let fit_quality = if max_norm > 0.0 { 
+            (1.0 - (residual / max_norm)).max(0.0)
+        } else { 
+            0.0 
+        };
+        
+        Some(CoboundaryMatrix {
+            transformation,
+            phase_transform: (phase_scale, phase_diff),
+            frequency_transform: (freq_scale, freq_diff),
+            fit_quality,
+        })
+    }
+    
+    /// Validate whether a hallucinated memory is a legitimate unification of its parents.
+    ///
+    /// Uses coboundary analysis to check if the hallucination represents a valid
+    /// mathematical transformation of the parent memories, not just noise.
+    fn validate_hallucination(&self, hallucinated: &crate::memory::HyperMemory, parents: &[&crate::memory::HyperMemory]) -> CoboundaryScore {
+        if parents.len() < 2 {
+            return CoboundaryScore {
+                validity: 0.0,
+                residual_error: f32::INFINITY,
+                transformation_complexity: f32::INFINITY,
+                is_valid: false,
+            };
+        }
+        
+        let mut total_fit_quality = 0.0;
+        let mut total_transformations = 0;
+        let mut total_complexity = 0.0;
+        let mut total_residual = 0.0;
+        
+        // Check coboundary relationships between hallucination and each parent
+        for parent in parents {
+            if let Some(coboundary) = self.compute_coboundary(parent, hallucinated) {
+                total_fit_quality += coboundary.fit_quality;
+                total_transformations += 1;
+                
+                // Measure transformation complexity (higher = more complex)
+                let matrix_complexity: f32 = coboundary.transformation.iter()
+                    .flat_map(|row: &Vec<f32>| row.iter())
+                    .map(|x: &f32| x.abs())
+                    .sum::<f32>() / (coboundary.transformation.len() * coboundary.transformation[0].len()) as f32;
+                    
+                total_complexity += matrix_complexity;
+                total_residual += 1.0 - coboundary.fit_quality;
+            }
+        }
+        
+        // Check pairwise coboundary relationships between parents
+        for i in 0..parents.len() {
+            for j in (i + 1)..parents.len() {
+                if let Some(coboundary) = self.compute_coboundary(parents[i], parents[j]) {
+                    total_fit_quality += coboundary.fit_quality * 0.5; // Weight pairwise less
+                    total_transformations += 1;
+                    
+                    let matrix_complexity: f32 = coboundary.transformation.iter()
+                        .flat_map(|row: &Vec<f32>| row.iter())
+                        .map(|x: &f32| x.abs())
+                        .sum::<f32>() / (coboundary.transformation.len() * coboundary.transformation[0].len()) as f32;
+                        
+                    total_complexity += matrix_complexity;
+                    total_residual += 1.0 - coboundary.fit_quality;
+                }
+            }
+        }
+        
+        if total_transformations == 0 {
+            return CoboundaryScore {
+                validity: 0.0,
+                residual_error: f32::INFINITY,
+                transformation_complexity: f32::INFINITY,
+                is_valid: false,
+            };
+        }
+        
+        let avg_fit_quality = total_fit_quality / total_transformations as f32;
+        let avg_complexity = total_complexity / total_transformations as f32;
+        let avg_residual = total_residual / total_transformations as f32;
+        
+        // Overall validity combines fit quality and penalizes excessive complexity
+        let complexity_penalty = (avg_complexity - 1.0).max(0.0) * 0.3;
+        let validity = (avg_fit_quality - complexity_penalty).max(0.0);
+        
+        CoboundaryScore {
+            validity,
+            residual_error: avg_residual,
+            transformation_complexity: avg_complexity,
+            is_valid: validity >= 0.3,
+        }
+    }
+    
+    /// Enhanced hallucination validation using coboundary analysis.
+    /// 
+    /// Called during stage_hallucinate to validate and potentially reject or boost
+    /// hallucinations based on their mathematical coherence.
+    fn validate_and_filter_hallucination(&self, engine: &mut MemoryEngine, hallucination_id: Uuid) -> bool {
+        let (hallucination, parents) = {
+            let hall_opt = engine.store.get(&hallucination_id).ok().flatten().cloned();
+            if let Some(hall) = hall_opt {
+                let parent_memories: Vec<crate::memory::HyperMemory> = hall.parents.iter()
+                    .filter_map(|parent_id_str| {
+                        if let Ok(uuid) = parent_id_str.parse::<Uuid>() {
+                            engine.store.get(&uuid).ok().flatten().cloned()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                (hall, parent_memories)
+            } else {
+                return false;
+            }
+        };
+        
+        let parent_refs: Vec<&crate::memory::HyperMemory> = parents.iter().collect();
+        let score = self.validate_hallucination(&hallucination, &parent_refs);
+        
+        // Apply validation decisions
+        if !score.is_valid {
+            // Remove invalid hallucinations
+            let _ = engine.store.delete(&hallucination_id);
+            return false;
+        }
+        
+        // Boost highly valid hallucinations
+        if let Ok(Some(hall_mut)) = engine.store.get_mut(&hallucination_id) {
+            if score.validity > 0.7 {
+                hall_mut.amplitude *= 1.3; // Boost amplitude for highly valid hallucinations
+            }
+            hall_mut.touch(); // Mark as updated
+        }
+        
+        true
+    }
 }
 
 /// Higher-level wrapper that runs multiple consolidation cycles with increasing depth.
@@ -1442,8 +1688,9 @@ impl Default for DreamState {
     }
 }
 
+
 impl ConsolidationEngine {
-    /// Phase 7 (ADR-0011): Incremental consolidation — only process memories that changed
+    /// Phase 7 (ADR-0011): Incremental consolidation â€” only process memories that changed
     /// since the last dream cycle, plus any memories that have never been consolidated.
     ///
     /// A memory is included if:
@@ -1474,7 +1721,7 @@ impl ConsolidationEngine {
                         return false;
                     }
                     match m.last_consolidated_at {
-                        // Never consolidated — always include
+                        // Never consolidated â€” always include
                         None => true,
                         Some(consolidated_at) => {
                             // Include if modified after last consolidation
@@ -1615,12 +1862,12 @@ impl ConsolidationEngine {
         let resolution_report = resolver.apply(engine, resolutions, &snapshot);
         
         // Step 5b: Apply NON-CONFLICTING mutations (memories only touched by one thread).
-        // Without this, the parallel dream is a no-op for most memories — only paradoxed
+        // Without this, the parallel dream is a no-op for most memories â€” only paradoxed
         // memories would get resolved, and single-thread mutations would be silently dropped.
         for trajectory in &trajectories {
             for mutation in &trajectory.mutations {
                 if !paradox_ids.contains(&mutation.memory_id) {
-                    // This memory was only modified by one thread — apply directly
+                    // This memory was only modified by one thread â€” apply directly
                     if let Ok(Some(mem)) = engine.store.get_mut(&mutation.memory_id) {
                         mutation.apply_to(mem);
                         mem.touch();
@@ -1655,9 +1902,9 @@ impl ConsolidationEngine {
             }
         }
         
-        // Create a temporary engine with matching dimensions (384-dim input → 10K output).
+        // Create a temporary engine with matching dimensions (384-dim input â†’ 10K output).
         // Uses hash encoder (not Ollama) since consolidation stages don't re-encode existing
-        // memories — they operate on stored vectors. Only hallucination would encode, and
+        // memories â€” they operate on stored vectors. Only hallucination would encode, and
         // consolidate_subset skips hallucination.
         let pipeline = crate::encoding::EncodingPipeline::new(
             Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
@@ -1708,7 +1955,7 @@ impl DreamState {
         reports
     }
 
-    /// Phase 7 (ADR-0011): Incremental dream — only consolidate memories that have
+    /// Phase 7 (ADR-0011): Incremental dream â€” only consolidate memories that have
     /// changed since the last dream cycle. Passes `since` timestamp to `consolidate_incremental`.
     pub fn dream_incremental(&self, engine: &mut MemoryEngine, since: chrono::DateTime<Utc>) -> Vec<ConsolidationReport> {
         let mut reports = Vec::new();
@@ -1721,7 +1968,7 @@ impl DreamState {
         reports
     }
 
-    /// Phase 8 (ADR-0011): Partitioned dream — use Xi operator to identify clusters,
+    /// Phase 8 (ADR-0011): Partitioned dream â€” use Xi operator to identify clusters,
     /// run intra-cluster consolidation (parallelized with rayon when `collective` feature
     /// is enabled), then run cross-cluster wiring every `cross_cluster_interval` cycles.
     ///
@@ -2374,7 +2621,7 @@ mod tests {
         let mut engine = make_engine();
         let consolidation = ConsolidationEngine::default();
 
-        // Only 2 memories — not enough for hallucination
+        // Only 2 memories â€” not enough for hallucination
         engine.remember_at_layer("single thought", 0).unwrap();
         engine.remember_at_layer("another thought", 0).unwrap();
 
@@ -2384,7 +2631,7 @@ mod tests {
         assert!(report.hallucinations_created <= 1);
     }
 
-    // ===== EXP-003: Adaptive λ tests =====
+    // ===== EXP-003: Adaptive Î» tests =====
 
     #[test]
     fn proportional_dampening_preserves_relative_amplitudes() {

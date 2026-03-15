@@ -850,6 +850,65 @@ impl KannakaMemorySystem {
         Ok(self.engine.store.all_memories()?)
     }
 
+    /// Show δ-invariant clusters - memories grouped by their δ values (coboundary equivalence candidates)
+    pub fn invariant_clusters(&self, tolerance: f32) -> Result<Vec<crate::invariant::DeltaCluster>, SystemError> {
+        let clusters = crate::invariant::cluster_by_delta(&self.engine, tolerance);
+        Ok(clusters)
+    }
+
+    /// Detect Conservative Memory Fields in the current memory set
+    pub fn detect_cmfs(&self) -> Result<Vec<crate::cmf::ConservativeMemoryField>, SystemError> {
+        let all_memories = self.engine.store.all_memories()?;
+        
+        if all_memories.len() < 3 {
+            return Ok(Vec::new());
+        }
+        
+        // Group memories into potential clusters using Kuramoto synchronization
+        let clusters = self.kuramoto.find_synchronized_clusters(&self.engine, 3);
+        let mut cmfs = Vec::new();
+        
+        // Try to detect CMF in each cluster
+        for cluster in &clusters {
+            if cluster.memory_ids.len() >= 3 {
+                // Get the actual memory objects for this cluster
+                let cluster_memories: Vec<&crate::memory::HyperMemory> = cluster.memory_ids
+                    .iter()
+                    .filter_map(|id| self.engine.store.get(id).ok().flatten())
+                    .collect();
+                
+                if let Some(cmf) = crate::cmf::detect_cmf(&cluster_memories) {
+                    cmfs.push(cmf);
+                }
+            }
+        }
+        
+        // Also try to detect CMF from δ-clusters
+        let delta_clusters = crate::invariant::cluster_by_delta(&self.engine, 0.1);
+        for delta_cluster in &delta_clusters {
+            if delta_cluster.memory_ids.len() >= 3 {
+                let cluster_memories: Vec<&crate::memory::HyperMemory> = delta_cluster.memory_ids
+                    .iter()
+                    .filter_map(|id| self.engine.store.get(id).ok().flatten())
+                    .collect();
+                
+                if let Some(cmf) = crate::cmf::detect_cmf(&cluster_memories) {
+                    // Only add if we haven't already found a similar CMF
+                    let is_duplicate = cmfs.iter().any(|existing| {
+                        existing.explanatory_power > 0.7 && cmf.explanatory_power > 0.7 &&
+                        (existing.explanatory_power - cmf.explanatory_power).abs() < 0.1
+                    });
+                    
+                    if !is_duplicate {
+                        cmfs.push(cmf);
+                    }
+                }
+            }
+        }
+        
+        Ok(cmfs)
+    }
+
     /// System statistics.
     pub fn stats(&self) -> SystemStats {
         let state = self.bridge.assess(&self.engine);
