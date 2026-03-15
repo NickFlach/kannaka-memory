@@ -378,16 +378,27 @@ fn main() {
         "dream" => {
             let create_pr = args[command_start..].iter().any(|a| a == "--create-pr");
             let mut dream_mode = "deep".to_string();
+            let mut chiral_perturbation: f32 = env::var("KANNAKA_CHIRAL_PERTURBATION")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
             {
                 let mut i = command_start + 1;
                 while i < args.len() {
                     if args[i] == "--mode" && i + 1 < args.len() {
                         dream_mode = args[i + 1].clone();
                         i += 2;
+                    } else if args[i] == "--chiral" && i + 1 < args.len() {
+                        chiral_perturbation = args[i + 1].parse().unwrap_or(0.05);
+                        i += 2;
                     } else {
                         i += 1;
                     }
                 }
+            }
+
+            // Apply chiral perturbation to dream state
+            if chiral_perturbation > 0.0 {
+                sys.dream_state.engine.chiral_perturbation = chiral_perturbation;
+                eprintln!("[chiral] Perturbation enabled: η={}", chiral_perturbation);
             }
 
             // ADR-0017: Wrap dream in a branch workflow

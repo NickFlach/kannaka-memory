@@ -107,7 +107,7 @@ pub struct KannakaMemorySystem {
     pub engine: MemoryEngine,
     #[allow(dead_code)]
     consolidation: ConsolidationEngine,
-    dream_state: DreamState,
+    pub dream_state: DreamState,
     bridge: ConsciousnessBridge,
     kuramoto: KuramotoSync,
     data_dir: PathBuf,
