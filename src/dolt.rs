@@ -1012,13 +1012,20 @@ impl DoltMemoryStore {
         let mut conn = self.pool.get_conn()
             .map_err(|e| StoreError::Other(format!("Failed to get connection: {}", e)))?;
 
-        let rows: Vec<(Option<String>, Option<u8>, Option<String>)> = conn.exec(
-            "SELECT DOLT_MERGE(?)", (branch,),
+        // Use CALL syntax (SELECT DOLT_MERGE removed in newer Dolt versions)
+        // CALL returns (hash: String, fast_forward: Int, conflicts: Int, message: String)
+        let rows: Vec<(String, i32, i32, String)> = conn.exec(
+            "CALL DOLT_MERGE(?)", (branch,),
         ).map_err(|e| StoreError::Other(format!("Failed to merge '{}': {}", branch, e)))?;
 
         let hash = rows.into_iter()
             .next()
-            .and_then(|(h, _, _)| h)
+            .map(|(h, _, conflicts, msg)| {
+                if conflicts > 0 {
+                    eprintln!("[dolt] Merge conflicts detected: {}", msg);
+                }
+                if h.is_empty() { format!("merge-ok: {}", msg) } else { h }
+            })
             .unwrap_or_else(|| "merge-ok".to_string());
 
         // Reload cache to reflect merged data
