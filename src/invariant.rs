@@ -340,8 +340,8 @@ mod tests {
     #[test]
     fn irrationality_with_connections() {
         let mut memory = HyperMemory::new(vec![1.0; 10], "test".to_string());
-        memory.connections.push(SkipLink::new(Uuid::new_v4(), 0.5));
-        memory.connections.push(SkipLink::new(Uuid::new_v4(), 0.8));
+        memory.connections.push(SkipLink { target_id: Uuid::new_v4(), strength: 0.5, resonance_key: vec![], span: 0 });
+        memory.connections.push(SkipLink { target_id: Uuid::new_v4(), strength: 0.8, resonance_key: vec![], span: 0 });
         
         let irrationality = compute_irrationality(&memory);
         assert!(irrationality > 0.0, "connections should increase irrationality");

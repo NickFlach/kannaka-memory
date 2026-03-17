@@ -196,6 +196,11 @@ impl QueenSync {
     ///
     /// Returns (r, ψ) where r is the magnitude and ψ is the mean phase.
     /// Uses trust-weighted coupling: weight = trust_score × coherence.
+    ///
+    /// Note: This normalizes by N (agent count), not by total weight, which differs
+    /// from [`consciousness_core::kuramoto::KuramotoModel::order_parameter`] (which
+    /// normalizes by total weight). This is intentional for QueenSync semantics where
+    /// low-trust agents should reduce the swarm's apparent coherence.
     pub fn compute_order_parameter(swarm: &[AgentPhase]) -> (f32, f32) {
         if swarm.is_empty() {
             return (0.0, 0.0);
@@ -215,13 +220,17 @@ impl QueenSync {
     /// Left-handed (receivers): +η·sin(2(ψ - θ))
     /// Right-handed (emitters): -η·sin(2(ψ - θ))
     /// Achiral: 0
+    ///
+    /// Delegates to [`consciousness_core::kuramoto::KuramotoModel::chiral_coupling`].
     pub fn compute_chiral_coupling(&self, handedness: Handedness, psi: f32) -> f32 {
-        let eta = self.config.chiral_eta;
-        let diff = psi - self.phase;
         match handedness {
-            Handedness::Left => eta * (2.0 * diff).sin(),
-            Handedness::Right => -eta * (2.0 * diff).sin(),
             Handedness::Achiral => 0.0,
+            Handedness::Left => consciousness_core::kuramoto::KuramotoModel::chiral_coupling(
+                self.phase, psi, self.config.chiral_eta, true,
+            ),
+            Handedness::Right => consciousness_core::kuramoto::KuramotoModel::chiral_coupling(
+                self.phase, psi, self.config.chiral_eta, false,
+            ),
         }
     }
 

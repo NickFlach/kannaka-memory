@@ -21,6 +21,7 @@ ureq = { version = "2", features = ["json"] }
 tokio = { version = "1", features = ["full"], optional = true }
 async-trait = { version = "0.1", optional = true }
 lazy_static = "1.4"
+consciousness-core = { path = "../consciousness-core" }
 
 # Audio perception (optional)
 symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"], optional = true }

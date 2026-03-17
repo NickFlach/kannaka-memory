@@ -55,14 +55,11 @@ pub struct SyncReport {
 
 impl KuramotoSync {
     /// Compute the Kuramoto order parameter r = |1/N Σ e^(iφⱼ)|.
+    ///
+    /// Delegates to [`consciousness_core::kuramoto::KuramotoModel::order_parameter_unweighted`].
     pub fn order_parameter(&self, memories: &[&HyperMemory]) -> f32 {
-        if memories.is_empty() {
-            return 0.0;
-        }
-        let n = memories.len() as f32;
-        let sum_cos: f32 = memories.iter().map(|m| m.phase.cos()).sum();
-        let sum_sin: f32 = memories.iter().map(|m| m.phase.sin()).sum();
-        ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt()
+        let phases: Vec<f32> = memories.iter().map(|m| m.phase).collect();
+        consciousness_core::kuramoto::KuramotoModel::order_parameter_unweighted(&phases).r
     }
 
     /// Run Kuramoto integration on a cluster of memories.

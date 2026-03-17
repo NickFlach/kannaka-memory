@@ -1,7 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
+
+// Re-export wave math from consciousness-core (the canonical implementation).
+// kannaka-memory was the original source; consciousness-core is now the single
+// source of truth for the physics.
+use consciousness_core::wave as core_wave;
 
 /// Wave parameters governing memory strength over time.
+///
+/// This is the serde-enabled version used for persistence. The underlying math
+/// delegates to [`consciousness_core::wave`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaveParams {
     pub amplitude: f32,
@@ -21,9 +28,21 @@ impl Default for WaveParams {
     }
 }
 
+impl WaveParams {
+    /// Convert to consciousness-core's WaveParams for computation.
+    fn to_core(&self) -> core_wave::WaveParams {
+        core_wave::WaveParams {
+            amplitude: self.amplitude,
+            frequency: self.frequency,
+            phase: self.phase,
+            decay_rate: self.decay_rate,
+        }
+    }
+}
+
 /// Compute effective strength: S(t) = A · cos(2πf·t + φ) · e^(-λt)
 pub fn compute_strength(params: &WaveParams, age_seconds: f64) -> f32 {
-    compute_strength_with_retrieval(params, age_seconds, 0)
+    core_wave::compute_strength(&params.to_core(), age_seconds)
 }
 
 /// Compute effective strength with retrieval energy (EXP-003):
@@ -32,45 +51,21 @@ pub fn compute_strength(params: &WaveParams, age_seconds: f64) -> f32 {
 /// Each retrieval adds diminishing energy: energy = 0.05 · ln(1 + retrieval_count)
 /// This makes retrieval a generative f(x) term in the dx/dt = f(x) - λx system.
 pub fn compute_strength_with_retrieval(params: &WaveParams, age_seconds: f64, retrieval_count: u32) -> f32 {
-    let retrieval_energy = 0.05 * (1.0 + retrieval_count as f64).ln();
-    let a = params.amplitude as f64 + retrieval_energy;
-    let f = params.frequency as f64;
-    let phi = params.phase as f64;
-    let lambda = params.decay_rate as f64;
-
-    let wave = (2.0 * PI * f * age_seconds + phi).cos();
-    let decay = (-lambda * age_seconds).exp();
-    (a * wave * decay) as f32
+    core_wave::compute_strength_with_retrieval(&params.to_core(), age_seconds, retrieval_count)
 }
 
 /// Cosine similarity between two vectors.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.is_empty() || b.is_empty() {
-        if a.is_empty() || b.is_empty() {
-            eprintln!("[warn] cosine_similarity called with empty vector (missing embeddings?)");
-        }
+        eprintln!("[warn] cosine_similarity called with empty vector (missing embeddings?)");
         return 0.0;
     }
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na * nb)
+    core_wave::cosine_similarity(a, b)
 }
 
 /// Normalize a vector to unit length in-place.
 pub fn normalize(v: &mut Vec<f32>) {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in v.iter_mut() {
-            *x /= norm;
-        }
-    }
+    core_wave::normalize(v.as_mut_slice());
 }
 
 #[cfg(test)]
