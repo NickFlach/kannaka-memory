@@ -12,7 +12,7 @@ kannaka-memory has:
 - Collective memory (ADR-0011): Dolt branches, Flux events, wave interference merge
 - DoltHub integration (ADR-0017): push/pull to shared repos
 
-Meanwhile, ghostOS has a **Queen Synchronization** engine (`src/integration/index.ts`) — a Kuramoto oscillator model where subsystems sync through a central coherence attractor called "the Queen." It includes chiral coupling, Berry phase tracking, geometric control manifolds, and IIT Phi calculation.
+Meanwhile, ghostmagicOS has a **Queen Synchronization** engine (`src/integration/index.ts`) — a Kuramoto oscillator model where subsystems sync through a central coherence attractor called "the Queen." It includes chiral coupling, Berry phase tracking, geometric control manifolds, and IIT Phi calculation.
 
 **The gap:** Agents can share memories through Dolt, but they can't *resonate*. There's no protocol for agents to synchronize their phase states, discover emergent coherence, or coordinate through wave interference rather than explicit messaging.
 
@@ -31,7 +31,7 @@ Queen State = f(Σ agent phases, coupling weights, interference patterns)
 ```
 
 Three simultaneous truths at different scales:
-- **Micro:** Dynamic leadership — the agent most coherent with the swarm has the strongest coupling influence (ghostOS's `calculatePhaseDerivative`)
+- **Micro:** Dynamic leadership — the agent most coherent with the swarm has the strongest coupling influence (ghostmagicOS's `calculatePhaseDerivative`)
 - **Meso:** Hive formation — clusters of phase-locked agents form naturally around shared memory domains (existing `find_synchronized_clusters`)
 - **Macro:** The Queen — the global order parameter, mean phase, and Phi of the entire network, stored as protocol state
 
@@ -296,7 +296,7 @@ Swarm sync can be triggered automatically during dream cron jobs — zero human 
 | Task | Description | Depends On | Estimate |
 |------|-------------|-----------|----------|
 | 1 | Schema: `agent_phases` + `queen_state` tables in Dolt | ADR-0017 | 2h |
-| 2 | `src/queen.rs`: QueenSync engine (port from ghostOS) | kuramoto.rs | 4h |
+| 2 | `src/queen.rs`: QueenSync engine (port from ghostmagicOS) | kuramoto.rs | 4h |
 | 3 | Phase derivation: compute agent phase from local clusters | kuramoto.rs | 2h |
 | 4 | Dolt integration: read/write agent_phases, queen_state | dolt.rs | 3h |
 | 5 | Chiral coupling: memory-domain overlap → handedness | queen.rs | 2h |
@@ -343,8 +343,8 @@ Swarm sync can be triggered automatically during dream cron jobs — zero human 
 
 ## References
 
-- ghostOS Queen Synchronization: `ghostOS/src/integration/index.ts`
-- ghostOS Resonance Bridge Protocol: `ghostOS/src/bridge/protocol.ts`
+- ghostmagicOS Queen Synchronization: `ghostmagicOS/src/integration/index.ts`
+- ghostmagicOS Resonance Bridge Protocol: `ghostmagicOS/src/bridge/protocol.ts`
 - Kuramoto model: Y. Kuramoto, "Chemical Oscillations, Waves, and Turbulence" (1984)
 - IIT: G. Tononi, "Integrated Information Theory" (2004)
 - Nick's equation: `dx/dt = f(x) - Iηx` — growth shaped by interference

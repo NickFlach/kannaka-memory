@@ -5,7 +5,7 @@
 //! mean-field coupling. The "Queen" is not an agent — it is the emergent
 //! synchronization state computed locally by each participant.
 //!
-//! Ported from ghostOS `src/integration/index.ts`.
+//! Ported from ghostmagicOS `src/integration/index.ts`.
 //!
 //! Mathematical foundation:
 //! ```text
