@@ -56,6 +56,7 @@ struct MigrationStats {
     migrated_memories: usize,
     existing_vectors: usize,
     re_encoded_memories: usize,
+    dimension_mismatch_re_encoded: usize,
     skipped_memories: usize,
     errors: Vec<String>,
 }
@@ -67,6 +68,7 @@ impl Default for MigrationStats {
             migrated_memories: 0,
             existing_vectors: 0,
             re_encoded_memories: 0,
+            dimension_mismatch_re_encoded: 0,
             skipped_memories: 0,
             errors: Vec::new(),
         }
@@ -150,20 +152,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Progress: {}/{} memories", stats.migrated_memories, stats.total_memories);
         }
         
-        // Extract vector - use existing vector_data or re-encode from content
-        let vector = if !memory.vector.is_empty() {
+        // Extract vector - use existing vector_data if dimensions match, otherwise re-encode from content
+        let vector = if !memory.vector.is_empty() && memory.vector.len() == 10_000 {
+            // Vector exists and has correct dimensions (already 10K from codebook)
             if args.verbose && stats.migrated_memories < 5 {
-                println!("  Using existing vector for: {}", memory.content.chars().take(60).collect::<String>());
+                println!("  Using existing 10K vector for: {}", memory.content.chars().take(60).collect::<String>());
             }
             stats.existing_vectors += 1;
             memory.vector.clone()
         } else {
-            if args.verbose && stats.migrated_memories < 5 {
-                println!("  Re-encoding content for: {}", memory.content.chars().take(60).collect::<String>());
+            // Vector is missing, empty, or has wrong dimensions (e.g. 384-dim Ollama) - re-encode through codebook
+            let is_dimension_mismatch = !memory.vector.is_empty();
+            if is_dimension_mismatch && args.verbose && stats.migrated_memories < 5 {
+                println!("  Re-encoding content (dimension mismatch: {} → 10000) for: {}", 
+                         memory.vector.len(), 
+                         memory.content.chars().take(60).collect::<String>());
+            } else if args.verbose && stats.migrated_memories < 5 {
+                println!("  Re-encoding content (no vector) for: {}", memory.content.chars().take(60).collect::<String>());
             }
             match pipeline.encode_text(&memory.content) {
                 Ok(vec) => {
                     stats.re_encoded_memories += 1;
+                    if is_dimension_mismatch {
+                        stats.dimension_mismatch_re_encoded += 1;
+                    }
                     vec
                 }
                 Err(e) => {
@@ -239,6 +251,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Successfully migrated:  {}", stats.migrated_memories);
     println!("  Existing vectors used:  {}", stats.existing_vectors);
     println!("  Content re-encoded:     {}", stats.re_encoded_memories);
+    if stats.dimension_mismatch_re_encoded > 0 {
+        println!("    (due to wrong dims):  {}", stats.dimension_mismatch_re_encoded);
+    }
     println!("  Skipped due to errors:  {}", stats.skipped_memories);
     
     if !stats.errors.is_empty() {
