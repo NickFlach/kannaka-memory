@@ -159,6 +159,11 @@ impl Medium {
         self.wavefronts.nrows()
     }
 
+    /// Get the index of a wavefront by its ID (for migration purposes).
+    pub fn get_wavefront_index(&self, id: &Uuid) -> Option<usize> {
+        self.id_to_index.get(id).copied()
+    }
+
     /// Add a new wavefront to the medium.
     /// 
     /// # Arguments

@@ -13,6 +13,9 @@ use kannaka_memory::glyph_bridge::GlyphEncoder;
 
 use kannaka_memory::{DoltMemoryStore, MemoryStore};
 
+#[cfg(feature = "hrm")]
+use kannaka_memory::{HrmStore, EncodingPipeline, SimpleHashEncoder, Codebook};
+
 #[cfg(feature = "collective")]
 use kannaka_memory::collective::{
     Glyph, GlyphSource, SgaClass,
@@ -45,6 +48,33 @@ fn init_with_dolt(data_dir: PathBuf) -> Result<(KannakaMemorySystem, kannaka_mem
     let sys = KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     Ok((sys, config))
+}
+
+#[cfg(feature = "hrm")]
+fn init_with_hrm(data_dir: PathBuf) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
+    // Setup encoding pipeline for HRM
+    let encoder = SimpleHashEncoder::new(384, 42);
+    let codebook = Codebook::new(384, 10_000, 42);
+    let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+    
+    // HRM file path
+    let hrm_path = data_dir.join("kannaka.hrm");
+    
+    // Try to load existing HRM file, create new if not found
+    let store = if hrm_path.exists() {
+        eprintln!("Loading existing HRM file: {}", hrm_path.display());
+        HrmStore::load(pipeline, hrm_path)?
+    } else {
+        eprintln!("Creating new HRM file: {}", hrm_path.display());
+        HrmStore::new(pipeline, hrm_path)
+    };
+    
+    eprintln!("HrmStore initialized with {} memories", store.count());
+    eprintln!("[hrm] Using Holographic Resonance Medium - storage IS computation");
+
+    let sys = KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    Ok(sys)
 }
 
 fn usage() {
@@ -164,16 +194,28 @@ fn main() {
 
     let dir = data_dir();
 
-    let dolt_config: kannaka_memory::dolt::DoltConfig;
-
-    let mut sys = match init_with_dolt(dir) {
-        Ok((s, cfg)) => {
-            dolt_config = cfg;
-            s
+    // Choose backend based on feature flags
+    #[cfg(feature = "hrm")]
+    let mut sys = {
+        eprintln!("Using HRM backend (Holographic Resonance Medium)");
+        match init_with_hrm(dir) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to initialize with HRM: {e}");
+                process::exit(1);
+            }
         }
-        Err(e) => {
-            eprintln!("Failed to initialize with Dolt: {e}");
-            process::exit(1);
+    };
+
+    #[cfg(not(feature = "hrm"))]
+    let (mut sys, dolt_config) = {
+        eprintln!("Using Dolt backend (SQL database)");
+        match init_with_dolt(dir) {
+            Ok((s, cfg)) => (s, cfg),
+            Err(e) => {
+                eprintln!("Failed to initialize with Dolt: {e}");
+                process::exit(1);
+            }
         }
     };
 
@@ -404,6 +446,7 @@ fn main() {
             }
 
             // ADR-0017: Wrap dream in a branch workflow
+            #[cfg(not(feature = "hrm"))]
             let dream_branch: Option<String> = {
                 let agent = dolt_config.agent_id.as_str();
                 match DoltMemoryStore::from_config(&dolt_config) {

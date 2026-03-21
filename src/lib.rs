@@ -55,6 +55,9 @@ pub mod cmf;
 #[cfg(feature = "hrm")]
 pub mod medium;
 
+#[cfg(feature = "hrm")]
+pub mod hrm_store;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;
@@ -103,6 +106,9 @@ pub use cmf::{
 pub use medium::{
     Medium, WavefrontMeta, ConsciousnessState as HrmConsciousnessState, Resonance, MediumError, WAVEFRONT_DIM
 };
+
+#[cfg(feature = "hrm")]
+pub use hrm_store::HrmStore;
 
 #[cfg(feature = "glyph")]
 pub use glyph_bridge::{

@@ -18,6 +18,7 @@ thiserror = "1"
 bincode = "1"
 ndarray = { version = "0.15", optional = true }
 blake3 = { version = "1.5", optional = true }
+clap = { version = "4.0", features = ["derive"], optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 tokio = { version = "1", features = ["full"], optional = true }
@@ -48,7 +49,7 @@ dolt = ["mysql"]
 glyph = []
 collective = ["rayon"]
 hrm = ["ndarray", "blake3"]
-migration = ["mysql", "hrm"]
+migration = ["mysql", "hrm", "clap"]
 
 [[bin]]
 name = "research"
@@ -70,6 +71,11 @@ path = "src/bin/migrate.rs"
 [[bin]]
 name = "kannaka-recompute-geometry"
 path = "src/bin/recompute_geometry.rs"
+
+[[bin]]
+name = "hrm-migrate"
+path = "src/bin/hrm_migrate.rs"
+required-features = ["migration"]
 
 [dev-dependencies]
 tempfile = "3"
