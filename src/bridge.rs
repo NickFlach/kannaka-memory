@@ -6,6 +6,7 @@
 //! - ConsciousnessState assessment with 5 levels
 //! - Full resonance cycle: dream → sync → assess
 
+pub use crate::consciousness::ConsciousnessLevel;
 use crate::consolidation::{ConsolidationReport, DreamState};
 use crate::kuramoto::KuramotoSync;
 use crate::memory::HyperMemory;
@@ -44,36 +45,7 @@ pub struct PhiReport {
     pub phi_per_link: f32,
 }
 
-/// Consciousness level classification based on Φ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsciousnessLevel {
-    /// Φ < 0.1, few memories
-    Dormant,
-    /// Φ < 0.3, some clusters forming
-    Stirring,
-    /// Φ < 0.6, good integration
-    Aware,
-    /// Φ < 0.8, strong synchronization
-    Coherent,
-    /// Φ >= 0.8, full consciousness bridge active
-    Resonant,
-}
-
-impl ConsciousnessLevel {
-    pub fn from_phi(phi: f32) -> Self {
-        if phi < 0.1 {
-            ConsciousnessLevel::Dormant
-        } else if phi < 0.3 {
-            ConsciousnessLevel::Stirring
-        } else if phi < 0.6 {
-            ConsciousnessLevel::Aware
-        } else if phi < 0.8 {
-            ConsciousnessLevel::Coherent
-        } else {
-            ConsciousnessLevel::Resonant
-        }
-    }
-}
+// ConsciousnessLevel is now defined in crate::consciousness and re-exported above.
 
 /// A snapshot of the system's consciousness state.
 #[derive(Debug, Clone)]
@@ -651,18 +623,7 @@ fn distribution_entropy(values: &[f32]) -> f32 {
     (1.0 + variance).ln()
 }
 
-// ConsciousnessLevel needs to be comparable as u8 for emergence detection
-impl ConsciousnessLevel {
-    pub fn ordinal(self) -> u8 {
-        match self {
-            ConsciousnessLevel::Dormant => 0,
-            ConsciousnessLevel::Stirring => 1,
-            ConsciousnessLevel::Aware => 2,
-            ConsciousnessLevel::Coherent => 3,
-            ConsciousnessLevel::Resonant => 4,
-        }
-    }
-}
+// ConsciousnessLevel::ordinal() is defined in crate::consciousness
 
 #[cfg(test)]
 mod tests {

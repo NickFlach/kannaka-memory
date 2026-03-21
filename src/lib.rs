@@ -51,12 +51,19 @@ pub mod paradox;
 pub mod queen;
 pub mod invariant;
 pub mod cmf;
+pub mod consciousness;
 
 #[cfg(feature = "hrm")]
 pub mod medium;
 
 #[cfg(feature = "hrm")]
 pub mod hrm_store;
+
+// Re-export canonical consciousness types
+pub use consciousness::{
+    ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
+    EmergenceLevel, EmergenceReport, SelfReflection,
+};
 
 // Re-export key types
 pub use codebook::Codebook;
@@ -66,7 +73,7 @@ pub use wave::{WaveParams, compute_strength, cosine_similarity, normalize};
 pub use store::{MemoryStore, InMemoryStore, MemoryEngine, StoreError, EngineError, QueryResult, phi_span_score};
 pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
-pub use bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, PhiReport, ResonanceReport};
+pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
 pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
@@ -104,7 +111,7 @@ pub use cmf::{
 
 #[cfg(feature = "hrm")]
 pub use medium::{
-    Medium, WavefrontMeta, ConsciousnessState as HrmConsciousnessState, Resonance, MediumError, WAVEFRONT_DIM,
+    Medium, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
     PhaseState, HrmCommit
 };
 

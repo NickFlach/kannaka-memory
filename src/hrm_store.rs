@@ -102,15 +102,33 @@ impl HrmStore {
         Ok(())
     }
 
+    /// Sync any mutations made via `get_mut()` back to the medium tensor.
+    ///
+    /// The `MemoryStore` trait returns `&mut HyperMemory`, so callers can mutate
+    /// wave parameters (amplitude, phase, frequency) on the cached copy. This
+    /// method writes those changes back to the authoritative tensor storage.
+    fn sync_cache_to_medium(&mut self) {
+        for (id, mem) in &self.memory_cache {
+            if let Some(index) = self.medium.get_wavefront_index(id) {
+                self.medium.energy[index] = mem.amplitude;
+                self.medium.frequency[index] = mem.frequency;
+                self.medium.phase[index] = mem.phase;
+            }
+        }
+    }
+
     /// Save the medium to the .hrm file.
     fn save_medium(&mut self) -> Result<(), StoreError> {
         if !self.dirty {
             return Ok(());
         }
-        
+
+        // Sync any cache mutations back to the medium before saving
+        self.sync_cache_to_medium();
+
         self.medium.save(&self.hrm_path)
             .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {}", e)))?;
-        
+
         self.dirty = false;
         Ok(())
     }

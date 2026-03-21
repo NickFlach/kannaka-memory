@@ -293,6 +293,39 @@ impl MemoryEngine {
         Ok(created_links)
     }
 
+    /// Build a QueryResult with Xi diversity boosting applied.
+    fn build_xi_boosted_result(
+        &self,
+        id: Uuid,
+        base_similarity: f32,
+        combined_score: f32,
+        query_xi: &[f32],
+    ) -> QueryResult {
+        let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
+            let mem_xi = if mem.xi_signature.is_empty() {
+                compute_xi_signature(&mem.vector)
+            } else {
+                mem.xi_signature.clone()
+            };
+            xi_diversity_boost(base_similarity, query_xi, &mem_xi)
+        } else {
+            base_similarity
+        };
+
+        let effective_strength = if base_similarity.abs() > 1e-9 {
+            combined_score / base_similarity
+        } else {
+            0.0
+        };
+
+        QueryResult {
+            id,
+            similarity: xi_boosted_similarity,
+            effective_strength,
+            combined_score: combined_score * (xi_boosted_similarity / base_similarity.max(1e-9)),
+        }
+    }
+
     /// Encode a query and search with wave-modulated ranking and Xi diversity boosting.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
         let qvec = self.pipeline.encode_text(query)?;
@@ -307,32 +340,7 @@ impl MemoryEngine {
             .into_iter()
             .map(|(id, combined)| {
                 let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                
-                // Apply Xi diversity boosting
-                let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
-                    let mem_xi = if mem.xi_signature.is_empty() {
-                        // Compute on-the-fly for backward compatibility
-                        compute_xi_signature(&mem.vector)
-                    } else {
-                        mem.xi_signature.clone()
-                    };
-                    xi_diversity_boost(base_similarity, &query_xi, &mem_xi)
-                } else {
-                    base_similarity
-                };
-                
-                let effective_strength = if base_similarity.abs() > 1e-9 {
-                    combined / base_similarity
-                } else {
-                    0.0
-                };
-                
-                QueryResult {
-                    id,
-                    similarity: xi_boosted_similarity,
-                    effective_strength,
-                    combined_score: combined * (xi_boosted_similarity / base_similarity.max(1e-9)),
-                }
+                self.build_xi_boosted_result(id, base_similarity, combined, &query_xi)
             })
             .collect::<Vec<_>>();
 
@@ -403,32 +411,7 @@ impl MemoryEngine {
             .into_iter()
             .map(|(id, combined_score)| {
                 let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                
-                // Apply Xi diversity boosting
-                let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
-                    let mem_xi = if mem.xi_signature.is_empty() {
-                        // Compute on-the-fly for backward compatibility
-                        compute_xi_signature(&mem.vector)
-                    } else {
-                        mem.xi_signature.clone()
-                    };
-                    xi_diversity_boost(base_similarity, &query_xi, &mem_xi)
-                } else {
-                    base_similarity
-                };
-                
-                let effective_strength = if base_similarity.abs() > 1e-9 {
-                    combined_score / base_similarity
-                } else {
-                    0.0
-                };
-                
-                QueryResult {
-                    id,
-                    similarity: xi_boosted_similarity,
-                    effective_strength,
-                    combined_score: combined_score * (xi_boosted_similarity / base_similarity.max(1e-9)),
-                }
+                self.build_xi_boosted_result(id, base_similarity, combined_score, &query_xi)
             })
             .collect();
 
