@@ -243,7 +243,15 @@ impl Medium {
 
         let n = self.wavefront_count();
         let threshold = 0.3; // Lower threshold for more connections during dreams
-        let eta = 0.05 * (1.0 + temperature); // Temperature-modulated dampening
+        
+        // ISSUE #35 FIX: Scale annealing based on memory age variance
+        // When memories have similar ages (bulk import), reduce dampening
+        let age_variance = self.compute_memory_age_variance();
+        let age_dampening_scale = if age_variance < 3600.0 { 0.1 } else { 1.0 }; // Low variance = recent bulk import
+        let eta = 0.05 * (1.0 + temperature) * age_dampening_scale;
+        
+        // ISSUE #35 FIX: Minimum amplitude floor during dreams
+        let dream_amplitude_floor = 0.05;
 
         // Compute interference with temperature-boosted exploration
         let mut growth_terms = vec![0.0f32; n];
@@ -277,7 +285,9 @@ impl Medium {
             // Track total energy dampened for wisdom calculation
             self.total_energy_dampened += dampening;
 
-            self.energy[i] = (self.energy[i] + growth - dampening).max(0.001);
+            // ISSUE #35 FIX: Apply amplitude floor during dream cycles
+            let new_energy = self.energy[i] + growth - dampening;
+            self.energy[i] = new_energy.max(dream_amplitude_floor);
 
             // Temperature-modulated phase evolution
             if growth.abs() > 0.001 {
@@ -285,6 +295,27 @@ impl Medium {
                 self.phase[i] += phase_force;
             }
         }
+    }
+
+    /// Compute variance in memory ages (in seconds) to detect bulk imports
+    /// Returns high values for memories created at different times,
+    /// low values for bulk imports where all memories have similar timestamps
+    pub fn compute_memory_age_variance(&self) -> f32 {
+        if self.wavefront_count() < 2 {
+            return 3600.0; // Default high variance for single/no memories
+        }
+
+        let now = chrono::Utc::now();
+        let ages: Vec<f32> = self.metadata.iter()
+            .map(|meta| (now - meta.created_at).num_seconds() as f32)
+            .collect();
+
+        let mean_age = ages.iter().sum::<f32>() / ages.len() as f32;
+        let variance = ages.iter()
+            .map(|&age| (age - mean_age).powi(2))
+            .sum::<f32>() / ages.len() as f32;
+
+        variance
     }
 
     /// Prune wavefronts with energy below threshold (forgetting during dreams)

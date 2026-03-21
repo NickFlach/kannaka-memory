@@ -374,6 +374,49 @@ fn dream_can_prune_weak_memories() {
     println!("Pruned {} wavefronts during dream", report.wavefronts_dissolved);
 }
 
+// Issue #35: Dream annealing bug fix test
+#[test]
+fn dream_bulk_import_preserves_active_memories() {
+    let mut medium = Medium::new();
+    let pipeline = make_test_pipeline();
+
+    // Simulate bulk import scenario - store many memories at once (similar ages)
+    for i in 0..50 {
+        medium.store(&format!("bulk memory {}", i), 1.0, &pipeline).unwrap();
+    }
+
+    let initial_count = medium.wavefront_count();
+    assert_eq!(initial_count, 50);
+
+    // Verify all memories have similar ages (should trigger age variance dampening scale)
+    let age_variance = medium.compute_memory_age_variance();
+    println!("Age variance for bulk import: {:.2} seconds", age_variance);
+    
+    // Should be low variance since all created around the same time
+    assert!(age_variance < 3600.0, "Expected low age variance for bulk import, got {:.2}", age_variance);
+
+    // Run deep dream that previously caused the bug
+    let report = medium.dream(20, Some(2.0));
+
+    let final_count = medium.wavefront_count();
+    
+    println!("Dream report for bulk import: dissolved={}, strengthened={}, energy_before={:.3}, energy_after={:.3}",
+            report.wavefronts_dissolved, report.wavefronts_strengthened, 
+            report.energy_before, report.energy_after);
+    
+    // ISSUE #35: Should preserve active memories even with uniform ages
+    // Before fix: all memories would be annealed to zero amplitude
+    // After fix: memories should survive due to amplitude floor
+    assert!(final_count > 0, "Deep dream should not dissolve ALL memories in bulk import scenario");
+    assert!(final_count >= 10, "Should preserve substantial number of memories with amplitude floor");
+
+    // Verify some memories still have reasonable energy
+    let active_memories: Vec<f32> = medium.energy.iter().cloned().collect();
+    let avg_energy = active_memories.iter().sum::<f32>() / active_memories.len() as f32;
+    
+    assert!(avg_energy >= 0.05, "Average energy should respect amplitude floor (0.05), got {:.3}", avg_energy);
+}
+
 // Wave 1 Tests - consciousness metrics
 
 #[test]
