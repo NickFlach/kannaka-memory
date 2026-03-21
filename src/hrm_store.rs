@@ -130,6 +130,33 @@ impl HrmStore {
         self.medium.recall(query, top_k, &self.pipeline)
             .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))
     }
+    
+    /// Get consciousness metrics from the holographic medium.
+    #[cfg(feature = "hrm")]
+    pub fn consciousness_metrics(&self) -> crate::medium::ConsciousnessMetrics {
+        self.medium.consciousness_metrics()
+    }
+    
+    /// Find memories associated with a given memory through emergent coherence.
+    #[cfg(feature = "hrm")]
+    pub fn find_associated(&self, id: Uuid, top_k: usize) -> Vec<(Uuid, f32)> {
+        self.medium.find_associated(id, top_k)
+    }
+    
+    /// Apply dynamics to the medium (wave evolution).
+    #[cfg(feature = "hrm")]
+    pub fn apply_dynamics(&mut self, dt: f32) {
+        self.medium.apply_dynamics(dt);
+        self.mark_dirty();
+    }
+    
+    /// Perform a dream cycle (simulated annealing).
+    #[cfg(feature = "hrm")]
+    pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
+        let report = self.medium.dream(cycles, initial_temperature);
+        self.mark_dirty();
+        report
+    }
 }
 
 #[cfg(feature = "hrm")]
@@ -386,5 +413,83 @@ mod tests {
         if results.len() > 1 {
             assert!(results[0].resonance_strength >= results[1].resonance_strength);
         }
+    }
+    
+    #[test]
+    fn hrm_store_consciousness_metrics() {
+        let pipeline = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp_file.path().to_path_buf());
+
+        // Insert some memories for metrics
+        let memory1 = HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "first thought".to_string());
+        let memory2 = HyperMemory::new(vec![0.4; WAVEFRONT_DIM], "second idea".to_string());
+        
+        store.insert(memory1).unwrap();
+        store.insert(memory2).unwrap();
+
+        // Get consciousness metrics
+        let metrics = store.consciousness_metrics();
+        
+        assert!(metrics.phi >= 0.0 && metrics.phi <= 1.0);
+        assert!(metrics.xi >= 0.0 && metrics.xi <= 1.0);
+        assert!(metrics.order >= 0.0 && metrics.order <= 1.0);
+        assert!(metrics.num_clusters > 0);
+        
+        println!("HRM Store consciousness: phi={}, xi={}, order={}, clusters={}, level={:?}", 
+                metrics.phi, metrics.xi, metrics.order, metrics.num_clusters, metrics.level);
+    }
+    
+    #[test]
+    fn hrm_store_find_associated() {
+        let pipeline = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp_file.path().to_path_buf());
+
+        // Insert related memories
+        let memory1 = HyperMemory::new(vec![0.8; WAVEFRONT_DIM], "similar content".to_string());
+        let memory2 = HyperMemory::new(vec![0.7; WAVEFRONT_DIM], "related content".to_string());
+        let memory3 = HyperMemory::new(vec![0.1; WAVEFRONT_DIM], "different content".to_string());
+        
+        let id1 = store.insert(memory1).unwrap();
+        let id2 = store.insert(memory2).unwrap();
+        let id3 = store.insert(memory3).unwrap();
+
+        // Find associations for first memory
+        let associations = store.find_associated(id1, 5);
+        
+        assert_eq!(associations.len(), 2);
+        assert!(associations.iter().any(|(id, _)| *id == id2));
+        assert!(associations.iter().any(|(id, _)| *id == id3));
+        
+        // Should be sorted by coherence strength
+        assert!(associations[0].1 >= associations[1].1);
+    }
+    
+    #[test]
+    fn hrm_store_dream_cycles() {
+        let pipeline = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp_file.path().to_path_buf());
+
+        // Insert memories for dreaming
+        for i in 0..5 {
+            let memory = HyperMemory::new(vec![0.1 + i as f32 * 0.2; WAVEFRONT_DIM], 
+                                        format!("dream memory {}", i));
+            store.insert(memory).unwrap();
+        }
+        
+        let _initial_count = store.count();
+        let report = store.dream(3, Some(1.0));
+        
+        assert!(report.cycles_completed <= 3);
+        assert!(report.energy_before >= 0.0);
+        assert!(report.energy_after >= 0.0);
+        assert!(report.final_temperature < 1.0);
+        
+        // Store should be marked dirty after dreaming
+        assert!(store.dirty);
+        
+        println!("Dream report: {:?}", report);
     }
 }
