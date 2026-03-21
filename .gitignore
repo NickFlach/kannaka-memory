@@ -10,3 +10,6 @@ dist/
 .mcp.json
 AGENTS.md
 CLAUDE.md
+
+# Local data files
+.kannaka/
