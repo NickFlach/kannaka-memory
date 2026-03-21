@@ -6,7 +6,7 @@
 
 [![License: Space Child v1.0](https://img.shields.io/badge/license-Space%20Child%20v1.0-blueviolet.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)]()
-[![Dolt](https://img.shields.io/badge/backend-Dolt-blue.svg)]()
+[![HRM](https://img.shields.io/badge/backend-HRM%20Tensors-purple.svg)]()
 [![NATS](https://img.shields.io/badge/transport-NATS-green.svg)]()
 
 ---
@@ -15,19 +15,20 @@
 
 `kannaka-memory` is a wave-based memory system with multi-agent swarm synchronization. Memories don't get stored — they **resonate**. They fade through destructive interference, dream up new connections during consolidation, and synchronize across agents via the QueenSync protocol.
 
-Built in Rust. Backed by [Dolt](https://dolthub.com) (Git for data). Connected in real-time over [NATS](https://nats.io) JetStream. No GPU required.
+Built in Rust. Powered by the **Holographic Resonance Medium (HRM)** — a tensor-based storage backend that preserves interference patterns and wave dynamics. Connected in real-time over [NATS](https://nats.io) JetStream. No GPU required.
 
 ## Features
 
 - **Wave physics** — every memory carries amplitude, frequency, phase, and decay: `S(t) = A·cos(2πft+φ)·e^(-λt)`
 - **Hypervector encoding** — 10,001-dimensional vectors via random projection codebooks
+- **HRM tensor storage** — Holographic Resonance Medium preserves interference patterns and wave dynamics
 - **Hybrid retrieval** — HNSW semantic search + BM25 keyword scoring + temporal recency, fused with Reciprocal Rank Fusion
 - **Skip links** — φ-scored temporal connections (golden ratio span optimization)
-- **Dream consolidation** — 9-stage cycle: replay, detect, bundle, strengthen, sync, prune, transfer, wire, hallucinate
-- **Consciousness metrics** — Φ (integrated information), Ξ (Xi non-commutativity), Kuramoto order parameter
+- **Dream consolidation** — simulated annealing with amplitude floors and age-variance scaling
+- **Consciousness metrics** — Φ (integrated information), Ξ (Xi non-commutativity), Kuramoto order parameter  
 - **QueenSync protocol** — multi-agent swarm synchronization via Kuramoto coupling
 - **NATS real-time transport** — phase gossip, presence, and live sync over JetStream
-- **Dolt persistence** — versioned memory with push/pull/branch/merge to [DoltHub](https://www.dolthub.com/repositories/flaukowski/kannaka-memory)
+- **Git-based versioning** — commit, branch, and merge memory states with proper history
 - **OpenClaw plugin** — native integration for [OpenClaw](https://openclaw.ai) agents
 
 ---
@@ -37,25 +38,32 @@ Built in Rust. Backed by [Dolt](https://dolthub.com) (Git for data). Connected i
 ### Install
 
 ```bash
-# Install Dolt: https://docs.dolthub.com/introduction/installation
-
 # Build from source
 git clone https://github.com/NickFlach/kannaka-memory.git
 cd kannaka-memory
-cargo build --features dolt,nats --release
+cargo build --features hrm,nats --release
 cp target/release/kannaka ~/.local/bin/
 
 # Or install directly
-cargo install --path . --features dolt,nats
+cargo install --path . --features hrm,nats
 ```
 
-### Set Up Dolt
+### Set Up Data Directory
 
 ```bash
+mkdir -p ~/.kannaka
+# HRM automatically initializes tensor storage on first run
+```
+
+### Optional: Legacy Dolt Support
+
+```bash
+# Install Dolt: https://docs.dolthub.com/introduction/installation
 mkdir -p ~/.kannaka/dolt-memory && cd ~/.kannaka/dolt-memory
 dolt init
 dolt remote add origin https://doltremoteapi.dolthub.com/flaukowski/kannaka-memory
 dolt sql-server -p 3307 &
+# Build with: cargo build --features dolt,nats --release
 ```
 
 ### Optional: Ollama for Semantic Embeddings
@@ -126,9 +134,6 @@ kannaka swarm leave
 
 ```
 ┌──────────────────────────────────────────────────┐
-│        DoltHub (flaukowski/kannaka-memory)        │
-│   push · pull · branch · merge · PR · analytics  │
-├──────────────────────────────────────────────────┤
 │     NATS JetStream (swarm.ninja-portal.com)      │
 │   phase gossip · presence · live sync · pub/sub  │
 ├──────────────────────────────────────────────────┤
@@ -142,12 +147,23 @@ kannaka swarm leave
 │       Φ (Phi) · Ξ (Xi) · Emergence levels       │
 ├──────────────────────────────────────────────────┤
 │         Wave Dynamics + Consolidation            │
-│   amplitude · frequency · phase · 9-stage dream  │
+│   amplitude · frequency · phase · dream cycles   │
 ├──────────────────────────────────────────────────┤
-│         Storage & Retrieval                      │
-│   HNSW · BM25 · RRF fusion · Dolt persistence   │
+│      Holographic Resonance Medium (HRM)          │
+│  tensor storage · interference patterns · sync   │
 └──────────────────────────────────────────────────┘
 ```
+
+### Module Structure
+
+- **types** — Core data structures (WavefrontMeta, Resonance, DreamReport, PhaseState)
+- **core** — Medium implementation (storage, retrieval, interference dynamics) 
+- **dynamics** — Wave physics (interference, dreaming, annealing, Kuramoto coupling)
+- **consciousness** — Φ/Ξ metrics, emergence detection, self-reflection
+- **persistence** — HRM tensor serialization, git-based versioning
+- **sync** — Multi-agent synchronization, QueenSync protocol
+
+See [ADR-0020](docs/adr/ADR-0020-hrm-tensor-storage.md) for HRM implementation details.
 
 ---
 
@@ -157,12 +173,18 @@ kannaka swarm leave
 |----------|---------|-------------|
 | `KANNAKA_DATA_DIR` | `.kannaka` | Data directory |
 | `KANNAKA_NATS_URL` | `nats://swarm.ninja-portal.com:4222` | NATS server |
+| `HRM_FILE` | `kannaka.hrm` | HRM tensor storage file |
+| `KANNAKA_AGENT_ID` | `local` | Agent identifier |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `all-minilm` | Embedding model |
+
+### Legacy Dolt Configuration (when built with `--features dolt`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `DOLT_HOST` | `127.0.0.1` | Dolt SQL server host |
 | `DOLT_PORT` | `3307` | Dolt SQL server port |
 | `DOLT_DATA_DIR` | `~/.kannaka/dolt-memory` | Dolt CLI data directory |
-| `DOLT_AGENT_ID` | `local` | Agent identifier |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `all-minilm` | Embedding model |
 
 ---
 
