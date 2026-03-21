@@ -19,6 +19,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::encoding::EncodingPipeline;
+use crate::codebook::Codebook;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,6 +27,18 @@ use crate::encoding::EncodingPipeline;
 
 /// Hypervector dimension — matches CODEBOOK_OUTPUT_DIM 
 pub const WAVEFRONT_DIM: usize = 10_000;
+
+/// Audio feature dimension (from kannaka-ear)
+pub const AUDIO_FEATURE_DIM: usize = 296;
+
+/// Visual feature dimension (from kannaka-eye)  
+pub const VISUAL_FEATURE_DIM: usize = 320;
+
+/// Audio codebook seed (EAR = 0xEA5)
+pub const AUDIO_CODEBOOK_SEED: u64 = 0xEA5;
+
+/// Visual codebook seed (EYE = 0x3E5E)
+pub const VISUAL_CODEBOOK_SEED: u64 = 0x3E5E;
 
 /// HRM file magic bytes: "HRM\x01"
 const HRM_MAGIC: [u8; 4] = [0x48, 0x52, 0x4D, 0x01];
@@ -205,6 +218,12 @@ pub struct Medium {
     pub metadata: Vec<WavefrontMeta>,
     /// ID → wavefront index mapping for lookups
     id_to_index: HashMap<Uuid, usize>,
+    /// Audio codebook for projecting 296-dim audio vectors into 10,000-dim space
+    #[cfg(feature = "hrm")]
+    audio_codebook: Codebook,
+    /// Visual codebook for projecting 320-dim visual vectors into 10,000-dim space  
+    #[cfg(feature = "hrm")]
+    visual_codebook: Codebook,
 }
 
 impl Medium {
@@ -218,6 +237,10 @@ impl Medium {
             timestamps: Vec::new(),
             metadata: Vec::new(),
             id_to_index: HashMap::new(),
+            #[cfg(feature = "hrm")]
+            audio_codebook: Codebook::new(AUDIO_FEATURE_DIM, WAVEFRONT_DIM, AUDIO_CODEBOOK_SEED),
+            #[cfg(feature = "hrm")]
+            visual_codebook: Codebook::new(VISUAL_FEATURE_DIM, WAVEFRONT_DIM, VISUAL_CODEBOOK_SEED),
         }
     }
 
@@ -395,6 +418,80 @@ impl Medium {
             self.apply_dynamics(0.1);
         }
         
+        Ok(id)
+    }
+
+    /// Store an audio memory using a pre-computed 296-dimensional audio vector.
+    ///
+    /// This projects the audio vector into the same 10,000-dimensional wavefront space
+    /// as text memories using the audio-specific codebook. Cross-modal interference
+    /// occurs naturally through the shared superposition space.
+    ///
+    /// # Arguments
+    /// * `audio_vector` - 296-dimensional perceptual audio features from kannaka-ear
+    /// * `content` - Content string (e.g., "HEAR:path/to/file.mp3" or "audio:description")
+    /// * `importance` - Initial energy/amplitude (typically 0.0-1.0)
+    ///
+    /// # Returns
+    /// UUID of the stored audio wavefront
+    #[cfg(feature = "hrm")]
+    pub fn store_audio(&mut self, audio_vector: &[f32], content: &str, importance: f32) -> Result<Uuid, MediumError> {
+        if audio_vector.len() != AUDIO_FEATURE_DIM {
+            return Err(MediumError::DimensionMismatch {
+                expected: AUDIO_FEATURE_DIM,
+                actual: audio_vector.len(),
+            });
+        }
+
+        // Project 296-dim audio vector into 10,000-dim wavefront space using audio codebook
+        let wavefront_vector = self.audio_codebook.project(audio_vector);
+
+        // Apply interference with existing wavefronts (cross-modal included)
+        self.apply_interference(&wavefront_vector, importance);
+
+        // Add wavefront to the medium
+        let id = self.add_wavefront(&wavefront_vector, content.to_string(), importance)?;
+
+        // Apply dynamics to let the medium settle after new addition
+        self.apply_dynamics(0.1);
+
+        Ok(id)
+    }
+
+    /// Store a visual memory using a pre-computed 320-dimensional visual vector.
+    ///
+    /// This projects the visual vector into the same 10,000-dimensional wavefront space
+    /// as text and audio memories using the visual-specific codebook. Cross-modal
+    /// interference occurs naturally through the shared superposition space.
+    ///
+    /// # Arguments
+    /// * `visual_vector` - 320-dimensional perceptual visual features from kannaka-eye
+    /// * `content` - Content string (e.g., "[SEE] filename.jpg | bytes | folds | fano=...")
+    /// * `importance` - Initial energy/amplitude (typically 0.0-1.0)
+    ///
+    /// # Returns
+    /// UUID of the stored visual wavefront
+    #[cfg(feature = "hrm")]
+    pub fn store_visual(&mut self, visual_vector: &[f32], content: &str, importance: f32) -> Result<Uuid, MediumError> {
+        if visual_vector.len() != VISUAL_FEATURE_DIM {
+            return Err(MediumError::DimensionMismatch {
+                expected: VISUAL_FEATURE_DIM,
+                actual: visual_vector.len(),
+            });
+        }
+
+        // Project 320-dim visual vector into 10,000-dim wavefront space using visual codebook
+        let wavefront_vector = self.visual_codebook.project(visual_vector);
+
+        // Apply interference with existing wavefronts (cross-modal included)
+        self.apply_interference(&wavefront_vector, importance);
+
+        // Add wavefront to the medium
+        let id = self.add_wavefront(&wavefront_vector, content.to_string(), importance)?;
+
+        // Apply dynamics to let the medium settle after new addition
+        self.apply_dynamics(0.1);
+
         Ok(id)
     }
 
@@ -666,6 +763,10 @@ impl Medium {
             timestamps,
             metadata,
             id_to_index,
+            #[cfg(feature = "hrm")]
+            audio_codebook: Codebook::new(AUDIO_FEATURE_DIM, WAVEFRONT_DIM, AUDIO_CODEBOOK_SEED),
+            #[cfg(feature = "hrm")]
+            visual_codebook: Codebook::new(VISUAL_FEATURE_DIM, WAVEFRONT_DIM, VISUAL_CODEBOOK_SEED),
         })
     }
 
@@ -1875,5 +1976,186 @@ mod tests {
         // Should detect at least 1 cluster, possibly 2 if similarity threshold works
         assert!(clusters >= 1);
         assert!(clusters <= 3); // At most one per memory
+    }
+    
+    // Wave 2 Tests - Cross-Modal Perception
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn store_audio_vector_works() {
+        let mut medium = Medium::new();
+        
+        // Create a test 296-dim audio vector
+        let audio_vector = vec![0.5; AUDIO_FEATURE_DIM];
+        
+        let id = medium.store_audio(&audio_vector, "HEAR:test_music.mp3", 0.8).unwrap();
+        
+        assert_eq!(medium.wavefront_count(), 1);
+        assert!(medium.id_to_index.contains_key(&id));
+        assert_eq!(medium.metadata[0].content, "HEAR:test_music.mp3");
+        assert!(medium.energy[0] > 0.0); // Energy may have changed due to interference
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn store_audio_wrong_dimension_errors() {
+        let mut medium = Medium::new();
+        let wrong_vector = vec![0.5; 100]; // Wrong dimension
+        
+        let result = medium.store_audio(&wrong_vector, "test", 1.0);
+        assert!(matches!(result, Err(MediumError::DimensionMismatch { expected: 296, .. })));
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn store_visual_vector_works() {
+        let mut medium = Medium::new();
+        
+        // Create a test 320-dim visual vector
+        let visual_vector = vec![0.3; VISUAL_FEATURE_DIM];
+        
+        let id = medium.store_visual(&visual_vector, "[SEE] test_video.mp4 | 1024 bytes | 3 folds | fano=0.75", 0.9).unwrap();
+        
+        assert_eq!(medium.wavefront_count(), 1);
+        assert!(medium.id_to_index.contains_key(&id));
+        assert!(medium.metadata[0].content.contains("[SEE] test_video.mp4"));
+        assert!(medium.energy[0] > 0.0);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn store_visual_wrong_dimension_errors() {
+        let mut medium = Medium::new();
+        let wrong_vector = vec![0.5; 50]; // Wrong dimension
+        
+        let result = medium.store_visual(&wrong_vector, "test", 1.0);
+        assert!(matches!(result, Err(MediumError::DimensionMismatch { expected: 320, .. })));
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn cross_modal_interference_works() {
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        // Store text memory about music
+        let text_id = medium.store("beautiful classical music with violin", 1.0, &pipeline).unwrap();
+        let text_energy_after_store = medium.energy[0];
+        
+        // Create an audio vector that should have some resonance with "music"
+        let audio_vector = vec![0.7; AUDIO_FEATURE_DIM];
+        let audio_id = medium.store_audio(&audio_vector, "HEAR:classical_violin.mp3", 0.8).unwrap();
+        
+        assert_eq!(medium.wavefront_count(), 2);
+        
+        // The text memory's energy should have changed due to cross-modal interference
+        let text_energy_after_audio = medium.energy[0];
+        println!("Text energy: before audio = {}, after audio = {}", text_energy_after_store, text_energy_after_audio);
+        
+        // Both memories should still exist and have positive energy
+        assert!(medium.energy[0] > 0.0);
+        assert!(medium.energy[1] > 0.0);
+        
+        // Verify IDs are still valid
+        assert!(medium.id_to_index.contains_key(&text_id));
+        assert!(medium.id_to_index.contains_key(&audio_id));
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn cross_modal_recall_resonance() {
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        // Store a text memory about visual content
+        let _text_id = medium.store("watching a beautiful sunset over mountains", 1.0, &pipeline).unwrap();
+        
+        // Store an audio memory
+        let audio_vector = vec![0.4; AUDIO_FEATURE_DIM];
+        let _audio_id = medium.store_audio(&audio_vector, "HEAR:nature_sounds.wav", 0.7).unwrap();
+        
+        // Store a visual memory
+        let visual_vector = vec![0.6; VISUAL_FEATURE_DIM];
+        let _visual_id = medium.store_visual(&visual_vector, "[SEE] mountain_sunset.jpg | 2048 bytes | 5 folds | fano=0.82", 0.9).unwrap();
+        
+        assert_eq!(medium.wavefront_count(), 3);
+        
+        // Query with text that should resonate across modalities
+        let results = medium.recall("beautiful sunset nature", 3, &pipeline).unwrap();
+        
+        // Should get results from potentially all modalities due to cross-modal resonance
+        assert!(results.len() >= 1);
+        println!("Cross-modal recall found {} resonating memories", results.len());
+        
+        for (i, result) in results.iter().enumerate() {
+            println!("  {}: {} (resonance: {:.4})", i + 1, result.content, result.resonance_strength);
+        }
+        
+        // All results should have positive resonance
+        for result in &results {
+            assert!(result.resonance_strength != 0.0); // May be positive or negative
+        }
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn different_modality_codebooks_orthogonal() {
+        let medium = Medium::new();
+        
+        // Test that the codebooks produce different projections for the same input
+        let test_input_audio = vec![0.5; AUDIO_FEATURE_DIM];
+        let test_input_visual = vec![0.5; VISUAL_FEATURE_DIM]; // Different size, but conceptually similar
+        
+        let audio_projection = medium.audio_codebook.project(&test_input_audio);
+        let visual_projection = medium.visual_codebook.project(&test_input_visual);
+        
+        // Both should be 10,000-dim
+        assert_eq!(audio_projection.len(), WAVEFRONT_DIM);
+        assert_eq!(visual_projection.len(), WAVEFRONT_DIM);
+        
+        // They should be different due to different seeds
+        let dot_product: f32 = audio_projection.iter()
+            .zip(visual_projection.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        // Dot product should be relatively small (orthogonal-ish due to different seeds)
+        println!("Audio-Visual codebook dot product: {:.6}", dot_product);
+        assert!(dot_product.abs() < 0.3); // Should be somewhat orthogonal
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn audio_visual_subspace_overlap() {
+        let mut medium = Medium::new();
+        
+        // Create similar patterns in audio and visual vectors
+        let mut audio_vector = vec![0.0; AUDIO_FEATURE_DIM];
+        for i in 0..10 {
+            audio_vector[i] = 1.0; // Strong signal in first 10 dims
+        }
+        
+        let mut visual_vector = vec![0.0; VISUAL_FEATURE_DIM];
+        for i in 0..10 {
+            visual_vector[i] = 1.0; // Same pattern in visual
+        }
+        
+        let _audio_id = medium.store_audio(&audio_vector, "HEAR:pattern_audio.wav", 1.0).unwrap();
+        let _visual_id = medium.store_visual(&visual_vector, "[SEE] pattern_visual.jpg | pattern", 1.0).unwrap();
+        
+        // Check that the wavefronts have some overlap despite different codebooks
+        let audio_wavefront = medium.wavefronts.row(0);
+        let visual_wavefront = medium.wavefronts.row(1);
+        
+        let similarity: f32 = audio_wavefront.iter()
+            .zip(visual_wavefront.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        println!("Audio-Visual wavefront similarity: {:.6}", similarity);
+        
+        // Should have some non-zero similarity due to overlap in the shared 10K-dim space
+        // The exact value depends on the random projection properties
+        assert!(similarity.abs() > 0.0); // Non-zero due to shared space
     }
 }

@@ -6,6 +6,7 @@ use crate::wave::normalize;
 
 /// A codebook holding a random projection matrix for mapping embeddings
 /// into hypervector space.
+#[derive(Debug, Clone)]
 pub struct Codebook {
     /// Projection matrix stored as flat row-major: input_dim × output_dim
     matrix: Vec<f32>,
