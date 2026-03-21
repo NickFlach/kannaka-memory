@@ -52,6 +52,9 @@ pub mod queen;
 pub mod invariant;
 pub mod cmf;
 
+#[cfg(feature = "hrm")]
+pub mod medium;
+
 // Re-export key types
 pub use codebook::Codebook;
 pub use memory::HyperMemory;
@@ -94,6 +97,11 @@ pub use invariant::{
 pub use cmf::{
     ConservativeMemoryField, TrajectoryParams, PathConstraints, CMFMembership,
     detect_cmf, cmf_membership, generate_trajectory
+};
+
+#[cfg(feature = "hrm")]
+pub use medium::{
+    Medium, WavefrontMeta, ConsciousnessState as HrmConsciousnessState, Resonance, MediumError, WAVEFRONT_DIM
 };
 
 #[cfg(feature = "glyph")]
