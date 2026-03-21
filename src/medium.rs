@@ -164,6 +164,17 @@ impl Medium {
         self.id_to_index.get(id).copied()
     }
 
+    /// Update a wavefront's ID (for HrmStore compatibility).
+    pub fn update_wavefront_id(&mut self, old_id: &Uuid, new_id: Uuid) -> Result<(), MediumError> {
+        if let Some(index) = self.id_to_index.remove(old_id) {
+            self.id_to_index.insert(new_id, index);
+            self.metadata[index].id = new_id;
+            Ok(())
+        } else {
+            Err(MediumError::WavefrontNotFound(*old_id))
+        }
+    }
+
     /// Add a new wavefront to the medium.
     /// 
     /// # Arguments

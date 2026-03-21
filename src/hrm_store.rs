@@ -137,12 +137,21 @@ impl MemoryStore for HrmStore {
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
         
-        // Add to medium
-        let wavefront_id = self.medium.store(&memory.content, memory.amplitude, &self.pipeline)
-            .map_err(|e| StoreError::Other(format!("Failed to store in medium: {}", e)))?;
+        // Check for duplicates
+        if self.memory_cache.contains_key(&id) {
+            return Err(StoreError::DuplicateId(id));
+        }
         
-        // Update the wavefront with memory data
-        if let Some(index) = self.medium.get_wavefront_index(&wavefront_id) {
+        // Add to medium using the vector directly to preserve the memory's UUID
+        let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
+            .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;
+        
+        // Update the wavefront ID to match the memory's UUID
+        self.medium.update_wavefront_id(&wavefront_id, id)
+            .map_err(|e| StoreError::Other(format!("Failed to update wavefront ID: {}", e)))?;
+        
+        // Update wave parameters
+        if let Some(index) = self.medium.get_wavefront_index(&id) {
             self.medium.energy[index] = memory.amplitude;
             self.medium.frequency[index] = memory.frequency;
             self.medium.phase[index] = memory.phase;
