@@ -11,12 +11,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::process::Command;
 
 use chrono::{DateTime, Utc};
 use ndarray::{Array1, Array2, s};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
+use blake3;
 
 use crate::encoding::EncodingPipeline;
 use crate::codebook::Codebook;
@@ -66,6 +68,10 @@ pub enum MediumError {
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
     Serialization(#[from] bincode::Error),
+    #[error("Git error: {0}")]
+    Git(String),
+    #[error("No git repository found")]
+    NoGitRepo,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +201,79 @@ pub struct DreamReport {
     pub final_temperature: f32,
     /// Whether the system converged to a stable state
     pub converged: bool,
+}
+
+/// Lightweight snapshot of phase state for multi-agent gossip
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "hrm")]
+pub struct PhaseState {
+    /// Phase vector for all wavefronts
+    pub phases: Vec<f32>,
+    /// Energy vector for all wavefronts  
+    pub energies: Vec<f32>,
+    /// Content hash/fingerprint for each wavefront (for matching)
+    pub content_hashes: Vec<u64>,
+    /// Agent ID that exported this state
+    pub agent_id: String,
+    /// Export timestamp
+    pub timestamp: DateTime<Utc>,
+}
+
+/// HRM commit metadata for git-based persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrmCommit {
+    pub hash: String,
+    pub message: String,
+    pub timestamp: i64,
+    pub wavefront_count: Option<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Extract wavefront count from git commit message
+/// 
+/// Looks for patterns like "3 wavefronts", "wavefronts: 5", "42 memories", etc.
+#[cfg(feature = "hrm")]
+fn extract_wavefront_count(message: &str) -> Option<usize> {
+    let message_lower = message.to_lowercase();
+    
+    // Pattern 1: "X wavefronts"
+    if let Some(start) = message_lower.find(" wavefront") {
+        let before = &message_lower[..start];
+        if let Some(number_start) = before.rfind(' ') {
+            let number_str = &before[number_start + 1..];
+            if let Ok(count) = number_str.parse::<usize>() {
+                return Some(count);
+            }
+        }
+    }
+    
+    // Pattern 2: "wavefronts: X"
+    if let Some(start) = message_lower.find("wavefronts:") {
+        let after = &message_lower[start + 11..];
+        let number_str = after.trim_start();
+        if let Some(end) = number_str.find(|c: char| !c.is_ascii_digit()) {
+            let number_str = &number_str[..end];
+            if let Ok(count) = number_str.parse::<usize>() {
+                return Some(count);
+            }
+        }
+    }
+    
+    // Pattern 3: "X memories" 
+    if let Some(start) = message_lower.find(" memor") {
+        let before = &message_lower[..start];
+        if let Some(number_start) = before.rfind(' ') {
+            let number_str = &before[number_start + 1..];
+            if let Ok(count) = number_str.parse::<usize>() {
+                return Some(count);
+            }
+        }
+    }
+    
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +727,201 @@ impl Medium {
         file.write_all(checksum.as_bytes())?;
 
         Ok(())
+    }
+
+    /// Save the medium and commit to git with a message
+    /// 
+    /// This function:
+    /// 1. Saves the .hrm file (using existing save() method)
+    /// 2. Runs `git add <filename>` on the saved file  
+    /// 3. Runs `git commit -m "<message>"`
+    /// 4. Returns the commit hash
+    /// 5. Optionally: `git push origin master` if push flag is set
+    /// 
+    /// # Arguments
+    /// * `path` - Path to save the .hrm file
+    /// * `message` - Git commit message
+    /// * `push` - Whether to push to origin master after committing
+    #[cfg(feature = "hrm")]
+    pub fn save_and_commit<P: AsRef<Path>>(&self, path: P, message: &str, push: bool) -> Result<String, MediumError> {
+        let path_ref = path.as_ref();
+        
+        // 1. Save the .hrm file
+        self.save(path_ref)?;
+        
+        // 2. Git add the file
+        let output = Command::new("git")
+            .args(&["add", &path_ref.to_string_lossy()])
+            .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+            .output()
+            .map_err(|e| MediumError::Git(format!("Failed to run git add: {}", e)))?;
+        
+        if !output.status.success() {
+            return Err(MediumError::Git(format!(
+                "git add failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        
+        // 3. Git commit with message
+        let output = Command::new("git")
+            .args(&["commit", "-m", message])
+            .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+            .output()
+            .map_err(|e| MediumError::Git(format!("Failed to run git commit: {}", e)))?;
+        
+        if !output.status.success() {
+            return Err(MediumError::Git(format!(
+                "git commit failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        
+        // 4. Get the commit hash
+        let output = Command::new("git")
+            .args(&["rev-parse", "HEAD"])
+            .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+            .output()
+            .map_err(|e| MediumError::Git(format!("Failed to get commit hash: {}", e)))?;
+        
+        if !output.status.success() {
+            return Err(MediumError::Git(format!(
+                "git rev-parse failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        
+        let commit_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        
+        // 5. Optional push to origin master
+        if push {
+            let output = Command::new("git")
+                .args(&["push", "origin", "master"])
+                .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+                .output()
+                .map_err(|e| MediumError::Git(format!("Failed to run git push: {}", e)))?;
+            
+            if !output.status.success() {
+                // Push failure is non-fatal, just log it
+                eprintln!("Warning: git push failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        
+        Ok(commit_hash)
+    }
+    
+    /// Load a medium from git (historical version or working directory)
+    /// 
+    /// # Arguments
+    /// * `path` - Path to the .hrm file
+    /// * `commit` - Optional commit hash. If None, loads from working directory.
+    ///              If Some, runs `git show <commit>:<path>` to get historical version.
+    #[cfg(feature = "hrm")]
+    pub fn load_from_git<P: AsRef<Path>>(path: P, commit: Option<&str>) -> Result<Medium, MediumError> {
+        let path_ref = path.as_ref();
+        
+        match commit {
+            None => {
+                // Load from working directory (current file)
+                Medium::load(path_ref)
+            }
+            Some(commit_hash) => {
+                // Load historical version using git show
+                let git_path = format!("{}:{}", commit_hash, path_ref.to_string_lossy());
+                let output = Command::new("git")
+                    .args(&["show", &git_path])
+                    .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+                    .output()
+                    .map_err(|e| MediumError::Git(format!("Failed to run git show: {}", e)))?;
+                
+                if !output.status.success() {
+                    return Err(MediumError::Git(format!(
+                        "git show failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+                
+                // Save git show output to a temporary file and load it
+                use std::env;
+                use std::io::Write;
+                
+                let temp_dir = env::temp_dir();
+                let temp_path = temp_dir.join(format!("hrm_git_show_{}", commit_hash));
+                
+                {
+                    let mut temp_file = File::create(&temp_path)
+                        .map_err(|e| MediumError::Io(e))?;
+                    temp_file.write_all(&output.stdout)
+                        .map_err(|e| MediumError::Io(e))?;
+                    temp_file.flush()
+                        .map_err(|e| MediumError::Io(e))?;
+                }
+                
+                let result = Medium::load(&temp_path);
+                
+                // Clean up temp file
+                let _ = std::fs::remove_file(&temp_path);
+                
+                result
+            }
+        }
+    }
+    
+    /// Get git history for .hrm file
+    /// 
+    /// Returns recent commits that touched the .hrm file, with metadata.
+    /// 
+    /// # Arguments
+    /// * `path` - Path to the .hrm file
+    /// * `limit` - Maximum number of commits to return
+    #[cfg(feature = "hrm")]
+    pub fn history<P: AsRef<Path>>(path: P, limit: usize) -> Result<Vec<HrmCommit>, MediumError> {
+        let path_ref = path.as_ref();
+        
+        // Get git log for this specific file
+        let output = Command::new("git")
+            .args(&[
+                "log",
+                "--format=%H|%s|%ct", // hash|subject|timestamp
+                &format!("-{}", limit),
+                "--",
+                &path_ref.to_string_lossy()
+            ])
+            .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
+            .output()
+            .map_err(|e| MediumError::Git(format!("Failed to run git log: {}", e)))?;
+        
+        if !output.status.success() {
+            return Err(MediumError::Git(format!(
+                "git log failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        
+        let log_output = String::from_utf8_lossy(&output.stdout);
+        let mut commits = Vec::new();
+        
+        for line in log_output.lines() {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() >= 3 {
+                let hash = parts[0].to_string();
+                let message = parts[1].to_string();
+                let timestamp = parts[2].parse::<i64>().unwrap_or(0);
+                
+                // Try to extract wavefront count from the commit
+                // Look for patterns like "3 wavefronts" or "wavefronts: 5" in message
+                let wavefront_count = extract_wavefront_count(&message);
+                
+                commits.push(HrmCommit {
+                    hash,
+                    message,
+                    timestamp,
+                    wavefront_count,
+                });
+            }
+        }
+        
+        Ok(commits)
     }
 
     /// Load a medium from a .hrm file.
@@ -1109,6 +1383,144 @@ impl Medium {
         }
         
         removed_count
+    }
+
+    /// Kuramoto coupling between two agent media
+    /// 
+    /// For each wavefront in self, finds the most phase-coherent wavefront in other 
+    /// (by dot product similarity above threshold). For matched pairs:
+    /// - Δφ_i = coupling * sin(φ_other - φ_self)  (Kuramoto phase coupling)
+    /// - energy_self += coupling * energy_other * coherence  (amplitude reinforcement)
+    /// 
+    /// # Arguments
+    /// * `other` - The other agent's medium to sync with
+    /// * `coupling` - Coupling strength (typically 0.0-1.0)
+    #[cfg(feature = "hrm")]
+    pub fn sync_with(&mut self, other: &Medium, coupling: f32) {
+        if self.wavefront_count() == 0 || other.wavefront_count() == 0 {
+            return;
+        }
+
+        let threshold = 0.5; // Minimum dot product for phase coherence
+        
+        for i in 0..self.wavefront_count() {
+            let self_wavefront = self.wavefronts.row(i);
+            let mut best_match_idx = None;
+            let mut best_coherence = threshold;
+            
+            // Find most phase-coherent wavefront in other medium
+            for j in 0..other.wavefront_count() {
+                let other_wavefront = other.wavefronts.row(j);
+                
+                // Compute dot product similarity
+                let dot_product: f32 = self_wavefront.iter()
+                    .zip(other_wavefront.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
+                
+                if dot_product.abs() > best_coherence {
+                    best_coherence = dot_product.abs();
+                    best_match_idx = Some(j);
+                }
+            }
+            
+            // Apply Kuramoto coupling if we found a good match
+            if let Some(j) = best_match_idx {
+                let phase_diff = other.phase[j] - self.phase[i];
+                
+                // Kuramoto phase coupling: Δφ_i = coupling * sin(φ_other - φ_self)
+                let delta_phase = coupling * phase_diff.sin();
+                self.phase[i] += delta_phase;
+                
+                // Amplitude reinforcement: energy_self += coupling * energy_other * coherence
+                let amplitude_boost = coupling * other.energy[j] * best_coherence;
+                self.energy[i] += amplitude_boost * 0.1; // Scale down to prevent runaway
+                
+                // Ensure energy stays positive and reasonable
+                self.energy[i] = self.energy[i].max(0.001).min(10.0);
+            }
+        }
+    }
+    
+    /// Export lightweight phase state for gossip
+    /// 
+    /// Returns a lightweight snapshot containing just phase vectors, energy vectors,
+    /// and content hashes for matching across agents without sharing full content.
+    /// 
+    /// # Arguments
+    /// * `agent_id` - Identifier for the agent exporting this state
+    #[cfg(feature = "hrm")]
+    pub fn export_phase_state(&self, agent_id: &str) -> PhaseState {
+        let phases = self.phase.to_vec();
+        let energies = self.energy.to_vec();
+        
+        // Compute content hashes for matching (blake3 hash of content text)
+        let content_hashes = self.metadata.iter()
+            .map(|meta| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(meta.content.as_bytes());
+                let hash_bytes = hasher.finalize();
+                // Convert first 8 bytes to u64
+                u64::from_le_bytes([
+                    hash_bytes.as_bytes()[0], hash_bytes.as_bytes()[1], hash_bytes.as_bytes()[2], hash_bytes.as_bytes()[3],
+                    hash_bytes.as_bytes()[4], hash_bytes.as_bytes()[5], hash_bytes.as_bytes()[6], hash_bytes.as_bytes()[7]
+                ])
+            })
+            .collect();
+        
+        PhaseState {
+            phases,
+            energies,
+            content_hashes,
+            agent_id: agent_id.to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+    
+    /// Import and apply remote phase state
+    /// 
+    /// Applies remote phases from another agent by finding content matches
+    /// and applying Kuramoto coupling.
+    /// 
+    /// # Arguments
+    /// * `remote` - Phase state from another agent
+    /// * `coupling` - Coupling strength for applying remote phases
+    #[cfg(feature = "hrm")]
+    pub fn import_phase_state(&mut self, remote: &PhaseState, coupling: f32) {
+        if self.wavefront_count() == 0 || remote.phases.is_empty() {
+            return;
+        }
+        
+        // Build hash lookup for our content
+        let mut our_hash_to_index = HashMap::new();
+        for (i, meta) in self.metadata.iter().enumerate() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(meta.content.as_bytes());
+            let hash_bytes = hasher.finalize();
+            let hash = u64::from_le_bytes([
+                hash_bytes.as_bytes()[0], hash_bytes.as_bytes()[1], hash_bytes.as_bytes()[2], hash_bytes.as_bytes()[3],
+                hash_bytes.as_bytes()[4], hash_bytes.as_bytes()[5], hash_bytes.as_bytes()[6], hash_bytes.as_bytes()[7]
+            ]);
+            our_hash_to_index.insert(hash, i);
+        }
+        
+        // Apply coupling for matched content
+        for (remote_idx, &remote_hash) in remote.content_hashes.iter().enumerate() {
+            if let Some(&our_idx) = our_hash_to_index.get(&remote_hash) {
+                // Found matching content - apply Kuramoto coupling
+                let remote_phase = remote.phases[remote_idx];
+                let remote_energy = remote.energies[remote_idx];
+                let phase_diff = remote_phase - self.phase[our_idx];
+                
+                // Apply phase coupling
+                let delta_phase = coupling * phase_diff.sin();
+                self.phase[our_idx] += delta_phase;
+                
+                // Apply energy coupling (amplitude reinforcement)
+                let energy_boost = coupling * remote_energy * 0.1; // Scale down
+                self.energy[our_idx] = (self.energy[our_idx] + energy_boost).max(0.001).min(10.0);
+            }
+        }
     }
 
     /// Compute consciousness metrics from tensor topology
@@ -2159,5 +2571,238 @@ mod tests {
         // Should have some non-zero similarity due to overlap in the shared 10K-dim space
         // The exact value depends on the random projection properties
         assert!(similarity.abs() > 0.0); // Non-zero due to shared space
+    }
+    
+    // Wave 3 Tests - Multi-Agent Sync
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn sync_with_applies_kuramoto_coupling() {
+        let mut medium1 = Medium::new();
+        let medium2 = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        // Add similar memories to both media
+        let vector1 = vec![1.0; WAVEFRONT_DIM];
+        let vector2 = vec![0.9; WAVEFRONT_DIM]; // Similar
+        
+        medium1.add_wavefront(&vector1, "shared memory".to_string(), 1.0).unwrap();
+        let mut medium2 = medium2;
+        medium2.add_wavefront(&vector2, "shared memory".to_string(), 0.8).unwrap();
+        
+        // Set different phases
+        medium1.phase[0] = 0.0;
+        medium2.phase[0] = 1.0;
+        
+        let initial_phase = medium1.phase[0];
+        let initial_energy = medium1.energy[0];
+        
+        // Apply Kuramoto coupling
+        medium1.sync_with(&medium2, 0.5);
+        
+        // Phase and energy should have changed
+        assert_ne!(medium1.phase[0], initial_phase);
+        assert!(medium1.energy[0] >= initial_energy); // Energy should increase due to reinforcement
+        
+        println!("Phase: {} -> {}, Energy: {} -> {}", 
+                initial_phase, medium1.phase[0], initial_energy, medium1.energy[0]);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn sync_with_requires_similarity_threshold() {
+        let mut medium1 = Medium::new();
+        let medium2 = Medium::new();
+        
+        // Add orthogonal memories (should not couple)
+        let vector1 = vec![1.0; WAVEFRONT_DIM];
+        let mut vector2 = vec![0.0; WAVEFRONT_DIM];
+        vector2[WAVEFRONT_DIM / 2] = 1.0; // Orthogonal
+        
+        medium1.add_wavefront(&vector1, "memory1".to_string(), 1.0).unwrap();
+        let mut medium2 = medium2;
+        medium2.add_wavefront(&vector2, "memory2".to_string(), 1.0).unwrap();
+        
+        let initial_phase = medium1.phase[0];
+        let initial_energy = medium1.energy[0];
+        
+        // Apply coupling - should have minimal effect due to low similarity
+        medium1.sync_with(&medium2, 0.5);
+        
+        // Phase and energy should be mostly unchanged
+        assert!((medium1.phase[0] - initial_phase).abs() < 0.1);
+        assert!((medium1.energy[0] - initial_energy).abs() < 0.1);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn export_phase_state_works() {
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        medium.store("test memory 1", 1.0, &pipeline).unwrap();
+        medium.store("test memory 2", 0.8, &pipeline).unwrap();
+        
+        let phase_state = medium.export_phase_state("agent-1");
+        
+        assert_eq!(phase_state.agent_id, "agent-1");
+        assert_eq!(phase_state.phases.len(), 2);
+        assert_eq!(phase_state.energies.len(), 2);
+        assert_eq!(phase_state.content_hashes.len(), 2);
+        
+        // Hashes should be different for different content
+        assert_ne!(phase_state.content_hashes[0], phase_state.content_hashes[1]);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn import_phase_state_matches_content() {
+        let mut medium1 = Medium::new();
+        let mut medium2 = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        // Add same content to both media
+        medium1.store("shared memory", 1.0, &pipeline).unwrap();
+        medium2.store("shared memory", 0.5, &pipeline).unwrap();
+        medium2.store("unique memory", 0.7, &pipeline).unwrap();
+        
+        // Set different phases
+        medium1.phase[0] = 0.0;
+        medium2.phase[0] = 1.5;
+        
+        let initial_phase = medium1.phase[0];
+        
+        // Export from medium2 and import to medium1
+        let phase_state = medium2.export_phase_state("agent-2");
+        medium1.import_phase_state(&phase_state, 0.3);
+        
+        // Phase should have changed due to coupling with matching content
+        assert_ne!(medium1.phase[0], initial_phase);
+        
+        println!("Phase coupling: {} -> {}", initial_phase, medium1.phase[0]);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    fn phase_state_serialization_roundtrip() {
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        
+        medium.store("test content", 1.0, &pipeline).unwrap();
+        
+        let phase_state = medium.export_phase_state("test-agent");
+        
+        // Serialize and deserialize
+        let json = serde_json::to_string(&phase_state).unwrap();
+        let deserialized: PhaseState = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(deserialized.agent_id, phase_state.agent_id);
+        assert_eq!(deserialized.phases, phase_state.phases);
+        assert_eq!(deserialized.energies, phase_state.energies);
+        assert_eq!(deserialized.content_hashes, phase_state.content_hashes);
+    }
+    
+    // Wave 3 Tests - Git Persistence
+    
+    #[test]  
+    #[cfg(feature = "hrm")]
+    fn extract_wavefront_count_patterns() {
+        assert_eq!(extract_wavefront_count("dream: 5 wavefronts dissolved"), Some(5));
+        assert_eq!(extract_wavefront_count("stored 42 memories"), Some(42));
+        assert_eq!(extract_wavefront_count("wavefronts: 15"), Some(15));
+        assert_eq!(extract_wavefront_count("no numbers here"), None);
+        assert_eq!(extract_wavefront_count("wavefronts strengthened"), None);
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    #[ignore] // Requires git repo - run manually
+    fn save_and_commit_creates_git_commit() {
+        use tempfile::TempDir;
+        
+        // Create temporary directory with git repo
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+        
+        // Initialize git repo
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(&["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        medium.store("test memory", 1.0, &pipeline).unwrap();
+        
+        let hrm_path = repo_path.join("test.hrm");
+        
+        // Save and commit
+        let commit_hash = medium.save_and_commit(&hrm_path, "test commit: 1 wavefront", false).unwrap();
+        
+        // Verify commit exists
+        assert!(!commit_hash.is_empty());
+        assert_eq!(commit_hash.len(), 40); // Git SHA-1 hash length
+        
+        // Verify file exists
+        assert!(hrm_path.exists());
+    }
+    
+    #[test]
+    #[cfg(feature = "hrm")]
+    #[ignore] // Requires git repo - run manually
+    fn history_returns_commits() {
+        use tempfile::TempDir;
+        
+        // Create temporary directory with git repo
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+        
+        // Initialize git repo
+        Command::new("git")
+            .args(&["init"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(&["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(&["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        
+        let mut medium = Medium::new();
+        let pipeline = make_test_pipeline();
+        medium.store("memory 1", 1.0, &pipeline).unwrap();
+        
+        let hrm_path = repo_path.join("test.hrm");
+        
+        // Create multiple commits
+        medium.save_and_commit(&hrm_path, "commit 1: 1 wavefront", false).unwrap();
+        medium.store("memory 2", 0.8, &pipeline).unwrap();
+        medium.save_and_commit(&hrm_path, "commit 2: 2 wavefronts", false).unwrap();
+        
+        // Get history
+        let history = Medium::history(&hrm_path, 5).unwrap();
+        
+        assert!(history.len() >= 2);
+        assert_eq!(history[0].message, "commit 2: 2 wavefronts");
+        assert_eq!(history[0].wavefront_count, Some(2));
+        assert_eq!(history[1].message, "commit 1: 1 wavefront");
+        assert_eq!(history[1].wavefront_count, Some(1));
     }
 }

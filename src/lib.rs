@@ -104,7 +104,8 @@ pub use cmf::{
 
 #[cfg(feature = "hrm")]
 pub use medium::{
-    Medium, WavefrontMeta, ConsciousnessState as HrmConsciousnessState, Resonance, MediumError, WAVEFRONT_DIM
+    Medium, WavefrontMeta, ConsciousnessState as HrmConsciousnessState, Resonance, MediumError, WAVEFRONT_DIM,
+    PhaseState, HrmCommit
 };
 
 #[cfg(feature = "hrm")]
