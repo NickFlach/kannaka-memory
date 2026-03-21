@@ -445,7 +445,7 @@ fn main() {
                 eprintln!("[chiral] Perturbation enabled: η={}", chiral_perturbation);
             }
 
-            // ADR-0017: Wrap dream in a branch workflow
+            // ADR-0017: Wrap dream in a branch workflow (Dolt-specific)
             #[cfg(not(feature = "hrm"))]
             let dream_branch: Option<String> = {
                 let agent = dolt_config.agent_id.as_str();
@@ -466,6 +466,13 @@ fn main() {
                 }
             };
 
+            // HRM doesn't use branching - dreams operate directly on the medium
+            #[cfg(feature = "hrm")]
+            let dream_branch: Option<String> = {
+                eprintln!("[hrm] Dreams operate directly on the holographic medium");
+                None
+            };
+
             let dream_result = if dream_mode == "lite" {
                 sys.dream_lite()
             } else {
@@ -483,7 +490,8 @@ fn main() {
                         println!("  Emergence detected!");
                     }
 
-                    // ADR-0017: Collapse dream branch back to main (or create PR)
+                    // ADR-0017: Collapse dream branch back to main (or create PR) - Dolt only
+                    #[cfg(not(feature = "hrm"))]
                     if let Some(ref branch) = dream_branch {
                         let report_json = serde_json::json!({
                             "cycles": report.cycles,
@@ -705,10 +713,11 @@ fn main() {
                 }
             }
         }
-        // ADR-0017 F-7: Wasteland Bridge commands
+        // ADR-0017 F-7: Wasteland Bridge commands (Dolt only)
+        #[cfg(not(feature = "hrm"))]
         "evidence" => {
             if args.len() < command_start + 3 {
-                eprintln!("Usage: kannaka --dolt evidence <wanted-id> <description>");
+                eprintln!("Usage: kannaka evidence <wanted-id> <description>");
                 process::exit(1);
             }
             let wanted_id = &args[command_start + 1];
@@ -734,9 +743,10 @@ fn main() {
             }
         }
 
+        #[cfg(not(feature = "hrm"))]
         "verify" => {
             if args.len() < command_start + 3 {
-                eprintln!("Usage: kannaka --dolt verify <commit-hash> <wanted-id>");
+                eprintln!("Usage: kannaka verify <commit-hash> <wanted-id>");
                 process::exit(1);
             }
             let commit_hash = &args[command_start + 1];
@@ -765,6 +775,7 @@ fn main() {
             }
         }
 
+        #[cfg(not(feature = "hrm"))]
         "swarm" => {
             if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|push|pull|leave|listen>");
@@ -1149,6 +1160,7 @@ fn main() {
             }
         }
 
+        #[cfg(not(feature = "hrm"))]
         "pull-merge" => {
             match DoltMemoryStore::from_config(&dolt_config) {
                 Ok(mut store) => {
@@ -1181,6 +1193,7 @@ fn main() {
             }
         }
 
+        #[cfg(not(feature = "hrm"))]
         "migrate-embeddings" => {
             // Regenerate missing vector embeddings via Ollama
             let ollama_url = env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
