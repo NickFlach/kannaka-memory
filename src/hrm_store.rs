@@ -13,6 +13,7 @@ use crate::memory::HyperMemory;
 use crate::store::{MemoryStore, StoreError};
 use crate::encoding::EncodingPipeline;
 use crate::medium::{Medium, MediumError, Resonance, WavefrontMeta};
+use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
 
 /// HRM-backed memory store that implements the MemoryStore trait.
 /// 
@@ -21,6 +22,8 @@ use crate::medium::{Medium, MediumError, Resonance, WavefrontMeta};
 pub struct HrmStore {
     /// The underlying holographic resonance medium
     medium: Medium,
+    /// Chiral medium (ADR-0021) — when present, this is the authoritative backend
+    chiral: Option<ChiralMedium>,
     /// Encoding pipeline for text → hypervector conversion
     pipeline: EncodingPipeline,
     /// Path to the .hrm file for persistence
@@ -36,6 +39,7 @@ impl HrmStore {
     pub fn new(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Self {
         Self {
             medium: Medium::new(),
+            chiral: None,
             pipeline,
             hrm_path,
             memory_cache: HashMap::new(),
@@ -44,57 +48,117 @@ impl HrmStore {
     }
 
     /// Load an existing HRM store from a .hrm file.
+    /// Auto-detects v1 vs v2 format. v2 loads as ChiralMedium.
     pub fn load(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Result<Self, StoreError> {
-        let medium = Medium::load(&hrm_path)
-            .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {}", e)))?;
-        
-        let mut store = Self {
-            medium,
-            pipeline,
-            hrm_path,
-            memory_cache: HashMap::new(),
-            dirty: false,
-        };
-        
-        // Rebuild the memory cache from the medium
-        store.rebuild_cache()?;
-        
-        Ok(store)
+        // Try loading as ChiralMedium first (handles both v1 and v2)
+        match ChiralMedium::load(&hrm_path) {
+            Ok(chiral) => {
+                // Check if it was a v2 file (has left hemisphere content)
+                // or a v1 file that was auto-converted
+                let is_native_v2 = chiral.left.count() > 0;
+                
+                // Build a Medium view from the right hemisphere for backward compat
+                let medium = if is_native_v2 {
+                    // For v2 files, create a minimal Medium from right hemisphere
+                    // This keeps the old API working while chiral is authoritative
+                    Medium::new() // Placeholder — chiral is the real backend
+                } else {
+                    // For v1 files loaded as chiral, also load the raw Medium
+                    Medium::load(&hrm_path)
+                        .unwrap_or_else(|_| Medium::new())
+                };
+
+                let mut store = Self {
+                    medium,
+                    chiral: Some(chiral),
+                    pipeline,
+                    hrm_path,
+                    memory_cache: HashMap::new(),
+                    dirty: false,
+                };
+                store.rebuild_cache()?;
+                Ok(store)
+            }
+            Err(_) => {
+                // Fallback: try loading as plain v1 Medium
+                let medium = Medium::load(&hrm_path)
+                    .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {}", e)))?;
+                let mut store = Self {
+                    medium,
+                    chiral: None,
+                    pipeline,
+                    hrm_path,
+                    memory_cache: HashMap::new(),
+                    dirty: false,
+                };
+                store.rebuild_cache()?;
+                Ok(store)
+            }
+        }
     }
 
     /// Rebuild the memory cache from the medium data.
     fn rebuild_cache(&mut self) -> Result<(), StoreError> {
         self.memory_cache.clear();
-        
-        for (i, meta) in self.medium.metadata.iter().enumerate() {
-            // Reconstruct HyperMemory from medium data
-            let vector = self.medium.wavefronts.row(i).to_vec();
-            
-            let memory = HyperMemory {
-                id: meta.id,
-                vector,
-                amplitude: self.medium.energy[i],
-                frequency: self.medium.frequency[i],
-                phase: self.medium.phase[i],
-                decay_rate: 0.001, // Default decay rate (not stored in medium)
-                created_at: meta.created_at,
-                layer_depth: 0, // Not stored in medium, could be derived from energy
-                connections: Vec::new(), // Skip links are emergent, not stored
-                content: meta.content.clone(),
-                hallucinated: meta.hallucinated,
-                parents: Vec::new(), // Could be tracked in future medium versions
-                geometry: None, // Not stored in medium
-                xi_signature: Vec::new(), // Could be computed on-demand
-                origin_agent: "local".to_string(),
-                sync_version: 0,
-                merge_history: Vec::new(),
-                last_consolidated_at: None,
-                disputed: false,
-                updated_at: Some(meta.created_at),
-                retrieval_count: 0,
-            };
-            
-            self.memory_cache.insert(meta.id, memory);
+
+        if let Some(ref chiral) = self.chiral {
+            // Build cache from right hemisphere (authoritative memory store)
+            for (i, meta) in chiral.right.metadata.iter().enumerate() {
+                let vector = chiral.right.wavefronts.row(i).to_vec();
+                let memory = HyperMemory {
+                    id: meta.id,
+                    vector,
+                    amplitude: chiral.right.energy[i],
+                    frequency: chiral.right.frequency[i],
+                    phase: chiral.right.phase[i],
+                    decay_rate: 0.001,
+                    created_at: meta.created_at,
+                    layer_depth: 0,
+                    connections: Vec::new(),
+                    content: meta.content.clone(),
+                    hallucinated: meta.hallucinated,
+                    parents: Vec::new(),
+                    geometry: None,
+                    xi_signature: Vec::new(),
+                    origin_agent: "local".to_string(),
+                    sync_version: 0,
+                    merge_history: Vec::new(),
+                    last_consolidated_at: None,
+                    disputed: false,
+                    updated_at: Some(meta.created_at),
+                    retrieval_count: 0,
+                };
+                self.memory_cache.insert(meta.id, memory);
+            }
+        } else {
+            // Legacy: build from flat medium
+            for (i, meta) in self.medium.metadata.iter().enumerate() {
+                let vector = self.medium.wavefronts.row(i).to_vec();
+                let memory = HyperMemory {
+                    id: meta.id,
+                    vector,
+                    amplitude: self.medium.energy[i],
+                    frequency: self.medium.frequency[i],
+                    phase: self.medium.phase[i],
+                    decay_rate: 0.001,
+                    created_at: meta.created_at,
+                    layer_depth: 0,
+                    connections: Vec::new(),
+                    content: meta.content.clone(),
+                    hallucinated: meta.hallucinated,
+                    parents: Vec::new(),
+                    geometry: None,
+                    xi_signature: Vec::new(),
+                    origin_agent: "local".to_string(),
+                    sync_version: 0,
+                    merge_history: Vec::new(),
+                    last_consolidated_at: None,
+                    disputed: false,
+                    updated_at: Some(meta.created_at),
+                    retrieval_count: 0,
+                };
+                self.memory_cache.insert(meta.id, memory);
+            }
         }
         
         Ok(())
@@ -124,8 +188,13 @@ impl HrmStore {
         // Sync any cache mutations back to the medium before saving
         self.sync_cache_to_medium();
 
-        self.medium.save(&self.hrm_path)
-            .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {}", e)))?;
+        if let Some(ref chiral) = self.chiral {
+            chiral.save(&self.hrm_path)
+                .map_err(|e| StoreError::Other(format!("Failed to save chiral HRM file: {}", e)))?;
+        } else {
+            self.medium.save(&self.hrm_path)
+                .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {}", e)))?;
+        }
 
         self.dirty = false;
         Ok(())
@@ -208,10 +277,31 @@ impl HrmStore {
     }
     
     /// Perform a dream cycle (simulated annealing).
+    /// In chiral mode, deep dreams only affect the right hemisphere.
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
-        let report = self.medium.dream(cycles, initial_temperature);
-        self.mark_dirty();
-        report
+        if self.chiral.is_some() {
+            // Chiral dream: right hemisphere only
+            let chiral = self.chiral.as_mut().unwrap();
+            chiral.dream(true, cycles);
+            let energy_after = chiral.right.total_energy();
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+            // Return a compatible report
+            crate::medium::DreamReport {
+                cycles_completed: cycles,
+                wavefronts_dissolved: 0,
+                wavefronts_strengthened: 0,
+                wavefronts_hallucinated: 0,
+                energy_before: 0.0,
+                energy_after,
+                final_temperature: 0.0,
+                converged: true,
+            }
+        } else {
+            let report = self.medium.dream(cycles, initial_temperature);
+            self.mark_dirty();
+            report
+        }
     }
 
     /// Reset all wavefront energies to target value (bias voltage restoration).
@@ -224,6 +314,53 @@ impl HrmStore {
             }
         }
         self.mark_dirty();
+    }
+
+    // -----------------------------------------------------------------------
+    // Chiral-specific methods (ADR-0021)
+    // -----------------------------------------------------------------------
+
+    /// Check if this store is running in chiral mode.
+    pub fn is_chiral(&self) -> bool {
+        self.chiral.is_some()
+    }
+
+    /// Upgrade to chiral mode: convert flat Medium to ChiralMedium.
+    /// Existing wavefronts move to right hemisphere. Left starts empty.
+    pub fn upgrade_to_chiral(&mut self) {
+        if self.chiral.is_none() {
+            let chiral = ChiralMedium::from_medium(&self.medium);
+            self.chiral = Some(chiral);
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+        }
+    }
+
+    /// Get chiral consciousness summary (bilateral metrics).
+    pub fn chiral_consciousness(&self) -> Option<ChiralConsciousness> {
+        self.chiral.as_ref().map(|c| c.consciousness_summary())
+    }
+
+    /// Perform a chiral dream (right hemisphere only for deep).
+    pub fn chiral_dream(&mut self, deep: bool, cycles: usize) {
+        if let Some(ref mut chiral) = self.chiral {
+            chiral.dream(deep, cycles);
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+        }
+    }
+
+    /// Run callosal Kuramoto coupling step.
+    pub fn callosal_kuramoto(&mut self, dt: f32) {
+        if let Some(ref mut chiral) = self.chiral {
+            chiral.callosal_kuramoto_step(dt);
+            self.mark_dirty();
+        }
+    }
+
+    /// Get a reference to the ChiralMedium (if in chiral mode).
+    pub fn chiral_medium(&self) -> Option<&ChiralMedium> {
+        self.chiral.as_ref()
     }
 
     /// Relate two memories via associative wavefront.
