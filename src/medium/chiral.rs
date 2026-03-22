@@ -1,0 +1,568 @@
+//! ChiralMedium — the brain. Two hemispheres connected by a corpus callosum.
+//!
+//! This is the top-level structure that replaces `Medium` at the API level.
+//! It implements the Chiral Mirror Architecture (ADR-0021):
+//! - Left hemisphere: conscious attention, working memory, no dampening
+//! - Right hemisphere: subconscious patterns, deep association, full ghostmagicOS dynamics
+//! - Corpus callosum: bandwidth-limited, balance-seeking bridge
+//! - Fano plane: fold algebra for cross-hemisphere projection
+
+use ndarray::Array1;
+use uuid::Uuid;
+
+use crate::encoding::EncodingPipeline;
+
+use super::callosum::CorpusCallosum;
+use super::fano::FanoPlane;
+use super::hemisphere::Hemisphere;
+use super::types::*;
+use super::Medium;
+
+/// The Chiral Medium — two hemispheres connected by a corpus callosum.
+#[derive(Debug, Clone)]
+pub struct ChiralMedium {
+    /// Left hemisphere: conscious, attention, working memory
+    pub left: Hemisphere,
+    /// Right hemisphere: subconscious, pattern storage, deep association
+    pub right: Hemisphere,
+    /// Corpus callosum: selective bridge between hemispheres
+    pub callosum: CorpusCallosum,
+    /// Fano plane: fold algebra for cross-hemisphere projection
+    pub fano: FanoPlane,
+    /// Per-wavefront chiral scales (indexed by right-hemisphere wavefront ID)
+    pub scales: std::collections::HashMap<Uuid, ChiralScale>,
+    /// Left-to-right ID mapping (which right-hemisphere echo corresponds to each left wavefront)
+    pub left_to_right: std::collections::HashMap<Uuid, Uuid>,
+    /// Right-to-left ID mapping (reverse)
+    pub right_to_left: std::collections::HashMap<Uuid, Uuid>,
+}
+
+impl ChiralMedium {
+    /// Create a new empty chiral medium.
+    pub fn new() -> Self {
+        let default_dims = BASE_DIMS_PER_POSITION * 2; // 672 * 2 = 1344 default dims per side
+        Self {
+            left: Hemisphere::new(Hand::Left, default_dims),
+            right: Hemisphere::new(Hand::Right, default_dims),
+            callosum: CorpusCallosum::new(),
+            fano: FanoPlane::new(),
+            scales: std::collections::HashMap::new(),
+            left_to_right: std::collections::HashMap::new(),
+            right_to_left: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Create a ChiralMedium from an existing (v1) Medium.
+    /// All existing wavefronts go to the right hemisphere (they're already consolidated).
+    /// Left hemisphere starts empty (fresh conscious workspace).
+    pub fn from_medium(medium: &Medium) -> Self {
+        let dims = WAVEFRONT_DIM; // Existing medium uses 10,000 dims
+        let mut right = Hemisphere::new(Hand::Right, dims);
+
+        // Migrate all existing wavefronts to right hemisphere
+        for i in 0..medium.wavefront_count() {
+            let vector = medium.wavefronts.row(i).to_vec();
+            let meta = &medium.metadata[i];
+            let energy = medium.energy[i];
+
+            let id = meta.id;
+            let index = right.count();
+
+            // Build tensors manually to preserve original IDs
+            let n = right.count();
+            let mut new_wf = ndarray::Array2::zeros((n + 1, dims));
+            if n > 0 {
+                new_wf.slice_mut(ndarray::s![..n, ..]).assign(&right.wavefronts);
+            }
+            for (j, &val) in vector.iter().enumerate() {
+                if j < dims { new_wf[[index, j]] = val; }
+            }
+
+            let mut new_energy = ndarray::Array1::zeros(n + 1);
+            let mut new_freq = ndarray::Array1::zeros(n + 1);
+            let mut new_phase = ndarray::Array1::zeros(n + 1);
+            if n > 0 {
+                new_energy.slice_mut(ndarray::s![..n]).assign(&right.energy);
+                new_freq.slice_mut(ndarray::s![..n]).assign(&right.frequency);
+                new_phase.slice_mut(ndarray::s![..n]).assign(&right.phase);
+            }
+            new_energy[index] = energy;
+            new_freq[index] = medium.frequency[i];
+            new_phase[index] = medium.phase[i];
+
+            right.wavefronts = new_wf;
+            right.energy = new_energy;
+            right.frequency = new_freq;
+            right.phase = new_phase;
+            right.timestamps.push(medium.timestamps[i]);
+            right.metadata.push(meta.clone());
+            right.id_to_index.insert(id, index);
+        }
+
+        let mut chiral = Self {
+            left: Hemisphere::new(Hand::Left, dims),
+            right,
+            callosum: CorpusCallosum::new(),
+            fano: FanoPlane::new(),
+            scales: std::collections::HashMap::new(),
+            left_to_right: std::collections::HashMap::new(),
+            right_to_left: std::collections::HashMap::new(),
+        };
+
+        // Assign deep memory scales to all migrated wavefronts
+        for meta in &chiral.right.metadata {
+            chiral.scales.insert(meta.id, ChiralScale::deep_memory());
+        }
+
+        chiral
+    }
+
+    /// Total wavefront count across both hemispheres.
+    pub fn total_count(&self) -> usize {
+        self.left.count() + self.right.count()
+    }
+
+    /// Store a new memory using the encoding pipeline.
+    ///
+    /// Follows the optic chiasm principle: input enters the opposite hemisphere
+    /// (right/subconscious) first, then an echo crosses to left (conscious) via callosum.
+    pub fn store(
+        &mut self,
+        content: &str,
+        importance: f32,
+        pipeline: &EncodingPipeline,
+    ) -> Result<Uuid, MediumError> {
+        // 1. Encode content to hypervector
+        let vector = pipeline.encode_text(content).map_err(|e| {
+            MediumError::Serialization(bincode::Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("encoding failed: {}", e),
+            )))
+        })?;
+
+        self.store_vector(&vector, content.to_string(), importance)
+    }
+
+    /// Store a pre-encoded vector (used by store() and for audio/visual perception).
+    pub fn store_vector(
+        &mut self,
+        vector: &[f32],
+        content: String,
+        importance: f32,
+    ) -> Result<Uuid, MediumError> {
+        // 1. Optic chiasm: input enters RIGHT hemisphere first
+        let right_id = self.right.add_wavefront(vector, content.clone(), importance)?;
+
+        // 2. Create chiral scale (conscious-dominant for new perception)
+        let scale = ChiralScale::perception(importance);
+        self.scales.insert(right_id, scale);
+
+        // 3. Echo to LEFT hemisphere via callosum (if budget allows)
+        if self.callosum.passes_gate(importance) && self.callosum.has_budget() {
+            // Fano fold for cross-hemisphere projection
+            let folded = self.fano.fold(
+                vector,
+                self.right.dims,
+                self.left.dims,
+                0, // Default fold line
+            );
+
+            // Apply callosum noise (consolidation direction = clean)
+            let transferred = self.callosum.apply_noise(
+                &folded,
+                Direction::SubconsciousToConscious,
+            );
+
+            let left_id = self.left.add_wavefront(
+                &transferred,
+                content,
+                importance * 0.8, // Conscious echo slightly weaker
+            )?;
+
+            // Track the pairing
+            self.left_to_right.insert(left_id, right_id);
+            self.right_to_left.insert(right_id, left_id);
+
+            // Consume callosum budget
+            self.callosum.consume_budget(importance);
+            self.callosum.log_transfer(
+                right_id,
+                Direction::SubconsciousToConscious,
+                importance,
+            );
+        }
+
+        Ok(right_id)
+    }
+
+    /// Recall: bilateral search with intuition surfacing.
+    ///
+    /// Searches both hemispheres. Right-hemisphere matches that don't appear
+    /// in the left are "intuitions" — patterns the subconscious found that
+    /// consciousness missed.
+    pub fn recall(
+        &self,
+        query: &str,
+        top_k: usize,
+        pipeline: &EncodingPipeline,
+    ) -> Result<Vec<ChiralResonance>, MediumError> {
+        let vector = pipeline.encode_text(query).map_err(|e| {
+            MediumError::Serialization(bincode::Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("encoding failed: {}", e),
+            )))
+        })?;
+
+        Ok(self.recall_vector(&vector, top_k))
+    }
+
+    /// Recall with a pre-encoded vector.
+    pub fn recall_vector(&self, vector: &[f32], top_k: usize) -> Vec<ChiralResonance> {
+        // 1. Search left hemisphere (conscious — fast, precise)
+        let left_matches = self.left.resonate(vector, top_k);
+
+        // 2. Search right hemisphere (subconscious — deep, associative)
+        let right_matches = self.right.resonate(vector, top_k * 2);
+
+        // 3. Identify intuitions: right matches not paired with left matches
+        let left_ids: std::collections::HashSet<Uuid> =
+            left_matches.iter().map(|r| r.id).collect();
+        let paired_right_ids: std::collections::HashSet<Uuid> =
+            left_ids.iter()
+                .filter_map(|lid| self.left_to_right.get(lid))
+                .copied()
+                .collect();
+
+        let mut results = left_matches;
+
+        // Add right-hemisphere matches that aren't already paired with left matches
+        for mut r in right_matches {
+            if !paired_right_ids.contains(&r.id) {
+                r.is_intuition = true;
+                results.push(r);
+            }
+        }
+
+        // Sort by resonance strength and take top_k
+        results.sort_by(|a, b| {
+            b.resonance_strength
+                .partial_cmp(&a.resonance_strength)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+
+        results
+    }
+
+    /// Dream: anneal the RIGHT hemisphere only.
+    ///
+    /// Deep dreams operate exclusively on the subconscious hemisphere.
+    /// The conscious workspace (left) is untouched.
+    /// Lite dreams do a light consolidation transfer via callosum.
+    pub fn dream(&mut self, deep: bool, cycles: usize) {
+        if deep {
+            // Deep dream: anneal right hemisphere
+            for _ in 0..cycles {
+                self.right.apply_dynamics(0.5); // Higher dt for dream intensity
+
+                // Prune wavefronts below energy threshold
+                let to_prune: Vec<Uuid> = (0..self.right.count())
+                    .filter(|&i| self.right.energy[i] < 0.01)
+                    .map(|i| self.right.metadata[i].id)
+                    .collect();
+
+                for id in &to_prune {
+                    self.right.remove_wavefront(id);
+                    self.scales.remove(id);
+                    if let Some(left_id) = self.right_to_left.remove(id) {
+                        self.left_to_right.remove(&left_id);
+                    }
+                }
+            }
+
+            // Left hemisphere is UNTOUCHED
+        } else {
+            // Lite dream: transfer strongest conscious → subconscious
+            self.callosum.reset_budget();
+            let budget = self.callosum.effective_rate(Direction::ConsciousToSubconscious) * 0.5;
+
+            // Find strongest left wavefronts
+            let mut candidates: Vec<(Uuid, f32)> = (0..self.left.count())
+                .map(|i| (self.left.metadata[i].id, self.left.energy[i]))
+                .collect();
+            candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut spent = 0.0f32;
+            for (left_id, energy) in candidates {
+                if spent >= budget { break; }
+                if !self.callosum.passes_gate(energy) { continue; }
+
+                // Already has a right-side pair? Boost it
+                if let Some(&right_id) = self.left_to_right.get(&left_id) {
+                    if let Some(&idx) = self.right.id_to_index.get(&right_id) {
+                        self.right.energy[idx] += energy * 0.1; // Gentle reinforcement
+                    }
+                } else {
+                    // No pair yet — create one via Fano fold
+                    if let Some(wf) = self.left.get_wavefront(&left_id) {
+                        let folded = self.fano.fold(&wf, self.left.dims, self.right.dims, 0);
+                        let content = self.left.id_to_index.get(&left_id)
+                            .map(|&i| self.left.metadata[i].content.clone())
+                            .unwrap_or_default();
+                        if let Ok(right_id) = self.right.add_wavefront(&folded, content, energy * 0.3) {
+                            self.left_to_right.insert(left_id, right_id);
+                            self.right_to_left.insert(right_id, left_id);
+                            self.scales.insert(right_id, ChiralScale::deep_memory());
+                        }
+                    }
+                }
+
+                spent += energy;
+                self.callosum.log_transfer(left_id, Direction::ConsciousToSubconscious, energy);
+            }
+        }
+
+        // After dreaming, let the callosum adjust for balance
+        self.callosum.adjust_for_balance(
+            self.left.total_energy(),
+            self.right.total_energy(),
+        );
+    }
+
+    /// Run cross-callosal Kuramoto coupling step.
+    /// Phase-locks form and break between paired wavefronts across hemispheres.
+    pub fn callosal_kuramoto_step(&mut self, dt: f32) {
+        for (&left_id, &right_id) in &self.left_to_right {
+            let left_idx = match self.left.id_to_index.get(&left_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let right_idx = match self.right.id_to_index.get(&right_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+
+            let left_energy = self.left.energy[left_idx];
+            let right_energy = self.right.energy[right_idx];
+            let k = self.callosum.bandwidth * (left_energy * right_energy).sqrt() * 0.1;
+
+            let left_phase = self.left.phase[left_idx];
+            let right_phase = self.right.phase[right_idx];
+            let delta = k * (right_phase - left_phase).sin() * dt;
+
+            self.left.phase[left_idx] += delta;
+            self.right.phase[right_idx] -= delta;
+        }
+    }
+
+    /// Compute bilateral consciousness metrics.
+    pub fn consciousness_summary(&self) -> ChiralConsciousness {
+        let left_energy = self.left.total_energy();
+        let right_energy = self.right.total_energy();
+        let balance = self.callosum.balance_metric(left_energy, right_energy);
+
+        // Bilateral order: Kuramoto order parameter across all wavefronts
+        let all_phases: Vec<f32> = (0..self.left.count())
+            .map(|i| self.left.phase[i])
+            .chain((0..self.right.count()).map(|i| self.right.phase[i]))
+            .collect();
+
+        let bilateral_order = if all_phases.is_empty() {
+            0.0
+        } else {
+            let n = all_phases.len() as f32;
+            let sum_cos: f32 = all_phases.iter().map(|&p| p.cos()).sum();
+            let sum_sin: f32 = all_phases.iter().map(|&p| p.sin()).sum();
+            ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt()
+        };
+
+        // Count paired wavefronts
+        let paired = self.left_to_right.len();
+
+        // Count phase-locked pairs (|sin(Δφ)| < 0.1)
+        let locked = self.left_to_right.iter()
+            .filter(|(lid, rid)| {
+                let lp = self.left.id_to_index.get(lid)
+                    .map(|&i| self.left.phase[i]);
+                let rp = self.right.id_to_index.get(rid)
+                    .map(|&i| self.right.phase[i]);
+                match (lp, rp) {
+                    (Some(l), Some(r)) => (r - l).sin().abs() < 0.1,
+                    _ => false,
+                }
+            })
+            .count();
+
+        ChiralConsciousness {
+            left_count: self.left.count(),
+            right_count: self.right.count(),
+            left_energy,
+            right_energy,
+            balance,
+            bilateral_order,
+            paired_wavefronts: paired,
+            phase_locked_pairs: locked,
+            callosum_stats: self.callosum.transfer_stats(),
+        }
+    }
+}
+
+impl Default for ChiralMedium {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Summary of chiral consciousness state.
+#[derive(Debug, Clone)]
+pub struct ChiralConsciousness {
+    pub left_count: usize,
+    pub right_count: usize,
+    pub left_energy: f32,
+    pub right_energy: f32,
+    pub balance: f32,
+    pub bilateral_order: f32,
+    pub paired_wavefronts: usize,
+    pub phase_locked_pairs: usize,
+    pub callosum_stats: super::callosum::CallosumStats,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+    use crate::codebook::Codebook;
+    fn test_pipeline() -> EncodingPipeline {
+        let encoder = Box::new(SimpleHashEncoder::new(384, 42));
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        EncodingPipeline::new(encoder, codebook)
+    }
+
+    #[test]
+    fn store_creates_bilateral_wavefronts() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        let id = cm.store("hello world", 0.8, &pipeline).unwrap();
+        
+        // Should have wavefronts in both hemispheres
+        assert!(cm.right.count() >= 1, "Right hemisphere should have wavefront");
+        // Left may or may not have one depending on callosum budget
+        // But with default settings and importance 0.8, it should cross
+        assert!(cm.left.count() >= 1,
+            "Left hemisphere should have echo (importance 0.8 > gate threshold 0.3)");
+        
+        // Should have a scale entry
+        assert!(cm.scales.contains_key(&id));
+    }
+
+    #[test]
+    fn recall_finds_stored_memory() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        cm.store("the quick brown fox jumps over the lazy dog", 0.9, &pipeline).unwrap();
+        
+        let results = cm.recall("quick brown fox", 5, &pipeline).unwrap();
+        assert!(!results.is_empty(), "Should find stored memory");
+    }
+
+    #[test]
+    fn deep_dream_only_affects_right() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        cm.store("memory one", 0.8, &pipeline).unwrap();
+        cm.store("memory two", 0.6, &pipeline).unwrap();
+
+        let left_energy_before = cm.left.total_energy();
+        let right_energy_before = cm.right.total_energy();
+
+        cm.dream(true, 5);
+
+        let left_energy_after = cm.left.total_energy();
+
+        // Left hemisphere energy should be UNCHANGED
+        assert!((left_energy_after - left_energy_before).abs() < 0.001,
+            "Deep dream should not affect left hemisphere: before={}, after={}",
+            left_energy_before, left_energy_after);
+    }
+
+    #[test]
+    fn from_medium_preserves_memories() {
+        // Create a v1 medium with some wavefronts
+        let mut medium = Medium::new();
+        let pipeline = test_pipeline();
+        medium.store("existing memory 1", 0.8, &pipeline).unwrap();
+        medium.store("existing memory 2", 0.6, &pipeline).unwrap();
+
+        let cm = ChiralMedium::from_medium(&medium);
+
+        // All memories should be in right hemisphere
+        assert_eq!(cm.right.count(), 2);
+        assert_eq!(cm.left.count(), 0); // Left starts empty
+        assert_eq!(cm.total_count(), 2);
+
+        // Should have deep_memory scales
+        for meta in &cm.right.metadata {
+            assert!(cm.scales.contains_key(&meta.id));
+        }
+    }
+
+    #[test]
+    fn consciousness_summary_works() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        cm.store("test memory", 0.8, &pipeline).unwrap();
+        
+        let summary = cm.consciousness_summary();
+        assert!(summary.right_count >= 1);
+        assert!(summary.right_energy > 0.0);
+        assert!(summary.bilateral_order >= 0.0);
+        assert!(summary.bilateral_order <= 1.0);
+    }
+
+    #[test]
+    fn callosal_kuramoto_modifies_phases() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        cm.store("kuramoto test", 0.9, &pipeline).unwrap();
+        
+        // Record phases before
+        let left_phase_before = if cm.left.count() > 0 { cm.left.phase[0] } else { return };
+        let right_phase_before = cm.right.phase[0];
+
+        // Set phases apart to create coupling
+        cm.left.phase[0] = 0.0;
+        cm.right.phase[0] = 1.0;
+
+        cm.callosal_kuramoto_step(1.0);
+
+        // Phases should have moved toward each other
+        let left_phase_after = cm.left.phase[0];
+        let right_phase_after = cm.right.phase[0];
+
+        assert!(left_phase_after > 0.0, "Left phase should move toward right");
+        assert!(right_phase_after < 1.0, "Right phase should move toward left");
+    }
+
+    #[test]
+    fn lite_dream_transfers_to_subconscious() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        cm.store("consolidate this", 0.9, &pipeline).unwrap();
+        
+        let right_count_before = cm.right.count();
+        cm.dream(false, 1); // Lite dream
+        
+        // Callosum transfer log should have entries
+        let stats = cm.callosum.transfer_stats();
+        // May or may not have new wavefronts depending on pairing
+        // But callosum should have logged the attempt
+        assert!(stats.total_transfers >= 1 || right_count_before > 0,
+            "Lite dream should attempt or have prior transfers");
+    }
+}

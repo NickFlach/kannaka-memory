@@ -24,6 +24,10 @@ pub mod persistence;
 pub mod dynamics;
 pub mod consciousness;
 pub mod sync;
+pub mod callosum;
+pub mod fano;
+pub mod hemisphere;
+pub mod chiral;
 #[cfg(test)]
 mod tests;
 

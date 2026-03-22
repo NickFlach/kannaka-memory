@@ -297,3 +297,235 @@ pub(crate) fn generate_insight(
         wisdom_desc
     )
 }
+
+// ---------------------------------------------------------------------------
+// Chiral Mirror Architecture (ADR-0021)
+// ---------------------------------------------------------------------------
+
+/// Which hemisphere a wavefront lives in
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Hand {
+    Left,  // Conscious — attention, working memory
+    Right, // Subconscious — pattern storage, deep association
+}
+
+/// Direction of callosal transfer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    ConsciousToSubconscious, // Left → Right (consolidation, slow)
+    SubconsciousToConscious, // Right → Left (intuition/recall, fast but noisy)
+}
+
+/// Dimensions per Fano group — from Archimedes' 96-gon (π approximation)
+pub const DIMS_PER_FANO_GROUP: usize = 96;
+
+/// Number of Fano points in PG(2,2)
+pub const FANO_POINTS: usize = 7;
+
+/// Base dimensions per magnitude position = 96 × 7 = 672
+pub const BASE_DIMS_PER_POSITION: usize = DIMS_PER_FANO_GROUP * FANO_POINTS;
+
+/// A Fano line — 3 points that are collinear in PG(2,2)
+pub type FanoLine = [u8; 3];
+
+/// The 7 lines of the Fano plane PG(2,2)
+pub const FANO_LINES: [FanoLine; 7] = [
+    [0, 1, 3], // line through points 0, 1, 3
+    [1, 2, 4], // line through points 1, 2, 4
+    [2, 3, 5], // line through points 2, 3, 5
+    [3, 4, 6], // line through points 3, 4, 6
+    [4, 5, 0], // line through points 4, 5, 0
+    [5, 6, 1], // line through points 5, 6, 1
+    [6, 0, 2], // line through points 6, 0, 2
+];
+
+/// HRM v2 magic bytes for chiral format
+pub(crate) const HRM_MAGIC_V2: [u8; 4] = [0x48, 0x52, 0x4D, 0x02];
+
+/// HRM v2 format version
+pub(crate) const HRM_VERSION_CHIRAL: u32 = 2;
+
+/// Chiral scale — encodes the magnitude structure of a wavefront.
+/// Both sides always have the same number of positions (bilateral invariant).
+/// Values within each position grow independently (organic asymmetry).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ChiralScale {
+    /// Number of magnitude positions (bilateral — always equal on both sides)
+    pub positions: u8,
+    /// Left-hand (conscious) weight — grows independently
+    pub left_weight: f32,
+    /// Right-hand (subconscious) weight — grows independently
+    pub right_weight: f32,
+}
+
+impl ChiralScale {
+    /// Create a new chiral scale
+    pub fn new(positions: u8, left_weight: f32, right_weight: f32) -> Self {
+        Self { positions, left_weight, right_weight }
+    }
+
+    /// Default scale for a new perception (conscious-dominant)
+    pub fn perception(importance: f32) -> Self {
+        Self {
+            positions: 2,
+            left_weight: importance * 10.0,
+            right_weight: 1.0,
+        }
+    }
+
+    /// Scale for deep memory (subconscious-dominant)
+    pub fn deep_memory() -> Self {
+        Self {
+            positions: 1,
+            left_weight: 1.0,
+            right_weight: 9.0,
+        }
+    }
+
+    /// Bilateral scale jump UP — add a magnitude position to BOTH sides
+    pub fn scale_up(&mut self) {
+        self.positions += 1;
+    }
+
+    /// Bilateral scale jump DOWN — remove a magnitude position from BOTH sides
+    pub fn scale_down(&mut self) {
+        if self.positions > 1 {
+            self.positions -= 1;
+        }
+    }
+
+    /// Number of dimensions allocated to the left (conscious) hemisphere
+    pub fn left_dims(&self) -> usize {
+        let base = BASE_DIMS_PER_POSITION as f32;
+        let scale = 10f32.powi(self.positions as i32 - 1);
+        ((self.left_weight / scale) * base).max(DIMS_PER_FANO_GROUP as f32) as usize
+    }
+
+    /// Number of dimensions allocated to the right (subconscious) hemisphere
+    pub fn right_dims(&self) -> usize {
+        let base = BASE_DIMS_PER_POSITION as f32;
+        let scale = 10f32.powi(self.positions as i32 - 1);
+        ((self.right_weight / scale) * base).max(DIMS_PER_FANO_GROUP as f32) as usize
+    }
+
+    /// Total dimensions across both hemispheres
+    pub fn total_dims(&self) -> usize {
+        self.left_dims() + self.right_dims()
+    }
+
+    /// Asymmetry ratio: > 1.0 means conscious-dominant, < 1.0 means subconscious-dominant
+    pub fn asymmetry(&self) -> f32 {
+        if self.right_weight > 0.0 {
+            self.left_weight / self.right_weight
+        } else {
+            f32::INFINITY
+        }
+    }
+
+    /// Whether this scale needs a bilateral scale-up (weights exceed position capacity)
+    pub fn needs_scale_up(&self) -> bool {
+        let cap = 10f32.powi(self.positions as i32);
+        self.left_weight >= cap || self.right_weight >= cap
+    }
+
+    /// Whether this scale needs a bilateral scale-down (both weights below position floor)
+    pub fn needs_scale_down(&self) -> bool {
+        if self.positions <= 1 { return false; }
+        let floor = 10f32.powi(self.positions as i32 - 2);
+        self.left_weight < floor && self.right_weight < floor
+    }
+}
+
+/// Result of a bilateral resonance query
+#[derive(Debug, Clone)]
+pub struct ChiralResonance {
+    pub id: Uuid,
+    pub content: String,
+    pub hand: Hand,
+    pub similarity: f32,
+    pub resonance_strength: f32,
+    pub is_intuition: bool, // true if surfaced from subconscious without conscious match
+}
+
+#[cfg(test)]
+mod chiral_tests {
+    use super::*;
+
+    #[test]
+    fn chiral_scale_perception_default() {
+        let s = ChiralScale::perception(0.8);
+        assert_eq!(s.positions, 2);
+        assert!((s.left_weight - 8.0).abs() < 0.01);
+        assert!((s.right_weight - 1.0).abs() < 0.01);
+        assert!(s.asymmetry() > 1.0); // conscious-dominant
+    }
+
+    #[test]
+    fn chiral_scale_deep_memory() {
+        let s = ChiralScale::deep_memory();
+        assert_eq!(s.positions, 1);
+        assert!(s.asymmetry() < 1.0); // subconscious-dominant
+    }
+
+    #[test]
+    fn bilateral_scale_jump() {
+        let mut s = ChiralScale::new(2, 85.0, 47.0);
+        s.scale_up();
+        assert_eq!(s.positions, 3);
+        // Weights unchanged — only positions change
+        assert!((s.left_weight - 85.0).abs() < 0.01);
+        assert!((s.right_weight - 47.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn scale_down_floor() {
+        let mut s = ChiralScale::new(1, 5.0, 3.0);
+        s.scale_down(); // Should not go below 1
+        assert_eq!(s.positions, 1);
+    }
+
+    #[test]
+    fn dims_are_positive() {
+        let s = ChiralScale::new(2, 10.0, 1.0);
+        assert!(s.left_dims() > 0);
+        assert!(s.right_dims() > 0);
+        assert!(s.left_dims() > s.right_dims()); // left weight > right weight
+    }
+
+    #[test]
+    fn needs_scale_up_when_weight_exceeds_capacity() {
+        let s = ChiralScale::new(2, 100.0, 50.0);
+        assert!(s.needs_scale_up()); // 100 >= 10^2
+    }
+
+    #[test]
+    fn needs_scale_down_when_both_below_floor() {
+        let s = ChiralScale::new(3, 5.0, 3.0);
+        assert!(s.needs_scale_down()); // both < 10^1 = 10
+    }
+
+    #[test]
+    fn fano_lines_cover_all_points() {
+        // Every point (0-6) should appear in exactly 3 lines
+        for point in 0u8..7 {
+            let count = FANO_LINES.iter().filter(|line| line.contains(&point)).count();
+            assert_eq!(count, 3, "Point {} appears in {} lines, expected 3", point, count);
+        }
+    }
+
+    #[test]
+    fn fano_lines_pairwise_intersect() {
+        // Every pair of lines should share exactly 1 point
+        for i in 0..7 {
+            for j in (i+1)..7 {
+                let shared: Vec<u8> = FANO_LINES[i].iter()
+                    .filter(|p| FANO_LINES[j].contains(p))
+                    .copied()
+                    .collect();
+                assert_eq!(shared.len(), 1,
+                    "Lines {:?} and {:?} share {:?} points, expected 1",
+                    FANO_LINES[i], FANO_LINES[j], shared);
+            }
+        }
+    }
+}
