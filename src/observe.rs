@@ -223,7 +223,12 @@ impl MemoryIntrospector {
 
         for mem in &all {
             let strength = mem.effective_strength(now);
-            let abs_strength = strength.abs();
+
+            // Classify by amplitude envelope (A · e^(-λt)), not instantaneous
+            // strength which oscillates through zero due to cos(2πft + φ).
+            // The wave oscillation is the memory's *rhythm*, not its vitality.
+            let age_secs = (now - mem.created_at).num_milliseconds().max(0) as f64 / 1000.0;
+            let envelope = mem.amplitude as f64 * (-mem.decay_rate as f64 * age_secs).exp();
 
             sum_amplitude += mem.amplitude;
             sum_frequency += mem.frequency;
@@ -236,9 +241,9 @@ impl MemoryIntrospector {
                 layer_depth: mem.layer_depth,
             };
 
-            if abs_strength > active_threshold {
+            if envelope > active_threshold as f64 {
                 active += 1;
-            } else if abs_strength > ghost_threshold {
+            } else if envelope > ghost_threshold as f64 {
                 dormant += 1;
             } else {
                 ghost += 1;

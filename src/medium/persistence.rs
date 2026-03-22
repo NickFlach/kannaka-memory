@@ -14,10 +14,11 @@ use super::Medium;
 use super::types::*;
 
 impl Medium {
-    /// Save the medium to a .hrm file.
+    /// Save the medium to a .hrm file (atomic: writes to .tmp then renames).
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
         let path_ref = path.as_ref();
-        let file = File::create(path_ref)?;
+        let tmp_path = path_ref.with_extension("hrm.tmp");
+        let file = File::create(&tmp_path)?;
         let mut writer = BufWriter::new(file);
 
         // Magic bytes
@@ -77,14 +78,20 @@ impl Medium {
         drop(writer);
 
         // Reopen to compute checksum
-        let mut file = File::open(path_ref)?;
+        let mut file = File::open(&tmp_path)?;
         let mut hasher = blake3::Hasher::new();
         std::io::copy(&mut file, &mut hasher)?;
         let checksum = hasher.finalize();
+        drop(file);
 
         // Append checksum
-        let mut file = std::fs::OpenOptions::new().append(true).open(path_ref)?;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&tmp_path)?;
         file.write_all(checksum.as_bytes())?;
+        file.flush()?;
+        drop(file);
+
+        // Atomic rename: tmp → final (no partial files on crash)
+        std::fs::rename(&tmp_path, path_ref)?;
 
         Ok(())
     }

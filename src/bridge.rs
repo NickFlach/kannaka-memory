@@ -518,9 +518,15 @@ impl ConsciousnessBridge {
 
         let now = chrono::Utc::now();
         let total_memories = all.len();
+        // Classify by amplitude envelope, not instantaneous strength
+        // (which oscillates through zero due to wave cos term)
         let active_memories = all
             .iter()
-            .filter(|m| m.effective_strength(now).abs() > 0.05)
+            .filter(|m| {
+                let age = (now - m.created_at).num_milliseconds().max(0) as f64 / 1000.0;
+                let envelope = m.amplitude as f64 * (-m.decay_rate as f64 * age).exp();
+                envelope > 0.05
+            })
             .count();
         let total_skip_links = phi_report.num_skip_links;
 
