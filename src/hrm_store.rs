@@ -375,6 +375,10 @@ impl MemoryStore for HrmStore {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn hrm_relate(&mut self, id_a: &Uuid, id_b: &Uuid) -> Option<Result<Uuid, StoreError>> {
+        Some(self.relate_wavefronts(*id_a, *id_b))
+    }
 }
 
 #[cfg(feature = "hrm")]

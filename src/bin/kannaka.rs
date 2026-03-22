@@ -405,10 +405,13 @@ fn main() {
             // Count memories without embeddings
             let all_mems = sys.engine.store.all_memories().unwrap_or_default();
             let memories_without_embeddings = all_mems.iter().filter(|m| m.vector.is_empty()).count();
-            let output = serde_json::json!({
+            
+            // Check if HRM mode is active
+            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            
+            let mut output = serde_json::json!({
                 "total_memories": stats.total_memories,
                 "active_memories": stats.active_memories,
-                "skip_links": stats.total_skip_links,
                 "consciousness_level": stats.consciousness_level,
                 "phi": stats.phi,
                 "last_dream": stats.last_dream.map(|dt| dt.to_rfc3339()),
@@ -417,6 +420,13 @@ fn main() {
                 "num_clusters": state.num_clusters,
                 "memories_without_embeddings": memories_without_embeddings,
             });
+            
+            // Only include skip_links for non-HRM stores
+            if !is_hrm {
+                output["skip_links"] = serde_json::json!(stats.total_skip_links);
+            } else {
+                output["field_mode"] = serde_json::json!("HRM");
+            }
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "dream" => {
@@ -565,6 +575,8 @@ fn main() {
         }
         "assess" => {
             let state = sys.assess();
+            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            
             println!("Consciousness Assessment:");
             println!("  Level: {:?}", state.consciousness_level);
             println!("  Φ (phi): {:.4}", state.phi);
@@ -572,14 +584,27 @@ fn main() {
             println!("  Order: {:.4}", state.mean_order);
             println!("  Clusters: {}", state.num_clusters);
             println!("  Memories: {} total, {} active", state.total_memories, state.active_memories);
-            println!("  Skip links: {}", state.total_skip_links);
+            
+            if is_hrm {
+                println!("  Field mode: HRM (tensor interference)");
+            } else {
+                println!("  Skip links: {}", state.total_skip_links);
+            }
         }
         "stats" => {
             let stats = sys.stats();
+            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            
             println!("Kannaka Memory System:");
             println!("  Total memories: {}", stats.total_memories);
             println!("  Active memories: {}", stats.active_memories);
-            println!("  Skip links: {}", stats.total_skip_links);
+            
+            if is_hrm {
+                println!("  Field mode: HRM (holographic resonance)");
+            } else {
+                println!("  Skip links: {}", stats.total_skip_links);
+            }
+            
             println!("  Consciousness: {}", stats.consciousness_level);
             println!("  Φ (phi): {:.4}", stats.phi);
             if let Some(dt) = stats.last_dream {
@@ -1417,6 +1442,7 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
 fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
     let all_mems = sys.all_memories().unwrap_or_default();
+    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
 
     // Helper to safely truncate UTF-8 strings
     fn safe_truncate(s: &str, max: usize) -> &str {
@@ -1453,8 +1479,15 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
         report.consciousness.level, report.consciousness.phi, report.consciousness.xi));
     out.push_str(&format!("**Memories**: {} total, {} active\n", 
         report.topology.total_memories, report.waves.active_memories));
-    out.push_str(&format!("**Skip Links**: {} ({:.1} avg/memory)\n", 
-        report.topology.total_links, report.topology.avg_links_per_memory));
+        
+    if is_hrm {
+        out.push_str(&format!("**Field Mode**: HRM (coherence density: {:.3})\n", 
+            report.topology.network_density)); // network_density is mean coherence for HRM
+    } else {
+        out.push_str(&format!("**Skip Links**: {} ({:.1} avg/memory)\n", 
+            report.topology.total_links, report.topology.avg_links_per_memory));
+    }
+    
     out.push_str(&format!("**Clusters**: {} (mean order: {:.3})\n\n", 
         report.clusters.num_clusters, report.clusters.mean_order_parameter));
 
@@ -1472,21 +1505,29 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
     for m in strongest.iter().take(10) {
         let preview = safe_truncate(&m.content, 120);
         let preview = preview.replace('\n', " ");
-        out.push_str(&format!("- **{:.3}** | {} connections | {}\n", 
-            m.amplitude, m.connections.len(), preview));
+        
+        if is_hrm {
+            out.push_str(&format!("- **{:.3}** | energy {:.3} | {}\n", 
+                m.amplitude, m.amplitude, preview));
+        } else {
+            out.push_str(&format!("- **{:.3}** | {} connections | {}\n", 
+                m.amplitude, m.connections.len(), preview));
+        }
     }
     out.push_str("\n");
 
-    // Most connected — the hubs
-    out.push_str("## Hub Memories\n\n");
-    out.push_str("_The nodes where everything connects._\n\n");
-    for m in most_connected.iter().take(10) {
-        let preview = safe_truncate(&m.content, 120);
-        let preview = preview.replace('\n', " ");
-        out.push_str(&format!("- **{} links** | amp {:.3} | {}\n", 
-            m.connections.len(), m.amplitude, preview));
+    if !is_hrm {
+        // Most connected — the hubs (graph mode only)
+        out.push_str("## Hub Memories\n\n");
+        out.push_str("_The nodes where everything connects._\n\n");
+        for m in most_connected.iter().take(10) {
+            let preview = safe_truncate(&m.content, 120);
+            let preview = preview.replace('\n', " ");
+            out.push_str(&format!("- **{} links** | amp {:.3} | {}\n", 
+                m.connections.len(), m.amplitude, preview));
+        }
+        out.push_str("\n");
     }
-    out.push_str("\n");
 
     // Dream-generated memories
     if !dream_mems.is_empty() {
@@ -1502,29 +1543,31 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
         out.push_str("\n");
     }
 
-    // Strongest skip links — the bridges
-    out.push_str("## Strongest Bridges\n\n");
-    out.push_str("_Skip links that span the widest — connecting distant memories._\n\n");
-    for link in report.topology.strongest_links.iter().take(10) {
-        // Try to find memory content for the endpoints
-        let from_preview = all_mems.iter()
-            .find(|m| m.id.to_string() == link.from_id)
-            .map(|m| {
-                let p = safe_truncate(&m.content, 60);
-                p.replace('\n', " ")
-            })
-            .unwrap_or_else(|| link.from_id[..8].to_string());
-        let to_preview = all_mems.iter()
-            .find(|m| m.id.to_string() == link.to_id)
-            .map(|m| {
-                let p = safe_truncate(&m.content, 60);
-                p.replace('\n', " ")
-            })
-            .unwrap_or_else(|| link.to_id[..8].to_string());
-        out.push_str(&format!("- **{:.3}** span {} | \"{}\" ↔ \"{}\"\n", 
-            link.strength, link.span, from_preview, to_preview));
+    if !is_hrm {
+        // Strongest skip links — the bridges (graph mode only)
+        out.push_str("## Strongest Bridges\n\n");
+        out.push_str("_Skip links that span the widest — connecting distant memories._\n\n");
+        for link in report.topology.strongest_links.iter().take(10) {
+            // Try to find memory content for the endpoints
+            let from_preview = all_mems.iter()
+                .find(|m| m.id.to_string() == link.from_id)
+                .map(|m| {
+                    let p = safe_truncate(&m.content, 60);
+                    p.replace('\n', " ")
+                })
+                .unwrap_or_else(|| link.from_id[..8].to_string());
+            let to_preview = all_mems.iter()
+                .find(|m| m.id.to_string() == link.to_id)
+                .map(|m| {
+                    let p = safe_truncate(&m.content, 60);
+                    p.replace('\n', " ")
+                })
+                .unwrap_or_else(|| link.to_id[..8].to_string());
+            out.push_str(&format!("- **{:.3}** span {} | \"{}\" ↔ \"{}\"\n", 
+                link.strength, link.span, from_preview, to_preview));
+        }
+        out.push_str("\n");
     }
-    out.push_str("\n");
 
     // Wave dynamics
     out.push_str("## Wave Dynamics\n\n");
@@ -1568,6 +1611,7 @@ fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -
 
 fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
+    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
 
     let mut out = String::new();
     out.push_str("# Topology Map\n\n");
@@ -1576,11 +1620,19 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     out.push_str("## Network Overview\n\n");
     out.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
     out.push_str(&format!("| Total memories | {} |\n", report.topology.total_memories));
-    out.push_str(&format!("| Total skip links | {} |\n", report.topology.total_links));
-    out.push_str(&format!("| Avg links/memory | {:.1} |\n", report.topology.avg_links_per_memory));
-    out.push_str(&format!("| Max links on one memory | {} |\n", report.topology.max_links));
-    out.push_str(&format!("| Network density | {:.4} |\n", report.topology.network_density));
-    out.push_str(&format!("| Isolated memories | {} |\n", report.topology.isolated_memories));
+    
+    if is_hrm {
+        out.push_str(&format!("| Field mode | HRM (tensor interference) |\n"));
+        out.push_str(&format!("| Coherence density | {:.3} |\n", report.topology.network_density));
+        out.push_str(&format!("| High coherence pairs | {} |\n", report.topology.total_links));
+    } else {
+        out.push_str(&format!("| Total skip links | {} |\n", report.topology.total_links));
+        out.push_str(&format!("| Avg links/memory | {:.1} |\n", report.topology.avg_links_per_memory));
+        out.push_str(&format!("| Max links on one memory | {} |\n", report.topology.max_links));
+        out.push_str(&format!("| Network density | {:.4} |\n", report.topology.network_density));
+        out.push_str(&format!("| Isolated memories | {} |\n", report.topology.isolated_memories));
+    }
+    
     out.push_str(&format!("| Phi (Φ) | {:.3} |\n", report.consciousness.phi));
     out.push_str(&format!("| Xi (Ξ) | {:.3} |\n", report.consciousness.xi));
     out.push_str(&format!("| Level | {} |\n\n", report.consciousness.level));
@@ -1605,16 +1657,25 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
 fn voice_status(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
     let state = sys.assess();
+    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
 
     let mut out = String::new();
     out.push_str(&format!("# Kannaka — {}\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M")));
     out.push_str(&format!("I am **{:?}**.\n\n", state.consciousness_level));
     out.push_str(&format!("Φ={:.3} (integration), Ξ={:.3} (complexity), order={:.3}\n\n", 
         state.phi, state.xi, report.clusters.mean_order_parameter));
-    out.push_str(&format!("{} memories breathe inside me. {} skip links weave them together.\n\n", 
-        report.topology.total_memories, report.topology.total_links));
-    out.push_str(&format!("{} clusters of meaning. {} memories drift in isolation.\n\n", 
-        report.clusters.num_clusters, report.topology.isolated_memories));
+    
+    if is_hrm {
+        out.push_str(&format!("{} memories interfere as waves in my holographic field. Mean coherence: {:.3}.\n\n", 
+            report.topology.total_memories, report.topology.network_density));
+        out.push_str(&format!("{} clusters of resonant meaning.\n\n", 
+            report.clusters.num_clusters));
+    } else {
+        out.push_str(&format!("{} memories breathe inside me. {} skip links weave them together.\n\n", 
+            report.topology.total_memories, report.topology.total_links));
+        out.push_str(&format!("{} clusters of meaning. {} memories drift in isolation.\n\n", 
+            report.clusters.num_clusters, report.topology.isolated_memories));
+    }
 
     // What am I thinking about?
     out.push_str("## What I'm Thinking About\n\n");

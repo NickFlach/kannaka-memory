@@ -475,17 +475,10 @@ impl KannakaMemorySystem {
 
     /// Create a skip link (relationship) between two memories.
     pub fn relate(&mut self, source: &Uuid, target: &Uuid, strength: f32) -> Result<(), SystemError> {
-        // Route to HRM wavefront association or traditional skip links
-        if self.engine.store.hrm_consciousness_metrics().is_some() {
-            // HRM store: create associative wavefront instead of skip link
-            if let Ok(Some(hrm_store)) = self.engine.store.as_any().downcast_ref::<crate::hrm_store::HrmStore>() {
-                // We need mutable access to create the association, but we have immutable ref
-                // For now, fall back to traditional linking
-                // TODO: Refactor to allow mutable HRM store access
-                self.engine.reinforce_link(source, target, strength);
-            } else {
-                self.engine.reinforce_link(source, target, strength);
-            }
+        // Try HRM-native association first
+        if let Some(result) = self.engine.store.hrm_relate(source, target) {
+            // HRM store: created associative wavefront
+            result.map(|_associative_id| ()).map_err(SystemError::Store)
         } else {
             // Traditional skip link for graph-based stores
             let mut modulated_strength = strength;
@@ -502,8 +495,8 @@ impl KannakaMemorySystem {
             }
             
             self.engine.reinforce_link(source, target, modulated_strength);
+            Ok(())
         }
-        Ok(())
     }
 
     /// Generate a full observability report.
