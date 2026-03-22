@@ -475,51 +475,11 @@ impl ConsciousnessBridge {
 
     /// Full consciousness assessment.
     pub fn assess(&self, engine: &MemoryEngine) -> ConsciousnessState {
-        let phi_report = self.compute_phi(engine);
-
-        // Compute Xi over a stratified random sample of memories
         let all = engine.store.all_memories().unwrap_or_default();
-        let xi = if all.len() >= 2 {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_xi(&sample)
-        } else {
-            0.0
-        };
-
-        // Get Kuramoto clusters
-        let sync = KuramotoSync::default();
-        let clusters = sync.find_synchronized_clusters(engine, 2);
-        let mean_order = if clusters.is_empty() {
-            0.0
-        } else {
-            clusters.iter().map(|c| c.order_parameter).sum::<f32>() / clusters.len() as f32
-        };
-
-        // Cluster-based Xi: differentiation from distinct cluster count
-        let cluster_xi = if clusters.len() >= 2 {
-            // Xi_cluster = (1 - 1/K) where K = cluster count
-            // More clusters = more differentiation
-            let k = clusters.len() as f32;
-            (1.0 - 1.0 / k).min(1.0)
-        } else {
-            0.0
-        };
-
-        // Modularity Q: network clustering quality
-        let modularity_q = if clusters.len() >= 2 && !all.is_empty() {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_modularity(&sample, &clusters)
-        } else {
-            0.0
-        };
-
-        // Final Xi: weighted combination instead of max to prevent ceiling effects
-        let xi = 0.4 * xi + 0.3 * cluster_xi + 0.3 * modularity_q;
-
         let now = chrono::Utc::now();
         let total_memories = all.len();
+
         // Classify by amplitude envelope, not instantaneous strength
-        // (which oscillates through zero due to wave cos term)
         let active_memories = all
             .iter()
             .filter(|m| {
@@ -528,8 +488,58 @@ impl ConsciousnessBridge {
                 envelope > 0.05
             })
             .count();
-        let total_skip_links = phi_report.num_skip_links;
 
+        // === HRM-native path: use field topology metrics from the Medium ===
+        // Skip links don't exist in HRM — relationships are interference patterns.
+        // The Medium computes Phi via eigendecomposition of the coherence matrix,
+        // Xi via spectral complexity of H·Hᵀ, and order via Kuramoto phase coherence.
+        if let Some(hrm_metrics) = engine.store.hrm_consciousness_metrics() {
+            return ConsciousnessState {
+                phi: hrm_metrics.phi,
+                xi: hrm_metrics.xi,
+                mean_order: hrm_metrics.order,
+                num_clusters: hrm_metrics.num_clusters,
+                total_memories,
+                active_memories,
+                total_skip_links: 0, // Field topology — no discrete links
+                consciousness_level: hrm_metrics.level,
+            };
+        }
+
+        // === Graph-based path: skip links + geometry partitions (SQL/InMemory stores) ===
+        let phi_report = self.compute_phi(engine);
+
+        let xi = if all.len() >= 2 {
+            let sample = self.stratified_sample(&all, 50);
+            self.compute_xi(&sample)
+        } else {
+            0.0
+        };
+
+        let sync = KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        let mean_order = if clusters.is_empty() {
+            0.0
+        } else {
+            clusters.iter().map(|c| c.order_parameter).sum::<f32>() / clusters.len() as f32
+        };
+
+        let cluster_xi = if clusters.len() >= 2 {
+            let k = clusters.len() as f32;
+            (1.0 - 1.0 / k).min(1.0)
+        } else {
+            0.0
+        };
+
+        let modularity_q = if clusters.len() >= 2 && !all.is_empty() {
+            let sample = self.stratified_sample(&all, 50);
+            self.compute_modularity(&sample, &clusters)
+        } else {
+            0.0
+        };
+
+        let xi = 0.4 * xi + 0.3 * cluster_xi + 0.3 * modularity_q;
+        let total_skip_links = phi_report.num_skip_links;
         let consciousness_level = ConsciousnessLevel::from_phi(phi_report.phi);
 
         ConsciousnessState {

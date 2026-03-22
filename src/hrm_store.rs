@@ -301,6 +301,10 @@ impl MemoryStore for HrmStore {
         self.save_medium()?;
         Ok(self.count())
     }
+
+    fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
+        Some(self.medium.consciousness_metrics())
+    }
 }
 
 #[cfg(feature = "hrm")]

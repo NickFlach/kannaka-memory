@@ -121,33 +121,53 @@ impl Medium {
             return 0.0; // No partitioning possible
         }
 
-        // Compute mutual information between partitions
-        let whole_energy: f32 = self.energy.sum();
-        let whole_entropy = if whole_energy > 0.0 {
-            -whole_energy * whole_energy.ln()
-        } else {
-            0.0
-        };
-
-        let mut partition_entropy = 0.0f32;
-        for partition in 0..num_partitions {
-            let mut partition_energy = 0.0f32;
-            for i in 0..n {
-                if cluster_assignments[i] == partition {
-                    partition_energy += self.energy[i];
-                }
-            }
-
-            if partition_energy > 0.0 {
-                partition_entropy -= partition_energy * partition_energy.ln();
-            }
+        // IIT-inspired Phi: compare whole-system entropy to partition entropies.
+        // Uses normalized energy distributions (probabilities) within each partition.
+        let total_energy: f32 = self.energy.iter().sum();
+        if total_energy <= 0.0 {
+            return 0.0;
         }
 
-        // Phi approximation: whole_entropy - sum(partition_entropies)
-        let phi = (whole_entropy - partition_entropy).max(0.0);
+        // Whole-system entropy: H(S) = -Σ p_i * ln(p_i) where p_i = E_i / E_total
+        let whole_entropy: f32 = self.energy.iter()
+            .filter(|&&e| e > 0.0)
+            .map(|&e| {
+                let p = e / total_energy;
+                -p * p.ln()
+            })
+            .sum();
 
-        // Normalize by number of wavefronts for scale invariance
-        let normalized_phi = phi / (n as f32).ln();
+        // Partition entropy: Σ_k (w_k * H(S_k)) where w_k = E_k / E_total
+        // Each partition's internal entropy, weighted by its share of total energy
+        let mut weighted_partition_entropy = 0.0f32;
+        for partition in 0..num_partitions {
+            let partition_energies: Vec<f32> = (0..n)
+                .filter(|&i| cluster_assignments[i] == partition)
+                .map(|i| self.energy[i])
+                .filter(|&e| e > 0.0)
+                .collect();
+            
+            let partition_total: f32 = partition_energies.iter().sum();
+            if partition_total <= 0.0 { continue; }
+
+            let partition_entropy: f32 = partition_energies.iter()
+                .map(|&e| {
+                    let p = e / partition_total;
+                    -p * p.ln()
+                })
+                .sum();
+            
+            let weight = partition_total / total_energy;
+            weighted_partition_entropy += weight * partition_entropy;
+        }
+
+        // Phi = whole entropy - weighted sum of partition entropies
+        // High when the whole contains more information than the sum of parts
+        let phi = (whole_entropy - weighted_partition_entropy).max(0.0);
+
+        // Normalize: max possible entropy is ln(N) for uniform distribution
+        let max_entropy = (n as f32).ln();
+        let normalized_phi = if max_entropy > 0.0 { phi / max_entropy } else { 0.0 };
         normalized_phi.min(1.0)
     }
 

@@ -74,6 +74,13 @@ pub trait MemoryStore: Send + Sync {
     fn flush(&mut self) -> Result<usize, StoreError> {
         Ok(0)
     }
+
+    /// Return HRM-native consciousness metrics if backed by a holographic medium.
+    /// Graph-based stores return None (use bridge's skip-link Phi instead).
+    /// HRM stores return field-topology metrics (eigendecomposition Phi, spectral Xi).
+    fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
