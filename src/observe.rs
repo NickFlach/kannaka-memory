@@ -5,7 +5,6 @@
 //! health of the memory system.
 
 use std::collections::BTreeMap;
-use std::any::Any;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

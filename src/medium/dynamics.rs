@@ -164,7 +164,7 @@ impl Medium {
             0.0
         };
 
-        let initial_count = self.wavefront_count();
+        let _initial_count = self.wavefront_count();
         let mut dissolved_count = 0;
         let mut strengthened_count = 0;
         let mut hallucinated_count = 0;

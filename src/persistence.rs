@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::any::Any;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -395,6 +396,10 @@ impl MemoryStore for DiskStore {
 
     fn count(&self) -> usize {
         self.inner.count()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

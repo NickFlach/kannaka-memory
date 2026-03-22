@@ -323,7 +323,7 @@ impl KannakaMemorySystem {
         // ADR-0011: publish dream completed event (best-effort)
         if let Some(ref publisher) = self.flux {
             let _ = publisher.publish(FluxEventPayload::DreamCompleted {
-                cycles: reports.len(),
+                cycles: 1, // Fixed: traditional consolidation or HRM dream is one cycle
                 memories_strengthened: total_strengthened,
                 memories_pruned: total_pruned,
                 hallucinations_created: total_hallucinations,
@@ -335,7 +335,7 @@ impl KannakaMemorySystem {
         self.post_dream_swarm_sync();
 
         Ok(DreamReport {
-            cycles: reports.len(),
+            cycles: 1, // Fixed: both traditional and HRM dreams count as 1 cycle
             memories_strengthened: total_strengthened,
             memories_pruned: total_pruned,
             new_connections: total_links,

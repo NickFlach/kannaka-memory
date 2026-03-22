@@ -3,6 +3,7 @@
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::any::Any;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -509,6 +510,10 @@ impl MemoryStore for HnswStore {
 
     fn count(&self) -> usize {
         self.memories.len()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

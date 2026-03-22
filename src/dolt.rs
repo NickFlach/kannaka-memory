@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::time::{Duration, Instant};
+use std::any::Any;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use mysql::*;
@@ -2669,6 +2670,10 @@ impl MemoryStore for DoltMemoryStore {
         let msg = format!("flush: synced {} memories with skip links to Dolt", count);
         let _ = self.commit(&msg);
         Ok(count)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
