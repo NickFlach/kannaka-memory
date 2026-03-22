@@ -19,7 +19,7 @@ bincode = "1"
 ndarray = { version = "0.15", optional = true }
 blake3 = { version = "1.5", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+# rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 tokio = { version = "1", features = ["full"], optional = true }
 async-trait = { version = "0.1", optional = true }
@@ -45,7 +45,7 @@ video = ["image"]
 glyph = []
 collective = ["rayon"]
 hrm = ["ndarray", "blake3"]
-sqlite-migrate = ["rusqlite", "clap"]
+# sqlite-migrate feature removed
 
 [[bin]]
 name = "research"
@@ -59,10 +59,6 @@ required-features = ["glyph"]
 name = "kannaka-mcp"
 path = "src/bin/mcp_server.rs"
 required-features = ["mcp"]
-
-[[bin]]
-name = "kannaka-migrate"
-path = "src/bin/migrate.rs"
 
 [[bin]]
 name = "kannaka-recompute-geometry"
