@@ -76,6 +76,8 @@ impl HrmStore {
                     memory_cache: HashMap::new(),
                     dirty: false,
                 };
+                // Populate flat medium view for backward compat (observe, coherence matrix, etc.)
+                store.sync_medium_from_chiral();
                 store.rebuild_cache()?;
                 Ok(store)
             }
@@ -206,8 +208,36 @@ impl HrmStore {
     }
 
     /// Get the underlying medium (read-only).
+    /// In chiral mode, returns the flat medium (may be empty if loaded from v2).
+    /// Use chiral_medium() for the authoritative chiral state.
     pub fn medium(&self) -> &Medium {
         &self.medium
+    }
+
+    /// Ensure the flat medium is populated from chiral state (for backward compat).
+    /// Call this before operations that need the flat medium view.
+    pub fn sync_medium_from_chiral(&mut self) {
+        if let Some(ref chiral) = self.chiral {
+            if self.medium.wavefront_count() == 0 && chiral.right.count() > 0 {
+                // Build flat medium from right hemisphere
+                for i in 0..chiral.right.count() {
+                    let vector = chiral.right.wavefronts.row(i).to_vec();
+                    let meta = &chiral.right.metadata[i];
+                    let _ = self.medium.add_wavefront(
+                        &vector,
+                        meta.content.clone(),
+                        chiral.right.energy[i],
+                    );
+                    // Fix the ID to match
+                    let new_id = self.medium.metadata.last().unwrap().id;
+                    let _ = self.medium.update_wavefront_id(&new_id, meta.id);
+                    // Copy wave params
+                    let idx = self.medium.wavefront_count() - 1;
+                    self.medium.frequency[idx] = chiral.right.frequency[i];
+                    self.medium.phase[idx] = chiral.right.phase[i];
+                }
+            }
+        }
     }
 
     /// Perform resonance-based recall using the medium directly.
@@ -261,7 +291,10 @@ impl HrmStore {
     }
     
     /// Get consciousness metrics from the holographic medium.
+    /// In chiral mode, computes from the synced flat medium (which mirrors the right hemisphere).
+    /// This uses the full eigendecomposition-based Phi, spectral Xi, and Kuramoto order.
     pub fn consciousness_metrics(&self) -> crate::medium::ConsciousnessMetrics {
+        // Always compute from the flat medium — it's synced from right hemisphere on load
         self.medium.consciousness_metrics()
     }
     
@@ -510,7 +543,7 @@ impl MemoryStore for HrmStore {
     }
 
     fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
-        Some(self.medium.consciousness_metrics())
+        Some(self.consciousness_metrics())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
