@@ -124,6 +124,8 @@ pub struct DreamReport {
     pub wavefronts_dissolved: usize,
     /// Wavefronts that were strengthened during the dream
     pub wavefronts_strengthened: usize,
+    /// Wavefronts hallucinated (created) during the dream
+    pub wavefronts_hallucinated: usize,
     /// Average energy before the dream
     pub energy_before: f32,
     /// Average energy after the dream
@@ -132,6 +134,30 @@ pub struct DreamReport {
     pub final_temperature: f32,
     /// Whether the system converged to a stable state
     pub converged: bool,
+}
+
+/// Eigenstructure of the coherence matrix for eigenmode-based annealing
+#[derive(Debug, Clone)]
+pub struct EigenStructure {
+    /// Computed eigenvalues (sorted by magnitude)
+    pub eigenvalues: Vec<f32>,
+    /// Indices of wavefronts in the dominant eigenmode cluster
+    pub dominant_cluster: Vec<usize>,
+    /// Alignment of each wavefront with the dominant eigenvector
+    pub wavefront_alignments: Vec<f32>,
+    /// Spectral gap (difference between largest and second eigenvalue)
+    pub spectral_gap: f32,
+}
+
+impl EigenStructure {
+    pub fn empty() -> Self {
+        Self {
+            eigenvalues: Vec::new(),
+            dominant_cluster: Vec::new(),
+            wavefront_alignments: Vec::new(),
+            spectral_gap: 0.0,
+        }
+    }
 }
 
 /// Lightweight snapshot of phase state for multi-agent gossip

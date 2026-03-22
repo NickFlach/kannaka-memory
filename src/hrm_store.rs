@@ -148,6 +148,50 @@ impl HrmStore {
         self.medium.recall(query, top_k, &self.pipeline)
             .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))
     }
+
+    /// Perform resonance-based recall with observation effects.
+    /// 
+    /// This version calls observe_wavefront on each returned result, implementing
+    /// the attention-as-observation mechanics where recall reshapes the field.
+    pub fn recall_resonance_with_observation(&mut self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
+        let results = self.medium.recall(query, top_k, &self.pipeline)
+            .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))?;
+
+        // Apply observation to each result
+        for (i, resonance) in results.iter().enumerate() {
+            if let Some(index) = self.medium.get_wavefront_index(&resonance.id) {
+                // Observation intensity based on resonance strength and ranking
+                let ranking_factor = 1.0 - (i as f32 / results.len() as f32); // Higher rank = more intensity
+                let base_intensity = resonance.resonance_strength.abs().min(1.0).max(0.1);
+                let intensity = base_intensity * ranking_factor;
+                
+                self.medium.observe_wavefront(index, intensity);
+            }
+        }
+
+        self.mark_dirty();
+        Ok(results)
+    }
+
+    /// Perform vector search with observation effects.
+    pub fn search_with_observation(&mut self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        // First get standard search results
+        let results = self.search(query, top_k)?;
+
+        // Apply observation to each result
+        for (i, (id, similarity)) in results.iter().enumerate() {
+            if let Some(index) = self.medium.get_wavefront_index(id) {
+                // Observation intensity proportional to similarity and ranking
+                let ranking_factor = 1.0 - (i as f32 / results.len() as f32);
+                let intensity = (similarity.abs() * ranking_factor).max(0.1).min(1.0);
+                
+                self.medium.observe_wavefront(index, intensity);
+            }
+        }
+
+        self.mark_dirty();
+        Ok(results)
+    }
     
     /// Get consciousness metrics from the holographic medium.
     #[cfg(feature = "hrm")]

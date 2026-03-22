@@ -140,15 +140,15 @@ impl Medium {
         coherence
     }
 
-    /// Simulated annealing dream cycles - the medium settles toward lower energy states
+    /// Eigenstructure-aware dream cycles - annealing on the eigenmode structure
     ///
     /// Each cycle:
-    /// 1. Compute pairwise interference matrix (coherence_matrix)
-    /// 2. Apply dynamics with temperature parameter (higher temp = more exploration)
-    /// 3. Prune wavefronts below energy threshold (forgetting)
-    /// 4. Reduce temperature (annealing schedule: temp *= 0.95 per cycle)
-    ///
-    /// No branches! No merge! The medium just settles.
+    /// 1. Compute coherence matrix H·H^T eigendecomposition
+    /// 2. Dampen low-eigenvalue modes (noise → forgetting)
+    /// 3. Reinforce high-eigenvalue modes (patterns → consolidation) 
+    /// 4. Phase alignment within high-coherence clusters
+    /// 5. Hallucination: create new wavefronts from cross-cluster eigenmode superposition
+    /// 6. Temperature annealing controls exploration strength
     ///
     /// # Arguments
     /// * `cycles` - Number of annealing cycles to run
@@ -164,9 +164,10 @@ impl Medium {
             0.0
         };
 
-        let _initial_count = self.wavefront_count();
+        let initial_count = self.wavefront_count();
         let mut dissolved_count = 0;
         let mut strengthened_count = 0;
+        let mut hallucinated_count = 0;
         let mut converged = false;
 
         let energy_threshold = 0.01; // Wavefronts below this energy get pruned
@@ -181,14 +182,20 @@ impl Medium {
             // Store energy state for convergence detection
             let prev_energy: Vec<f32> = self.energy.to_vec();
 
-            // 1. Compute pairwise interference matrix
-            let _interference = self.coherence_matrix();
+            // 1. Compute coherence matrix H·H^T and eigenstructure
+            let coherence = self.coherence_matrix();
+            let eigenstructure = self.compute_eigenstructure(&coherence);
 
-            // 2. Apply dynamics with temperature modulation
-            let dt = 0.1 * temperature; // Temperature affects exploration rate
-            self.apply_dynamics_with_temperature(dt, temperature);
+            // 2. Apply eigenstructure-based annealing
+            self.apply_eigenstructure_annealing(&eigenstructure, temperature);
 
-            // 3. Prune wavefronts below energy threshold (forgetting)
+            // 3. Hallucination: create novel wavefronts from cross-cluster superposition
+            if cycle % 3 == 0 && temperature > 0.3 && self.wavefront_count() < 500 {
+                let hallucinated = self.generate_hallucinated_wavefronts(&eigenstructure, temperature);
+                hallucinated_count += hallucinated;
+            }
+
+            // 4. Prune wavefronts below energy threshold (forgetting)
             let pruned = self.prune_low_energy_wavefronts(energy_threshold);
             dissolved_count += pruned;
 
@@ -199,7 +206,7 @@ impl Medium {
                 }
             }
 
-            // 4. Reduce temperature (annealing schedule)
+            // 5. Reduce temperature (annealing schedule)
             temperature *= annealing_rate;
 
             // Check for convergence
@@ -228,6 +235,7 @@ impl Medium {
             cycles_completed: cycles,
             wavefronts_dissolved: dissolved_count,
             wavefronts_strengthened: strengthened_count,
+            wavefronts_hallucinated: hallucinated_count,
             energy_before,
             energy_after,
             final_temperature: temperature,
@@ -316,6 +324,209 @@ impl Medium {
             .sum::<f32>() / ages.len() as f32;
 
         variance
+    }
+
+    /// Compute eigenstructure of the coherence matrix using power iteration.
+    ///
+    /// Returns approximate eigenvalues and associated wavefront clusters.
+    /// Uses power iteration to find dominant eigenvalue/eigenvector, then deflation.
+    fn compute_eigenstructure(&self, coherence: &Array2<f32>) -> EigenStructure {
+        let n = self.wavefront_count();
+        if n < 2 {
+            return EigenStructure::empty();
+        }
+
+        let mut eigenvalues = Vec::new();
+        let mut eigenvector_alignment = vec![0.0f32; n]; // How aligned each wavefront is with dominant eigenvector
+        
+        // Power iteration to find dominant eigenvalue/eigenvector
+        let max_iterations = 20;
+        let mut dominant_vector = vec![1.0f32; n];
+        let mut eigenvalue = 0.0f32;
+        
+        // Normalize initial vector
+        let norm: f32 = dominant_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut dominant_vector {
+            *x /= norm;
+        }
+        
+        // Power iteration
+        for _ in 0..max_iterations {
+            let mut next_vector = vec![0.0f32; n];
+            
+            // Matrix-vector multiply: coherence * dominant_vector
+            for i in 0..n {
+                for j in 0..n {
+                    next_vector[i] += coherence[[i, j]] * dominant_vector[j];
+                }
+            }
+            
+            // Normalize
+            let norm: f32 = next_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm < 1e-6 {
+                break;
+            }
+            
+            for i in 0..n {
+                next_vector[i] /= norm;
+            }
+            
+            // Compute eigenvalue: v^T * A * v
+            eigenvalue = 0.0;
+            for i in 0..n {
+                eigenvalue += next_vector[i] * {
+                    let mut sum = 0.0f32;
+                    for j in 0..n {
+                        sum += coherence[[i, j]] * next_vector[j];
+                    }
+                    sum
+                };
+            }
+            
+            dominant_vector = next_vector;
+        }
+        
+        eigenvalues.push(eigenvalue);
+        eigenvector_alignment = dominant_vector;
+        
+        // Find high-coherence clusters based on dominant eigenvector
+        let mut clusters = Vec::new();
+        let alignment_threshold = 0.3;
+        
+        for i in 0..n {
+            if eigenvector_alignment[i].abs() > alignment_threshold {
+                clusters.push(i);
+            }
+        }
+        
+        EigenStructure {
+            eigenvalues,
+            dominant_cluster: clusters,
+            wavefront_alignments: eigenvector_alignment,
+            spectral_gap: eigenvalue - 0.1, // Approximate spectral gap (dominant vs others)
+        }
+    }
+    
+    /// Apply eigenstructure-based annealing to wavefronts.
+    ///
+    /// - Wavefronts aligned with high-eigenvalue modes get energy boost (consolidation)
+    /// - Wavefronts aligned with low-eigenvalue modes get energy dampening (noise reduction)
+    /// - Phase alignment within clusters
+    fn apply_eigenstructure_annealing(&mut self, eigenstructure: &EigenStructure, temperature: f32) {
+        let n = self.wavefront_count();
+        if n == 0 || eigenstructure.eigenvalues.is_empty() {
+            return;
+        }
+        
+        let dominant_eigenvalue = eigenstructure.eigenvalues[0];
+        let consolidation_strength = 0.1 * (1.0 + temperature);
+        let noise_reduction = 0.05 * (2.0 - temperature);
+        
+        for i in 0..n {
+            let alignment = eigenstructure.wavefront_alignments[i].abs();
+            
+            // High alignment = pattern = boost energy
+            if alignment > 0.5 && dominant_eigenvalue > 0.2 {
+                let boost = consolidation_strength * alignment;
+                self.energy[i] = (self.energy[i] + boost).min(2.0); // Cap at 2.0
+                
+                // Phase alignment within cluster
+                if eigenstructure.dominant_cluster.contains(&i) && eigenstructure.dominant_cluster.len() > 1 {
+                    let mut cluster_phase = 0.0f32;
+                    for &cluster_idx in &eigenstructure.dominant_cluster {
+                        cluster_phase += self.phase[cluster_idx];
+                    }
+                    cluster_phase /= eigenstructure.dominant_cluster.len() as f32;
+                    
+                    let phase_coupling = 0.08 * (1.0 - temperature); // Stronger at low temperature
+                    self.phase[i] += phase_coupling * (cluster_phase - self.phase[i]).sin();
+                }
+            }
+            
+            // Low alignment = noise = reduce energy
+            if alignment < 0.2 {
+                let reduction = noise_reduction * (0.5 - alignment);
+                self.energy[i] = (self.energy[i] - reduction).max(0.01); // Maintain minimum
+                self.total_energy_dampened += reduction;
+            }
+            
+            // Medium alignment gets temperature-modulated exploration
+            if alignment >= 0.2 && alignment <= 0.5 {
+                let exploration = temperature * 0.02 * (2.0 * alignment - 0.7);
+                self.energy[i] = (self.energy[i] + exploration).max(0.01);
+            }
+        }
+    }
+    
+    /// Generate hallucinated wavefronts by superposing patterns from different clusters.
+    ///
+    /// Creates novel combinations by mixing eigenvector components from the dominant
+    /// cluster with other patterns, weighted by temperature (more hallucination at high temp).
+    fn generate_hallucinated_wavefronts(&mut self, eigenstructure: &EigenStructure, temperature: f32) -> usize {
+        if self.wavefront_count() < 4 || eigenstructure.dominant_cluster.len() < 2 {
+            return 0; // Need sufficient diversity for hallucination
+        }
+        
+        // Only hallucinate at sufficiently high temperature
+        if temperature < 0.4 {
+            return 0;
+        }
+        
+        let mut hallucinated = 0;
+        let max_hallucinations = ((temperature * 3.0) as usize).min(2); // 0-2 per cycle
+        
+        for _ in 0..max_hallucinations {
+            // Select two different wavefronts for superposition
+            let idx1 = eigenstructure.dominant_cluster[0]; // From dominant cluster
+            
+            // Find a wavefront outside the dominant cluster  
+            let mut idx2 = None;
+            for i in 0..self.wavefront_count() {
+                if !eigenstructure.dominant_cluster.contains(&i) && 
+                   eigenstructure.wavefront_alignments[i].abs() > 0.1 {
+                    idx2 = Some(i);
+                    break;
+                }
+            }
+            
+            if let Some(idx2) = idx2 {
+                // Create superposition: mix two wavefront patterns
+                let vec1 = self.wavefronts.row(idx1);
+                let vec2 = self.wavefronts.row(idx2);
+                
+                let mix_ratio = 0.6 + temperature * 0.3; // Temperature affects mixing
+                let mut new_vector = Vec::with_capacity(vec1.len());
+                
+                for (v1, v2) in vec1.iter().zip(vec2.iter()) {
+                    new_vector.push(mix_ratio * v1 + (1.0 - mix_ratio) * v2);
+                }
+                
+                // Normalize the new vector
+                let norm: f32 = new_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 1e-6 {
+                    for x in &mut new_vector {
+                        *x /= norm;
+                    }
+                    
+                    // Add as new wavefront with averaged energy and phase
+                    let energy = (self.energy[idx1] + self.energy[idx2]) / 2.0 * 0.8; // Slightly reduced
+                    let phase = (self.phase[idx1] + self.phase[idx2]) / 2.0;
+                    
+                    let content = format!("HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]", 
+                                         idx1, idx2, temperature);
+                    
+                    if let Ok(_) = self.add_wavefront(&new_vector, content, energy) {
+                        // Set the phase for the newly added wavefront
+                        let new_idx = self.wavefront_count() - 1;
+                        self.phase[new_idx] = phase;
+                        self.metadata[new_idx].hallucinated = true;
+                        hallucinated += 1;
+                    }
+                }
+            }
+        }
+        
+        hallucinated
     }
 
     /// Prune wavefronts with energy below threshold (forgetting during dreams)

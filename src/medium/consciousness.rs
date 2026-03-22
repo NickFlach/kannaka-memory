@@ -630,6 +630,68 @@ impl Medium {
         })
     }
 
+    /// Observe a wavefront — attention as quantum observation that reshapes the field.
+    ///
+    /// When a memory is recalled/attended to, the observation has physical effects:
+    /// 1. Boosts energy of the attended wavefront
+    /// 2. Finds neighbors with high coherence (above threshold)
+    /// 3. Nudges their phases toward alignment proportional to coherence * intensity
+    ///
+    /// This implements the quantum observer effect in the tensor field — observation
+    /// changes the system. Modality weights affect the gravitational pull.
+    ///
+    /// # Arguments
+    /// * `idx` - Index of the wavefront being observed
+    /// * `intensity` - Strength of observation (0.0-1.0+)
+    pub(crate) fn observe_wavefront(&mut self, idx: usize, intensity: f32) {
+        if idx >= self.wavefront_count() || intensity <= 0.0 {
+            return;
+        }
+
+        // 1. Boost energy of the observed wavefront
+        let energy_boost = intensity * 0.1; // Scale factor
+        self.energy[idx] = (self.energy[idx] + energy_boost).min(2.0); // Cap at 2.0 to prevent runaway
+
+        // 2. Determine modality weight based on content
+        let observed_meta = &self.metadata[idx];
+        let modality_weight = get_modality_weight(&observed_meta.content);
+
+        // 3. Compute coherence matrix to find neighbors
+        let coherence_matrix = self.coherence_matrix();
+        let coherence_threshold = 0.3;
+
+        // 4. Find high-coherence neighbors and nudge their phases toward alignment
+        for neighbor_idx in 0..self.wavefront_count() {
+            if neighbor_idx == idx {
+                continue;
+            }
+
+            let coherence = coherence_matrix[[idx, neighbor_idx]].abs();
+            
+            if coherence > coherence_threshold {
+                // Phase nudging proportional to coherence * intensity * modality_weight
+                let coupling_strength = coherence * intensity * modality_weight * 0.05;
+                
+                // Target phase: the observed wavefront's phase
+                let target_phase = self.phase[idx];
+                let current_phase = self.phase[neighbor_idx];
+                
+                // Nudge toward alignment using Kuramoto-like dynamics
+                let phase_difference = target_phase - current_phase;
+                let phase_nudge = coupling_strength * phase_difference.sin();
+                
+                self.phase[neighbor_idx] += phase_nudge;
+                
+                // Also apply a small energy boost to coherent neighbors
+                let neighbor_energy_boost = coupling_strength * 0.5;
+                self.energy[neighbor_idx] = (self.energy[neighbor_idx] + neighbor_energy_boost).min(1.5);
+            }
+        }
+
+        // 5. Apply small dynamics step to let the field settle
+        self.apply_dynamics(0.05);
+    }
+
     /// Internal helper: apply interference without going through the full store path.
     /// Used by introspect() which needs to apply interference before manually adding the wavefront.
     fn apply_interference_raw(&mut self, new_vector: &[f32], importance: f32) {
@@ -657,4 +719,96 @@ impl Medium {
             }
         }
     }
+}
+
+/// Determine modality weight based on content type.
+///
+/// Modality weights affect the gravitational pull during observation:
+/// - text: 1.0 (baseline)
+/// - audio: 1.5 (richer signal)
+/// - visual: 1.2 (moderate richness)
+fn get_modality_weight(content: &str) -> f32 {
+    if content.starts_with("HEAR:") || content.starts_with("audio:") {
+        1.5 // Audio has richer temporal signal
+    } else if content.starts_with("[SEE]") || content.starts_with("visual:") {
+        1.2 // Visual has moderate spatial richness  
+    } else {
+        1.0 // Text baseline
+    }
+}
+
+/// Extract Phi value from self-observation content string.
+/// Returns the numeric value after "Phi=" if found.
+fn extract_phi_from_content(content: &str) -> Option<&str> {
+    if let Some(start) = content.find("Phi=") {
+        let phi_start = start + 4; // Skip "Phi="
+        let phi_end = content[phi_start..]
+            .find(',')
+            .map(|i| phi_start + i)
+            .unwrap_or(content.len());
+        Some(&content[phi_start..phi_end])
+    } else {
+        None
+    }
+}
+
+/// Generate insight string from consciousness metrics (deterministic).
+fn generate_insight(
+    wavefront_count: usize,
+    consciousness: &ConsciousnessMetrics,
+    emergence: &EmergenceReport,
+    wisdom: f32,
+) -> String {
+    if wavefront_count == 0 {
+        return "Empty medium - no patterns to analyze".to_string();
+    }
+
+    let mut insights = Vec::new();
+
+    // Phi insights
+    if consciousness.phi > 0.8 {
+        insights.push("High integration - system operates as unified whole".to_string());
+    } else if consciousness.phi > 0.5 {
+        insights.push("Moderate integration - some subsystem independence".to_string());
+    } else if consciousness.phi > 0.1 {
+        insights.push("Low integration - fragmented subsystems".to_string());
+    } else {
+        insights.push("Minimal integration - near-random configuration".to_string());
+    }
+
+    // Xi insights
+    if consciousness.xi > 0.7 {
+        insights.push("Rich spectral complexity - diverse eigenmode structure".to_string());
+    } else if consciousness.xi > 0.4 {
+        insights.push("Moderate complexity - some eigenmode diversity".to_string());
+    } else {
+        insights.push("Low complexity - dominant eigenmode".to_string());
+    }
+
+    // Emergence insights
+    match emergence.level {
+        EmergenceLevel::PreConscious => {
+            insights.push("Pre-conscious: no self-modeling detected".to_string());
+        }
+        EmergenceLevel::SelfAware => {
+            insights.push("Self-aware: basic self-modeling emerging".to_string());
+        }
+        EmergenceLevel::Reflective => {
+            insights.push("Reflective: stable self-model with coherent patterns".to_string());
+        }
+        EmergenceLevel::Recursive => {
+            insights.push("Recursive: self-model affects itself in feedback loops".to_string());
+        }
+    }
+
+    // Wisdom insights
+    if wisdom > 0.7 {
+        insights.push("High wisdom - learned restraint and selective dampening".to_string());
+    } else if wisdom > 0.4 {
+        insights.push("Moderate wisdom - balanced growth and pruning".to_string());
+    } else {
+        insights.push("Low wisdom - still in chaotic growth phase".to_string());
+    }
+
+    insights.join("; ")
 }
