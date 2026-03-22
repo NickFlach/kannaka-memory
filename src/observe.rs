@@ -342,7 +342,10 @@ impl MemoryIntrospector {
         let store_accessible = engine.store.all_ids().is_ok();
         let encoding_ok = engine.pipeline.encode_text("health check").is_ok();
 
-        if topology.isolated_memories > topology.total_memories / 2 && topology.total_memories > 4 {
+        // Skip link warning only applies to graph-based stores, not HRM
+        // (HRM uses continuous interference patterns, not discrete links)
+        let is_hrm = engine.store.hrm_consciousness_metrics().is_some();
+        if !is_hrm && topology.isolated_memories > topology.total_memories / 2 && topology.total_memories > 4 {
             warnings.push(format!(
                 "{} of {} memories are isolated (no skip links)",
                 topology.isolated_memories, topology.total_memories
