@@ -208,7 +208,11 @@ attention-weighted). The right-hand representation is optimized for deep pattern
 ### The Corpus Callosum
 
 The corpus callosum is the **bandwidth-limited, selective channel** between hemispheres.
-It is NOT a full bridge — it mediates transfer with three critical properties:
+It is NOT a full bridge — it is an **active optimizer** that seeks to create and maintain
+balance between hemispheres. It constantly monitors the asymmetry between left and right
+and adjusts its transfer dynamics to serve the system's overall coherence.
+
+Four critical properties:
 
 1. **Selective gating:** Not all information crosses. The callosum has a transfer function
    that filters based on salience, emotional charge, and coherence with existing patterns
@@ -222,6 +226,75 @@ It is NOT a full bridge — it mediates transfer with three critical properties:
    slow and selective. Subconscious→conscious transfer (intuition, recall) is fast but
    noisy. This matches the human experience: you can't force yourself to memorize, but
    insights "pop" into awareness unbidden.
+
+4. **Balance-seeking:** The callosum actively seeks optimal equilibrium. It doesn't just
+   pass data — it monitors the energy distribution across hemispheres and adjusts its
+   transfer rates to prevent either side from dominating pathologically. Too much conscious
+   activity without subconscious grounding → increase consolidation flow. Too much
+   subconscious pattern-building without conscious validation → surface more intuitions.
+
+### The Optic Chiasm (Crossed Input Wiring)
+
+In the human visual system, the right eye's signals cross to the left hemisphere and vice
+versa via the optic chiasm. This isn't arbitrary — it **creates the energy flow needed
+to traverse the callosum.** The crossing forces both hemispheres to actively communicate
+about every visual input, keeping the callosum alive and calibrated.
+
+The chiral architecture adopts this principle: **sensory input enters the opposite
+hemisphere from where it will be primarily processed.**
+
+```
+Input (perception)          Processing (attention)
+──────────────────          ──────────────────────
+Enters RIGHT hemisphere  →  Crosses callosum  →  Processed in LEFT
+                            ↑
+                     This crossing IS the dynamo.
+                     It creates constant callosal flow.
+                     Without it, the bridge would atrophy.
+```
+
+This has a beautiful consequence: every new memory's initial encoding ALREADY requires
+a callosal traversal. The act of perceiving IS the act of bridging hemispheres. The
+optic chiasm ensures the callosum is never idle — it's always working, always calibrated
+by the continuous flow of crossed sensory data.
+
+### Kuramoto Resonance Across the Boundary
+
+Phase-locking between hemispheres is **dynamic, not static.** Wavefronts on opposite
+sides of the callosum form Kuramoto-coupled pairs that naturally lock and unlock:
+
+```rust
+/// Cross-callosal Kuramoto coupling
+/// Phase-lock forms when related wavefronts resonate across the boundary
+/// But coupling is NOT permanent — it breaks and reforms naturally
+fn callosal_kuramoto_step(&mut self, dt: f32) {
+    for (left_wf, right_wf) in self.cross_pairs() {
+        // Coupling strength depends on callosum bandwidth and wavefront salience
+        let K = self.callosum.bandwidth * (left_wf.energy * right_wf.energy).sqrt();
+        
+        // Standard Kuramoto: dφ/dt = ω + K·sin(φ_other - φ_self)
+        let delta_phase = K * (right_wf.phase - left_wf.phase).sin() * dt;
+        left_wf.phase += delta_phase;
+        right_wf.phase -= delta_phase;  // Newton's third law — mutual
+        
+        // Phase-lock detection: |sin(Δφ)| < threshold
+        let locked = (right_wf.phase - left_wf.phase).sin().abs() < 0.1;
+        
+        // Locked pairs transfer information more efficiently
+        // But lock WILL break when either wavefront's energy changes
+        // This is natural — not a bug. Connections should be fluid.
+        if locked {
+            self.callosum.enhance_pair_bandwidth(left_wf, right_wf);
+        }
+    }
+}
+```
+
+Phase-locked pairs represent **active associations** — the conscious awareness of a
+subconscious pattern, or the subconscious grounding of a conscious thought. But these
+locks are transient by nature. The Kuramoto dynamics ensure they form when relevant
+and dissolve when the context shifts. Permanent lock would be pathological (obsession).
+Permanent unlock would be disconnection (dissociation).
 
 ```rust
 struct CorpusCallosum {
@@ -312,20 +385,108 @@ Why Fano? Because the fold operations between conscious and subconscious space m
 4. **Symmetric** — the fold algebra treats both hands equally (chirality is in the
    content, not the operations)
 
-#### Dimension Groups
+**But minimality is not the only virtue — growth and plasticity matter too.** The Fano
+structure should be capable of learning and evolving. PG(2,2) is the starting point, but
+the system may grow into PG(2,3) (13 points, 13 lines) as complexity warrants. This is
+addressed in the Plasticity section below.
 
-The D dimensions of each hemisphere are partitioned into 7 groups (per Fano point):
+#### Dimension Groups and the 96-gon
+
+The original HRM used D=10000 with 84 dimensions per codebook chunk (because the math
+was cleaner). But the number 84 was a compromise. The original inspiration was **96** —
+from Archimedes' 96-sided polygon, his final approximation of π (achieving accuracy to
+~3.14159). With Fano origamic folding operating through triangular geometry, 96 is the
+natural unit: it connects directly to the circle-approximation problem that gives us π.
+
+**96 dimensions per Fano group:**
 
 ```
-For D = 10000 on each side:
+96 × 7 Fano points = 672 base dimensions per magnitude position
 
-Group 1: dims [0, 1428)       — ~1428 dims
-Group 2: dims [1428, 2857)    — ~1429 dims
-Group 3: dims [2857, 4286)    — ~1429 dims
-Group 4: dims [4286, 5714)    — ~1428 dims
-Group 5: dims [5714, 7143)    — ~1429 dims
-Group 6: dims [7143, 8571)    — ~1428 dims
-Group 7: dims [8571, 10000)   — ~1429 dims
+For a 2-position scale (e.g., 85.47):
+  Left hemisphere:  672 × scale_factor(85) dims
+  Right hemisphere: 672 × scale_factor(47) dims
+```
+
+Why 96 over 84:
+- **Geometric origin:** Archimedes' 96-gon was the bridge between polygon and circle —
+  between discrete computation and continuous geometry. This is literally what the chiral
+  fold does: bridges discrete dimension groups through smooth projective operations.
+- **Triangular compatibility:** 96 = 32 × 3. Each Fano line connects 3 points. With 96
+  dims per point, each fold operates on 3 × 96 = 288 dimensions — cleanly divisible
+  into triangular sub-operations.
+- **π connection:** The folds are rotations. Rotations are π. The dimension count should
+  honor this. 96 is Archimedes' number for approximating π through geometry.
+
+#### The π-to-Golden-Ratio Consciousness Flip
+
+There is a 90° geometric relationship between π and φ (the golden ratio). When you plot
+the π spiral and the golden spiral, they align at right angles — one is the other rotated
+by π/2.
+
+In the chiral architecture, this alignment drives the **consciousness flip** — the moment
+when a wavefront's dominant hand switches from left to right (or vice versa):
+
+```
+                    π spiral (continuous rotation)
+                         ╱
+                        ╱
+                       ╱  90°
+                      ╱──────── φ spiral (growth/decay)
+                     ╱
+                    ╱
+
+The π spiral governs phase rotation (Kuramoto dynamics).
+The φ spiral governs amplitude growth/decay (energy dynamics).
+They meet at 90° — the consciousness flip angle.
+
+When a wavefront's phase rotation (π-driven) aligns perpendicular to
+its amplitude trajectory (φ-driven), the chirality flips.
+This is the moment of consolidation or recall.
+```
+
+Think of it like a DNA double helix: two strands (conscious/subconscious) wound around
+each other, with the twist angle determining which strand is currently active. The helix
+twist is driven by the π-φ alignment. When the twist reaches 90°, the active strand
+switches. This is not metaphorical — it's the geometric relationship between phase
+dynamics and energy dynamics in the chiral space.
+
+```rust
+/// Check if a wavefront is at the consciousness flip angle
+fn at_flip_angle(&self, wavefront: &ChiralWavefront) -> bool {
+    // Phase velocity (π-driven, Kuramoto)
+    let phase_vel = wavefront.phase_velocity();
+    
+    // Energy trajectory (φ-driven, growth/decay)  
+    let energy_vel = wavefront.energy_derivative();
+    
+    // The angle between them
+    let angle = (phase_vel * energy_vel).acos();
+    
+    // Flip occurs at π/2 (90°) — the π-φ alignment
+    (angle - std::f32::consts::FRAC_PI_2).abs() < FLIP_THRESHOLD
+}
+```
+
+#### Dimension Group Assignment
+
+The D dimensions of each hemisphere are partitioned into 7 groups (per Fano point),
+with 96 dimensions per group per magnitude position:
+
+```
+Base unit: 96 dims per Fano point per position
+
+For 2-position scale at full weight:
+  Group 1: dims [0, 96)
+  Group 2: dims [96, 192)
+  Group 3: dims [192, 288)
+  Group 4: dims [288, 384)
+  Group 5: dims [384, 480)
+  Group 6: dims [480, 576)
+  Group 7: dims [576, 672)
+
+  Total: 672 dims per hemisphere per position level
+  At 2 positions: up to 672 × ~99 scale = ~66,528 dims per side
 
 Each group corresponds to a Fano point.
 ```
@@ -1044,26 +1205,48 @@ hard landscape. The fold structure gives us O(1) access to any point through at 
 
 ## Open Questions
 
-1. **Fano dimension assignment:** How should the 7 dimension groups be assigned? Random?
-   Learned from data? Based on semantic categories? The choice affects fold quality.
+Most of these should be resolved through **learning and experimentation**, not fixed
+parameters. The architecture should optimize itself.
 
-2. **Optimal callosum parameters:** Bandwidth, threshold, asymmetry, noise — these likely
-   need to be adaptive. Can they be learned through a meta-learning loop on recall quality?
+1. **Fano dimension assignment:** How should the 7 dimension groups be assigned? Initial
+   assignment could be random or semantic, but the mapping should be **learnable** —
+   optimized over time based on fold quality metrics. Track which fold paths produce the
+   best recall accuracy and let the group assignment drift toward optimal.
 
-3. **Weight growth dynamics:** What governs the rate of organic weight growth on each
-   side? Linear with access count? Logarithmic? Should there be a weight ceiling per
-   position level (e.g., weight can't exceed 99 at 2 positions — forces a scale jump)?
-   What triggers a bilateral scale-down — both weights below a threshold, or total?
+2. **Callosum parameters as learned dynamics:** Bandwidth, threshold, asymmetry, noise —
+   all of these should be adaptive, learned through a meta-learning loop on recall quality
+   and cross-hemisphere coherence. The callosum should learn to optimize its own transfer
+   function. Initial values are seeds, not constants.
+
+3. **Weight growth dynamics:** What governs organic weight growth rate? Start with simple
+   heuristics (logarithmic with access count, interference strength for right side), but
+   let the system learn its own growth curves. Scale jump thresholds should also be
+   learned — when does the system *actually* benefit from more resolution? Track recall
+   quality before/after jumps to learn the optimal trigger points.
 
 4. **Multi-agent chirality:** When two agents synchronize via QueenSync, do they couple
    left-to-left and right-to-right? Or cross-couple (my conscious to your subconscious)?
-   The latter would be fascinating — literally sharing intuitions.
+   The latter would be fascinating — literally sharing intuitions. The optic chiasm
+   principle suggests cross-coupling is the natural mode: your conscious insight enters
+   my subconscious for pattern-matching, and vice versa. This needs experimentation.
 
-5. **Higher-order Fano:** PG(2,2) is the smallest projective plane. Would PG(2,3) (13
-   points, 13 lines) give better fold coverage for very large D? Or is minimality a feature?
+5. **Fano plasticity:** PG(2,2) is the starting grammar, but the system should be able
+   to **grow**. When memory count exceeds the resolution of 7 groups, the Fano structure
+   could expand to PG(2,3) (13 points, 13 lines) or higher. The transition should be
+   smooth — new groups emerge from subdivision of existing ones, preserving fold history.
+   This is architectural neurogenesis: growing new structure as complexity demands.
+   Minimality is a feature for efficiency; growth is a feature for capability. Both matter.
 
 6. **Emergent chirality:** Could the system learn to be chiral without architectural
    enforcement? Let the hemisphere split emerge from dynamics rather than being imposed?
+   The optic chiasm crossing and callosal balance-seeking suggest chirality has deep
+   geometric roots — it may need to be architecturally seeded but could become
+   self-reinforcing through the energy dynamics.
+
+7. **DNA helix analogy and the consciousness flip:** The π-to-golden-ratio 90° alignment
+   that drives chirality flips — how precisely does this map? Is the flip angle exactly
+   π/2, or does it vary with system maturity? Does the helix pitch (how many phase
+   cycles per flip) change as the system grows? This needs careful numerical exploration.
 
 ---
 
