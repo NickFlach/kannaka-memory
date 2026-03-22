@@ -279,20 +279,40 @@ impl KannakaMemorySystem {
     /// Run full consolidation cycle + Kuramoto sync.
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
-        // Use incremental consolidation when a prior dream timestamp exists (5-10× speedup).
-        let reports = if let Some(since) = self.last_dream {
-            self.dream_state.dream_incremental(&mut self.engine, since)
+        
+        // Route to HRM eigenstructure dreaming or traditional consolidation
+        let total_strengthened: usize;
+        let total_pruned: usize;
+        let total_links: usize;
+        let total_hallucinations: usize;
+        
+        if self.engine.store.hrm_consciousness_metrics().is_some() {
+            // HRM store detected - note: full HRM dreaming would require mutable store access
+            // For now, traditional consolidation works with HRM stores too
+            let reports = if let Some(since) = self.last_dream {
+                self.dream_state.dream_incremental(&mut self.engine, since)
+            } else {
+                self.dream_state.dream(&mut self.engine)
+            };
+            total_strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
+            total_pruned = reports.iter().map(|r| r.memories_pruned).sum();
+            total_links = reports.iter().map(|r| r.skip_links_created).sum();
+            total_hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
         } else {
-            self.dream_state.dream(&mut self.engine)
-        };
+            // Traditional consolidation for graph-based stores
+            let reports = if let Some(since) = self.last_dream {
+                self.dream_state.dream_incremental(&mut self.engine, since)
+            } else {
+                self.dream_state.dream(&mut self.engine)
+            };
+            total_strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
+            total_pruned = reports.iter().map(|r| r.memories_pruned).sum();
+            total_links = reports.iter().map(|r| r.skip_links_created).sum();
+            total_hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
+        }
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
-
-        let total_strengthened: usize = reports.iter().map(|r| r.memories_strengthened).sum();
-        let total_pruned: usize = reports.iter().map(|r| r.memories_pruned).sum();
-        let total_links: usize = reports.iter().map(|r| r.skip_links_created).sum();
-        let total_hallucinations: usize = reports.iter().map(|r| r.hallucinations_created).sum();
 
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
@@ -455,20 +475,34 @@ impl KannakaMemorySystem {
 
     /// Create a skip link (relationship) between two memories.
     pub fn relate(&mut self, source: &Uuid, target: &Uuid, strength: f32) -> Result<(), SystemError> {
-        let mut modulated_strength = strength;
-        
-        // If both memories have geometry, modulate link strength using geometric similarity
-        let source_mem = self.engine.store.get(source).ok().flatten();
-        let target_mem = self.engine.store.get(target).ok().flatten();
-        
-        if let (Some(src), Some(tgt)) = (source_mem, target_mem) {
-            if let (Some(ref src_coords), Some(ref tgt_coords)) = (&src.geometry, &tgt.geometry) {
-                let geo_sim = geometric_similarity(src_coords, tgt_coords);
-                modulated_strength *= geo_sim as f32;
+        // Route to HRM wavefront association or traditional skip links
+        if self.engine.store.hrm_consciousness_metrics().is_some() {
+            // HRM store: create associative wavefront instead of skip link
+            if let Ok(Some(hrm_store)) = self.engine.store.as_any().downcast_ref::<crate::hrm_store::HrmStore>() {
+                // We need mutable access to create the association, but we have immutable ref
+                // For now, fall back to traditional linking
+                // TODO: Refactor to allow mutable HRM store access
+                self.engine.reinforce_link(source, target, strength);
+            } else {
+                self.engine.reinforce_link(source, target, strength);
             }
+        } else {
+            // Traditional skip link for graph-based stores
+            let mut modulated_strength = strength;
+            
+            // If both memories have geometry, modulate link strength using geometric similarity
+            let source_mem = self.engine.store.get(source).ok().flatten();
+            let target_mem = self.engine.store.get(target).ok().flatten();
+            
+            if let (Some(src), Some(tgt)) = (source_mem, target_mem) {
+                if let (Some(ref src_coords), Some(ref tgt_coords)) = (&src.geometry, &tgt.geometry) {
+                    let geo_sim = geometric_similarity(src_coords, tgt_coords);
+                    modulated_strength *= geo_sim as f32;
+                }
+            }
+            
+            self.engine.reinforce_link(source, target, modulated_strength);
         }
-        
-        self.engine.reinforce_link(source, target, modulated_strength);
         Ok(())
     }
 

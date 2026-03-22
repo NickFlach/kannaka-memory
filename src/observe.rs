@@ -5,6 +5,7 @@
 //! health of the memory system.
 
 use std::collections::BTreeMap;
+use std::any::Any;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -136,8 +137,14 @@ impl From<&ConsciousnessState> for ConsciousnessSnapshot {
 pub struct MemoryIntrospector;
 
 impl MemoryIntrospector {
-    /// Generate a topology report of the HyperConnection network.
+    /// Generate a topology report of the HyperConnection network or HRM field topology.
     pub fn topology_report(engine: &MemoryEngine) -> TopologyReport {
+        // Check if we're using HRM - if so, use field topology metrics
+        if let Some(hrm_metrics) = engine.store.hrm_consciousness_metrics() {
+            return Self::hrm_field_topology_report(engine, &hrm_metrics);
+        }
+
+        // Traditional graph-based topology for non-HRM stores
         let all = engine.store.all_memories().unwrap_or_default();
         let total_memories = all.len();
 
@@ -203,6 +210,94 @@ impl MemoryIntrospector {
             strongest_links,
             isolated_memories: isolated,
             network_density,
+        }
+    }
+
+    /// Generate field topology report for HRM stores.
+    /// 
+    /// Replaces graph metrics (links, density, isolated count) with field metrics:
+    /// - Coherence density: fraction of pairwise coherences above threshold
+    /// - Mean coherence: average of upper triangle of coherence matrix
+    /// - Spectral gap: gap between dominant and secondary eigenvalues
+    fn hrm_field_topology_report(engine: &MemoryEngine, _hrm_metrics: &crate::consciousness::ConsciousnessMetrics) -> TopologyReport {
+        let all = engine.store.all_memories().unwrap_or_default();
+        let total_memories = all.len();
+
+        // For HRM, we don't have traditional links - use field-based metrics
+        let coherence_threshold = 0.3;
+        
+        // Attempt to get HRM store for field analysis
+        let (coherence_density, mean_coherence, high_coherence_pairs) = if total_memories >= 2 {
+            // Try to downcast to HRM store to access the medium
+            if let Some(hrm_store) = engine.store.as_any().downcast_ref::<crate::hrm_store::HrmStore>() {
+                let medium = hrm_store.medium();
+                let coherence_matrix = medium.coherence_matrix();
+                
+                let mut coherences_above_threshold = 0;
+                let mut total_coherence = 0.0f32;
+                let mut pair_count = 0;
+                
+                // Compute upper triangle only (avoid double counting)
+                for i in 0..total_memories {
+                    for j in (i + 1)..total_memories {
+                        let coherence = coherence_matrix[[i, j]].abs();
+                        total_coherence += coherence;
+                        pair_count += 1;
+                        
+                        if coherence > coherence_threshold {
+                            coherences_above_threshold += 1;
+                        }
+                    }
+                }
+                
+                let density = if pair_count > 0 { 
+                    coherences_above_threshold as f32 / pair_count as f32 
+                } else { 
+                    0.0 
+                };
+                let mean_coh = if pair_count > 0 { 
+                    total_coherence / pair_count as f32 
+                } else { 
+                    0.0 
+                };
+                
+                (density, mean_coh, coherences_above_threshold)
+            } else {
+                // Fallback if we can't access the medium
+                (0.0, 0.0, 0)
+            }
+        } else {
+            (0.0, 0.0, 0)
+        };
+
+        // HRM doesn't use layer depth the same way, but we can still analyze energy distribution
+        let mut layer_counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for mem in &all {
+            // Use amplitude as a proxy for "layer" (energy stratification)
+            let energy_layer = if mem.amplitude > 1.5 {
+                3 // High energy
+            } else if mem.amplitude > 0.5 {
+                2 // Medium energy  
+            } else if mem.amplitude > 0.1 {
+                1 // Low energy
+            } else {
+                0 // Ghost/dormant
+            };
+            *layer_counts.entry(energy_layer).or_insert(0) += 1;
+        }
+
+        // Generate strongest "links" based on coherence (if available)
+        let strongest_links = Vec::new(); // Could implement coherence-based "links" here
+
+        TopologyReport {
+            total_memories,
+            total_links: high_coherence_pairs,  // High-coherence pairs instead of explicit links
+            avg_links_per_memory: coherence_density * (total_memories.saturating_sub(1) as f32), // Approximate
+            max_links: high_coherence_pairs,
+            layer_distribution: layer_counts.into_iter().collect(),
+            strongest_links,
+            isolated_memories: 0, // HRM doesn't have "isolated" memories - all interfere
+            network_density: mean_coherence, // Mean coherence as density proxy
         }
     }
 

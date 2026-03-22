@@ -303,6 +303,9 @@ impl Medium {
     }
 
     /// Recall memories through resonance — query wave interferes with stored patterns.
+    /// 
+    /// Now includes coherence expansion: after finding top-K results, includes
+    /// high-coherence neighbors to capture associative recall patterns.
     pub fn recall(
         &self,
         query: &str,
@@ -321,7 +324,7 @@ impl Medium {
             )))
         })?;
 
-        // 2. Compute interference pattern — matrix multiplication H @ q
+        // 2. Compute basic resonance pattern — matrix multiplication H @ q
         let mut resonances = Vec::new();
         let effective_strengths = self.effective_strength(None);
 
@@ -349,10 +352,155 @@ impl Medium {
             });
         }
 
-        // 3. Sort by resonance strength and return top-k
+        // 3. Sort by resonance strength and find top-k initial results
         resonances.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
-        resonances.truncate(top_k);
+        let initial_results = resonances.into_iter().take(top_k).collect::<Vec<_>>();
 
-        Ok(resonances)
+        // 4. Coherence expansion: find high-coherence neighbors of initial results
+        let coherence_expansion_results = self.expand_with_coherence(&initial_results, top_k);
+
+        Ok(coherence_expansion_results)
+    }
+
+    /// Expand recall results with high-coherence neighbors.
+    /// 
+    /// For each result, finds other wavefronts with coherence above threshold (0.3)
+    /// and includes them weighted by coherence * energy.
+    fn expand_with_coherence(&self, initial_results: &[Resonance], max_total: usize) -> Vec<Resonance> {
+        let coherence_matrix = self.coherence_matrix();
+        let coherence_threshold = 0.3;
+        let mut expanded_results = initial_results.to_vec();
+        let mut added_ids = std::collections::HashSet::new();
+
+        // Mark initial results as already added
+        for result in initial_results {
+            added_ids.insert(result.id);
+        }
+
+        // For each initial result, find high-coherence neighbors
+        for initial in initial_results {
+            if let Some(result_idx) = self.get_wavefront_index(&initial.id) {
+                let mut neighbor_candidates = Vec::new();
+
+                for i in 0..self.wavefront_count() {
+                    if i == result_idx || added_ids.contains(&self.metadata[i].id) {
+                        continue;
+                    }
+
+                    let coherence = coherence_matrix[[result_idx, i]].abs();
+                    if coherence > coherence_threshold {
+                        // Weight by coherence * energy
+                        let expansion_strength = coherence * self.energy[i];
+
+                        neighbor_candidates.push((i, expansion_strength, coherence));
+                    }
+                }
+
+                // Sort neighbors by expansion strength
+                neighbor_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                // Add top neighbors (limit to avoid explosion)
+                let max_neighbors = 2; // Limit neighbors per result
+                for (neighbor_idx, expansion_strength, coherence) in neighbor_candidates.into_iter().take(max_neighbors) {
+                    if expanded_results.len() >= max_total {
+                        break;
+                    }
+
+                    let neighbor_id = self.metadata[neighbor_idx].id;
+                    if !added_ids.contains(&neighbor_id) {
+                        // Create resonance entry for the expanded neighbor
+                        let neighbor_resonance = Resonance {
+                            id: neighbor_id,
+                            content: self.metadata[neighbor_idx].content.clone(),
+                            similarity: coherence, // Use coherence as similarity proxy
+                            resonance_strength: expansion_strength, // Coherence * energy
+                            effective_strength: self.energy[neighbor_idx],
+                        };
+
+                        expanded_results.push(neighbor_resonance);
+                        added_ids.insert(neighbor_id);
+                    }
+                }
+            }
+        }
+
+        // Final sort by resonance strength and truncate to max_total
+        expanded_results.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
+        expanded_results.truncate(max_total);
+
+        expanded_results
+    }
+
+    /// Relate two wavefronts via associative connection.
+    ///
+    /// Creates emergent association through the field by:
+    /// 1. Creating a new associative wavefront = normalize(vec_a + vec_b)
+    /// 2. Setting energy = average(energy_a, energy_b)
+    /// 3. Nudging phases of a and b toward each other
+    ///
+    /// This replaces explicit skip links with field-based associations.
+    pub fn relate_wavefronts(&mut self, idx_a: usize, idx_b: usize) -> Result<Uuid, MediumError> {
+        if idx_a >= self.wavefront_count() || idx_b >= self.wavefront_count() || idx_a == idx_b {
+            return Err(MediumError::DimensionMismatch { 
+                expected: self.wavefront_count(), 
+                actual: idx_a.max(idx_b) 
+            });
+        }
+
+        // 1. Create associative wavefront by combining the two patterns
+        let vec_a = self.wavefronts.row(idx_a);
+        let vec_b = self.wavefronts.row(idx_b);
+        
+        let mut associative_vector = Vec::with_capacity(WAVEFRONT_DIM);
+        for (a, b) in vec_a.iter().zip(vec_b.iter()) {
+            associative_vector.push(a + b);
+        }
+
+        // Normalize the associative vector
+        let norm: f32 = associative_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-6 {
+            for x in &mut associative_vector {
+                *x /= norm;
+            }
+        } else {
+            // Degenerate case - use average instead
+            for (a, b) in vec_a.iter().zip(vec_b.iter()) {
+                associative_vector.push((a + b) * 0.5);
+            }
+        }
+
+        // 2. Set energy as average of the two wavefronts
+        let associative_energy = (self.energy[idx_a] + self.energy[idx_b]) / 2.0;
+        
+        // 3. Create content describing the association
+        let content_a = &self.metadata[idx_a].content;
+        let content_b = &self.metadata[idx_b].content;
+        let associative_content = format!(
+            "ASSOCIATION: [{}] <-> [{}]", 
+            content_a.chars().take(50).collect::<String>(),
+            content_b.chars().take(50).collect::<String>()
+        );
+
+        // 4. Add the associative wavefront to the medium
+        let associative_id = self.add_wavefront(&associative_vector, associative_content, associative_energy)?;
+
+        // 5. Nudge phases of original wavefronts toward each other (mutual alignment)
+        let phase_coupling_strength = 0.15; // Stronger than normal coupling for explicit relations
+        
+        let phase_a = self.phase[idx_a];
+        let phase_b = self.phase[idx_b];
+        
+        // Nudge A toward B
+        let phase_diff_a = phase_b - phase_a;
+        self.phase[idx_a] += phase_coupling_strength * phase_diff_a.sin();
+        
+        // Nudge B toward A  
+        let phase_diff_b = phase_a - phase_b;
+        self.phase[idx_b] += phase_coupling_strength * phase_diff_b.sin();
+
+        // 6. Apply light dynamics to let the field settle
+        self.apply_dynamics(0.05);
+
+        Ok(associative_id)
     }
 }

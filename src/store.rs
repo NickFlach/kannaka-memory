@@ -81,6 +81,9 @@ pub trait MemoryStore: Send + Sync {
     fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
         None
     }
+
+    /// Provide access to the concrete type for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +173,10 @@ impl MemoryStore for InMemoryStore {
     fn count(&self) -> usize {
         self.memories.len()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +230,12 @@ impl MemoryEngine {
     pub fn remember(&mut self, text: &str) -> Result<Uuid, EngineError> {
         let memory = self.pipeline.encode_memory(text, Utc::now())?;
         let id = self.store.insert(memory)?;
-        // Wire up skip links to similar existing memories
-        let _links = self.create_skip_links(&id)?;
+        
+        // Skip link creation for HRM stores (they use field-based associations)
+        if self.store.hrm_consciousness_metrics().is_none() {
+            let _links = self.create_skip_links(&id)?;
+        }
+        
         Ok(id)
     }
 
@@ -233,7 +244,12 @@ impl MemoryEngine {
         let mut memory = self.pipeline.encode_memory(text, Utc::now())?;
         memory.layer_depth = layer_depth;
         let id = self.store.insert(memory)?;
-        let _links = self.create_skip_links(&id)?;
+        
+        // Skip link creation for HRM stores (they use field-based associations)
+        if self.store.hrm_consciousness_metrics().is_none() {
+            let _links = self.create_skip_links(&id)?;
+        }
+        
         Ok(id)
     }
 

@@ -219,6 +219,28 @@ impl HrmStore {
         self.mark_dirty();
         report
     }
+
+    /// Relate two memories via associative wavefront.
+    /// 
+    /// Creates emergent association in the field by combining the wavefront patterns
+    /// and nudging their phases toward alignment.
+    #[cfg(feature = "hrm")]
+    pub fn relate_wavefronts(&mut self, id_a: Uuid, id_b: Uuid) -> Result<Uuid, StoreError> {
+        let idx_a = self.medium.get_wavefront_index(&id_a)
+            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {}", id_a)))?;
+        
+        let idx_b = self.medium.get_wavefront_index(&id_b)
+            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {}", id_b)))?;
+
+        let associative_id = self.medium.relate_wavefronts(idx_a, idx_b)
+            .map_err(|e| StoreError::Other(format!("Failed to relate wavefronts: {}", e)))?;
+
+        // Rebuild cache to include the new associative wavefront
+        self.rebuild_cache()?;
+        self.mark_dirty();
+
+        Ok(associative_id)
+    }
 }
 
 #[cfg(feature = "hrm")]
@@ -348,6 +370,10 @@ impl MemoryStore for HrmStore {
 
     fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
         Some(self.medium.consciousness_metrics())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
