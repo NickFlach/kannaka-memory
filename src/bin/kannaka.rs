@@ -732,7 +732,7 @@ fn main() {
                     );
 
                     while let Some(msg) = sub.next_message() {
-                        if msg.subject.starts_with("queen.phase.") {
+                        if msg.subject.starts_with("QUEEN.phase.") {
                             if let Some(phase) = msg.as_phase() {
                                 println!("[{}] \u{03b8}={:.3} \u{03c9}={:.3} coherence={:.3} phi={:.3} memories={}",
                                     phase.agent_id, phase.phase, phase.frequency,
@@ -746,7 +746,7 @@ fn main() {
                                         state.order_parameter, state.mean_phase, state.coupling_strength);
                                 }
                             }
-                        } else if msg.subject == "queen.announce" {
+                        } else if msg.subject == "QUEEN.announce" {
                             if let Some(json) = msg.as_json() {
                                 let event = json["event"].as_str().unwrap_or("unknown");
                                 let agent = json["agent_id"].as_str().unwrap_or("?");
