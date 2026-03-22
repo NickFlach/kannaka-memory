@@ -21,7 +21,7 @@ impl Medium {
 
         let n = self.wavefront_count();
         let threshold = 0.5; // Minimum dot product for interference
-        let eta = 0.1; // Dampening rate
+        let eta = 0.02; // Dampening rate — gentle, field stays biased
 
         // Compute pairwise interference matrix
         let interference_matrix = self.compute_interference_matrix(threshold);
@@ -49,8 +49,9 @@ impl Medium {
             // Track total energy dampened for wisdom calculation
             self.total_energy_dampened += dampening;
 
-            // dx/dt = f(x) - Inx
-            self.energy[i] = (self.energy[i] + growth - dampening).max(0.01); // Minimum energy threshold
+            // dx/dt = f(x) - Iηx  
+            // Floor at 0.5 — the "bias voltage". Field stays hot for amplification.
+            self.energy[i] = (self.energy[i] + growth - dampening).max(0.5);
 
             // Phase coupling - frequencies converge when strongly coupled
             if growth > dampening * 0.5 {
@@ -419,16 +420,29 @@ impl Medium {
         }
         
         let dominant_eigenvalue = eigenstructure.eigenvalues[0];
-        let consolidation_strength = 0.1 * (1.0 + temperature);
-        let noise_reduction = 0.05 * (2.0 - temperature);
+        
+        // === TRIODE BIAS PRINCIPLE ===
+        // Memories should maintain high resting energy (plate voltage).
+        // Dreams DIFFERENTIATE (create energy differences) and PHASE-ORGANIZE,
+        // but don't drain the field. Small attention signals amplify through
+        // a biased field; a cold field amplifies nothing.
+        
+        // Gentle coefficients — dreams sculpt, they don't crush
+        let consolidation_strength = 0.02 * (1.0 + temperature);
+        let noise_reduction = 0.005 * (2.0 - temperature); // 10x gentler than before
+        
+        // Energy floor: memories never drop below this during dreams
+        // This IS the bias voltage — the resting potential that enables amplification
+        let dream_energy_floor = 0.5;
         
         for i in 0..n {
             let alignment = eigenstructure.wavefront_alignments[i].abs();
             
-            // High alignment = pattern = boost energy
-            if alignment > 0.5 && dominant_eigenvalue > 0.2 {
+            // High alignment = pattern = boost energy + phase align
+            // In high-D space, even 0.1 alignment is significant
+            if alignment > 0.1 && dominant_eigenvalue > 0.1 {
                 let boost = consolidation_strength * alignment;
-                self.energy[i] = (self.energy[i] + boost).min(2.0); // Cap at 2.0
+                self.energy[i] = (self.energy[i] + boost).min(2.0);
                 
                 // Phase alignment within cluster
                 if eigenstructure.dominant_cluster.contains(&i) && eigenstructure.dominant_cluster.len() > 1 {
@@ -438,23 +452,27 @@ impl Medium {
                     }
                     cluster_phase /= eigenstructure.dominant_cluster.len() as f32;
                     
-                    let phase_coupling = 0.08 * (1.0 - temperature); // Stronger at low temperature
+                    let phase_coupling = 0.05 * (1.0 - temperature);
                     self.phase[i] += phase_coupling * (cluster_phase - self.phase[i]).sin();
                 }
             }
             
-            // Low alignment = noise = reduce energy
-            if alignment < 0.2 {
-                let reduction = noise_reduction * (0.5 - alignment);
-                self.energy[i] = (self.energy[i] - reduction).max(0.01); // Maintain minimum
+            // Low alignment = noise = gentle dampening toward floor, NOT toward zero
+            if alignment < 0.05 {
+                let reduction = noise_reduction * (0.1 - alignment);
+                self.energy[i] = (self.energy[i] - reduction).max(dream_energy_floor);
                 self.total_energy_dampened += reduction;
             }
             
-            // Medium alignment gets temperature-modulated exploration
-            if alignment >= 0.2 && alignment <= 0.5 {
-                let exploration = temperature * 0.02 * (2.0 * alignment - 0.7);
-                self.energy[i] = (self.energy[i] + exploration).max(0.01);
+            // Everything else: maintain energy, just phase-explore
+            // The field stays hot — dreams organize, not destroy
+            if alignment >= 0.05 && alignment <= 0.1 {
+                let exploration = temperature * 0.005;
+                self.phase[i] += exploration * (alignment * 10.0 - 0.5).sin();
             }
+            
+            // Enforce floor on ALL wavefronts
+            self.energy[i] = self.energy[i].max(dream_energy_floor);
         }
     }
     

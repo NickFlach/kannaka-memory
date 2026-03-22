@@ -84,6 +84,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// Provide access to the concrete type for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
     /// Create HRM-native association between two memories (HRM stores only).
     /// Returns None for non-HRM stores, Some(associative_id) for HRM stores.
@@ -181,6 +182,9 @@ impl MemoryStore for InMemoryStore {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }

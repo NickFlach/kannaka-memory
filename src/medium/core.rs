@@ -155,6 +155,14 @@ impl Medium {
             .collect()
     }
 
+    /// Reset all wavefront energies to a target value (the "bias voltage").
+    /// Use after dream over-dampening or migration to restore field potential.
+    pub fn reset_energies(&mut self, target: f32) {
+        for i in 0..self.wavefront_count() {
+            self.energy[i] = target;
+        }
+    }
+
     /// Store a new memory using the encoding pipeline.
     ///
     /// This implements the interference-based storage where new waves interact with existing ones.

@@ -220,6 +220,18 @@ impl HrmStore {
         report
     }
 
+    /// Reset all wavefront energies to target value (bias voltage restoration).
+    pub fn reset_energies(&mut self, target: f32) {
+        self.medium.reset_energies(target);
+        // Update cache
+        for meta in &self.medium.metadata {
+            if let Some(mem) = self.memory_cache.get_mut(&meta.id) {
+                mem.amplitude = target;
+            }
+        }
+        self.mark_dirty();
+    }
+
     /// Relate two memories via associative wavefront.
     /// 
     /// Creates emergent association in the field by combining the wavefront patterns
@@ -373,6 +385,9 @@ impl MemoryStore for HrmStore {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 

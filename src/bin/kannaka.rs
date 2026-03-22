@@ -429,6 +429,27 @@ fn main() {
             }
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
+        "bias" => {
+            // Reset all wavefront energies to a target value (restore bias voltage)
+            let target: f32 = args.get(command_start + 1)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0);
+            
+            #[cfg(feature = "hrm")]
+            {
+                if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
+                    hrm.reset_energies(target);
+                    hrm.flush().ok();
+                    println!("{{\"status\": \"ok\", \"target_energy\": {}, \"memories\": {}}}", target, hrm.count());
+                } else {
+                    eprintln!("bias command only works with HRM backend");
+                }
+            }
+            #[cfg(not(feature = "hrm"))]
+            {
+                eprintln!("bias command requires HRM feature");
+            }
+        }
         "dream" => {
             let create_pr = args[command_start..].iter().any(|a| a == "--create-pr");
             let mut dream_mode = "deep".to_string();
