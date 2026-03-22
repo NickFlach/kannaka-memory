@@ -70,7 +70,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// Flush all dirty/in-memory state to the backing store.
     /// Default is a no-op for stores that don't need it (e.g. InMemoryStore).
-    /// DoltMemoryStore overrides this to write all memories + skip links to SQL.
+    /// HrmStore overrides this to write the holographic medium to disk.
     fn flush(&mut self) -> Result<usize, StoreError> {
         Ok(0)
     }

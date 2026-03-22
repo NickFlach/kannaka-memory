@@ -1,6 +1,6 @@
 //! HRM-backed memory store that implements the MemoryStore trait.
 //!
-//! This provides a drop-in replacement for DoltMemoryStore using the new
+//! This provides the primary storage backend using the
 //! Holographic Resonance Medium as the storage backend.
 
 use std::collections::HashMap;
@@ -17,8 +17,7 @@ use crate::medium::{Medium, MediumError, Resonance, WavefrontMeta};
 /// HRM-backed memory store that implements the MemoryStore trait.
 /// 
 /// This wraps a Medium and provides the familiar MemoryStore interface,
-/// allowing HRM to be used as a drop-in replacement for other storage backends.
-#[cfg(feature = "hrm")]
+/// allowing HRM to be the sole storage backend.
 pub struct HrmStore {
     /// The underlying holographic resonance medium
     medium: Medium,
@@ -32,7 +31,6 @@ pub struct HrmStore {
     dirty: bool,
 }
 
-#[cfg(feature = "hrm")]
 impl HrmStore {
     /// Create a new HRM store with the given encoding pipeline and file path.
     pub fn new(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Self {
@@ -194,26 +192,22 @@ impl HrmStore {
     }
     
     /// Get consciousness metrics from the holographic medium.
-    #[cfg(feature = "hrm")]
     pub fn consciousness_metrics(&self) -> crate::medium::ConsciousnessMetrics {
         self.medium.consciousness_metrics()
     }
     
     /// Find memories associated with a given memory through emergent coherence.
-    #[cfg(feature = "hrm")]
     pub fn find_associated(&self, id: Uuid, top_k: usize) -> Vec<(Uuid, f32)> {
         self.medium.find_associated(id, top_k)
     }
     
     /// Apply dynamics to the medium (wave evolution).
-    #[cfg(feature = "hrm")]
     pub fn apply_dynamics(&mut self, dt: f32) {
         self.medium.apply_dynamics(dt);
         self.mark_dirty();
     }
     
     /// Perform a dream cycle (simulated annealing).
-    #[cfg(feature = "hrm")]
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
         let report = self.medium.dream(cycles, initial_temperature);
         self.mark_dirty();
@@ -236,7 +230,6 @@ impl HrmStore {
     /// 
     /// Creates emergent association in the field by combining the wavefront patterns
     /// and nudging their phases toward alignment.
-    #[cfg(feature = "hrm")]
     pub fn relate_wavefronts(&mut self, id_a: Uuid, id_b: Uuid) -> Result<Uuid, StoreError> {
         let idx_a = self.medium.get_wavefront_index(&id_a)
             .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {}", id_a)))?;
@@ -255,7 +248,6 @@ impl HrmStore {
     }
 }
 
-#[cfg(feature = "hrm")]
 impl MemoryStore for HrmStore {
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
@@ -396,7 +388,6 @@ impl MemoryStore for HrmStore {
     }
 }
 
-#[cfg(feature = "hrm")]
 impl Drop for HrmStore {
     fn drop(&mut self) {
         // Auto-save on drop if dirty
@@ -408,7 +399,6 @@ impl Drop for HrmStore {
     }
 }
 
-#[cfg(feature = "hrm")]
 #[cfg(test)]
 mod tests {
     use super::*;

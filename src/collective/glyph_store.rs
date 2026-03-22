@@ -6,17 +6,16 @@
 //! - `GlyphStore` — in-memory store for sealed glyphs with search and merge
 //! - `merge_glyphs()` — homomorphic wave superposition on sealed glyphs
 //! - Proof-verified trust scoring
-//! - Dolt SQL schema for persistence (applied via the `dolt` feature)
 //!
 //! ## Data Flow
 //!
 //! ```text
 //! Agent creates memory
-//!   → seal_with_commitments() → PrivacyGlyph + openings
-//!   → glyph_store.insert() → stored locally
-//!   → push to DoltHub (glyphs table) → visible to collective
-//!   → other agents search via proofs → no blooming needed
-//!   → merge_glyphs() on commitments → sealed collective memory
+//!   -> seal_with_commitments() -> PrivacyGlyph + openings
+//!   -> glyph_store.insert() -> stored locally
+//!   -> publish via NATS -> visible to collective
+//!   -> other agents search via proofs -> no blooming needed
+//!   -> merge_glyphs() on commitments -> sealed collective memory
 //! ```
 
 use std::collections::HashMap;
@@ -33,11 +32,10 @@ use crate::collective::privacy::{
 // proofs::{prove_existence, verify_existence, ExistenceProof} available when needed
 
 // ============================================================================
-// Dolt Schema (SQL DDL for glyph persistence)
+// Schema (SQL DDL for glyph persistence, historical reference)
 // ============================================================================
 
-/// SQL schema for the glyphs table in Dolt.
-/// Apply via `dolt sql < schema.sql` or programmatically.
+/// SQL schema for the glyphs table (historical reference, no longer used).
 pub const GLYPH_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS glyphs (
     glyph_hash      VARCHAR(64) PRIMARY KEY,
@@ -83,7 +81,7 @@ CREATE TABLE IF NOT EXISTS group_keys (
 /// In-memory store for privacy glyphs.
 ///
 /// Holds sealed glyphs and their metadata for search, merge, and proof
-/// operations. In production, this is backed by Dolt (via the SQL schema above).
+/// operations. In production, this is backed by the HRM medium.
 #[derive(Debug, Default)]
 pub struct GlyphStore {
     /// Glyphs indexed by hash

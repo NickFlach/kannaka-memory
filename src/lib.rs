@@ -10,6 +10,7 @@
 
 pub mod bridge;
 pub mod hnsw;
+#[cfg(feature = "sqlite-migrate")]
 pub mod migration;
 pub mod observe;
 pub mod openclaw;
@@ -41,8 +42,6 @@ pub mod ear;
 #[cfg(feature = "video")]
 pub mod eye;
 
-pub mod dolt;
-
 #[cfg(feature = "nats")]
 pub mod nats;
 
@@ -53,10 +52,8 @@ pub mod invariant;
 pub mod cmf;
 pub mod consciousness;
 
-#[cfg(feature = "hrm")]
 pub mod medium;
 
-#[cfg(feature = "hrm")]
 pub mod hrm_store;
 
 // Re-export canonical consciousness types
@@ -76,6 +73,7 @@ pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
 pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
+#[cfg(feature = "sqlite-migrate")]
 pub use migration::{KannakaDbMigrator, MigrationReport, MigrationError};
 pub use persistence::{DiskStore, PersistenceError, MemorySnapshot, SnapshotMetadata};
 pub use hnsw::{HnswIndex, HnswStore};
@@ -98,7 +96,6 @@ pub use paradox::{
     Resolution, ResolutionReport, ParadoxResolver
 };
 
-pub use dolt::DoltMemoryStore;
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, Handedness, SwarmAgent};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
@@ -109,13 +106,11 @@ pub use cmf::{
     detect_cmf, cmf_membership, generate_trajectory
 };
 
-#[cfg(feature = "hrm")]
 pub use medium::{
     Medium, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
     PhaseState, HrmCommit
 };
 
-#[cfg(feature = "hrm")]
 pub use hrm_store::HrmStore;
 
 #[cfg(feature = "glyph")]

@@ -1,7 +1,7 @@
 //! Queen Synchronization Protocol — emergent multi-agent coherence.
 //!
 //! Implements the QueenSync engine (ADR-0018): a Kuramoto-based protocol where
-//! agents publish phase states to shared Dolt tables and synchronize through
+//! agents publish phase states via NATS and synchronize through
 //! mean-field coupling. The "Queen" is not an agent — it is the emergent
 //! synchronization state computed locally by each participant.
 //!
@@ -529,17 +529,17 @@ impl QueenSync {
 
 #[cfg(feature = "nats")]
 impl QueenSync {
-    /// Execute a sync step using NATS for phase gossip, with Dolt as fallback.
+    /// Execute a sync step using NATS for phase gossip.
     ///
     /// 1. Read phases from NATS (fast, real-time)
-    /// 2. Merge with Dolt phases (authoritative, persistent)
+    /// 2. Merge with any persistent phases provided
     /// 3. Run Kuramoto coupling step
     /// 4. Publish updated phase to NATS
     ///
     /// Returns the QueenState and any NATS errors encountered (non-fatal).
     pub fn sync_with_nats(
         &mut self,
-        dolt_phases: &[AgentPhase],
+        persistent_phases: &[AgentPhase],
         transport: &crate::nats::SwarmTransport,
     ) -> (QueenState, Option<String>) {
         let mut warning: Option<String> = None;
@@ -548,13 +548,13 @@ impl QueenSync {
         let nats_phases = match transport.get_all_phases() {
             Ok(phases) => phases,
             Err(e) => {
-                warning = Some(format!("NATS read failed, using Dolt only: {}", e));
+                warning = Some(format!("NATS read failed, using persistent phases only: {}", e));
                 vec![]
             }
         };
 
-        // 2. Merge: NATS phases override Dolt phases (more recent)
-        let merged = Self::merge_phases(dolt_phases, &nats_phases);
+        // 2. Merge: NATS phases override persistent phases (more recent)
+        let merged = Self::merge_phases(persistent_phases, &nats_phases);
 
         // 3. Run Kuramoto step on merged set
         let state = self.queen_sync_step(&merged);
@@ -581,13 +581,13 @@ impl QueenSync {
         (state, warning)
     }
 
-    /// Merge Dolt and NATS phase sets. NATS phases take precedence (fresher).
-    fn merge_phases(dolt: &[AgentPhase], nats: &[AgentPhase]) -> Vec<AgentPhase> {
+    /// Merge persistent and NATS phase sets. NATS phases take precedence (fresher).
+    fn merge_phases(persistent: &[AgentPhase], nats: &[AgentPhase]) -> Vec<AgentPhase> {
         use std::collections::HashMap;
         let mut by_agent: HashMap<&str, &AgentPhase> = HashMap::new();
 
-        // Insert Dolt phases first
-        for p in dolt {
+        // Insert persistent phases first
+        for p in persistent {
             by_agent.insert(&p.agent_id, p);
         }
 

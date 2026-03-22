@@ -74,23 +74,26 @@ impl Medium {
         writer.write_all(&consciousness_bytes)?;
 
         // Checksum (blake3 of all preceding data)
+        // Flush data, compute checksum over the .tmp file, append checksum,
+        // flush again — all BEFORE the atomic rename. No gap.
         writer.flush()?;
         drop(writer);
 
-        // Reopen to compute checksum
+        // Compute checksum over all data written so far
         let mut file = File::open(&tmp_path)?;
         let mut hasher = blake3::Hasher::new();
         std::io::copy(&mut file, &mut hasher)?;
         let checksum = hasher.finalize();
         drop(file);
 
-        // Append checksum
+        // Append checksum to the .tmp file and flush before rename
         let mut file = std::fs::OpenOptions::new().append(true).open(&tmp_path)?;
         file.write_all(checksum.as_bytes())?;
         file.flush()?;
+        file.sync_all()?;
         drop(file);
 
-        // Atomic rename: tmp → final (no partial files on crash)
+        // Atomic rename: tmp → final (data + checksum are both present, no gap)
         std::fs::rename(&tmp_path, path_ref)?;
 
         Ok(())
@@ -300,6 +303,20 @@ impl Medium {
     /// Load a medium from a .hrm file.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, MediumError> {
         let path = path.as_ref();
+
+        // File size sanity check: minimum = magic(4) + version(4) + timestamp(8) + n(4) + d(4) = 24 bytes
+        const MIN_HRM_SIZE: u64 = 24;
+        let file_size = std::fs::metadata(path)?.len();
+        if file_size < MIN_HRM_SIZE {
+            return Err(MediumError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "HRM file too small ({} bytes, minimum {}): likely truncated",
+                    file_size, MIN_HRM_SIZE
+                ),
+            )));
+        }
+
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
 
@@ -396,8 +413,24 @@ impl Medium {
         let _consciousness: ConsciousnessState = bincode::deserialize(&consciousness_bytes)?;
 
         // Verify checksum (blake3 of all data except the final 32 bytes)
+        // Use read() instead of read_exact() — a truncated/missing checksum
+        // should warn, not hard-fail with "failed to fill whole buffer".
         let mut stored_checksum = [0u8; 32];
-        if reader.read_exact(&mut stored_checksum).is_ok() {
+        let mut checksum_bytes_read = 0;
+        loop {
+            match reader.read(&mut stored_checksum[checksum_bytes_read..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    checksum_bytes_read += n;
+                    if checksum_bytes_read >= 32 {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        if checksum_bytes_read == 32 {
             // Re-read file and hash everything except the final 32 bytes
             let file_len = std::fs::metadata(path)?.len();
             if file_len >= 32 {
@@ -417,8 +450,16 @@ impl Medium {
                     return Err(MediumError::ChecksumMismatch);
                 }
             }
+        } else if checksum_bytes_read > 0 {
+            // Partial checksum — file was likely truncated between data and checksum write.
+            // Warn but don't fail: the data portion parsed successfully.
+            eprintln!(
+                "Warning: HRM file has partial checksum ({}/32 bytes) — skipping verification. \
+                 File may have been saved by an older version or interrupted during write.",
+                checksum_bytes_read
+            );
         }
-        // If no checksum present (old format), skip verification gracefully
+        // If no checksum present (old format / 0 bytes read), skip verification gracefully
 
         // Build ID -> index mapping
         let mut id_to_index = HashMap::new();

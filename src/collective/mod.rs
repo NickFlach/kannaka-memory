@@ -1,9 +1,9 @@
 //! ADR-0011: Collective Memory Architecture
 //!
 //! Three-layer architecture:
-//! - **Dolt** (Local Memory): agent-local persistence, full memory store + skip links
+//! - **HRM** (Local Memory): agent-local persistence via Holographic Resonance Medium
 //! - **Flux** (Nervous System): lightweight event signaling, metadata only
-//! - **DoltHub** (Commons): shared repository, branch-based memory convergence
+//! - **NATS** (Transport): real-time phase gossip and swarm coordination
 //!
 //! # Branch Conventions
 //! ```

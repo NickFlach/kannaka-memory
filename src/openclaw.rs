@@ -13,6 +13,7 @@ use crate::encoding::{EncodingPipeline, SimpleHashEncoder, OllamaEncoder, Compos
 use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
+#[cfg(feature = "sqlite-migrate")]
 use crate::migration::{KannakaDbMigrator, MigrationReport};
 use crate::persistence::PersistenceError;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
@@ -32,6 +33,7 @@ pub enum SystemError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
+    #[cfg(feature = "sqlite-migrate")]
     #[error(transparent)]
     Migration(#[from] crate::migration::MigrationError),
     #[error("I/O error: {0}")]
@@ -381,41 +383,27 @@ impl KannakaMemorySystem {
     ///
     /// Best-effort: errors are logged but never propagated.
     fn post_dream_swarm_sync(&mut self) {
-        // Only attempt if Dolt is configured
-        let config = match crate::dolt::DoltConfig::try_from_env() {
-            Some(c) => c,
-            None => return,
-        };
-        let store = match crate::dolt::DoltMemoryStore::from_config(&config) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        // Check if this agent is registered
-        let agents = store.read_swarm_agents().unwrap_or_default();
-        let registered = agents.iter().any(|a| a.agent_id == config.agent_id && a.swarm_role != "inactive");
-        if !registered {
-            return;
-        }
-        // Derive and publish phase
-        let mut queen = crate::queen::QueenSync::new(
-            crate::queen::QueenConfig::default(),
-            &config.agent_id,
-        );
-        queen.derive_local_state(&self.engine);
-        let phase = queen.to_agent_phase(0, self.engine.store.count());
-        if let Err(e) = store.publish_phase(&phase) {
-            eprintln!("[swarm] post-dream publish failed: {e}");
-            return;
-        }
-        // Read swarm and run sync step
-        let phases = store.read_swarm_phases(std::time::Duration::from_secs(24 * 3600)).unwrap_or_default();
-        if phases.len() >= 2 {
-            let state = queen.queen_sync_step(&phases);
-            if let Err(e) = store.write_queen_state(&state) {
-                eprintln!("[swarm] post-dream queen state write failed: {e}");
-            } else {
-                eprintln!("[swarm] Post-dream sync: r={:.3}, Φ={:.3}, {} agents",
-                    state.order_parameter, state.phi, state.agent_count);
+        // Post-dream swarm sync via NATS (best-effort, non-blocking)
+        #[cfg(feature = "nats")]
+        {
+            let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
+            if agent_id.is_empty() {
+                return;
+            }
+            let nats_url = std::env::var("KANNAKA_NATS_URL")
+                .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+            let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            let mut queen = crate::queen::QueenSync::new(
+                crate::queen::QueenConfig::default(),
+                &agent_id,
+            );
+            queen.derive_local_state(&self.engine);
+            let phase = queen.to_agent_phase(0, self.engine.store.count());
+            if let Err(e) = transport.publish_phase(&phase) {
+                eprintln!("[swarm] post-dream NATS publish failed: {e}");
             }
         }
     }
@@ -430,6 +418,7 @@ impl KannakaMemorySystem {
     }
 
     /// Import from kannaka.db (SQLite).
+    #[cfg(feature = "sqlite-migrate")]
     pub fn migrate_from_sqlite(&mut self, db_path: &Path) -> Result<MigrationReport, SystemError> {
         let pipeline = make_pipeline();
         let migrator = KannakaDbMigrator::new(db_path, pipeline);
@@ -445,13 +434,11 @@ impl KannakaMemorySystem {
         let bin_path = self.data_dir.join("kannaka.bin");
         self.engine.save_state(&bin_path)?;
         self.working_memory.save_json(&self.data_dir)?;
-        // ADR-0016: Flush all memories (including skip links) to Dolt backend.
-        // This is critical after dreams — connections are modified in-memory
-        // but were never persisted to the skip_links table without this call.
+        // Flush all in-memory state to the backing store (HRM file).
         let flushed = self.engine.store.flush()
             .map_err(|e| SystemError::Engine(crate::store::EngineError::Store(e)))?;
         if flushed > 0 {
-            eprintln!("[dolt] Flushed {} memories with skip links", flushed);
+            eprintln!("[hrm] Flushed {} memories to medium", flushed);
         }
         Ok(())
     }

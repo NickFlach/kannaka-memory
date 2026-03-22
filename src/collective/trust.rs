@@ -6,7 +6,7 @@
 //! - Increased when merged memories prove accurate (confirmed by dream cycles)
 //! - Decreased when memories are quarantined or pruned
 //! - Capped at [0.1, 1.0]
-//! - Logged via Dolt history (every change is auditable)
+//! - Logged via history (every change is auditable)
 
 use std::collections::HashMap;
 
@@ -68,7 +68,7 @@ fn clamp_trust(t: f32) -> f32 {
 // AgentTrustStore
 // ---------------------------------------------------------------------------
 
-/// In-memory trust store. Syncs to the `agents` table in Dolt when `--dolt` is active.
+/// In-memory trust store for agent reputation tracking.
 #[derive(Debug, Default)]
 pub struct AgentTrustStore {
     agents: HashMap<String, AgentRecord>,
@@ -156,7 +156,7 @@ impl AgentTrustStore {
         self.agents.values()
     }
 
-    /// Load agents from a snapshot (e.g. from Dolt query).
+    /// Load agents from a snapshot.
     pub fn load_agents(&mut self, agents: Vec<AgentRecord>) {
         for agent in agents {
             self.agents.insert(agent.agent_id.clone(), agent);

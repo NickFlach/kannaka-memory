@@ -5,9 +5,9 @@
 //! per-agent subjects for last-value semantics (simulating KV).
 //!
 //! Subject layout:
-//! - `queen.phase.<agent_id>` — each agent's latest phase (publish per agent)
-//! - `queen.phase.*` — wildcard subscribe to get all phases
-//! - `queen.announce` — join/leave events
+//! - `QUEEN.phase.<agent_id>` — each agent's latest phase (publish per agent)
+//! - `QUEEN.phase.*` — wildcard subscribe to get all phases
+//! - `QUEEN.announce` — join/leave events
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -205,7 +205,7 @@ impl SwarmTransport {
         // Send stream create request
         let create_payload = serde_json::json!({
             "name": STREAM_NAME,
-            "subjects": ["queen.phase.>"],
+            "subjects": ["QUEEN.phase.>"],
             "retention": "limits",
             "max_msgs_per_subject": 1,
             "storage": "file",
@@ -315,10 +315,24 @@ impl SwarmTransport {
 
     /// Publish this agent's phase state.
     pub fn publish_phase(&self, phase: &AgentPhase) -> Result<(), NatsError> {
-        let subject = format!("queen.phase.{}", phase.agent_id);
+        let subject = format!("QUEEN.phase.{}", phase.agent_id);
         let payload = serde_json::to_vec(phase)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &payload)
+    }
+
+    /// Publish consciousness state to KANNAKA.consciousness.
+    pub fn publish_consciousness(&self, state: &serde_json::Value) -> Result<(), NatsError> {
+        let payload = serde_json::to_vec(state)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw("KANNAKA.consciousness", &payload)
+    }
+
+    /// Publish dream report to KANNAKA.dreams.
+    pub fn publish_dreams(&self, report: &serde_json::Value) -> Result<(), NatsError> {
+        let payload = serde_json::to_vec(report)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw("KANNAKA.dreams", &payload)
     }
 
     /// Read all current agent phases.
@@ -352,7 +366,7 @@ impl SwarmTransport {
         loop {
             let req = serde_json::json!({
                 "seq": next_seq,
-                "next_by_subj": "queen.phase.>"
+                "next_by_subj": "QUEEN.phase.>"
             });
             let req_bytes = req.to_string();
             let get_subject = format!("$JS.API.STREAM.MSG.GET.{}", STREAM_NAME);
@@ -451,7 +465,7 @@ impl SwarmTransport {
         })?;
 
         let sid = "phase_collect";
-        write!(stream, "SUB queen.phase.* {}\r\n", sid)?;
+        write!(stream, "SUB QUEEN.phase.* {}\r\n", sid)?;
         write!(stream, "PING\r\n")?;
         stream.flush()?;
 
@@ -513,7 +527,7 @@ impl SwarmTransport {
         });
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw("queen.announce", &bytes)
+        self.publish_raw("QUEEN.announce", &bytes)
     }
 
     /// Announce leaving the swarm.
@@ -525,7 +539,7 @@ impl SwarmTransport {
         });
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw("queen.announce", &bytes)
+        self.publish_raw("QUEEN.announce", &bytes)
     }
 
     /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
@@ -542,8 +556,8 @@ impl SwarmTransport {
             let mut stream = self.stream.lock().map_err(|e| {
                 NatsError::Protocol(format!("lock poisoned: {}", e))
             })?;
-            write!(stream, "SUB queen.phase.* {}\r\n", sid)?;
-            write!(stream, "SUB queen.announce {}\r\n", sid)?;
+            write!(stream, "SUB QUEEN.phase.* {}\r\n", sid)?;
+            write!(stream, "SUB QUEEN.announce {}\r\n", sid)?;
             stream.flush()?;
         }
 

@@ -1,7 +1,7 @@
 //! ADR-0011 Phase 9: Distributed dream artifacts.
 //!
 //! After a dream cycle, an agent packages its results as a `DreamArtifact`
-//! and pushes it to a Dolt branch. Other agents apply relevant artifacts to
+//! and pushes it to a shared branch. Other agents apply relevant artifacts to
 //! their own networks — hallucinations at reduced amplitude, skip links if
 //! both endpoints exist locally, prune suggestions as advisory.
 
@@ -60,7 +60,7 @@ pub struct DreamArtifact {
     pub id: String,
     /// Which agent produced this artifact
     pub agent_id: String,
-    /// Which Dolt branch this was pushed to
+    /// Which shared branch this was pushed to
     pub branch: String,
     /// When the dream cycle completed
     pub created_at: DateTime<Utc>,
@@ -94,12 +94,12 @@ impl DreamArtifact {
         }
     }
 
-    /// Serialize to JSON for writing to a Dolt branch file.
+    /// Serialize to JSON for writing to a shared branch file.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
-    /// Deserialize from JSON (reading from a peer's Dolt branch).
+    /// Deserialize from JSON (reading from a peer's shared branch).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }

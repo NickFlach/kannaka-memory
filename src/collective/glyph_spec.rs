@@ -220,7 +220,7 @@ fn cosine_similarity_7(a: &[f64; 7], b: &[f64; 7]) -> f64 {
 // Wire Format Serialization
 // ============================================================================
 
-/// Dolt DDL for universal glyph persistence.
+/// SQL DDL for universal glyph persistence (historical reference).
 pub const UNIVERSAL_GLYPH_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS universal_glyphs (
     glyph_id        CHAR(64) PRIMARY KEY,

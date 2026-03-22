@@ -19,7 +19,7 @@ bincode = "1"
 ndarray = { version = "0.15", optional = true }
 blake3 = { version = "1.5", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 ureq = { version = "2", features = ["json"] }
 tokio = { version = "1", features = ["full"], optional = true }
 async-trait = { version = "0.1", optional = true }
@@ -34,22 +34,18 @@ rubato = { version = "0.15", optional = true }
 # Video perception (optional) — uses ffmpeg subprocess, no C deps
 image = { version = "0.25", optional = true }
 
-# Dolt database support (optional)
-mysql = { version = "25", optional = true }
-
 # NATS real-time transport (optional) — uses raw TCP protocol (nats crate broken with rand 0.9)
 
 [features]
-default = ["dolt", "nats"]
+default = ["hrm", "nats"]
 nats = []
 mcp = ["tokio", "async-trait"]
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
-dolt = ["mysql"]
 glyph = []
 collective = ["rayon"]
 hrm = ["ndarray", "blake3"]
-migration = ["mysql", "hrm", "clap"]
+sqlite-migrate = ["rusqlite", "clap"]
 
 [[bin]]
 name = "research"
@@ -72,10 +68,11 @@ path = "src/bin/migrate.rs"
 name = "kannaka-recompute-geometry"
 path = "src/bin/recompute_geometry.rs"
 
-[[bin]]
-name = "hrm-migrate"
-path = "src/bin/hrm_migrate.rs"
-required-features = ["migration"]
+# hrm-migrate is obsolete (was Dolt→HRM migration); kept for reference
+# [[bin]]
+# name = "hrm-migrate"
+# path = "src/bin/hrm_migrate.rs"
+# required-features = ["sqlite-migrate"]
 
 [dev-dependencies]
 tempfile = "3"
