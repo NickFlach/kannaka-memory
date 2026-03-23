@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 use crate::encoding::{EncodingError, EncodingPipeline};
 use crate::memory::HyperMemory;
-use crate::xi_operator::{xi_diversity_boost, compute_xi_signature};
 use crate::wave::cosine_similarity;
 
 // ---------------------------------------------------------------------------
@@ -249,11 +248,17 @@ pub fn phi_span_score(span: u8) -> f32 {
     (1.0 - best.min(1.0)) as f32
 }
 
-/// High-level API: remember() and recall() over a pluggable store.
+/// High-level API over the holographic resonance medium.
+///
+/// Core paths assume HRM. The pipeline is:
+/// - remember() → store.store_text() → ChiralMedium (encode + classify + fold + store)
+/// - recall()   → store.recall_text() → ChiralMedium (bilateral resonance)
+///
+/// The pipeline field is kept for compatibility callers that need raw encoding.
 pub struct MemoryEngine {
     pub store: Box<dyn MemoryStore>,
     pub(crate) pipeline: EncodingPipeline,
-    /// Threshold for automatic skip link creation
+    /// Legacy — kept for callers that check it. Not used by core paths.
     pub similarity_threshold: f32,
 }
 
@@ -266,155 +271,57 @@ impl MemoryEngine {
         }
     }
 
-    /// Encode text and store into the holographic medium. Returns the memory id.
-    ///
-    /// Uses store_text() for HRM-native storage (encode → wavefront → interference).
-    /// Falls back to insert() for non-HRM stores.
+    /// Store text into the holographic medium.
+    /// The medium handles encoding, SGA classification, Fano routing, and chiral storage.
     pub fn remember(&mut self, text: &str) -> Result<Uuid, EngineError> {
-        // Try HRM-native path first (store_text handles encoding + chiral routing)
-        match self.store.store_text(text, 0.5, None) {
-            Ok(id) => Ok(id),
-            Err(_) => {
-                // Fallback: encode + insert (for InMemoryStore / testing)
+        self.store.store_text(text, 0.5, None)
+            .or_else(|_| {
+                // Compat fallback for test stores
                 let memory = self.pipeline.encode_memory(text, Utc::now())?;
-                let id = self.store.insert(memory)?;
-                Ok(id)
-            }
-        }
+                Ok(self.store.insert(memory)?)
+            })
     }
 
-    /// Encode text and store with a specific layer_depth.
-    pub fn remember_at_layer(&mut self, text: &str, layer_depth: u8) -> Result<Uuid, EngineError> {
-        // HRM doesn't use layer_depth — it's a legacy concept
-        // Store via HRM-native path, ignore layer_depth
-        match self.store.store_text(text, 0.5, None) {
-            Ok(id) => Ok(id),
-            Err(_) => {
-                let mut memory = self.pipeline.encode_memory(text, Utc::now())?;
-                memory.layer_depth = layer_depth;
-                let id = self.store.insert(memory)?;
-                Ok(id)
-            }
-        }
+    /// Store with explicit layer depth (legacy concept — HRM ignores it).
+    pub fn remember_at_layer(&mut self, text: &str, _layer_depth: u8) -> Result<Uuid, EngineError> {
+        self.remember(text)
     }
 
-    /// Build a QueryResult with Xi diversity boosting applied.
-    fn build_xi_boosted_result(
-        &self,
-        id: Uuid,
-        base_similarity: f32,
-        combined_score: f32,
-        query_xi: &[f32],
-    ) -> QueryResult {
-        let xi_boosted_similarity = if let Ok(Some(mem)) = self.store.get(&id) {
-            let mem_xi = if mem.xi_signature.is_empty() {
-                compute_xi_signature(&mem.vector)
-            } else {
-                mem.xi_signature.clone()
-            };
-            xi_diversity_boost(base_similarity, query_xi, &mem_xi)
-        } else {
-            base_similarity
-        };
-
-        let effective_strength = if base_similarity.abs() > 1e-9 {
-            combined_score / base_similarity
-        } else {
-            0.0
-        };
-
-        QueryResult {
-            id,
-            similarity: xi_boosted_similarity,
-            effective_strength,
-            combined_score: combined_score * (xi_boosted_similarity / base_similarity.max(1e-9)),
-        }
-    }
-
-    /// Encode a query and search with wave-modulated ranking and Xi diversity boosting.
-    /// Recall memories by resonance with the query.
-    ///
-    /// Uses recall_text() for HRM-native bilateral resonance (searches both
-    /// hemispheres, surfaces intuitions from subconscious).
-    /// Falls back to vector search + Xi boosting for non-HRM stores.
+    /// Recall by resonance. The medium handles bilateral search and intuition surfacing.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
-        // Try HRM-native recall first (bilateral resonance)
-        match self.store.recall_text(query, top_k) {
-            Ok(results) => {
-                // Convert (Uuid, f32) to QueryResult
-                let qr: Vec<QueryResult> = results.into_iter().map(|(id, score)| {
-                    QueryResult {
-                        id,
-                        similarity: score,
-                        effective_strength: score,
-                        combined_score: score,
-                    }
-                }).collect();
-
-                // Record retrieval events (f(x) term)
-                for r in &qr {
-                    if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
-                        mem.record_retrieval();
-                    }
-                }
-
-                Ok(qr)
-            }
-            Err(_) => {
-                // Fallback: encode → search → Xi boost
+        let results = self.store.recall_text(query, top_k)
+            .or_else(|_| {
+                // Compat fallback for test stores
                 let qvec = self.pipeline.encode_text(query)?;
-                let query_xi = compute_xi_signature(&qvec);
                 let now = Utc::now();
-                let raw_limit = (top_k * 10).min(self.store.count());
-                let raw = self.store.search(&qvec, raw_limit)?;
-                let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
-                let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?;
+                self.store.search_with_wave(&qvec, top_k, now)
+                    .map_err(|e| EncodingError::Other(e.to_string()))
+            })?;
 
-                let mut results = wave_results
-                    .into_iter()
-                    .map(|(id, combined)| {
-                        let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                        self.build_xi_boosted_result(id, base_similarity, combined, &query_xi)
-                    })
-                    .collect::<Vec<_>>();
+        let qr: Vec<QueryResult> = results.into_iter().map(|(id, score)| {
+            QueryResult { id, similarity: score, effective_strength: score, combined_score: score }
+        }).collect();
 
-                results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
-                results.truncate(top_k);
-
-                for r in &results {
-                    if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
-                        mem.record_retrieval();
-                    }
-                }
-
-                Ok(results)
+        // Record retrieval events (f(x) term — recalled memories gain energy)
+        for r in &qr {
+            if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
+                mem.record_retrieval();
             }
         }
+
+        Ok(qr)
     }
 
-    /// Recall with skip link expansion — follows connections to find related memories.
-    /// Recall with expansion — skip links removed, now delegates to simple recall.
-    /// TODO(chiral): replace with ChiralMedium resonance-based expansion
-    pub fn recall_with_expansion(
-        &mut self,
-        query: &str,
-        top_k: usize,
-    ) -> Result<Vec<QueryResult>, EngineError> {
-        // Skip links removed — fall back to direct recall with Xi boosting
+    /// Alias for recall() — expansion is now inherent in bilateral resonance.
+    pub fn recall_with_expansion(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
         self.recall(query, top_k)
     }
 
-    /// Decay all skip link strengths — no-op after skip link removal.
-    /// TODO(chiral): remove entirely once all callers updated
-    pub fn decay_links(&mut self, _decay_factor: f32) {
-        // Skip links removed — interference patterns in ChiralMedium handle association decay
-    }
+    /// No-op — associations are emergent from interference in the holographic medium.
+    pub fn decay_links(&mut self, _decay_factor: f32) {}
 
-    /// Reinforce a skip link — no-op after skip link removal.
-    /// TODO(chiral): remove entirely once all callers updated
-    pub fn reinforce_link(&mut self, _memory_id: &Uuid, _target_id: &Uuid, _boost: f32) {
-        // Skip links removed — interference patterns in ChiralMedium handle reinforcement
-    }
+    /// No-op — reinforcement is emergent from constructive interference.
+    pub fn reinforce_link(&mut self, _memory_id: &Uuid, _target_id: &Uuid, _boost: f32) {}
 
     /// Get a memory by id.
     pub fn get_memory(&self, id: &Uuid) -> Result<Option<&HyperMemory>, EngineError> {
