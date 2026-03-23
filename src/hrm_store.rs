@@ -50,22 +50,25 @@ impl HrmStore {
     /// Load an existing HRM store from a .hrm file.
     /// Auto-detects v1 vs v2 format. v2 loads as ChiralMedium.
     pub fn load(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Result<Self, StoreError> {
+        // Detect format version from magic bytes before loading
+        let is_v2 = if let Ok(mut f) = std::fs::File::open(&hrm_path) {
+            let mut magic = [0u8; 4];
+            use std::io::Read;
+            f.read_exact(&mut magic).ok();
+            magic == crate::medium::HRM_MAGIC_V2
+        } else {
+            false
+        };
+
         // Try loading as ChiralMedium first (handles both v1 and v2)
         match ChiralMedium::load(&hrm_path) {
             Ok(chiral) => {
-                // Check if it was a v2 file (has left hemisphere content)
-                // or a v1 file that was auto-converted
-                let is_native_v2 = chiral.left.count() > 0;
-                
-                // Build a Medium view from the right hemisphere for backward compat
-                let medium = if is_native_v2 {
-                    // For v2 files, create a minimal Medium from right hemisphere
-                    // This keeps the old API working while chiral is authoritative
-                    Medium::new() // Placeholder — chiral is the real backend
+                // For v2 files, start with empty Medium (will be synced from chiral)
+                // For v1 files auto-converted, also load the raw Medium
+                let medium = if is_v2 {
+                    Medium::new()
                 } else {
-                    // For v1 files loaded as chiral, also load the raw Medium
-                    Medium::load(&hrm_path)
-                        .unwrap_or_else(|_| Medium::new())
+                    Medium::load(&hrm_path).unwrap_or_else(|_| Medium::new())
                 };
 
                 let mut store = Self {
@@ -81,7 +84,8 @@ impl HrmStore {
                 store.rebuild_cache()?;
                 Ok(store)
             }
-            Err(_) => {
+            Err(chiral_err) => {
+                eprintln!("[hrm] ChiralMedium::load failed: {}", chiral_err);
                 // Fallback: try loading as plain v1 Medium
                 let medium = Medium::load(&hrm_path)
                     .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {}", e)))?;

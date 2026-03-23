@@ -77,13 +77,14 @@ pub struct WavefrontMeta {
     pub is_self_referential: bool,
     /// SGA classification — which of the 96 classes this memory belongs to
     /// Encodes (h₂, d, ℓ) coordinates in the Sigmatics Geometric Algebra
-    #[serde(default)]
+    /// Note: skipped in bincode serialization for backward compat with v1/v2 .hrm files
+    #[serde(skip)]
     pub sga_class: Option<u8>,
     /// Fano group (0-6) — derived from SGA class, determines fold operations
-    #[serde(default)]
+    #[serde(skip)]
     pub fano_group: Option<u8>,
     /// Category used for SGA classification
-    #[serde(default)]
+    #[serde(skip)]
     pub category: Option<String>,
 }
 
