@@ -106,17 +106,20 @@ pub trait MemoryStore: Send + Sync {
     /// Persist the holographic tensor to disk.
     fn flush(&mut self) -> Result<usize, StoreError> { Ok(0) }
 
-    // -- Compatibility layer (used by MemoryEngine) --
+    // -- Compatibility layer --
+    // These exist for legacy callers (consolidation, bridge, kuramoto, etc.)
+    // that traffic in HyperMemory objects. New code should use store_text/recall_text.
 
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
     fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError>;
-    fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
-    fn search_with_wave(&self, query: &[f32], top_k: usize, now: DateTime<Utc>) -> Result<Vec<(Uuid, f32)>, StoreError>;
     fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError>;
     fn all_ids(&self) -> Result<Vec<Uuid>, StoreError>;
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
     fn count(&self) -> usize;
+
+    /// Raw vector search — legacy, prefer recall_text() for resonance-based recall.
+    fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
 
     /// Downcasting support.
     fn as_any(&self) -> &dyn std::any::Any;
@@ -169,26 +172,6 @@ impl MemoryStore for InMemoryStore {
             .memories
             .values()
             .map(|m| (m.id, cosine_similarity(query, &m.vector)))
-            .collect();
-        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-        scored.truncate(top_k);
-        Ok(scored)
-    }
-
-    fn search_with_wave(
-        &self,
-        query: &[f32],
-        top_k: usize,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<(Uuid, f32)>, StoreError> {
-        let mut scored: Vec<(Uuid, f32)> = self
-            .memories
-            .values()
-            .map(|m| {
-                let sim = cosine_similarity(query, &m.vector);
-                let strength = m.effective_strength(now);
-                (m.id, sim * strength)
-            })
             .collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
@@ -294,8 +277,7 @@ impl MemoryEngine {
             .or_else(|_| {
                 // Compat fallback for test stores
                 let qvec = self.pipeline.encode_text(query)?;
-                let now = Utc::now();
-                self.store.search_with_wave(&qvec, top_k, now)
+                self.store.search(&qvec, top_k)
                     .map_err(|e| EncodingError::Other(e.to_string()))
             })?;
 
@@ -501,29 +483,6 @@ mod tests {
         let results = store.search(&v1, 3).unwrap();
         assert_eq!(results[0].0, id1);
         assert!((results[0].1 - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn search_with_wave_older_ranks_lower() {
-        let mut store = InMemoryStore::new();
-        let v = vec![1.0; 50];
-
-        let m_recent = make_memory(v.clone(), "recent");
-        let id_recent = m_recent.id;
-        store.insert(m_recent).unwrap();
-
-        let mut m_old = make_memory(v.clone(), "old");
-        m_old.created_at = Utc::now() - Duration::days(30);
-        m_old.frequency = 0.0;
-        m_old.decay_rate = 0.001;
-        let id_old = m_old.id;
-        store.insert(m_old).unwrap();
-
-        let now = Utc::now();
-        let results = store.search_with_wave(&v, 2, now).unwrap();
-        assert_eq!(results[0].0, id_recent);
-        assert_eq!(results[1].0, id_old);
-        assert!(results[0].1 > results[1].1);
     }
 
     // -- MemoryEngine tests --

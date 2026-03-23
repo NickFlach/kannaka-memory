@@ -526,32 +526,7 @@ impl MemoryStore for HrmStore {
         Ok(scores)
     }
 
-    fn search_with_wave(
-        &self,
-        query: &[f32],
-        top_k: usize,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<(Uuid, f32)>, StoreError> {
-        // Use the medium's wave-modulated search
-        let effective_strengths = self.medium.effective_strength(Some(now));
-        let mut scores = Vec::new();
-        
-        for (i, meta) in self.medium.metadata.iter().enumerate() {
-            let wavefront = self.medium.wavefronts.row(i);
-            let similarity: f32 = wavefront.iter()
-                .zip(query.iter())
-                .map(|(a, b)| a * b)
-                .sum();
-            
-            let wave_score = similarity * effective_strengths[i];
-            scores.push((meta.id, wave_score));
-        }
-        
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scores.truncate(top_k);
-        
-        Ok(scores)
-    }
+
 
     fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError> {
         Ok(self.memory_cache.values().collect())
@@ -721,30 +696,6 @@ mod tests {
             let memories = store.all_memories().unwrap();
             assert_eq!(memories[0].content, "persistent content");
         }
-    }
-
-    #[test]
-    fn hrm_store_wave_search() {
-        let pipeline = make_test_pipeline();
-        let temp_file = NamedTempFile::new().unwrap();
-        let mut store = HrmStore::new(pipeline, temp_file.path().to_path_buf());
-
-        // Insert memory with specific wave parameters
-        let mut memory = HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "wave test".to_string());
-        memory.amplitude = 1.0;
-        memory.frequency = 2.0;
-        memory.phase = 0.5;
-        
-        let id = store.insert(memory).unwrap();
-
-        // Test wave-modulated search
-        let query = vec![0.5; WAVEFRONT_DIM];
-        let now = Utc::now();
-        let results = store.search_with_wave(&query, 5, now).unwrap();
-        
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, id);
-        assert!(results[0].1 > 0.0); // Should have positive wave score
     }
 
     #[test]
