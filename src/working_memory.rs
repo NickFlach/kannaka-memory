@@ -1,8 +1,13 @@
-//! Working Memory — L2 conversation context layer.
+//! Transient Interaction State — session-scoped conversation tracking.
 //!
-//! Maintains a ring buffer of conversation turns and rolling session state
-//! that survives session compactions. Persists to both a fast JSON file
-//! and periodic HyperMemory checkpoints in the main store.
+//! **Transitional module.** In the chiral HRM vision, transient interaction
+//! state IS the left hemisphere — conversation turns are conscious wavefronts,
+//! task tracking is attention-weighted energy, and summarization is a
+//! lite dream cycle on the conscious workspace.
+//!
+//! Currently implements a ring buffer + JSON persistence that runs parallel
+//! to the holographic medium. Should be absorbed into left-hemisphere
+//! wavefront operations as the chiral architecture matures.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -285,11 +290,15 @@ impl WorkingMemory {
     // Context output
     // ------------------------------------------------------------------
 
-    /// Format current state as a context block.
-    /// Transitional: should become left-hemisphere field state query.
+    /// Query the transient interaction state.
+    ///
+    /// Transitional: in the chiral vision, this becomes a resonance query
+    /// against the left hemisphere — "what am I currently attending to?"
+    /// The conscious workspace would return its highest-energy wavefronts
+    /// rather than formatting markdown.
     pub fn get_context(&self) -> String {
         let mut out = String::new();
-        out.push_str("## Working Memory Context\n\n");
+        out.push_str("## Interaction State\n\n");
 
         // Summary
         if !self.session_state.conversation_summary.is_empty() {
@@ -381,10 +390,15 @@ impl WorkingMemory {
     }
 
     // ------------------------------------------------------------------
-    // Persistence — HyperMemory checkpoint (safety net)
+    // Persistence — absorb interaction state into the medium
     // ------------------------------------------------------------------
 
-    /// Checkpoint: saves JSON + stores a high-amplitude HyperMemory tagged "session-state".
+    /// Absorb the current interaction state into the holographic medium.
+    /// Saves JSON snapshot + creates a high-amplitude wavefront tagged "session-state"
+    /// so the interaction context survives dream consolidation.
+    ///
+    /// Transitional: when the left hemisphere IS the interaction state,
+    /// this becomes a no-op — the state is already in the medium.
     pub fn checkpoint(&mut self, data_dir: &Path, engine: &mut MemoryEngine) -> Result<(), std::io::Error> {
         // 1. Save JSON (fast path)
         self.save_json(data_dir)?;
