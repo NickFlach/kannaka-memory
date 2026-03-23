@@ -277,7 +277,7 @@ impl ConsolidationEngine {
 
     /// Stage 2: Detect interference patterns between memory pairs.
     ///
-    /// Uses HNSW approximate nearest neighbor search for O(n log n) instead of
+    /// Uses brute-force neighbor search. In HRM, associations are emergent from interference, not indexed.
     /// brute-force O(n�). Each memory queries its K nearest neighbors, then
     /// checks phase alignment to classify as constructive or destructive.
     fn stage_detect(&self, engine: &ResonanceEngine, working_set: &[Uuid]) -> Vec<InterferencePair> {
@@ -285,7 +285,7 @@ impl ConsolidationEngine {
 
         // Number of nearest neighbors to query per memory.
         // Higher = more thorough but slower. 32 catches most interference pairs.
-        // Request k_neighbors+1 because the store returns the query memory itself as
+        // Request k_neighbors+1 because the medium returns the query memory itself as
         // the top hit (similarity=1.0); the self-result is filtered below.
         let k_neighbors: usize = 32.min(working_set.len().saturating_sub(1));
         if k_neighbors == 0 {

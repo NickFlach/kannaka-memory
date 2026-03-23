@@ -507,7 +507,7 @@ impl ConsciousnessBridge {
             };
         }
 
-        // === Graph-based path: skip links + geometry partitions (SQL/InMemory stores) ===
+        // === Legacy path (transitional) ===
         let phi_report = self.compute_phi(engine);
 
         let xi = if all.len() >= 2 {

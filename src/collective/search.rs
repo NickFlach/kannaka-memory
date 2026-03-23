@@ -157,9 +157,9 @@ pub fn respond_to_proof_request(
     })
 }
 
-/// Search sealed glyphs in the store using local similarity computation.
+/// Search sealed glyphs in the medium using local similarity computation.
 ///
-/// This is the local search path — the searcher has access to the store
+/// This is the local search path — the searcher has access to the medium
 /// and can iterate glyphs they own. For remote glyphs, use the Flux-based
 /// proof exchange (see `respond_to_proof_request`).
 pub fn collective_search(
@@ -259,7 +259,7 @@ fn compute_rank_score(similarity: f64, trust_bonus: f32, effective_difficulty: u
     similarity * sim_weight + trust_normalized * trust_weight + access_score * access_weight
 }
 
-/// Verify a received similarity proof and update the store.
+/// Verify a received similarity proof and update the medium.
 ///
 /// Returns true if the proof verified successfully.
 pub fn process_proof_response(

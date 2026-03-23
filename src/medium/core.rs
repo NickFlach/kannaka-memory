@@ -205,7 +205,7 @@ impl Medium {
     /// * `importance` - Initial energy/amplitude (typically 0.0-1.0)
     ///
     /// # Returns
-    /// UUID of the stored audio wavefront
+    /// UUID of the mediumd audio wavefront
     pub fn store_audio(
         &mut self,
         audio_vector: &[f32],
@@ -246,7 +246,7 @@ impl Medium {
     /// * `importance` - Initial energy/amplitude (typically 0.0-1.0)
     ///
     /// # Returns
-    /// UUID of the stored visual wavefront
+    /// UUID of the mediumd visual wavefront
     pub fn store_visual(
         &mut self,
         visual_vector: &[f32],

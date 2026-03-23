@@ -2,7 +2,7 @@
 //!
 //! Flux is the "nervous system" of collective memory. Events carry lightweight
 //! metadata about memory activity — never full vectors or content — so other
-//! agents can decide whether to pull from DoltHub based on relevance.
+//! agents can decide whether to pull from remote sync (legacy) based on relevance.
 //!
 //! Environment variables:
 //!   FLUX_URL         — Flux instance base URL (default: http://localhost:3000)
@@ -296,7 +296,7 @@ impl FluxPublisher {
 // ---------------------------------------------------------------------------
 
 /// Represents a candidate event received from Flux that another agent wants
-/// us to evaluate for pulling from DoltHub.
+/// us to evaluate for pulling from remote sync (legacy).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteMemorySignal {
     pub agent_id: String,
@@ -310,7 +310,7 @@ pub struct RemoteMemorySignal {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PullDecision {
-    /// Pull this memory from the remote DoltHub branch.
+    /// Pull this memory from the remote remote sync (legacy) branch.
     Pull,
     /// Skip — not relevant or trust too low.
     Skip,

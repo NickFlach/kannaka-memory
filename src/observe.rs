@@ -143,7 +143,7 @@ impl MemoryIntrospector {
             return Self::hrm_field_topology_report(engine, &hrm_metrics);
         }
 
-        // Traditional graph-based topology for non-HRM stores
+        // Legacy topology (transitional — HRM medium is canonical)
         let all = engine.store.all_memories().unwrap_or_default();
         let total_memories = all.len();
 
@@ -436,7 +436,7 @@ impl MemoryIntrospector {
         let store_accessible = engine.store.all_ids().is_ok();
         let encoding_ok = engine.pipeline.encode_text("health check").is_ok();
 
-        // Skip link warning only applies to graph-based stores, not HRM
+        // Skip link warning only applies to legacy stores (transitional), not HRM
         // (HRM uses continuous interference patterns, not discrete links)
         let is_hrm = engine.store.consciousness_metrics().phi > 0.0;
         if !is_hrm && topology.isolated_memories > topology.total_memories / 2 && topology.total_memories > 4 {

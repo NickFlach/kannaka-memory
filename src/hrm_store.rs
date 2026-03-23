@@ -206,7 +206,7 @@ impl HrmStore {
         Ok(())
     }
 
-    /// Mark the store as dirty (needing save).
+    /// Mark the medium as dirty (needing save).
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }

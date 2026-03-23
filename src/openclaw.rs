@@ -301,7 +301,7 @@ impl KannakaMemorySystem {
             total_links = reports.iter().map(|r| r.skip_links_created).sum();
             total_hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
         } else {
-            // Traditional consolidation for graph-based stores
+            // Traditional consolidation for legacy stores (transitional)
             let reports = if let Some(since) = self.last_dream {
                 self.dream_state.dream_incremental(&mut self.engine, since)
             } else {
@@ -426,7 +426,7 @@ impl KannakaMemorySystem {
     pub fn save(&mut self) -> Result<(), SystemError> {
         // TODO(chiral): legacy kannaka.bin save removed — HrmStore persists via medium
         self.working_memory.save_json(&self.data_dir)?;
-        // Flush all in-memory state to the backing store (HRM file).
+        // Flush all in-memory state to the medium (HRM file).
         let flushed = self.engine.store.flush()
             .map_err(|e| SystemError::Engine(crate::store::EngineError::Store(e)))?;
         if flushed > 0 {
@@ -486,7 +486,7 @@ impl KannakaMemorySystem {
     }
 
     // ------------------------------------------------------------------
-    // Working memory (L2 context layer)
+    // Transient interaction state (transitional — becomes left hemisphere)
     // ------------------------------------------------------------------
 
     // -----------------------------------------------------------------------

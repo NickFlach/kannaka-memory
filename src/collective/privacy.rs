@@ -223,7 +223,7 @@ pub fn suggest_difficulty(memory: &HyperMemory, agent_default: u32) -> u32 {
 
     // Consolidation summaries inherit max difficulty of parents
     if memory.hallucinated && !memory.parents.is_empty() {
-        // Can't check parent difficulties without the store, but flag it
+        // Can't check parent difficulties without the medium, but flag it
         // The caller should check parent difficulties separately
     }
 

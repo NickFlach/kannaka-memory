@@ -361,7 +361,7 @@ impl ResonanceEngine {
     /// becomes an independent dream partition.  An "other" catch-all bucket holds any memory
     /// that doesn't match the standard bands.
     ///
-    /// Returns `Vec<MemoryCluster>` (empty if the store is empty).
+    /// Returns `Vec<MemoryCluster>` (empty if the medium is empty).
     pub fn xi_clusters(&self) -> Vec<crate::kuramoto::MemoryCluster> {
         use std::collections::HashMap;
         use crate::kuramoto::MemoryCluster;

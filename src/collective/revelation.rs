@@ -10,7 +10,7 @@
 //! ## Design Principle
 //!
 //! Privacy only goes *down* via revelation — never up. The original sealed state
-//! is always recorded in DoltHub history. A glyph can become more accessible
+//! is always recorded in remote sync (legacy) history. A glyph can become more accessible
 //! over time, but its creation privacy is immutable.
 
 use chrono::{DateTime, Duration, Utc};
@@ -160,7 +160,7 @@ pub fn evaluate_pending_policies(
         .collect()
 }
 
-/// Execute a revelation action by publishing a bloom hint to the store.
+/// Execute a revelation action by publishing a bloom hint to the medium.
 ///
 /// Returns the generated `BloomHint`, or `None` if the glyph doesn't exist
 /// or the hint creation fails.

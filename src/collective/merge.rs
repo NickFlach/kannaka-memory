@@ -193,7 +193,7 @@ pub fn apply_constructive(local: &mut HyperMemory, remote: &HyperMemory, result:
     let total = a1 + a2;
 
     // Amplitude-weighted vector average, re-normalized to unit length.
-    // HNSW and cosine similarity assume unit vectors; blending two unit vectors
+    // Cosine similarity assumes unit vectors; blending two unit vectors
     // produces a sub-unit vector that must be re-normalized.
     if !local.vector.is_empty() && local.vector.len() == remote.vector.len() {
         for (lv, rv) in local.vector.iter_mut().zip(remote.vector.iter()) {
