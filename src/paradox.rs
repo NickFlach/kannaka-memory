@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::consolidation::ConsolidationReport;
 use crate::memory::HyperMemory;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 use crate::wave::normalize;
 
 #[cfg(feature = "collective")]
@@ -529,7 +529,7 @@ impl ParadoxResolver {
     /// Apply resolutions to the memory engine and return efficiency report.
     pub fn apply(
         self, 
-        engine: &mut MemoryEngine, 
+        engine: &mut ResonanceEngine, 
         resolutions: Vec<(Paradox, Resolution)>,
         snapshot: &ParadoxSnapshot,
     ) -> ResolutionReport {
@@ -579,7 +579,7 @@ impl ParadoxResolver {
     /// Apply a consensus state to the memory.
     fn apply_consensus_state(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         paradox: &Paradox,
         state: &ProposedState,
         snapshot: &ParadoxSnapshot,
@@ -608,7 +608,7 @@ impl ParadoxResolver {
     /// Apply a holographic projection to the memory.
     fn apply_projection(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         paradox: &Paradox,
         amplitude: f32,
         phase: f32,
@@ -647,7 +647,7 @@ impl ParadoxResolver {
     /// Apply irreducible resolution: preserve original snapshot state and create tension metadata.
     fn apply_irreducible(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         paradox: &Paradox,
         _states: &[ProposedState],
         _tension_links: &[(usize, usize, f32)],
@@ -912,14 +912,14 @@ mod tests {
     fn dream_parallel_integration_test() {
         use crate::codebook::Codebook;
         use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
-        use crate::store::{InMemoryStore, MemoryEngine};
+        use crate::store::{TestMedium, ResonanceEngine};
         use crate::consolidation::ConsolidationEngine;
         
         // Set up engine with multiple memories across different frequency categories
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        let mut engine = MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline);
+        let mut engine = ResonanceEngine::new(Box::new(TestMedium::new()), pipeline);
         
         // Add memories to create multiple Xi clusters
         let id1 = engine.remember("high frequency experience memory").unwrap();

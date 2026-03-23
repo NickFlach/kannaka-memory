@@ -1,4 +1,4 @@
-//! Storage layer: MemoryStore trait, InMemoryStore, and MemoryEngine.
+//! Storage layer: MediumBackend trait, TestMedium, and ResonanceEngine.
 
 use std::collections::HashMap;
 
@@ -46,7 +46,7 @@ pub struct QueryResult {
 }
 
 // ---------------------------------------------------------------------------
-// MemoryStore trait
+// MediumBackend trait
 // ---------------------------------------------------------------------------
 
 /// Storage backend for holographic resonance memories.
@@ -56,7 +56,7 @@ pub struct QueryResult {
 /// resonance, consciousness metrics emerge from tensor topology, and associations
 /// are emergent from phase coherence.
 ///
-/// InMemoryStore exists only for testing.
+/// TestMedium exists only for testing.
 ///
 /// ## HRM-first semantics
 ///
@@ -67,8 +67,8 @@ pub struct QueryResult {
 /// - `dream()` — anneal the medium (right hemisphere only in chiral mode)
 ///
 /// The `insert()` / `search()` methods accept raw HyperMemory/vectors for
-/// compatibility with MemoryEngine. New code should prefer `store()`/`recall()`.
-pub trait MemoryStore: Send + Sync {
+/// compatibility with ResonanceEngine. New code should prefer `store()`/`recall()`.
+pub trait MediumBackend: Send + Sync {
     // -- Core HRM operations --
 
     /// Absorb content into the holographic medium as a new wavefront.
@@ -145,15 +145,15 @@ pub trait MemoryStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// InMemoryStore
+// TestMedium
 // ---------------------------------------------------------------------------
 
 /// HashMap-backed reference implementation with brute-force cosine similarity.
-pub struct InMemoryStore {
+pub struct TestMedium {
     memories: HashMap<Uuid, HyperMemory>,
 }
 
-impl InMemoryStore {
+impl TestMedium {
     pub fn new() -> Self {
         Self {
             memories: HashMap::new(),
@@ -161,13 +161,13 @@ impl InMemoryStore {
     }
 }
 
-impl Default for InMemoryStore {
+impl Default for TestMedium {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MemoryStore for InMemoryStore {
+impl MediumBackend for TestMedium {
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
         if self.memories.contains_key(&id) {
@@ -221,7 +221,7 @@ impl MemoryStore for InMemoryStore {
 }
 
 // ---------------------------------------------------------------------------
-// MemoryEngine
+// ResonanceEngine
 // ---------------------------------------------------------------------------
 
 /// Minimum link strength for traversal during query expansion.
@@ -257,15 +257,15 @@ pub fn phi_span_score(span: u8) -> f32 {
 /// - recall()   → store.resonate_query() → ChiralMedium (bilateral resonance + observation)
 ///
 /// The pipeline field is kept for compatibility callers that need raw encoding.
-pub struct MemoryEngine {
-    pub store: Box<dyn MemoryStore>,
+pub struct ResonanceEngine {
+    pub store: Box<dyn MediumBackend>,
     pub(crate) pipeline: EncodingPipeline,
     /// Legacy — kept for callers that check it. Not used by core paths.
     pub similarity_threshold: f32,
 }
 
-impl MemoryEngine {
-    pub fn new(store: Box<dyn MemoryStore>, pipeline: EncodingPipeline) -> Self {
+impl ResonanceEngine {
+    pub fn new(store: Box<dyn MediumBackend>, pipeline: EncodingPipeline) -> Self {
         Self {
             store,
             pipeline,
@@ -448,11 +448,11 @@ mod tests {
         v
     }
 
-    // -- InMemoryStore tests --
+    // -- TestMedium tests --
 
     #[test]
     fn store_insert_get_count() {
-        let mut store = InMemoryStore::new();
+        let mut store = TestMedium::new();
         assert_eq!(store.count(), 0);
         let mem = make_memory(vec![1.0; 10], "hello");
         let id = store.insert(mem).unwrap();
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn store_delete() {
-        let mut store = InMemoryStore::new();
+        let mut store = TestMedium::new();
         let mem = make_memory(vec![1.0; 10], "bye");
         let id = store.insert(mem).unwrap();
         assert!(store.delete(&id).unwrap());
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn store_duplicate_id_rejected() {
-        let mut store = InMemoryStore::new();
+        let mut store = TestMedium::new();
         let mem = make_memory(vec![1.0; 10], "a");
         let id = mem.id;
         store.insert(mem).unwrap();
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn search_returns_closest_first() {
-        let mut store = InMemoryStore::new();
+        let mut store = TestMedium::new();
         let mut v1 = unit_vec(100, 0);
         let mut v2 = unit_vec(100, 1);
         let mut v3 = unit_vec(100, 2);
@@ -503,13 +503,13 @@ mod tests {
         assert!((results[0].1 - 1.0).abs() < 1e-5);
     }
 
-    // -- MemoryEngine tests --
+    // -- ResonanceEngine tests --
 
     #[test]
     fn engine_remember_recall_roundtrip() {
-        let store = InMemoryStore::new();
+        let store = TestMedium::new();
         let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
+        let mut engine = ResonanceEngine::new(Box::new(store), pipeline);
 
         let id = engine.remember("the cat sat on the mat").unwrap();
         let results = engine.recall("cat on mat", 5).unwrap();
@@ -520,9 +520,9 @@ mod tests {
 
     #[test]
     fn engine_recall_ranks_relevant_higher() {
-        let store = InMemoryStore::new();
+        let store = TestMedium::new();
         let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
+        let mut engine = ResonanceEngine::new(Box::new(store), pipeline);
 
         let id_cat = engine.remember("the cat sat on the mat").unwrap();
         engine.remember("quantum physics and string theory").unwrap();
@@ -537,9 +537,9 @@ mod tests {
 
     #[test]
     fn engine_get_memory() {
-        let store = InMemoryStore::new();
+        let store = TestMedium::new();
         let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
+        let mut engine = ResonanceEngine::new(Box::new(store), pipeline);
 
         let id = engine.remember("test memory").unwrap();
         let mem = engine.get_memory(&id).unwrap().unwrap();

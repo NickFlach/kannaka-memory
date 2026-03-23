@@ -59,7 +59,7 @@ pub use consciousness::{
 pub use codebook::Codebook;
 pub use memory::{HyperMemory, LegacyLink};
 pub use wave::{WaveParams, compute_strength, cosine_similarity, normalize};
-pub use store::{MemoryStore, InMemoryStore, MemoryEngine, StoreError, EngineError, QueryResult, phi_span_score};
+pub use store::{MediumBackend, TestMedium, ResonanceEngine, StoreError, EngineError, QueryResult, phi_span_score};
 pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
 pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};

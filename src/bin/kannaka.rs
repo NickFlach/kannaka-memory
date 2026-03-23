@@ -11,7 +11,7 @@ use kannaka_memory::openclaw::KannakaMemorySystem;
 #[cfg(feature = "glyph")]
 use kannaka_memory::glyph_bridge::GlyphEncoder;
 
-use kannaka_memory::MemoryStore;
+use kannaka_memory::MediumBackend;
 use kannaka_memory::{HrmStore, EncodingPipeline, SimpleHashEncoder, Codebook};
 
 #[cfg(feature = "collective")]

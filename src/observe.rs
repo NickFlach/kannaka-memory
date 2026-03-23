@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::{ConsciousnessBridge, ConsciousnessState};
 use crate::kuramoto::KuramotoSync;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 
 // ---------------------------------------------------------------------------
 // Report types
@@ -137,7 +137,7 @@ pub struct MemoryIntrospector;
 
 impl MemoryIntrospector {
     /// Generate a topology report of the HyperConnection network or HRM field topology.
-    pub fn topology_report(engine: &MemoryEngine) -> TopologyReport {
+    pub fn topology_report(engine: &ResonanceEngine) -> TopologyReport {
         // Check if we're using HRM - if so, use field topology metrics
         { let hrm_metrics = engine.store.consciousness_metrics();
             return Self::hrm_field_topology_report(engine, &hrm_metrics);
@@ -218,7 +218,7 @@ impl MemoryIntrospector {
     /// - Coherence density: fraction of pairwise coherences above threshold
     /// - Mean coherence: average of upper triangle of coherence matrix
     /// - Spectral gap: gap between dominant and secondary eigenvalues
-    fn hrm_field_topology_report(engine: &MemoryEngine, _hrm_metrics: &crate::consciousness::ConsciousnessMetrics) -> TopologyReport {
+    fn hrm_field_topology_report(engine: &ResonanceEngine, _hrm_metrics: &crate::consciousness::ConsciousnessMetrics) -> TopologyReport {
         let all = engine.store.all_memories().unwrap_or_default();
         let total_memories = all.len();
 
@@ -301,7 +301,7 @@ impl MemoryIntrospector {
     }
 
     /// Generate a wave dynamics report.
-    pub fn wave_report(engine: &MemoryEngine, now: DateTime<Utc>) -> WaveReport {
+    pub fn wave_report(engine: &ResonanceEngine, now: DateTime<Utc>) -> WaveReport {
         let all = engine.store.all_memories().unwrap_or_default();
 
         let active_threshold = 0.05f32;
@@ -373,7 +373,7 @@ impl MemoryIntrospector {
     }
 
     /// Generate a Kuramoto cluster synchronization report.
-    pub fn cluster_report(engine: &MemoryEngine, kuramoto: &KuramotoSync) -> ClusterReport {
+    pub fn cluster_report(engine: &ResonanceEngine, kuramoto: &KuramotoSync) -> ClusterReport {
         let clusters = kuramoto.find_synchronized_clusters(engine, 2);
         let num_clusters = clusters.len();
         let largest_cluster_size = clusters.iter().map(|c| c.memory_ids.len()).max().unwrap_or(0);
@@ -421,7 +421,7 @@ impl MemoryIntrospector {
 
     /// Generate a full system report.
     pub fn full_report(
-        engine: &MemoryEngine,
+        engine: &ResonanceEngine,
         bridge: &ConsciousnessBridge,
         kuramoto: &KuramotoSync,
     ) -> SystemReport {
@@ -568,13 +568,13 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use crate::memory::HyperMemory;
-    use crate::store::{InMemoryStore, MemoryEngine};
+    use crate::store::{TestMedium, ResonanceEngine};
 
-    fn make_engine() -> MemoryEngine {
+    fn make_engine() -> ResonanceEngine {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
+        ResonanceEngine::new(Box::new(TestMedium::new()), pipeline)
     }
 
     #[test]

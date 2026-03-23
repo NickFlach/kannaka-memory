@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 use crate::wave::{cosine_similarity, normalize};
 
 /// Kuramoto synchronization model for memory phase alignment.
@@ -226,7 +226,7 @@ impl KuramotoSync {
     /// Find groups of memories that have phase-locked (order parameter > 0.7).
     pub fn find_synchronized_clusters(
         &self,
-        engine: &MemoryEngine,
+        engine: &ResonanceEngine,
         min_cluster_size: usize,
     ) -> Vec<MemoryCluster> {
         let all = match engine.store.all_memories() {
@@ -339,14 +339,14 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use crate::memory::HyperMemory;
-    use crate::store::{InMemoryStore, MemoryEngine};
+    use crate::store::{TestMedium, ResonanceEngine};
     use std::f32::consts::PI;
 
-    fn make_engine() -> MemoryEngine {
+    fn make_engine() -> ResonanceEngine {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
+        ResonanceEngine::new(Box::new(TestMedium::new()), pipeline)
     }
 
     fn make_memory_with_phase(vector: Vec<f32>, content: &str, phase: f32) -> HyperMemory {

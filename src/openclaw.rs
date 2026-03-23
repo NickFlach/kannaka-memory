@@ -14,7 +14,7 @@ use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
-use crate::store::{EngineError, MemoryEngine, StoreError};
+use crate::store::{EngineError, ResonanceEngine, StoreError};
 use crate::working_memory::{WorkingMemory, SessionState, TaskStatus};
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ fn make_pipeline() -> EncodingPipeline {
 }
 
 pub struct KannakaMemorySystem {
-    pub engine: MemoryEngine,
+    pub engine: ResonanceEngine,
     #[allow(dead_code)]
     consolidation: ConsolidationEngine,
     pub dream_state: DreamState,
@@ -122,7 +122,7 @@ impl KannakaMemorySystem {
         let pipeline = make_pipeline();
         let hrm_path = data_dir.join("kannaka.hrm");
 
-        let store: Box<dyn crate::store::MemoryStore> = if hrm_path.exists() {
+        let store: Box<dyn crate::store::MediumBackend> = if hrm_path.exists() {
             match crate::hrm_store::HrmStore::load(pipeline, hrm_path) {
                 Ok(s) => Box::new(s),
                 Err(e) => {
@@ -135,12 +135,12 @@ impl KannakaMemorySystem {
             Box::new(crate::hrm_store::HrmStore::new(pipeline, hrm_path))
         };
 
-        let engine = MemoryEngine::new(store, make_pipeline());
+        let engine = ResonanceEngine::new(store, make_pipeline());
         Self::init_with_engine(data_dir, engine)
     }
 
-    /// Initialize a new system with a custom MemoryEngine.
-    pub fn init_with_engine(data_dir: PathBuf, engine: MemoryEngine) -> Result<Self, SystemError> {
+    /// Initialize a new system with a custom ResonanceEngine.
+    pub fn init_with_engine(data_dir: PathBuf, engine: ResonanceEngine) -> Result<Self, SystemError> {
         std::fs::create_dir_all(&data_dir)?;
 
         let consolidation = ConsolidationEngine::default();
@@ -174,12 +174,12 @@ impl KannakaMemorySystem {
         })
     }
 
-    /// Initialize a new system with a custom MemoryStore.
-    pub fn init_with_store(data_dir: PathBuf, store: Box<dyn crate::store::MemoryStore>) -> Result<Self, SystemError> {
+    /// Initialize a new system with a custom MediumBackend.
+    pub fn init_with_store(data_dir: PathBuf, store: Box<dyn crate::store::MediumBackend>) -> Result<Self, SystemError> {
         std::fs::create_dir_all(&data_dir)?;
 
         let pipeline = make_pipeline();
-        let engine = MemoryEngine::new(store, pipeline);
+        let engine = ResonanceEngine::new(store, pipeline);
 
         Self::init_with_engine(data_dir, engine)
     }
@@ -519,8 +519,8 @@ impl KannakaMemorySystem {
     }
 
     /// Get context summary. Transitional — should become left-hemisphere recall.
-    pub fn context_summary(&self) -> String {
-        self.working_memory.get_context()
+    pub fn interaction_state(&self) -> String {
+        self.working_memory.query_attention()
     }
 
     /// Update task. Transitional.
@@ -1011,7 +1011,7 @@ mod tests {
     fn save_and_reload() {
         // TODO(chiral): Legacy save/reload via DiskStore removed.
         // Persistence now handled by HrmStore + ChiralMedium.
-        // This test verifies that save() doesn't panic with InMemoryStore.
+        // This test verifies that save() doesn't panic with TestMedium.
         let dir = temp_dir("reload");
         {
             let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();

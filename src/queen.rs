@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::kuramoto::KuramotoSync;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -406,7 +406,7 @@ impl QueenSync {
     /// Returns `Achiral` if insufficient data.
     pub fn derive_handedness(
         &self,
-        engine: &MemoryEngine,
+        engine: &ResonanceEngine,
         swarm_phases: &[AgentPhase],
     ) -> Handedness {
         // Compute this agent's mean memory vector
@@ -475,7 +475,7 @@ impl QueenSync {
     /// - **Coherence** = mean order parameter across clusters.
     ///
     /// Returns (phase, frequency, coherence). Updates self in place.
-    pub fn derive_local_state(&mut self, engine: &MemoryEngine) -> (f32, f32, f32) {
+    pub fn derive_local_state(&mut self, engine: &ResonanceEngine) -> (f32, f32, f32) {
         let sync = KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(engine, 2);
 

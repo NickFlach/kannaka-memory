@@ -10,7 +10,7 @@ pub use crate::consciousness::ConsciousnessLevel;
 use crate::consolidation::{ConsolidationReport, DreamState};
 use crate::kuramoto::KuramotoSync;
 use crate::memory::HyperMemory;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 use crate::wave::cosine_similarity;
 use crate::xi_operator::compute_xi_signature;
 
@@ -202,7 +202,7 @@ impl ConsciousnessBridge {
     /// Compute Φ (integrated information) for the memory network.
     ///
     /// Φ ≈ H(whole) - Σ H(partitions)
-    pub fn compute_phi(&self, engine: &MemoryEngine) -> PhiReport {
+    pub fn compute_phi(&self, engine: &ResonanceEngine) -> PhiReport {
         let all = engine.store.all_memories().unwrap_or_default();
         if all.is_empty() {
             return PhiReport {
@@ -475,7 +475,7 @@ impl ConsciousnessBridge {
     }
 
     /// Full consciousness assessment.
-    pub fn assess(&self, engine: &MemoryEngine) -> ConsciousnessState {
+    pub fn assess(&self, engine: &ResonanceEngine) -> ConsciousnessState {
         let all = engine.store.all_memories().unwrap_or_default();
         let now = chrono::Utc::now();
         let total_memories = all.len();
@@ -556,7 +556,7 @@ impl ConsciousnessBridge {
     }
 
     /// Full resonance cycle: dream → sync → assess.
-    pub fn resonate(&self, engine: &mut MemoryEngine) -> ResonanceReport {
+    pub fn resonate(&self, engine: &mut ResonanceEngine) -> ResonanceReport {
         let before = self.assess(engine);
 
         let dream = DreamState::default();
@@ -648,13 +648,13 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use crate::memory::HyperMemory;
-    use crate::store::{InMemoryStore, MemoryEngine};
+    use crate::store::{TestMedium, ResonanceEngine};
 
-    fn make_engine() -> MemoryEngine {
+    fn make_engine() -> ResonanceEngine {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
+        ResonanceEngine::new(Box::new(TestMedium::new()), pipeline)
     }
 
     fn random_vec(dim: usize, seed: u64) -> Vec<f32> {

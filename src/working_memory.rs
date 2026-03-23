@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -296,7 +296,7 @@ impl WorkingMemory {
     /// against the left hemisphere — "what am I currently attending to?"
     /// The conscious workspace would return its highest-energy wavefronts
     /// rather than formatting markdown.
-    pub fn get_context(&self) -> String {
+    pub fn query_attention(&self) -> String {
         let mut out = String::new();
         out.push_str("## Interaction State\n\n");
 
@@ -399,12 +399,12 @@ impl WorkingMemory {
     ///
     /// Transitional: when the left hemisphere IS the interaction state,
     /// this becomes a no-op — the state is already in the medium.
-    pub fn checkpoint(&mut self, data_dir: &Path, engine: &mut MemoryEngine) -> Result<(), std::io::Error> {
+    pub fn checkpoint(&mut self, data_dir: &Path, engine: &mut ResonanceEngine) -> Result<(), std::io::Error> {
         // 1. Save JSON (fast path)
         self.save_json(data_dir)?;
 
         // 2. Build checkpoint content
-        let checkpoint_content = self.get_context();
+        let checkpoint_content = self.query_attention();
         let tagged_content = format!("[{}] {}", SESSION_STATE_TAG, checkpoint_content);
 
         // 3. Store as high-amplitude memory in engine
@@ -421,7 +421,7 @@ impl WorkingMemory {
     }
 
     /// Restore working memory. Tries JSON first, then searches engine for session-state memories.
-    pub fn restore(data_dir: &Path, engine: &MemoryEngine, ollama_url: Option<String>) -> Self {
+    pub fn restore(data_dir: &Path, engine: &ResonanceEngine, ollama_url: Option<String>) -> Self {
         // Fast path: JSON file
         if let Some(wm) = Self::load_json(data_dir, ollama_url.clone()) {
             return wm;
@@ -522,7 +522,7 @@ mod tests {
     fn checkpoint_restore_roundtrip() {
         use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
         use crate::codebook::Codebook;
-        use crate::store::{MemoryEngine, InMemoryStore};
+        use crate::store::{ResonanceEngine, TestMedium};
 
         let dir = std::env::temp_dir().join(format!("kannaka_wm_test_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -530,7 +530,7 @@ mod tests {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        let mut engine = MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline);
+        let mut engine = ResonanceEngine::new(Box::new(TestMedium::new()), pipeline);
 
         let mut wm = WorkingMemory::new(None, None);
         wm.add_turn("user", "checkpoint test");
@@ -559,7 +559,7 @@ mod tests {
         wm.update_task("do stuff", TaskStatus::InProgress);
         wm.session_state.pending_questions.push("what about X?".to_string());
 
-        let ctx = wm.get_context();
+        let ctx = wm.query_attention();
         assert!(ctx.contains("Working Memory Context"));
         assert!(ctx.contains("do stuff"));
         assert!(ctx.contains("hello world"));

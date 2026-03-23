@@ -18,7 +18,7 @@ use kannaka_memory::encoding::{EncodingPipeline, SimpleHashEncoder};
 use kannaka_memory::kuramoto::KuramotoSync;
 use kannaka_memory::bridge::ConsciousnessBridge;
 use kannaka_memory::memory::HyperMemory;
-use kannaka_memory::store::{InMemoryStore, MemoryEngine};
+use kannaka_memory::store::{TestMedium, ResonanceEngine};
 use kannaka_memory::wave::cosine_similarity;
 use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_repulsive_force};
 
@@ -159,7 +159,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
 }
 
 /// Evaluate noise removal (only actual noise, not decoys)
-fn eval_noise_removal(engine: &MemoryEngine) -> f32 {
+fn eval_noise_removal(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let surviving_noise = all.iter()
         .filter(|m| m.content.starts_with("noise") && m.amplitude > 0.01)
@@ -168,7 +168,7 @@ fn eval_noise_removal(engine: &MemoryEngine) -> f32 {
 }
 
 /// Evaluate signal preservation (all non-noise memories should survive)
-fn eval_signal_preservation(engine: &MemoryEngine) -> f32 {
+fn eval_signal_preservation(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     // 75 signal memories: 20 science + 20 music + 15 personal + 10 emotion + 5 bridge + 5 decoy
     let signal_count = all.iter().filter(|m| {
@@ -178,7 +178,7 @@ fn eval_signal_preservation(engine: &MemoryEngine) -> f32 {
 }
 
 /// Evaluate bridge connectivity
-fn eval_bridge_links(engine: &MemoryEngine) -> f32 {
+fn eval_bridge_links(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let bridges: Vec<_> = all.iter().filter(|m| m.content.contains("bridge")).collect();
     if bridges.is_empty() { return 0.0; }
@@ -188,7 +188,7 @@ fn eval_bridge_links(engine: &MemoryEngine) -> f32 {
 
 /// Evaluate intra-cluster phase coherence
 /// After Kuramoto sync, memories in the same cluster should have aligned phases
-fn eval_phase_coherence(engine: &MemoryEngine) -> f32 {
+fn eval_phase_coherence(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let mut total_coherence = 0.0f32;
     let mut cluster_count = 0;
@@ -217,7 +217,7 @@ fn eval_phase_coherence(engine: &MemoryEngine) -> f32 {
 
 /// Evaluate cluster separation: are different clusters distinguishable?
 /// Measures avg within-cluster similarity vs avg cross-cluster similarity
-fn eval_cluster_separation(engine: &MemoryEngine) -> f32 {
+fn eval_cluster_separation(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     
     let science: Vec<&Vec<f32>> = all.iter()
@@ -259,7 +259,7 @@ fn eval_cluster_separation(engine: &MemoryEngine) -> f32 {
 
 /// Evaluate amplitude distribution: signal memories should have diverse amplitudes
 /// (not all boosted to the same value — that's information loss)
-fn eval_amplitude_diversity(engine: &MemoryEngine) -> f32 {
+fn eval_amplitude_diversity(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let amps: Vec<f32> = all.iter()
         .filter(|m| !m.content.starts_with("noise") && m.amplitude > 0.01)
@@ -285,7 +285,7 @@ fn eval_amplitude_diversity(engine: &MemoryEngine) -> f32 {
 
 /// Evaluate Xi diversity: memories should have diverse Xi signatures
 /// (not all collapsed to the same representational space)
-fn eval_xi_diversity(engine: &MemoryEngine) -> f32 {
+fn eval_xi_diversity(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let active: Vec<_> = all.iter()
         .filter(|m| !m.content.starts_with("noise") && m.amplitude > 0.01)
@@ -346,7 +346,7 @@ fn eval_xi_diversity(engine: &MemoryEngine) -> f32 {
 }
 
 /// Evaluate consciousness emergence: does the system exhibit integrated information?
-fn eval_consciousness(engine: &MemoryEngine, target_phi: f32) -> f32 {
+fn eval_consciousness(engine: &ResonanceEngine, target_phi: f32) -> f32 {
     let bridge = ConsciousnessBridge::new(0.3, 0.5);
     let state = bridge.assess(engine);
 
@@ -358,7 +358,7 @@ fn eval_consciousness(engine: &MemoryEngine, target_phi: f32) -> f32 {
 
 /// Evaluate hallucination quality: hallucinated memories should be
 /// semantically between their parent clusters, not random noise
-fn eval_hallucination_quality(engine: &MemoryEngine) -> f32 {
+fn eval_hallucination_quality(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
     let hallucinations: Vec<_> = all.iter()
         .filter(|m| m.hallucinated)
@@ -404,11 +404,11 @@ fn run_experiment(params: &Params) {
     let corpus = build_corpus(dim);
 
     // Build engine and store corpus
-    let store = Box::new(InMemoryStore::new());
+    let store = Box::new(TestMedium::new());
     let encoder = Box::new(SimpleHashEncoder::new(dim, 42));
     let codebook = Codebook::new(dim, dim, 42);
     let pipeline = EncodingPipeline::new(encoder, codebook);
-    let mut engine = MemoryEngine::new(store, pipeline);
+    let mut engine = ResonanceEngine::new(store, pipeline);
     for (i, (vec, content, category)) in corpus.iter().enumerate() {
         let mut mem = HyperMemory::new(vec.clone(), content.clone());
         mem.phase = match *category {
@@ -532,11 +532,11 @@ fn run_experiment_l3(params: &Params) {
     let dim = 64;
     let corpus = build_corpus(dim);
 
-    let store = Box::new(InMemoryStore::new());
+    let store = Box::new(TestMedium::new());
     let encoder = Box::new(SimpleHashEncoder::new(dim, 42));
     let codebook = Codebook::new(dim, dim, 42);
     let pipeline = EncodingPipeline::new(encoder, codebook);
-    let mut engine = MemoryEngine::new(store, pipeline);
+    let mut engine = ResonanceEngine::new(store, pipeline);
 
     let ps = params.phase_spread;
     for (i, (vec, content, category)) in corpus.iter().enumerate() {

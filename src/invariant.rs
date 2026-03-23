@@ -9,7 +9,7 @@ use uuid::Uuid;
 use chrono::Utc;
 
 use crate::memory::HyperMemory;
-use crate::store::MemoryEngine;
+use crate::store::ResonanceEngine;
 
 /// Invariant metrics computed for a memory that remain stable across transformations
 #[derive(Debug, Clone)]
@@ -177,7 +177,7 @@ pub fn compute_invariant_metrics(
 }
 
 /// Cluster memories by their δ values - memories with similar δ are coboundary equivalent candidates
-pub fn cluster_by_delta(engine: &MemoryEngine, tolerance: f32) -> Vec<DeltaCluster> {
+pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCluster> {
     let now = Utc::now();
     let all_memories = match engine.store.all_memories() {
         Ok(mems) => mems,

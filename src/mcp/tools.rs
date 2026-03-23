@@ -243,7 +243,7 @@ impl McpToolSet {
                 }),
             },
             ToolDefinition {
-                name: "context_summary".to_string(),
+                name: "interaction_state".to_string(),
                 description: "Get the current rolling conversation summary and context".to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -308,7 +308,7 @@ impl McpToolSet {
             "context_save" => self.context_save(&args),
             "context_restore" => self.context_restore(&args),
             "context_turn" => self.context_turn(&args),
-            "context_summary" => self.context_summary(&args),
+            "interaction_state" => self.interaction_state(&args),
             "context_task" => self.context_task(&args),
             "status" => self.status(&args),
             #[cfg(feature = "audio")]
@@ -726,7 +726,7 @@ impl McpToolSet {
 
     fn context_restore(&mut self, _args: &Value) -> ToolResult {
         let _state = self.system.context_restore();
-        let summary = self.system.context_summary();
+        let summary = self.system.interaction_state();
         if summary.is_empty() {
             ToolResult::success("No working memory state found".to_string())
         } else {
@@ -747,8 +747,8 @@ impl McpToolSet {
         ToolResult::success(format!("Turn logged ({})", role))
     }
 
-    fn context_summary(&mut self, _args: &Value) -> ToolResult {
-        let summary = self.system.context_summary();
+    fn interaction_state(&mut self, _args: &Value) -> ToolResult {
+        let summary = self.system.interaction_state();
         if summary.is_empty() {
             ToolResult::success("No context available yet".to_string())
         } else {

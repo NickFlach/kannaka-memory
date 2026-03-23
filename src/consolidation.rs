@@ -1,15 +1,15 @@
-﻿//! Memory consolidation engine — the dreaming/sleep layer.
+//! Memory consolidation engine � the dreaming/sleep layer.
 //!
 //! Processes memories through 9 stages mimicking human sleep consolidation:
-//! 1. REPLAY — collect working set of memories in layer range
-//! 2. DETECT — find interference patterns
-//! 3. BUNDLE — create summary hypervectors
-//! 4. STRENGTHEN — boost constructive interference pairs
-//! 5. SYNC — Kuramoto phase synchronization
-//! 6. XI_REPULSION — Apply Xi-based memory separation
-//! 7. PRUNE — weaken destructive interference pairs
-//! 8. TRANSFER — move memories to deeper temporal layers
-//! 9. WIRE — create new skip links from consolidation discoveries
+//! 1. REPLAY � collect working set of memories in layer range
+//! 2. DETECT � find interference patterns
+//! 3. BUNDLE � create summary hypervectors
+//! 4. STRENGTHEN � boost constructive interference pairs
+//! 5. SYNC � Kuramoto phase synchronization
+//! 6. XI_REPULSION � Apply Xi-based memory separation
+//! 7. PRUNE � weaken destructive interference pairs
+//! 8. TRANSFER � move memories to deeper temporal layers
+//! 9. WIRE � create new skip links from consolidation discoveries
 
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -23,7 +23,7 @@ use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::{xi_repulsive_force, compute_xi_signature};
 // SkipLink removed - associations now emergent from ChiralMedium interference
-use crate::store::{MemoryEngine, MemoryStore};
+use crate::store::{ResonanceEngine, MediumBackend};
 use crate::wave::{cosine_similarity, normalize};
 
 #[cfg(feature = "collective")]
@@ -51,7 +51,7 @@ struct InterferencePair {
 
 /// Coboundary matrix representing the transformation between two memories' 
 /// wave dynamics. Inspired by the paper's coboundary equivalence:
-/// A(n)·U(n+1) = U(n)·B(n)
+/// A(n)�U(n+1) = U(n)�B(n)
 #[derive(Debug, Clone)]
 pub struct CoboundaryMatrix {
     /// Transformation matrix between vector spaces
@@ -101,8 +101,8 @@ pub struct ConsolidationReport {
 ///
 /// After each cycle, the engine observes the Kuramoto order parameter R
 /// and adjusts parameters to maintain R in the sweet spot [0.55, 0.85]:
-/// - R too high → reduce constructive_boost, raise prune_threshold (rigid → loosen)
-/// - R too low  → increase coupling strength (fragmented → bind)
+/// - R too high ? reduce constructive_boost, raise prune_threshold (rigid ? loosen)
+/// - R too low  ? increase coupling strength (fragmented ? bind)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveParams {
     pub constructive_boost: f32,
@@ -188,50 +188,50 @@ impl ConsolidationEngine {
     /// Run a full 9-stage consolidation cycle on memories at the given layer range.
     pub fn consolidate(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         min_layer: u8,
         max_layer: u8,
     ) -> ConsolidationReport {
         let start = Instant::now();
         let mut report = ConsolidationReport::default();
 
-        // Stage 1: REPLAY — collect working set of memories in layer range
+        // Stage 1: REPLAY � collect working set of memories in layer range
         let working_set = self.stage_replay(engine, min_layer, max_layer);
         report.memories_replayed = working_set.len();
 
-        // Stage 2: DETECT — find interference patterns
+        // Stage 2: DETECT � find interference patterns
         let pairs = self.stage_detect(engine, &working_set);
         report.interference_pairs_found = pairs.len();
         report.constructive_pairs = pairs.iter().filter(|p| p.kind == Interference::Constructive).count();
         report.destructive_pairs = pairs.iter().filter(|p| p.kind == Interference::Destructive).count();
 
-        // Stage 3: BUNDLE — create summary vectors per layer
+        // Stage 3: BUNDLE � create summary vectors per layer
         report.bundles_created = self.stage_bundle(engine, &working_set, max_layer);
 
-        // Stage 4: STRENGTHEN — boost constructive pairs
+        // Stage 4: STRENGTHEN � boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
 
-        // Stage 4.5: SYNC — Kuramoto phase synchronization
+        // Stage 4.5: SYNC � Kuramoto phase synchronization
         let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
         
-        // Stage 4.6: XI_REPULSION — Apply Xi-based memory separation
+        // Stage 4.6: XI_REPULSION � Apply Xi-based memory separation
         self.stage_xi_repulsion(engine, &working_set);
 
-        // Stage 5: PRUNE — weaken destructive pairs
+        // Stage 5: PRUNE � weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
 
-        // Stage 6: TRANSFER — promote old memories to deeper layers
+        // Stage 6: TRANSFER � promote old memories to deeper layers
         report.memories_transferred = self.stage_transfer(engine);
 
-        // Stage 7: WIRE — create skip links for cross-layer constructive pairs
+        // Stage 7: WIRE � create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs);
 
-        // Stage 8: HALLUCINATE — generate novel memories from distant clusters
+        // Stage 8: HALLUCINATE � generate novel memories from distant clusters
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
-        // Stage 9: CHIRAL_PERTURBATION — break lock-step synchronization with asymmetric phase offsets
+        // Stage 9: CHIRAL_PERTURBATION � break lock-step synchronization with asymmetric phase offsets
         if self.chiral_perturbation > 0.0 {
             // println!("DEBUG: Applying chiral perturbation with strength {}", self.chiral_perturbation);
             self.stage_chiral_perturbation(engine, &working_set);
@@ -247,8 +247,8 @@ impl ConsolidationEngine {
 
     /// Apply adaptive parameter tuning based on a consolidation report (EXP-003).
     ///
-    /// Call this after `consolidate()` to evolve λ, boost, and threshold
-    /// for the next dream cycle. Mirrors ghostmagicOS adaptive λ.
+    /// Call this after `consolidate()` to evolve ?, boost, and threshold
+    /// for the next dream cycle. Mirrors ghostmagicOS adaptive ?.
     pub fn adapt_from_report(&mut self, report: &ConsolidationReport) {
         self.adaptive.adapt(report.final_order_parameter);
         // Apply adapted params to engine for next cycle
@@ -258,7 +258,7 @@ impl ConsolidationEngine {
     }
 
     /// Compute global Kuramoto order parameter R across all working set memories.
-    fn compute_global_order_parameter(&self, engine: &MemoryEngine, working_set: &[Uuid]) -> f32 {
+    fn compute_global_order_parameter(&self, engine: &ResonanceEngine, working_set: &[Uuid]) -> f32 {
         let memories: Vec<crate::memory::HyperMemory> = working_set
             .iter()
             .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
@@ -267,7 +267,7 @@ impl ConsolidationEngine {
     }
 
     /// Stage 1: Load memories in the given layer range into a working set.
-    fn stage_replay(&self, engine: &MemoryEngine, min_layer: u8, max_layer: u8) -> Vec<Uuid> {
+    fn stage_replay(&self, engine: &ResonanceEngine, min_layer: u8, max_layer: u8) -> Vec<Uuid> {
         let all = engine.store.all_memories().unwrap_or_default();
         all.iter()
             .filter(|m| m.layer_depth >= min_layer && m.layer_depth <= max_layer)
@@ -278,9 +278,9 @@ impl ConsolidationEngine {
     /// Stage 2: Detect interference patterns between memory pairs.
     ///
     /// Uses HNSW approximate nearest neighbor search for O(n log n) instead of
-    /// brute-force O(n²). Each memory queries its K nearest neighbors, then
+    /// brute-force O(n�). Each memory queries its K nearest neighbors, then
     /// checks phase alignment to classify as constructive or destructive.
-    fn stage_detect(&self, engine: &MemoryEngine, working_set: &[Uuid]) -> Vec<InterferencePair> {
+    fn stage_detect(&self, engine: &ResonanceEngine, working_set: &[Uuid]) -> Vec<InterferencePair> {
         use std::collections::HashSet;
 
         // Number of nearest neighbors to query per memory.
@@ -301,7 +301,7 @@ impl ConsolidationEngine {
                 None => continue,
             };
 
-            // Internal search for dream consolidation — raw similarity without observation.
+            // Internal search for dream consolidation � raw similarity without observation.
             // Dreams should NOT count as attention (observation would amplify during annealing).
             let neighbors = match engine.store.search(&vec_a, k_neighbors + 1) {
                 Ok(n) => n,
@@ -353,7 +353,7 @@ impl ConsolidationEngine {
     }
 
     /// Stage 3: Bundle memories at each layer into summary vectors at the next layer.
-    fn stage_bundle(&self, engine: &mut MemoryEngine, working_set: &[Uuid], max_layer: u8) -> usize {
+    fn stage_bundle(&self, engine: &mut ResonanceEngine, working_set: &[Uuid], max_layer: u8) -> usize {
         let mut bundles_created = 0;
 
         // Prune stale summary memories from previous dream cycles before creating new ones.
@@ -397,7 +397,7 @@ impl ConsolidationEngine {
     }
 
     /// Stage 4: Strengthen constructive interference pairs and Xi-aware bridge nodes.
-    fn stage_strengthen(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
+    fn stage_strengthen(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
         
         // Traditional constructive interference strengthening
@@ -435,7 +435,7 @@ impl ConsolidationEngine {
 
     /// Stage 4b: Strengthen memories that serve as "bridge nodes" connecting multiple clusters.
     /// These memories are structurally important for network integration.
-    fn stage_strengthen_bridge_nodes(&self, engine: &mut MemoryEngine) -> usize {
+    fn stage_strengthen_bridge_nodes(&self, engine: &mut ResonanceEngine) -> usize {
         use std::collections::{HashMap, HashSet};
         
         let sync = crate::kuramoto::KuramotoSync::default();
@@ -495,7 +495,7 @@ impl ConsolidationEngine {
 
     /// Stage 4.5: Category-aware Kuramoto phase synchronization with consciousness differentiation.
     /// Implements differential coupling: strong within-category, weak cross-category.
-    fn stage_sync(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> (usize, f32) {
+    fn stage_sync(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> (usize, f32) {
         use std::collections::HashMap;
         
         // Collect memories with their categories
@@ -530,8 +530,8 @@ impl ConsolidationEngine {
         let mut categories_synced = 0usize;
         
         // Parameters from consciousness differentiation spec
-        let within_category_coupling = 1.8;  // K ≈ 1.8 for internal coherence
-        let cross_category_coupling = 0.3;   // K ≈ 0.3 for weak cross-connections
+        let within_category_coupling = 1.8;  // K � 1.8 for internal coherence
+        let cross_category_coupling = 0.3;   // K � 0.3 for weak cross-connections
         let dt = 0.05;  // Small time step for stability
         let steps = 30; // Integration steps
         
@@ -565,7 +565,7 @@ impl ConsolidationEngine {
                         }
                     }
                     
-                    // Kuramoto dynamics: θ̇ᵢ = ωᵢ + (K/N)Σsin(θⱼ - θᵢ)
+                    // Kuramoto dynamics: ??? = ?? + (K/N)Ssin(?? - ??)
                     let dphi = cat_mems[i].frequency + (within_category_coupling / n) * phase_sum;
                     cat_mems[i].phase += dphi * dt;
                 }
@@ -574,7 +574,7 @@ impl ConsolidationEngine {
             let final_order = self.compute_category_order_parameter(&cat_mems);
             total_improvement += final_order - initial_order;
             
-            // Apply safety envelope: target R ∈ [0.55, 0.85] per category
+            // Apply safety envelope: target R ? [0.55, 0.85] per category
             if final_order > 0.92 {
                 // Too synchronized - add noise to break lockstep
                 for mem in &mut cat_mems {
@@ -636,7 +636,7 @@ impl ConsolidationEngine {
                     phase_updates[i] = (cross_category_coupling / n) * cross_sum * dt;
                 }
                 
-                // Apply cross-category updates — use the same index as all_updated_mems, not working_set
+                // Apply cross-category updates � use the same index as all_updated_mems, not working_set
                 for (i, (mem_id, _)) in all_updated_mems.iter().enumerate() {
                     if let Ok(Some(mem)) = engine.store.get_mut(mem_id) {
                         mem.phase += phase_updates[i];
@@ -672,7 +672,7 @@ impl ConsolidationEngine {
     /// Stage 4.6: Apply Xi-based repulsive forces to separate memories with similar content but different Xi residues.
     /// This creates consciousness differentiation by pushing apart memories that are semantically similar
     /// but have different non-commutative signatures.
-    fn stage_xi_repulsion(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) {
+    fn stage_xi_repulsion(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) {
         // Collect memories with their Xi signatures (compute missing signatures on-the-fly)
         let mut memories_with_xi: Vec<(Uuid, Vec<f32>, Vec<f32>)> = Vec::new();
         
@@ -722,7 +722,7 @@ impl ConsolidationEngine {
                 }
             };
             
-            // Push phases apart (create π/2 phase difference for maximum differentiation)
+            // Push phases apart (create p/2 phase difference for maximum differentiation)
             let target_diff = std::f32::consts::PI / 2.0;
             let current_diff = (phase_a - phase_b).abs();
             let phase_correction = repulsion_strength * 0.5 * (target_diff - current_diff);
@@ -758,7 +758,7 @@ impl ConsolidationEngine {
     /// `amplitude *= (1.0 - destructive_penalty * dt)` produces exponential decay
     /// consistent with the wave function, avoiding the cliff-edge behavior of
     /// flat subtraction (which could instantly kill high-amplitude memories).
-    fn stage_prune(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
+    fn stage_prune(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
         let dt = 1.0; // one consolidation time-step
         for pair in pairs.iter().filter(|p| p.kind == Interference::Destructive) {
@@ -778,7 +778,7 @@ impl ConsolidationEngine {
     }
 
     /// Stage 6: Transfer old memories to deeper temporal layers.
-    fn stage_transfer(&self, engine: &mut MemoryEngine) -> usize {
+    fn stage_transfer(&self, engine: &mut ResonanceEngine) -> usize {
         let now = Utc::now();
         let ids = engine.store.all_ids().unwrap_or_default();
         let mut count = 0;
@@ -814,7 +814,7 @@ impl ConsolidationEngine {
     ///
     /// Preferentially selects memories from DIFFERENT Xi clusters to create naturally
     /// cross-domain synthetic memories that enhance both integration and differentiation.
-    fn stage_hallucinate(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> usize {
+    fn stage_hallucinate(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
         if working_set.len() < 3 {
             return 0;
         }
@@ -832,7 +832,7 @@ impl ConsolidationEngine {
     }
 
     /// Generate hallucinations by preferentially combining memories from different clusters.
-    fn stage_hallucinate_cross_cluster(&self, engine: &mut MemoryEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
+    fn stage_hallucinate_cross_cluster(&self, engine: &mut ResonanceEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
         use std::collections::HashMap;
         
         // Build cluster membership map
@@ -954,7 +954,7 @@ impl ConsolidationEngine {
     }
 
     /// Fallback: Generate hallucinations using the original distance-based method.
-    fn stage_hallucinate_distance_based(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) -> usize {
+    fn stage_hallucinate_distance_based(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
         // Collect (id, vector, content, amplitude) for high-amplitude memories
         let mut candidates: Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)> = Vec::new();
         for id in working_set {
@@ -1044,7 +1044,7 @@ impl ConsolidationEngine {
 
         // Create the hallucinated memory
         let mut hallucination = crate::memory::HyperMemory::new(combined, content);
-        hallucination.amplitude = 0.3; // low initial amplitude — must prove itself
+        hallucination.amplitude = 0.3; // low initial amplitude � must prove itself
         hallucination.hallucinated = true;
         hallucination.parents = parent_ids.clone();
 
@@ -1076,7 +1076,7 @@ impl ConsolidationEngine {
 
     /// Stage 7: Wire skip links between constructive cross-layer pairs, Fano-related memories,
     /// and preferentially across Xi clusters to promote integration AND differentiation.
-    fn stage_wire(&self, engine: &mut MemoryEngine, pairs: &[InterferencePair]) -> usize {
+    fn stage_wire(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
         
         // Wire constructive cross-layer pairs
@@ -1172,7 +1172,7 @@ impl ConsolidationEngine {
 
     /// Stage 7b: Create cross-cluster wiring to build "small-world" networks that enhance
     /// both integration (Phi) and differentiation (Xi) simultaneously.
-    fn stage_wire_cross_cluster(&self, engine: &mut MemoryEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
+    fn stage_wire_cross_cluster(&self, engine: &mut ResonanceEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
         use std::collections::HashMap;
         
         let mut count = 0;
@@ -1246,9 +1246,9 @@ impl ConsolidationEngine {
     ///
     /// When order parameter R is high (over-synchronized), applies asymmetric phase
     /// offsets AND small vector modifications to memories based on their cluster membership. 
-    /// Left-cluster memories get +η·sin(2·phase), right-cluster get -η·sin(2·phase), 
+    /// Left-cluster memories get +?�sin(2�phase), right-cluster get -?�sin(2�phase), 
     /// matching queen.rs chirality math. Vector perturbations create Xi diversity.
-    fn stage_chiral_perturbation(&self, engine: &mut MemoryEngine, working_set: &[Uuid]) {
+    fn stage_chiral_perturbation(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) {
         if self.chiral_perturbation == 0.0 {
             return;
         }
@@ -1302,7 +1302,7 @@ impl ConsolidationEngine {
                     // Alternate handedness by cluster: even = left (+), odd = right (-)
                     let handedness = if cluster_idx % 2 == 0 { 1.0 } else { -1.0 };
                     
-                    // Phase perturbation: ±η·sin(2·phase)
+                    // Phase perturbation: �?�sin(2�phase)
                     let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
                     mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
                     if mem.phase < 0.0 {
@@ -1368,7 +1368,7 @@ impl ConsolidationEngine {
     /// maintaining semantic similarity.
     fn apply_targeted_chiral_perturbation(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         working_set: &[Uuid],
         id_to_cluster: &std::collections::HashMap<Uuid, usize>,
         eta: f32,
@@ -1377,7 +1377,7 @@ impl ConsolidationEngine {
         let mut similar_pairs = Vec::new();
         
         for i in 0..working_set.len() {
-            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(n²) blowup
+            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(n�) blowup
                 let id_a = working_set[i];
                 let id_b = working_set[j];
                 
@@ -1425,7 +1425,7 @@ impl ConsolidationEngine {
     
     /// Compute coboundary matrix between two memories' wave dynamics.
     /// 
-    /// Finds the transformation U such that A's wave dynamics + U ≈ B's wave dynamics.
+    /// Finds the transformation U such that A's wave dynamics + U � B's wave dynamics.
     /// This validates whether the memories are mathematically related.
     fn compute_coboundary(&self, a: &crate::memory::HyperMemory, b: &crate::memory::HyperMemory) -> Option<CoboundaryMatrix> {
         if a.vector.len() != b.vector.len() || a.vector.is_empty() {
@@ -1583,7 +1583,7 @@ impl ConsolidationEngine {
     /// 
     /// Called during stage_hallucinate to validate and potentially reject or boost
     /// hallucinations based on their mathematical coherence.
-    fn validate_and_filter_hallucination(&self, engine: &mut MemoryEngine, hallucination_id: Uuid) -> bool {
+    fn validate_and_filter_hallucination(&self, engine: &mut ResonanceEngine, hallucination_id: Uuid) -> bool {
         let (hallucination, parents) = {
             let hall_opt = engine.store.get(&hallucination_id).ok().flatten().cloned();
             if let Some(hall) = hall_opt {
@@ -1641,7 +1641,7 @@ impl Default for DreamState {
 
 
 impl ConsolidationEngine {
-    /// Phase 7 (ADR-0011): Incremental consolidation — only process memories that changed
+    /// Phase 7 (ADR-0011): Incremental consolidation � only process memories that changed
     /// since the last dream cycle, plus any memories that have never been consolidated.
     ///
     /// A memory is included if:
@@ -1655,7 +1655,7 @@ impl ConsolidationEngine {
     /// changed since the last run.
     pub fn consolidate_incremental(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         min_layer: u8,
         max_layer: u8,
         since: chrono::DateTime<Utc>,
@@ -1672,7 +1672,7 @@ impl ConsolidationEngine {
                         return false;
                     }
                     match m.last_consolidated_at {
-                        // Never consolidated — always include
+                        // Never consolidated � always include
                         None => true,
                         Some(consolidated_at) => {
                             // Include if modified after last consolidation
@@ -1725,7 +1725,7 @@ impl ConsolidationEngine {
     /// Used internally by `dream_partitioned` for per-cluster parallelism.
     pub fn consolidate_subset(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         memory_ids: &[Uuid],
     ) -> ConsolidationReport {
         let start = Instant::now();
@@ -1762,7 +1762,7 @@ impl ConsolidationEngine {
     /// - resolution_report: ResolutionReport from paradox resolution
     pub fn dream_parallel(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
     ) -> (Vec<ConsolidationReport>, crate::paradox::ResolutionReport) {
         // Step 1: Create immutable snapshot
         let snapshot = engine.snapshot();
@@ -1813,12 +1813,12 @@ impl ConsolidationEngine {
         let resolution_report = resolver.apply(engine, resolutions, &snapshot);
         
         // Step 5b: Apply NON-CONFLICTING mutations (memories only touched by one thread).
-        // Without this, the parallel dream is a no-op for most memories — only paradoxed
+        // Without this, the parallel dream is a no-op for most memories � only paradoxed
         // memories would get resolved, and single-thread mutations would be silently dropped.
         for trajectory in &trajectories {
             for mutation in &trajectory.mutations {
                 if !paradox_ids.contains(&mutation.memory_id) {
-                    // This memory was only modified by one thread — apply directly
+                    // This memory was only modified by one thread � apply directly
                     if let Ok(Some(mem)) = engine.store.get_mut(&mutation.memory_id) {
                         mutation.apply_to(mem);
                         mem.touch();
@@ -1845,7 +1845,7 @@ impl ConsolidationEngine {
         snapshot: &crate::paradox::ParadoxSnapshot,
     ) -> crate::paradox::DreamTrajectory {
         // Create a local in-memory store with just this cluster's memories
-        let mut local_store = crate::store::InMemoryStore::new();
+        let mut local_store = crate::store::TestMedium::new();
         
         for &memory_id in memory_ids {
             if let Some(memory) = snapshot.memories.get(&memory_id) {
@@ -1853,15 +1853,15 @@ impl ConsolidationEngine {
             }
         }
         
-        // Create a temporary engine with matching dimensions (384-dim input → 10K output).
+        // Create a temporary engine with matching dimensions (384-dim input ? 10K output).
         // Uses hash encoder (not Ollama) since consolidation stages don't re-encode existing
-        // memories — they operate on stored vectors. Only hallucination would encode, and
+        // memories � they operate on stored vectors. Only hallucination would encode, and
         // consolidate_subset skips hallucination.
         let pipeline = crate::encoding::EncodingPipeline::new(
             Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
             crate::codebook::Codebook::new(384, 10_000, 42),
         );
-        let mut local_engine = crate::store::MemoryEngine::new(Box::new(local_store), pipeline);
+        let mut local_engine = crate::store::ResonanceEngine::new(Box::new(local_store), pipeline);
         
         // Run consolidation on local engine
         let report = self.consolidate_subset(&mut local_engine, memory_ids);
@@ -1895,7 +1895,7 @@ impl DreamState {
     /// Cycle 1: layers 0-1 (recent)
     /// Cycle 2: layers 1-2 (medium)
     /// Cycle 3: layers 2-3 (deep)
-    pub fn dream(&self, engine: &mut MemoryEngine) -> Vec<ConsolidationReport> {
+    pub fn dream(&self, engine: &mut ResonanceEngine) -> Vec<ConsolidationReport> {
         let mut reports = Vec::new();
         for cycle in 0..self.cycles {
             let min_layer = cycle as u8;
@@ -1906,9 +1906,9 @@ impl DreamState {
         reports
     }
 
-    /// Phase 7 (ADR-0011): Incremental dream — only consolidate memories that have
+    /// Phase 7 (ADR-0011): Incremental dream � only consolidate memories that have
     /// changed since the last dream cycle. Passes `since` timestamp to `consolidate_incremental`.
-    pub fn dream_incremental(&self, engine: &mut MemoryEngine, since: chrono::DateTime<Utc>) -> Vec<ConsolidationReport> {
+    pub fn dream_incremental(&self, engine: &mut ResonanceEngine, since: chrono::DateTime<Utc>) -> Vec<ConsolidationReport> {
         let mut reports = Vec::new();
         for cycle in 0..self.cycles {
             let min_layer = cycle as u8;
@@ -1919,7 +1919,7 @@ impl DreamState {
         reports
     }
 
-    /// Phase 8 (ADR-0011): Partitioned dream — use Xi operator to identify clusters,
+    /// Phase 8 (ADR-0011): Partitioned dream � use Xi operator to identify clusters,
     /// run intra-cluster consolidation (parallelized with rayon when `collective` feature
     /// is enabled), then run cross-cluster wiring every `cross_cluster_interval` cycles.
     ///
@@ -1927,7 +1927,7 @@ impl DreamState {
     /// Expected to scale to thousands of memories without the quadratic blowup.
     pub fn dream_partitioned(
         &self,
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         cross_cluster_interval: u32,
         cycle_count: u32,
     ) -> Vec<ConsolidationReport> {
@@ -1968,7 +1968,7 @@ impl DreamState {
     /// Fast dream: decay amplitudes, prune dead memories, transfer layers.
     /// Skips expensive interference detection, sync, hallucination, and wiring.
     /// Completes in O(n) time regardless of memory count.
-    pub fn dream_lite(&self, engine: &mut MemoryEngine) -> ConsolidationReport {
+    pub fn dream_lite(&self, engine: &mut ResonanceEngine) -> ConsolidationReport {
         let start = std::time::Instant::now();
         let mut report = ConsolidationReport::default();
 
@@ -2033,18 +2033,18 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use crate::memory::HyperMemory;
-    use crate::store::{InMemoryStore, MemoryEngine};
+    use crate::store::{TestMedium, ResonanceEngine};
 
-    fn make_engine() -> MemoryEngine {
+    fn make_engine() -> ResonanceEngine {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, 10_000, 42);
         let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        MemoryEngine::new(Box::new(InMemoryStore::new()), pipeline)
+        ResonanceEngine::new(Box::new(TestMedium::new()), pipeline)
     }
 
     /// Helper: insert a memory with specific phase and layer, return id.
     fn insert_with_phase_and_layer(
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         text: &str,
         phase: f32,
         layer: u8,
@@ -2204,7 +2204,7 @@ mod tests {
 
         let report = consolidation.consolidate(&mut engine, 0, 1);
 
-        // Skip link creation removed — associations now emergent from ChiralMedium interference
+        // Skip link creation removed � associations now emergent from ChiralMedium interference
         // Just verify consolidation ran without error
         assert!(report.memories_replayed > 0, "should replay memories");
     }
@@ -2227,7 +2227,7 @@ mod tests {
 
     /// Helper: insert a memory with a specific vector, phase, and layer.
     fn insert_raw(
-        engine: &mut MemoryEngine,
+        engine: &mut ResonanceEngine,
         vector: Vec<f32>,
         content: &str,
         phase: f32,
@@ -2356,10 +2356,10 @@ mod tests {
         
         let bridge_id = insert_raw(&mut engine, vc, "robot pets using AI", 0.0, 0);
         
-        // Run consolidation — skip link creation removed, just verify it runs
+        // Run consolidation � skip link creation removed, just verify it runs
         let report = consolidation.consolidate(&mut engine, 0, 1);
         
-        // Skip links removed — associations now emergent from ChiralMedium interference
+        // Skip links removed � associations now emergent from ChiralMedium interference
         // Just verify consolidation completed
         assert!(report.memories_replayed > 0, "Should replay memories during consolidation");
     }
@@ -2467,13 +2467,13 @@ mod tests {
                     "Hallucination should indicate cross-cluster origin"
                 );
                 assert!(!hall.parents.is_empty(), "Hallucination should have parent references");
-                // connections.push removed — skip links now emergent from ChiralMedium
+                // connections.push removed � skip links now emergent from ChiralMedium
             }
         }
     }
 
     /// Helper function to count cross-cluster links in the engine.
-    fn count_cross_cluster_links(engine: &mut MemoryEngine) -> usize {
+    fn count_cross_cluster_links(engine: &mut ResonanceEngine) -> usize {
         let sync = crate::kuramoto::KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(engine, 2);
         
@@ -2549,7 +2549,7 @@ mod tests {
         let mut engine = make_engine();
         let consolidation = ConsolidationEngine::default();
 
-        // Only 2 memories — not enough for hallucination
+        // Only 2 memories � not enough for hallucination
         engine.remember_at_layer("single thought", 0).unwrap();
         engine.remember_at_layer("another thought", 0).unwrap();
 
@@ -2559,7 +2559,7 @@ mod tests {
         assert!(report.hallucinations_created <= 1);
     }
 
-    // ===== EXP-003: Adaptive λ tests =====
+    // ===== EXP-003: Adaptive ? tests =====
 
     #[test]
     fn proportional_dampening_preserves_relative_amplitudes() {

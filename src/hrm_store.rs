@@ -1,4 +1,4 @@
-//! HRM-backed memory store that implements the MemoryStore trait.
+//! HRM-backed memory store that implements the MediumBackend trait.
 //!
 //! This provides the primary storage backend using the
 //! Holographic Resonance Medium as the storage backend.
@@ -10,14 +10,14 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
-use crate::store::{MemoryStore, StoreError};
+use crate::store::{MediumBackend, StoreError};
 use crate::encoding::EncodingPipeline;
 use crate::medium::{Medium, MediumError, Resonance, WavefrontMeta};
 use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
 
-/// HRM-backed memory store that implements the MemoryStore trait.
+/// HRM-backed memory store that implements the MediumBackend trait.
 /// 
-/// This wraps a Medium and provides the familiar MemoryStore interface,
+/// This wraps a Medium and provides the familiar MediumBackend interface,
 /// allowing HRM to be the sole storage backend.
 pub struct HrmStore {
     /// The underlying holographic resonance medium
@@ -172,7 +172,7 @@ impl HrmStore {
 
     /// Sync any mutations made via `get_mut()` back to the medium tensor.
     ///
-    /// The `MemoryStore` trait returns `&mut HyperMemory`, so callers can mutate
+    /// The `MediumBackend` trait returns `&mut HyperMemory`, so callers can mutate
     /// wave parameters (amplitude, phase, frequency) on the cached copy. This
     /// method writes those changes back to the authoritative tensor storage.
     fn sync_cache_to_medium(&mut self) {
@@ -444,7 +444,7 @@ impl HrmStore {
     }
 }
 
-impl MemoryStore for HrmStore {
+impl MediumBackend for HrmStore {
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
         
