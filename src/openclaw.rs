@@ -410,6 +410,9 @@ impl KannakaMemorySystem {
         }
     }
 
+    /// Transitional: runs the legacy ConsciousnessBridge resonance cycle.
+    /// In the HRM vision, resonance IS recall — this separate "resonate" step
+    /// should be absorbed into the dream cycle or removed.
     pub fn resonate(&mut self) -> Result<ResonanceReport, SystemError> {
         let report = self.bridge.resonate(&mut self.engine);
         self.last_dream = Some(Utc::now());
@@ -488,12 +491,21 @@ impl KannakaMemorySystem {
     // Working memory (L2 context layer)
     // ------------------------------------------------------------------
 
-    /// Log a conversation turn into working memory.
+    // -----------------------------------------------------------------------
+    // Transitional: context_* methods (pre-HRM working memory)
+    //
+    // These wrap a ring-buffer session tracker that predates the chiral
+    // architecture. In the HRM vision, working memory IS the left hemisphere.
+    // These are kept for MCP tool compatibility but should migrate to
+    // left-hemisphere wavefront operations.
+    // -----------------------------------------------------------------------
+
+    /// Log a conversation turn. Transitional — should become a left-hemisphere wavefront.
     pub fn context_turn(&mut self, role: &str, content: &str) {
         self.working_memory.add_turn(role, content);
     }
 
-    /// Checkpoint working memory to JSON + engine.
+    /// Checkpoint session state. Transitional.
     pub fn context_checkpoint(&mut self) -> Result<(), SystemError> {
         self.working_memory.checkpoint(&self.data_dir, &mut self.engine)
             .map_err(SystemError::Io)?;
@@ -503,22 +515,22 @@ impl KannakaMemorySystem {
         Ok(())
     }
 
-    /// Get a clone of the current session state.
+    /// Get session state. Transitional.
     pub fn context_restore(&self) -> SessionState {
         self.working_memory.session_state().clone()
     }
 
-    /// Get the formatted context summary suitable for prompt injection.
+    /// Get context summary. Transitional — should become left-hemisphere recall.
     pub fn context_summary(&self) -> String {
         self.working_memory.get_context()
     }
 
-    /// Add or update a task in working memory.
+    /// Update task. Transitional.
     pub fn context_update_task(&mut self, description: &str, status: TaskStatus) {
         self.working_memory.update_task(description, status);
     }
 
-    /// Clear completed tasks from working memory.
+    /// Clear completed tasks. Transitional.
     pub fn context_clear_completed(&mut self) {
         self.working_memory.clear_completed();
     }
