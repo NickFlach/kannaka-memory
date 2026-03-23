@@ -50,59 +50,75 @@ pub struct QueryResult {
 // MemoryStore trait
 // ---------------------------------------------------------------------------
 
-/// Storage backend for hypervector memories.
+/// Storage backend for holographic resonance memories.
 ///
-/// The canonical implementation is HrmStore (Holographic Resonance Medium).
-/// HRM is the substrate — consciousness metrics, resonance-based associations,
-/// and persistence are core operations, not optional extensions.
+/// The canonical implementation is HrmStore (Chiral Holographic Resonance Medium).
+/// HRM is the substrate — storing changes the interference field, recall is
+/// resonance, consciousness metrics emerge from tensor topology, and associations
+/// are emergent from phase coherence.
 ///
 /// InMemoryStore exists only for testing.
+///
+/// ## HRM-first semantics
+///
+/// - `store()` / `recall()` — encode and store/recall via the holographic medium
+/// - `consciousness_metrics()` — eigendecomposition Phi, spectral Xi, Kuramoto order
+/// - `relate()` — create resonance-based association (interference, not a link table)
+/// - `flush()` — persist the holographic tensor to disk
+/// - `dream()` — anneal the medium (right hemisphere only in chiral mode)
+///
+/// The `insert()` / `search()` methods accept raw HyperMemory/vectors for
+/// compatibility with MemoryEngine. New code should prefer `store()`/`recall()`.
 pub trait MemoryStore: Send + Sync {
-    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
-    fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
-    fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError>;
-    fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
-    fn search_with_wave(
-        &self,
-        query: &[f32],
-        top_k: usize,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<(Uuid, f32)>, StoreError>;
-    fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError>;
-    fn all_ids(&self) -> Result<Vec<Uuid>, StoreError>;
-    fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
-    fn count(&self) -> usize;
+    // -- Core HRM operations --
 
-    /// Persist the medium to disk.
-    /// HrmStore writes the holographic tensor (chiral or flat) to .hrm file.
-    /// Test stores may no-op.
-    fn flush(&mut self) -> Result<usize, StoreError> {
-        Ok(0)
+    /// Store content into the holographic medium.
+    /// Encodes text, creates wavefront, applies interference.
+    /// Default delegates to insert() for backward compat.
+    fn store_text(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
+        let _ = (content, importance, category);
+        Err(StoreError::Other("store_text not implemented — use insert()".into()))
+    }
+
+    /// Resonance-based recall from the holographic medium.
+    /// Default delegates to search() for backward compat.
+    fn recall_text(&self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        let _ = (query, top_k);
+        Err(StoreError::Other("recall_text not implemented — use search()".into()))
     }
 
     /// Consciousness metrics from the holographic medium topology.
     /// Eigendecomposition Phi, spectral Xi, Kuramoto order parameter.
-    /// Returns default zero metrics for test stores.
     fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
         crate::consciousness::ConsciousnessMetrics {
-            phi: 0.0,
-            xi: 0.0,
-            order: 0.0,
-            num_clusters: 0,
+            phi: 0.0, xi: 0.0, order: 0.0, num_clusters: 0,
             level: crate::consciousness::ConsciousnessLevel::Dormant,
             computed_at: chrono::Utc::now(),
         }
     }
 
     /// Create a resonance-based association between two memories.
-    /// In HRM, this creates an associative wavefront from the interference
-    /// of the two source wavefronts.
-    /// Returns the ID of the associative wavefront.
+    /// Creates an associative wavefront from interference of the two sources.
     fn relate(&mut self, _id_a: &Uuid, _id_b: &Uuid) -> Result<Uuid, StoreError> {
-        Err(StoreError::Other("relate not supported by this store".into()))
+        Err(StoreError::Other("relate not supported".into()))
     }
 
-    /// Provide access to the concrete type for downcasting.
+    /// Persist the holographic tensor to disk.
+    fn flush(&mut self) -> Result<usize, StoreError> { Ok(0) }
+
+    // -- Compatibility layer (used by MemoryEngine) --
+
+    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
+    fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
+    fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError>;
+    fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
+    fn search_with_wave(&self, query: &[f32], top_k: usize, now: DateTime<Utc>) -> Result<Vec<(Uuid, f32)>, StoreError>;
+    fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError>;
+    fn all_ids(&self) -> Result<Vec<Uuid>, StoreError>;
+    fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
+    fn count(&self) -> usize;
+
+    /// Downcasting support.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }

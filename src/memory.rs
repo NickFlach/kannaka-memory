@@ -5,9 +5,8 @@ use uuid::Uuid;
 use crate::geometry::MemoryCoordinates;
 use crate::wave::WaveParams;
 
-/// Stub type replacing the deleted SkipLink — keeps old serialized data deserializable
-/// and existing code compiling. All fields are inert.
-/// TODO(chiral): remove once all callers are migrated to ChiralMedium interference
+/// Stub type for backward compatibility with serialized data that had skip links.
+/// Inert — associations are now emergent from interference in the holographic medium.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LegacyLink {
     pub target_id: Uuid,

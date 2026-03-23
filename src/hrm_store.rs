@@ -597,6 +597,34 @@ impl MemoryStore for HrmStore {
         self
     }
 
+    fn store_text(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
+        if let Some(ref mut chiral) = self.chiral {
+            let id = chiral.store_with_category(content, importance, &self.pipeline, category)
+                .map_err(|e| StoreError::Other(format!("chiral store failed: {}", e)))?;
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+            Ok(id)
+        } else {
+            let id = self.medium.store(content, importance, &self.pipeline)
+                .map_err(|e| StoreError::Other(format!("store failed: {}", e)))?;
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+            Ok(id)
+        }
+    }
+
+    fn recall_text(&self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        if let Some(ref chiral) = self.chiral {
+            let results = chiral.recall(query, top_k, &self.pipeline)
+                .map_err(|e| StoreError::Other(format!("chiral recall failed: {}", e)))?;
+            Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
+        } else {
+            let results = self.medium.recall(query, top_k, &self.pipeline)
+                .map_err(|e| StoreError::Other(format!("recall failed: {}", e)))?;
+            Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
+        }
+    }
+
     fn relate(&mut self, id_a: &Uuid, id_b: &Uuid) -> Result<Uuid, StoreError> {
         self.relate_wavefronts(*id_a, *id_b)
     }
