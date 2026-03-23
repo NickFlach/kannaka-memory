@@ -396,6 +396,45 @@ impl HrmStore {
         self.chiral.as_ref()
     }
 
+    /// Classify a wavefront with SGA coordinates (called after insert to tag the memory).
+    pub fn classify_wavefront(&mut self, id: &Uuid, category: &str, importance: f32) {
+        if let Some(ref mut chiral) = self.chiral {
+            // Compute SGA classification
+            let content_hash = {
+                let content = chiral.right.id_to_index.get(id)
+                    .and_then(|&idx| Some(chiral.right.metadata[idx].content.clone()))
+                    .unwrap_or_default();
+                let mut h: u64 = 0xcbf29ce484222325;
+                for b in content.bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+                h
+            };
+            let coords = crate::geometry::classify_memory(category, content_hash, importance as f64);
+            let sga_class = coords.class_index;
+            let fano_point = coords.l % (crate::medium::FANO_POINTS as u8);
+
+            // Tag right hemisphere
+            if let Some(&idx) = chiral.right.id_to_index.get(id) {
+                chiral.right.metadata[idx].sga_class = Some(sga_class);
+                chiral.right.metadata[idx].fano_group = Some(fano_point);
+                chiral.right.metadata[idx].category = Some(category.to_string());
+            }
+
+            // Tag left hemisphere if paired
+            if let Some(left_id) = chiral.right_to_left.get(id) {
+                if let Some(&idx) = chiral.left.id_to_index.get(left_id) {
+                    chiral.left.metadata[idx].sga_class = Some(sga_class);
+                    chiral.left.metadata[idx].fano_group = Some(fano_point);
+                    chiral.left.metadata[idx].category = Some(category.to_string());
+                }
+            }
+
+            self.mark_dirty();
+        }
+    }
+
     /// Relate two memories via associative wavefront.
     /// 
     /// Creates emergent association in the field by combining the wavefront patterns

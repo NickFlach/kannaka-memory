@@ -11,6 +11,7 @@ use ndarray::Array1;
 use uuid::Uuid;
 
 use crate::encoding::EncodingPipeline;
+use crate::geometry;
 
 use super::callosum::CorpusCallosum;
 use super::fano::FanoPlane;
@@ -132,7 +133,17 @@ impl ChiralMedium {
         importance: f32,
         pipeline: &EncodingPipeline,
     ) -> Result<Uuid, MediumError> {
-        // 1. Encode content to hypervector
+        self.store_with_category(content, importance, pipeline, None)
+    }
+
+    /// Store with explicit category for SGA classification.
+    pub fn store_with_category(
+        &mut self,
+        content: &str,
+        importance: f32,
+        pipeline: &EncodingPipeline,
+        category: Option<&str>,
+    ) -> Result<Uuid, MediumError> {
         let vector = pipeline.encode_text(content).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -140,7 +151,7 @@ impl ChiralMedium {
             )))
         })?;
 
-        self.store_vector(&vector, content.to_string(), importance)
+        self.store_vector_with_category(&vector, content.to_string(), importance, category)
     }
 
     /// Store a pre-encoded vector (used by store() and for audio/visual perception).
@@ -150,24 +161,61 @@ impl ChiralMedium {
         content: String,
         importance: f32,
     ) -> Result<Uuid, MediumError> {
-        // 1. Optic chiasm: input enters RIGHT hemisphere first
+        self.store_vector_with_category(vector, content, importance, None)
+    }
+
+    /// Store with explicit category for SGA classification.
+    pub fn store_vector_with_category(
+        &mut self,
+        vector: &[f32],
+        content: String,
+        importance: f32,
+        category: Option<&str>,
+    ) -> Result<Uuid, MediumError> {
+        // 1. SGA classification — determine the memory's geometric coordinates
+        let cat = category.unwrap_or("knowledge");
+        let content_hash = {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in content.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        };
+        let coords = geometry::classify_memory(cat, content_hash, importance as f64);
+        let sga_class = coords.class_index;
+        let fano_group = coords.l; // ℓ ∈ [0,7) maps to Fano point (mod 7 for safety)
+        let fano_point = fano_group % (FANO_POINTS as u8);
+
+        // 2. Determine which Fano fold line to use for callosal transfer
+        //    Use the first line through this memory's Fano point
+        let fold_line = self.fano.lines_through_point(fano_point)[0] as usize;
+
+        // 3. Optic chiasm: input enters RIGHT hemisphere first
         let right_id = self.right.add_wavefront(vector, content.clone(), importance)?;
 
-        // 2. Create chiral scale (conscious-dominant for new perception)
+        // 4. Tag the wavefront with its SGA classification
+        if let Some(idx) = self.right.id_to_index.get(&right_id) {
+            let idx = *idx;
+            self.right.metadata[idx].sga_class = Some(sga_class);
+            self.right.metadata[idx].fano_group = Some(fano_point);
+            self.right.metadata[idx].category = Some(cat.to_string());
+        }
+
+        // 5. Create chiral scale (conscious-dominant for new perception)
         let scale = ChiralScale::perception(importance);
         self.scales.insert(right_id, scale);
 
-        // 3. Echo to LEFT hemisphere via callosum (if budget allows)
+        // 6. Echo to LEFT hemisphere via callosum (if budget allows)
+        //    Uses the geometrically correct fold line for this memory's Fano group
         if self.callosum.passes_gate(importance) && self.callosum.has_budget() {
-            // Fano fold for cross-hemisphere projection
             let folded = self.fano.fold(
                 vector,
                 self.right.dims,
                 self.left.dims,
-                0, // Default fold line
+                fold_line, // Geometrically determined fold line
             );
 
-            // Apply callosum noise (consolidation direction = clean)
             let transferred = self.callosum.apply_noise(
                 &folded,
                 Direction::SubconsciousToConscious,
@@ -176,14 +224,20 @@ impl ChiralMedium {
             let left_id = self.left.add_wavefront(
                 &transferred,
                 content,
-                importance * 0.8, // Conscious echo slightly weaker
+                importance * 0.8,
             )?;
 
-            // Track the pairing
+            // Tag left wavefront too
+            if let Some(idx) = self.left.id_to_index.get(&left_id) {
+                let idx = *idx;
+                self.left.metadata[idx].sga_class = Some(sga_class);
+                self.left.metadata[idx].fano_group = Some(fano_point);
+                self.left.metadata[idx].category = Some(cat.to_string());
+            }
+
             self.left_to_right.insert(left_id, right_id);
             self.right_to_left.insert(right_id, left_id);
 
-            // Consume callosum budget
             self.callosum.consume_budget(importance);
             self.callosum.log_transfer(
                 right_id,
@@ -405,6 +459,47 @@ impl ChiralMedium {
             callosum_stats: self.callosum.transfer_stats(),
         }
     }
+
+    /// Get the distribution of memories across Fano groups in each hemisphere.
+    pub fn fano_distribution(&self) -> FanoDistribution {
+        let mut left_groups = [0usize; 7];
+        let mut right_groups = [0usize; 7];
+
+        for meta in &self.left.metadata {
+            if let Some(fg) = meta.fano_group {
+                if (fg as usize) < 7 {
+                    left_groups[fg as usize] += 1;
+                }
+            }
+        }
+
+        for meta in &self.right.metadata {
+            if let Some(fg) = meta.fano_group {
+                if (fg as usize) < 7 {
+                    right_groups[fg as usize] += 1;
+                }
+            }
+        }
+
+        let unclassified_left = self.left.metadata.iter().filter(|m| m.fano_group.is_none()).count();
+        let unclassified_right = self.right.metadata.iter().filter(|m| m.fano_group.is_none()).count();
+
+        FanoDistribution {
+            left_groups,
+            right_groups,
+            unclassified_left,
+            unclassified_right,
+        }
+    }
+}
+
+/// Distribution of memories across the 7 Fano groups per hemisphere.
+#[derive(Debug, Clone)]
+pub struct FanoDistribution {
+    pub left_groups: [usize; 7],
+    pub right_groups: [usize; 7],
+    pub unclassified_left: usize,
+    pub unclassified_right: usize,
 }
 
 impl Default for ChiralMedium {

@@ -75,6 +75,16 @@ pub struct WavefrontMeta {
     pub hallucinated: bool,
     /// Whether this wavefront is self-referential (encodes the medium's own state)
     pub is_self_referential: bool,
+    /// SGA classification — which of the 96 classes this memory belongs to
+    /// Encodes (h₂, d, ℓ) coordinates in the Sigmatics Geometric Algebra
+    #[serde(default)]
+    pub sga_class: Option<u8>,
+    /// Fano group (0-6) — derived from SGA class, determines fold operations
+    #[serde(default)]
+    pub fano_group: Option<u8>,
+    /// Category used for SGA classification
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 impl WavefrontMeta {
@@ -86,6 +96,9 @@ impl WavefrontMeta {
             created_at: Utc::now(),
             hallucinated: false,
             is_self_referential: false,
+            sga_class: None,
+            fano_group: None,
+            category: None,
         }
     }
 
