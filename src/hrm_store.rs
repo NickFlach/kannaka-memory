@@ -555,7 +555,7 @@ impl MemoryStore for HrmStore {
         self
     }
 
-    fn store_text(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
+    fn absorb(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
         if let Some(ref mut chiral) = self.chiral {
             let id = chiral.store_with_category(content, importance, &self.pipeline, category)
                 .map_err(|e| StoreError::Other(format!("chiral store failed: {}", e)))?;
@@ -571,7 +571,7 @@ impl MemoryStore for HrmStore {
         }
     }
 
-    fn recall_text(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+    fn resonate_query(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
         if let Some(ref chiral) = self.chiral {
             // Chiral bilateral resonance
             let results = chiral.recall(query, top_k, &self.pipeline)

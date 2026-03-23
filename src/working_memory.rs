@@ -285,7 +285,8 @@ impl WorkingMemory {
     // Context output
     // ------------------------------------------------------------------
 
-    /// Format current state as a context block for prompt injection.
+    /// Format current state as a context block.
+    /// Transitional: should become left-hemisphere field state query.
     pub fn get_context(&self) -> String {
         let mut out = String::new();
         out.push_str("## Working Memory Context\n\n");

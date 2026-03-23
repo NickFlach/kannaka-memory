@@ -71,20 +71,30 @@ pub struct QueryResult {
 pub trait MemoryStore: Send + Sync {
     // -- Core HRM operations --
 
-    /// Store content into the holographic medium.
-    /// Encodes text, creates wavefront, applies interference.
-    /// Default delegates to insert() for backward compat.
-    fn store_text(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
+    /// Absorb content into the holographic medium as a new wavefront.
+    /// Encodes text → SGA classification → Fano fold routing → interference.
+    /// The medium is permanently changed by the absorption.
+    fn absorb(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
         let _ = (content, importance, category);
-        Err(StoreError::Other("store_text not implemented — use insert()".into()))
+        Err(StoreError::Other("absorb not implemented".into()))
     }
 
-    /// Resonance-based recall from the holographic medium.
+    /// Backward-compatible alias for absorb().
+    fn store_text(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
+        self.absorb(content, importance, category)
+    }
+
+    /// Resonate a query through the holographic medium.
     /// Recall IS observation — attention reshapes the field.
-    /// Requires &mut self because reading changes the substrate.
-    fn recall_text(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+    /// The medium is permanently changed by the resonance.
+    fn resonate_query(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
         let _ = (query, top_k);
-        Err(StoreError::Other("recall_text not implemented — use search()".into()))
+        Err(StoreError::Other("resonate_query not implemented".into()))
+    }
+
+    /// Backward-compatible alias for resonate_query().
+    fn recall_text(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        self.resonate_query(query, top_k)
     }
 
     /// Consciousness metrics from the holographic medium topology.
@@ -243,8 +253,8 @@ pub fn phi_span_score(span: u8) -> f32 {
 /// High-level API over the holographic resonance medium.
 ///
 /// Core paths assume HRM. The pipeline is:
-/// - remember() → store.store_text() → ChiralMedium (encode + classify + fold + store)
-/// - recall()   → store.recall_text() → ChiralMedium (bilateral resonance)
+/// - remember() → store.absorb() → ChiralMedium (encode + classify + fold + absorb)
+/// - recall()   → store.resonate_query() → ChiralMedium (bilateral resonance + observation)
 ///
 /// The pipeline field is kept for compatibility callers that need raw encoding.
 pub struct MemoryEngine {
@@ -263,10 +273,10 @@ impl MemoryEngine {
         }
     }
 
-    /// Store text into the holographic medium.
-    /// The medium handles encoding, SGA classification, Fano routing, and chiral storage.
+    /// Absorb text into the holographic medium as a new wavefront.
+    /// The medium handles encoding, SGA classification, Fano routing, and chiral absorption.
     pub fn remember(&mut self, text: &str) -> Result<Uuid, EngineError> {
-        self.store.store_text(text, 0.5, None)
+        self.store.absorb(text, 0.5, None)
             .or_else(|_| {
                 // Compat fallback for test stores
                 let memory = self.pipeline.encode_memory(text, Utc::now())?;
@@ -279,9 +289,9 @@ impl MemoryEngine {
         self.remember(text)
     }
 
-    /// Recall by resonance. The medium handles bilateral search and intuition surfacing.
+    /// Resonate a query through the medium. Bilateral search + intuition surfacing + observation.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
-        let results = self.store.recall_text(query, top_k)
+        let results = self.store.resonate_query(query, top_k)
             .or_else(|_| {
                 // Compat fallback for test stores
                 let qvec = self.pipeline.encode_text(query)?;

@@ -185,19 +185,18 @@ impl KannakaMemorySystem {
     }
 
     /// Store a memory, auto-save if enabled.
-    /// Store a memory into the holographic medium.
+    /// Absorb a memory into the holographic medium.
     ///
-    /// Uses the HRM-native store_text path when available (ChiralMedium handles
-    /// encoding, SGA classification, Fano fold routing, and callosal transfer).
-    /// Falls back to MemoryEngine::remember() + post-classification for compat.
+    /// Uses the HRM-native absorb path (ChiralMedium handles encoding,
+    /// SGA classification, Fano fold routing, and callosal transfer).
     pub fn remember(&mut self, text: &str) -> Result<Uuid, SystemError> {
         let category = self.categorize_text(text);
         self.remember_with_category(text, &category, 0.5)
     }
     
-    /// Store a memory with explicit category and importance.
+    /// Absorb a memory with explicit category and importance.
     ///
-    /// The HRM-native path (store_text) handles:
+    /// The HRM-native path (absorb) handles:
     /// - Text → hypervector encoding
     /// - SGA 96-class classification from category
     /// - Fano group assignment → fold line selection
@@ -205,10 +204,9 @@ impl KannakaMemorySystem {
     /// - Callosal echo to left hemisphere
     pub fn remember_with_category(&mut self, text: &str, category: &str, importance: f64) -> Result<Uuid, SystemError> {
         // Try HRM-native path first
-        let id = match self.engine.store.store_text(text, importance as f32, Some(category)) {
+        let id = match self.engine.store.absorb(text, importance as f32, Some(category)) {
             Ok(id) => {
                 // HRM-native: encoding + classification + chiral routing all handled
-                // Still need to rebuild MemoryEngine's cache view
                 self.engine.store.flush().ok(); // ensure medium is consistent
                 id
             }
