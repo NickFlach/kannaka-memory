@@ -335,9 +335,10 @@ fn main() {
                     i += 1;
                 }
             }
-            // Create a skip link between the two memories
-            use kannaka_memory::SkipLink;
-            let link = SkipLink {
+            // Create a legacy link between the two memories
+            // TODO(chiral): replace with ChiralMedium interference-based relating
+            use kannaka_memory::LegacyLink;
+            let link = LegacyLink {
                 target_id,
                 strength: 0.8,
                 resonance_key: Vec::new(),
@@ -380,12 +381,8 @@ fn main() {
                 "memories_without_embeddings": memories_without_embeddings,
             });
             
-            // Only include skip_links for non-HRM stores
-            if !is_hrm {
-                output["skip_links"] = serde_json::json!(stats.total_skip_links);
-            } else {
-                output["field_mode"] = serde_json::json!("HRM");
-            }
+            // Skip links removed — ChiralMedium uses interference patterns
+            output["field_mode"] = serde_json::json!("HRM");
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "bias" => {
@@ -468,7 +465,7 @@ fn main() {
             if is_hrm {
                 println!("  Field mode: HRM (tensor interference)");
             } else {
-                println!("  Skip links: {}", state.total_skip_links);
+                // total_skip_links removed
             }
         }
         "stats" => {
@@ -479,11 +476,7 @@ fn main() {
             println!("  Total memories: {}", stats.total_memories);
             println!("  Active memories: {}", stats.active_memories);
             
-            if is_hrm {
-                println!("  Field mode: HRM (holographic resonance)");
-            } else {
-                println!("  Skip links: {}", stats.total_skip_links);
-            }
+            println!("  Field mode: HRM (holographic resonance)");
             
             println!("  Consciousness: {}", stats.consciousness_level);
             println!("  Φ (phi): {:.4}", stats.phi);

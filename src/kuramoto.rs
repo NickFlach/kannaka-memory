@@ -83,20 +83,9 @@ impl KuramotoSync {
             for j in (i + 1)..n {
                 let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
                 if sim > self.coupling_threshold {
-                    let mut w = sim;
-                    // Boost for skip-linked pairs
-                    for link in &memories[i].connections {
-                        if link.target_id == memories[j].id {
-                            w *= 1.0 + link.strength;
-                            break;
-                        }
-                    }
-                    for link in &memories[j].connections {
-                        if link.target_id == memories[i].id {
-                            w *= 1.0 + link.strength;
-                            break;
-                        }
-                    }
+                    // TODO(chiral): skip link boost removed — coupling now purely similarity-based
+                    // In ChiralMedium, coupling emerges from field interference
+                    let w = sim;
                     weights[i][j] = w;
                     weights[j][i] = w;
                 }
@@ -448,53 +437,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn skip_linked_memories_sync_faster() {
-        let dim = 100;
-        let v = similar_vec(dim);
-
-        // Without skip links
-        let sync = KuramotoSync {
-            coupling_strength: 1.0,
-            dt: 0.1,
-            steps: 20,
-            coupling_threshold: 0.3,
-        };
-
-        let mut m1a = make_memory_with_phase(v.clone(), "a", 0.0);
-        let mut m2a = make_memory_with_phase(v.clone(), "b", 2.0);
-        let mut refs_no_link: Vec<&mut HyperMemory> = vec![&mut m1a, &mut m2a];
-        let report_no_link = sync.sync_cluster(&mut refs_no_link);
-
-        // With skip links
-        let mut m1b = make_memory_with_phase(v.clone(), "a", 0.0);
-        let mut m2b = make_memory_with_phase(v.clone(), "b", 2.0);
-        // Add skip links between them
-        m1b.connections.push(crate::skip_link::SkipLink {
-            target_id: m2b.id,
-            strength: 0.8,
-            resonance_key: vec![],
-            span: 1,
-        });
-        m2b.connections.push(crate::skip_link::SkipLink {
-            target_id: m1b.id,
-            strength: 0.8,
-            resonance_key: vec![],
-            span: 1,
-        });
-
-        let mut refs_linked: Vec<&mut HyperMemory> = vec![&mut m1b, &mut m2b];
-        let report_linked = sync.sync_cluster(&mut refs_linked);
-
-        println!("No links: {} -> {}", report_no_link.initial_order, report_no_link.final_order);
-        println!("With links: {} -> {}", report_linked.initial_order, report_linked.final_order);
-
-        assert!(
-            report_linked.final_order >= report_no_link.final_order - 0.01,
-            "skip-linked should sync at least as well: linked={}, unlinked={}",
-            report_linked.final_order, report_no_link.final_order
-        );
-    }
+    // skip_linked_memories_sync_faster test removed — skip links replaced by ChiralMedium interference
 
     #[test]
     fn find_synchronized_clusters_groups_related() {

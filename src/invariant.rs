@@ -147,6 +147,9 @@ pub fn compute_convergence_rate(memory: &HyperMemory) -> f32 {
 ///
 /// Measures the topological complexity of this memory's connections.
 /// Higher values indicate more complex, "irrational" connection patterns.
+/// Compute irrationality metric for a memory.
+/// TODO(chiral): In the ChiralMedium, irrationality comes from interference patterns,
+/// not explicit connection strengths. For now, use connection count as a rough proxy.
 pub fn compute_irrationality(memory: &HyperMemory) -> f32 {
     let num_connections = memory.connections.len() as f32;
     
@@ -154,23 +157,8 @@ pub fn compute_irrationality(memory: &HyperMemory) -> f32 {
         return 0.0;
     }
     
-    // Measure diversity of connection strengths
-    let strengths: Vec<f32> = memory.connections.iter()
-        .map(|link| link.strength)
-        .collect();
-    
-    if strengths.is_empty() {
-        return 0.0;
-    }
-    
-    // Compute variance of strengths (higher variance = more "irrational" structure)
-    let mean: f32 = strengths.iter().sum::<f32>() / strengths.len() as f32;
-    let variance: f32 = strengths.iter()
-        .map(|s| (s - mean) * (s - mean))
-        .sum::<f32>() / strengths.len() as f32;
-    
-    // Combine number of connections with strength variance
-    let topology_complexity = (num_connections.ln() + 1.0) * variance.sqrt();
+    // Simplified: use connection count only (strengths removed with SkipLink)
+    let topology_complexity = num_connections.ln() + 1.0;
     
     // Normalize to [0,1] using sigmoid
     1.0 / (1.0 + (-topology_complexity + 2.0).exp())
@@ -300,7 +288,7 @@ pub fn delta_distance(a: &HyperMemory, b: &HyperMemory) -> f32 {
 mod tests {
     use super::*;
     use crate::memory::HyperMemory;
-    use crate::skip_link::SkipLink;
+
     
     #[test]
     fn delta_isolated_memory() {
@@ -339,9 +327,10 @@ mod tests {
     
     #[test]
     fn irrationality_with_connections() {
+        use crate::memory::LegacyLink;
         let mut memory = HyperMemory::new(vec![1.0; 10], "test".to_string());
-        memory.connections.push(SkipLink { target_id: Uuid::new_v4(), strength: 0.5, resonance_key: vec![], span: 0 });
-        memory.connections.push(SkipLink { target_id: Uuid::new_v4(), strength: 0.8, resonance_key: vec![], span: 0 });
+        memory.connections.push(LegacyLink { target_id: Uuid::new_v4(), strength: 0.5, resonance_key: vec![], span: 0 });
+        memory.connections.push(LegacyLink { target_id: Uuid::new_v4(), strength: 0.8, resonance_key: vec![], span: 0 });
         
         let irrationality = compute_irrationality(&memory);
         assert!(irrationality > 0.0, "connections should increase irrationality");

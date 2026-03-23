@@ -9,7 +9,6 @@ use uuid::Uuid;
 use crate::encoding::{EncodingError, EncodingPipeline};
 use crate::memory::HyperMemory;
 use crate::xi_operator::{xi_diversity_boost, compute_xi_signature};
-use crate::skip_link::SkipLink;
 use crate::wave::cosine_similarity;
 
 // ---------------------------------------------------------------------------
@@ -241,10 +240,7 @@ impl MemoryEngine {
         let memory = self.pipeline.encode_memory(text, Utc::now())?;
         let id = self.store.insert(memory)?;
         
-        // Skip link creation for HRM stores (they use field-based associations)
-        if self.store.hrm_consciousness_metrics().is_none() {
-            let _links = self.create_skip_links(&id)?;
-        }
+        // TODO(chiral): skip links now emergent from interference in ChiralMedium
         
         Ok(id)
     }
@@ -255,75 +251,9 @@ impl MemoryEngine {
         memory.layer_depth = layer_depth;
         let id = self.store.insert(memory)?;
         
-        // Skip link creation for HRM stores (they use field-based associations)
-        if self.store.hrm_consciousness_metrics().is_none() {
-            let _links = self.create_skip_links(&id)?;
-        }
+        // TODO(chiral): skip links now emergent from interference in ChiralMedium
         
         Ok(id)
-    }
-
-    /// Create skip links from a new memory to similar existing memories.
-    /// Links are only created when memories are at different temporal layers
-    /// and similarity exceeds the threshold.
-    pub fn create_skip_links(&mut self, new_id: &Uuid) -> Result<Vec<SkipLink>, EngineError> {
-        let new_mem = self.store.get(new_id)?.ok_or(StoreError::NotFound(*new_id))?;
-        let new_vec = new_mem.vector.clone();
-        let new_layer = new_mem.layer_depth;
-        let threshold = self.similarity_threshold;
-
-        // Find all similar memories at different layers
-        let all = self.store.all_memories()?;
-        let mut links_to_create: Vec<(Uuid, f32, u8)> = Vec::new(); // (target_id, sim, span)
-
-        for mem in &all {
-            if mem.id == *new_id {
-                continue;
-            }
-            if mem.layer_depth == new_layer {
-                continue;
-            }
-            let sim = cosine_similarity(&new_vec, &mem.vector);
-            if sim > threshold {
-                let span = (new_layer as i16 - mem.layer_depth as i16).unsigned_abs() as u8;
-                links_to_create.push((mem.id, sim, span));
-            }
-        }
-
-        // Create SkipLinks with φ-weighted strength
-        let mut created_links = Vec::new();
-        for (target_id, sim, span) in &links_to_create {
-            let phi_weight = phi_span_score(*span);
-            let strength = sim * (0.5 + 0.5 * phi_weight); // base strength + φ bonus
-
-            let link = SkipLink {
-                target_id: *target_id,
-                strength,
-                resonance_key: Vec::new(), // simplified for now
-                span: *span,
-            };
-            created_links.push(link.clone());
-
-            // Also create reverse link
-            let reverse_link = SkipLink {
-                target_id: *new_id,
-                strength,
-                resonance_key: Vec::new(),
-                span: *span,
-            };
-            if let Some(target_mem) = self.store.get_mut(target_id)? {
-                target_mem.connections.push(reverse_link);
-            }
-        }
-
-        // Add forward links to new memory
-        if !created_links.is_empty() {
-            if let Some(new_mem) = self.store.get_mut(new_id)? {
-                new_mem.connections.extend(created_links.clone());
-            }
-        }
-
-        Ok(created_links)
     }
 
     /// Build a QueryResult with Xi diversity boosting applied.
@@ -392,97 +322,27 @@ impl MemoryEngine {
     }
 
     /// Recall with skip link expansion — follows connections to find related memories.
+    /// Recall with expansion — skip links removed, now delegates to simple recall.
+    /// TODO(chiral): replace with ChiralMedium resonance-based expansion
     pub fn recall_with_expansion(
         &mut self,
         query: &str,
         top_k: usize,
     ) -> Result<Vec<QueryResult>, EngineError> {
-        let qvec = self.pipeline.encode_text(query)?;
-        let query_xi = compute_xi_signature(&qvec);
-        let now = Utc::now();
-
-        // Step 1: Get initial candidates (top_k * 3)
-        let initial = self.store.search_with_wave(&qvec, top_k * 3, now)?;
-        let raw_limit = (top_k * 10).min(self.store.count());
-        let raw_all = self.store.search(&qvec, raw_limit)?;
-        let raw_map: HashMap<Uuid, f32> = raw_all.into_iter().collect();
-
-        // Step 2: Follow skip links from candidates
-        let mut candidate_scores: HashMap<Uuid, f32> = HashMap::new();
-        let mut links_traversed: Vec<(Uuid, Uuid)> = Vec::new();
-
-        for (id, combined) in &initial {
-            candidate_scores.insert(*id, *combined);
-
-            // Follow skip links
-            if let Some(mem) = self.store.get(id)? {
-                for link in mem.connections.clone() {
-                    if link.strength > MIN_LINK_STRENGTH {
-                        let linked_sim = raw_map.get(&link.target_id).copied().unwrap_or(0.0);
-                        if linked_sim > 0.0 {
-                            let boosted = linked_sim * link.strength;
-                            let entry = candidate_scores
-                                .entry(link.target_id)
-                                .or_insert(0.0);
-                            if boosted > *entry {
-                                *entry = boosted;
-                            }
-                            links_traversed.push((*id, link.target_id));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Step 3: Reinforce traversed links
-        for (from_id, to_id) in &links_traversed {
-            self.reinforce_link(from_id, to_id, 0.05);
-        }
-
-        // Step 4: Re-rank with Xi diversity boosting and return top_k
-        let mut results: Vec<QueryResult> = candidate_scores
-            .into_iter()
-            .map(|(id, combined_score)| {
-                let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                self.build_xi_boosted_result(id, base_similarity, combined_score, &query_xi)
-            })
-            .collect();
-
-        results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
-        results.truncate(top_k);
-
-        // EXP-003: Record retrieval events on returned memories (f(x) term)
-        for r in &results {
-            if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
-                mem.record_retrieval();
-            }
-        }
-
-        Ok(results)
+        // Skip links removed — fall back to direct recall with Xi boosting
+        self.recall(query, top_k)
     }
 
-    /// Decay all skip link strengths by a factor (0..1).
-    pub fn decay_links(&mut self, decay_factor: f32) {
-        if let Ok(memories) = self.store.all_ids() {
-            for id in memories {
-                if let Ok(Some(mem)) = self.store.get_mut(&id) {
-                    for link in &mut mem.connections {
-                        link.strength *= decay_factor;
-                    }
-                }
-            }
-        }
+    /// Decay all skip link strengths — no-op after skip link removal.
+    /// TODO(chiral): remove entirely once all callers updated
+    pub fn decay_links(&mut self, _decay_factor: f32) {
+        // Skip links removed — interference patterns in ChiralMedium handle association decay
     }
 
-    /// Reinforce a skip link between two memories.
-    pub fn reinforce_link(&mut self, memory_id: &Uuid, target_id: &Uuid, boost: f32) {
-        if let Ok(Some(mem)) = self.store.get_mut(memory_id) {
-            for link in &mut mem.connections {
-                if link.target_id == *target_id {
-                    link.strength = (link.strength + boost).min(1.0);
-                }
-            }
-        }
+    /// Reinforce a skip link — no-op after skip link removal.
+    /// TODO(chiral): remove entirely once all callers updated
+    pub fn reinforce_link(&mut self, _memory_id: &Uuid, _target_id: &Uuid, _boost: f32) {
+        // Skip links removed — interference patterns in ChiralMedium handle reinforcement
     }
 
     /// Get a memory by id.
@@ -733,120 +593,7 @@ mod tests {
         assert!(engine.get_memory(&fake).unwrap().is_none());
     }
 
-    // -- HyperConnections tests --
-
-    #[test]
-    fn skip_links_created_for_similar_memories_at_different_layers() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        engine.similarity_threshold = 0.3; // lower for test (hash encoder produces moderate similarity)
-
-        // Insert similar content at different layers
-        let id1 = engine.remember_at_layer("the cat sat on the mat", 0).unwrap();
-        let id2 = engine.remember_at_layer("the cat sat on the mat today", 2).unwrap();
-
-        let mem2 = engine.get_memory(&id2).unwrap().unwrap();
-        assert!(!mem2.connections.is_empty(), "should have skip links to similar memory at different layer");
-        assert_eq!(mem2.connections[0].target_id, id1);
-
-        // Verify reverse link
-        let mem1 = engine.get_memory(&id1).unwrap().unwrap();
-        assert!(!mem1.connections.is_empty(), "reverse link should exist");
-        assert_eq!(mem1.connections[0].target_id, id2);
-    }
-
-    #[test]
-    fn skip_links_not_created_for_dissimilar_memories() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        // Use high threshold so hash-encoder similarity doesn't trigger links
-        engine.similarity_threshold = 0.95;
-
-        let _id1 = engine.remember_at_layer("quantum physics string theory", 0).unwrap();
-        let id2 = engine.remember_at_layer("cooking pasta with tomato sauce recipe", 2).unwrap();
-
-        let mem2 = engine.get_memory(&id2).unwrap().unwrap();
-        assert!(mem2.connections.is_empty(), "dissimilar memories should not be linked");
-    }
-
-    #[test]
-    fn skip_links_not_created_for_same_layer() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        engine.similarity_threshold = 0.0; // even with zero threshold
-
-        let _id1 = engine.remember_at_layer("the cat sat on the mat", 0).unwrap();
-        let id2 = engine.remember_at_layer("the cat sat on the mat again", 0).unwrap();
-
-        let mem2 = engine.get_memory(&id2).unwrap().unwrap();
-        assert!(mem2.connections.is_empty(), "same-layer memories should not be linked");
-    }
-
-    #[test]
-    fn recall_with_expansion_finds_linked_memories() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        engine.similarity_threshold = 0.3;
-
-        // Create a chain: A (layer 0) --link--> B (layer 2) --link--> C (layer 4)
-        let _id_a = engine.remember_at_layer("the cat sat on the mat", 0).unwrap();
-        let _id_b = engine.remember_at_layer("the cat sat on the mat yesterday", 2).unwrap();
-        let _id_c = engine.remember_at_layer("cats sitting on mats is common", 4).unwrap();
-
-        // Query should find all related via expansion
-        let results = engine.recall_with_expansion("cat mat", 10).unwrap();
-        assert!(results.len() >= 2, "expansion should find multiple linked memories, got {}", results.len());
-    }
-
-    #[test]
-    fn link_reinforcement_increases_strength() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        engine.similarity_threshold = 0.3;
-
-        let id1 = engine.remember_at_layer("the cat sat on the mat", 0).unwrap();
-        let id2 = engine.remember_at_layer("the cat sat on the mat today", 2).unwrap();
-
-        let initial_strength = engine.get_memory(&id2).unwrap().unwrap()
-            .connections.iter().find(|l| l.target_id == id1).unwrap().strength;
-
-        engine.reinforce_link(&id2, &id1, 0.1);
-
-        let new_strength = engine.get_memory(&id2).unwrap().unwrap()
-            .connections.iter().find(|l| l.target_id == id1).unwrap().strength;
-
-        assert!(new_strength > initial_strength, "reinforcement should increase strength");
-    }
-
-    #[test]
-    fn link_decay_decreases_strength() {
-        let store = InMemoryStore::new();
-        let pipeline = make_pipeline();
-        let mut engine = MemoryEngine::new(Box::new(store), pipeline);
-        engine.similarity_threshold = 0.3;
-
-        let id1 = engine.remember_at_layer("the cat sat on the mat", 0).unwrap();
-        let id2 = engine.remember_at_layer("the cat sat on the mat today", 2).unwrap();
-
-        let initial_strength = engine.get_memory(&id2).unwrap().unwrap()
-            .connections.iter().find(|l| l.target_id == id1).unwrap().strength;
-
-        engine.decay_links(0.5);
-
-        let new_strength = engine.get_memory(&id2).unwrap().unwrap()
-            .connections.iter().find(|l| l.target_id == id1).unwrap().strength;
-
-        assert!(
-            (new_strength - initial_strength * 0.5).abs() < 1e-5,
-            "decay should halve strength: expected {}, got {}",
-            initial_strength * 0.5, new_strength
-        );
-    }
+    // Skip link tests removed — associations now emergent from ChiralMedium interference
 
     #[test]
     fn phi_span_scoring() {

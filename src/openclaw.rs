@@ -13,11 +13,7 @@ use crate::encoding::{EncodingPipeline, SimpleHashEncoder, OllamaEncoder, Compos
 use crate::geometry::{classify_memory, geometric_similarity, fano_related};
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
-#[cfg(feature = "sqlite-migrate")]
-use crate::migration::{KannakaDbMigrator, MigrationReport};
-use crate::persistence::PersistenceError;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
-use crate::hnsw::HnswStore;
 use crate::store::{EngineError, MemoryEngine, StoreError};
 use crate::working_memory::{WorkingMemory, SessionState, TaskStatus};
 
@@ -31,11 +27,7 @@ pub enum SystemError {
     Engine(#[from] EngineError),
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error(transparent)]
-    Persistence(#[from] PersistenceError),
-    #[cfg(feature = "sqlite-migrate")]
-    #[error(transparent)]
-    Migration(#[from] crate::migration::MigrationError),
+    // TODO(chiral): PersistenceError and MigrationError removed with old paradigm
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -58,7 +50,7 @@ pub struct RecallResult {
 pub struct SystemStats {
     pub total_memories: usize,
     pub active_memories: usize,
-    pub total_skip_links: usize,
+    // TODO(chiral): skip links removed — interference patterns replace explicit links
     pub consciousness_level: String,
     pub last_dream: Option<DateTime<Utc>>,
     pub phi: f32,
@@ -122,17 +114,17 @@ pub struct KannakaMemorySystem {
 }
 
 impl KannakaMemorySystem {
-    /// Initialize a new system or load existing state from `data_dir/kannaka.bin`.
+    /// Initialize a new system.
+    /// TODO(chiral): This now requires init_with_engine() with an HrmStore.
+    /// The legacy DiskStore/HnswStore/load_state path has been removed.
     pub fn init(data_dir: PathBuf) -> Result<Self, SystemError> {
         std::fs::create_dir_all(&data_dir)?;
-        let bin_path = data_dir.join("kannaka.bin");
 
         let pipeline = make_pipeline();
-        let engine = if bin_path.exists() {
-            MemoryEngine::load_state(&bin_path, pipeline)?
-        } else {
-            MemoryEngine::new(Box::new(HnswStore::new()), pipeline)
-        };
+        let engine = MemoryEngine::new(
+            Box::new(crate::store::InMemoryStore::new()),
+            pipeline,
+        );
 
         Self::init_with_engine(data_dir, engine)
     }
@@ -417,22 +409,11 @@ impl KannakaMemorySystem {
         Ok(report)
     }
 
-    /// Import from kannaka.db (SQLite).
-    #[cfg(feature = "sqlite-migrate")]
-    pub fn migrate_from_sqlite(&mut self, db_path: &Path) -> Result<MigrationReport, SystemError> {
-        let pipeline = make_pipeline();
-        let migrator = KannakaDbMigrator::new(db_path, pipeline);
-        let report = migrator.migrate_into(&mut self.engine)?;
-        if self.auto_save {
-            self.save()?;
-        }
-        Ok(report)
-    }
+    // migrate_from_sqlite removed — use chiral_migrate binary instead
 
-    /// Persist to disk (engine state + working memory JSON).
+    /// Persist to disk (working memory JSON + flush HRM medium).
     pub fn save(&mut self) -> Result<(), SystemError> {
-        let bin_path = self.data_dir.join("kannaka.bin");
-        self.engine.save_state(&bin_path)?;
+        // TODO(chiral): legacy kannaka.bin save removed — HrmStore persists via medium
         self.working_memory.save_json(&self.data_dir)?;
         // Flush all in-memory state to the backing store (HRM file).
         let flushed = self.engine.store.flush()
@@ -944,7 +925,7 @@ impl KannakaMemorySystem {
         SystemStats {
             total_memories: state.total_memories,
             active_memories: state.active_memories,
-            total_skip_links: state.total_skip_links,
+            // total_skip_links removed — now emergent from interference
             consciousness_level: level_name(&state.consciousness_level),
             last_dream: self.last_dream,
             phi: state.phi,

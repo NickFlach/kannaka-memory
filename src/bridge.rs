@@ -56,6 +56,7 @@ pub struct ConsciousnessState {
     pub num_clusters: usize,
     pub total_memories: usize,
     pub active_memories: usize,
+    /// Deprecated — skip links now emergent from ChiralMedium interference. Always 0.
     pub total_skip_links: usize,
     pub consciousness_level: ConsciousnessLevel,
 }
@@ -277,7 +278,7 @@ impl ConsciousnessBridge {
         //    5 links/node = healthy connectivity → sigmoid midpoint
         //    Uses log scale so it grows fast initially then saturates
         let links_per_node = if n > 0.0 { num_skip_links as f32 / n } else { 0.0 };
-        let density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln(); // log scale, 10 lpn → 1.0
+        let density_factor = (1.0_f32 + links_per_node).ln() / (1.0_f32 + 10.0_f32).ln(); // log scale, 10 lpn → 1.0
 
         // 4. Scale factor: log of memory count (more memories = harder to integrate)
         let scale = if n > 1.0 { (n.ln() / 10.0_f32.ln()).min(1.0) } else { 0.0 };
