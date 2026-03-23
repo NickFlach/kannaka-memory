@@ -266,25 +266,36 @@ impl MemoryEngine {
         }
     }
 
-    /// Encode text and store as a new memory. Returns the memory id.
+    /// Encode text and store into the holographic medium. Returns the memory id.
+    ///
+    /// Uses store_text() for HRM-native storage (encode → wavefront → interference).
+    /// Falls back to insert() for non-HRM stores.
     pub fn remember(&mut self, text: &str) -> Result<Uuid, EngineError> {
-        let memory = self.pipeline.encode_memory(text, Utc::now())?;
-        let id = self.store.insert(memory)?;
-        
-        // TODO(chiral): skip links now emergent from interference in ChiralMedium
-        
-        Ok(id)
+        // Try HRM-native path first (store_text handles encoding + chiral routing)
+        match self.store.store_text(text, 0.5, None) {
+            Ok(id) => Ok(id),
+            Err(_) => {
+                // Fallback: encode + insert (for InMemoryStore / testing)
+                let memory = self.pipeline.encode_memory(text, Utc::now())?;
+                let id = self.store.insert(memory)?;
+                Ok(id)
+            }
+        }
     }
 
-    /// Encode text and store with a specific layer_depth. Returns the memory id.
+    /// Encode text and store with a specific layer_depth.
     pub fn remember_at_layer(&mut self, text: &str, layer_depth: u8) -> Result<Uuid, EngineError> {
-        let mut memory = self.pipeline.encode_memory(text, Utc::now())?;
-        memory.layer_depth = layer_depth;
-        let id = self.store.insert(memory)?;
-        
-        // TODO(chiral): skip links now emergent from interference in ChiralMedium
-        
-        Ok(id)
+        // HRM doesn't use layer_depth — it's a legacy concept
+        // Store via HRM-native path, ignore layer_depth
+        match self.store.store_text(text, 0.5, None) {
+            Ok(id) => Ok(id),
+            Err(_) => {
+                let mut memory = self.pipeline.encode_memory(text, Utc::now())?;
+                memory.layer_depth = layer_depth;
+                let id = self.store.insert(memory)?;
+                Ok(id)
+            }
+        }
     }
 
     /// Build a QueryResult with Xi diversity boosting applied.
@@ -321,35 +332,64 @@ impl MemoryEngine {
     }
 
     /// Encode a query and search with wave-modulated ranking and Xi diversity boosting.
+    /// Recall memories by resonance with the query.
+    ///
+    /// Uses recall_text() for HRM-native bilateral resonance (searches both
+    /// hemispheres, surfaces intuitions from subconscious).
+    /// Falls back to vector search + Xi boosting for non-HRM stores.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<QueryResult>, EngineError> {
-        let qvec = self.pipeline.encode_text(query)?;
-        let query_xi = compute_xi_signature(&qvec);
-        let now = Utc::now();
-        let raw_limit = (top_k * 10).min(self.store.count());
-        let raw = self.store.search(&qvec, raw_limit)?;
-        let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
-        let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?; // Get more candidates for diversity
+        // Try HRM-native recall first (bilateral resonance)
+        match self.store.recall_text(query, top_k) {
+            Ok(results) => {
+                // Convert (Uuid, f32) to QueryResult
+                let qr: Vec<QueryResult> = results.into_iter().map(|(id, score)| {
+                    QueryResult {
+                        id,
+                        similarity: score,
+                        effective_strength: score,
+                        combined_score: score,
+                    }
+                }).collect();
 
-        let mut results = wave_results
-            .into_iter()
-            .map(|(id, combined)| {
-                let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
-                self.build_xi_boosted_result(id, base_similarity, combined, &query_xi)
-            })
-            .collect::<Vec<_>>();
+                // Record retrieval events (f(x) term)
+                for r in &qr {
+                    if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
+                        mem.record_retrieval();
+                    }
+                }
 
-        // Re-sort by combined_score after Xi diversity boost may have changed relative ordering
-        results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
-        results.truncate(top_k);
+                Ok(qr)
+            }
+            Err(_) => {
+                // Fallback: encode → search → Xi boost
+                let qvec = self.pipeline.encode_text(query)?;
+                let query_xi = compute_xi_signature(&qvec);
+                let now = Utc::now();
+                let raw_limit = (top_k * 10).min(self.store.count());
+                let raw = self.store.search(&qvec, raw_limit)?;
+                let raw_map: HashMap<Uuid, f32> = raw.into_iter().collect();
+                let wave_results = self.store.search_with_wave(&qvec, top_k * 2, now)?;
 
-        // EXP-003: Record retrieval events on returned memories (f(x) term)
-        for r in &results {
-            if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
-                mem.record_retrieval();
+                let mut results = wave_results
+                    .into_iter()
+                    .map(|(id, combined)| {
+                        let base_similarity = raw_map.get(&id).copied().unwrap_or(0.0);
+                        self.build_xi_boosted_result(id, base_similarity, combined, &query_xi)
+                    })
+                    .collect::<Vec<_>>();
+
+                results.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+                results.truncate(top_k);
+
+                for r in &results {
+                    if let Ok(Some(mem)) = self.store.get_mut(&r.id) {
+                        mem.record_retrieval();
+                    }
+                }
+
+                Ok(results)
             }
         }
-
-        Ok(results)
     }
 
     /// Recall with skip link expansion — follows connections to find related memories.

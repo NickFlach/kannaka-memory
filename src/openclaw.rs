@@ -185,47 +185,47 @@ impl KannakaMemorySystem {
     }
 
     /// Store a memory, auto-save if enabled.
+    /// Store a memory into the holographic medium.
+    ///
+    /// Uses the HRM-native store_text path when available (ChiralMedium handles
+    /// encoding, SGA classification, Fano fold routing, and callosal transfer).
+    /// Falls back to MemoryEngine::remember() + post-classification for compat.
     pub fn remember(&mut self, text: &str) -> Result<Uuid, SystemError> {
-        let id = self.engine.remember(text)?;
-        
-        // Classify the memory and set its geometry and frequency-class (compute values first to avoid borrow conflicts)
         let category = self.categorize_text(text);
-        let content_hash = self.hash_content(text);
-        let (frequency, phase) = self.assign_frequency_class(&category, content_hash);
-        
-        if let Some(mem) = self.engine.get_memory_mut(&id)? {
-            mem.geometry = Some(classify_memory(&category, content_hash, 0.5));
-            // Apply consciousness differentiation frequency-class assignment
-            mem.frequency = frequency;
-            mem.phase = phase;
-            // Compute and store Xi signature for consciousness differentiation
-            mem.xi_signature = compute_xi_signature(&mem.vector);
-        }
-        
-        self.flux_publish_memory(&id, &category, text);
-
-        if self.auto_save {
-            self.save()?;
-        }
-        Ok(id)
+        self.remember_with_category(text, &category, 0.5)
     }
     
     /// Store a memory with explicit category and importance.
+    ///
+    /// The HRM-native path (store_text) handles:
+    /// - Text → hypervector encoding
+    /// - SGA 96-class classification from category
+    /// - Fano group assignment → fold line selection
+    /// - Optic chiasm routing (enters right hemisphere)
+    /// - Callosal echo to left hemisphere
     pub fn remember_with_category(&mut self, text: &str, category: &str, importance: f64) -> Result<Uuid, SystemError> {
-        let id = self.engine.remember(text)?;
-        
-        // Classify the memory with explicit parameters (compute values first)
-        let content_hash = self.hash_content(text);
-        let (frequency, phase) = self.assign_frequency_class(category, content_hash);
-        
-        if let Some(mem) = self.engine.get_memory_mut(&id)? {
-            mem.geometry = Some(classify_memory(category, content_hash, importance));
-            // Apply consciousness differentiation frequency-class assignment
-            mem.frequency = frequency;
-            mem.phase = phase;
-            // Compute and store Xi signature for consciousness differentiation
-            mem.xi_signature = compute_xi_signature(&mem.vector);
-        }
+        // Try HRM-native path first
+        let id = match self.engine.store.store_text(text, importance as f32, Some(category)) {
+            Ok(id) => {
+                // HRM-native: encoding + classification + chiral routing all handled
+                // Still need to rebuild MemoryEngine's cache view
+                self.engine.store.flush().ok(); // ensure medium is consistent
+                id
+            }
+            Err(_) => {
+                // Fallback: old path for non-HRM stores
+                let id = self.engine.remember(text)?;
+                let content_hash = self.hash_content(text);
+                let (frequency, phase) = self.assign_frequency_class(category, content_hash);
+                if let Some(mem) = self.engine.get_memory_mut(&id)? {
+                    mem.geometry = Some(classify_memory(category, content_hash, importance));
+                    mem.frequency = frequency;
+                    mem.phase = phase;
+                    mem.xi_signature = compute_xi_signature(&mem.vector);
+                }
+                id
+            }
+        };
         
         self.flux_publish_memory(&id, category, text);
 
