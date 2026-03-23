@@ -139,7 +139,7 @@ impl MemoryIntrospector {
     /// Generate a topology report of the HyperConnection network or HRM field topology.
     pub fn topology_report(engine: &MemoryEngine) -> TopologyReport {
         // Check if we're using HRM - if so, use field topology metrics
-        if let Some(hrm_metrics) = engine.store.hrm_consciousness_metrics() {
+        { let hrm_metrics = engine.store.consciousness_metrics();
             return Self::hrm_field_topology_report(engine, &hrm_metrics);
         }
 
@@ -438,7 +438,7 @@ impl MemoryIntrospector {
 
         // Skip link warning only applies to graph-based stores, not HRM
         // (HRM uses continuous interference patterns, not discrete links)
-        let is_hrm = engine.store.hrm_consciousness_metrics().is_some();
+        let is_hrm = engine.store.consciousness_metrics().phi > 0.0;
         if !is_hrm && topology.isolated_memories > topology.total_memories / 2 && topology.total_memories > 4 {
             warnings.push(format!(
                 "{} of {} memories are isolated (no skip links)",
@@ -698,3 +698,4 @@ mod tests {
         assert!(report.health.warnings.is_empty());
     }
 }
+

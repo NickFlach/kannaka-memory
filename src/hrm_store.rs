@@ -585,8 +585,9 @@ impl MemoryStore for HrmStore {
         Ok(self.count())
     }
 
-    fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
-        Some(self.consciousness_metrics())
+    fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
+        // Use the public method which handles chiral vs flat medium
+        Self::consciousness_metrics(self)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -596,8 +597,8 @@ impl MemoryStore for HrmStore {
         self
     }
 
-    fn hrm_relate(&mut self, id_a: &Uuid, id_b: &Uuid) -> Option<Result<Uuid, StoreError>> {
-        Some(self.relate_wavefronts(*id_a, *id_b))
+    fn relate(&mut self, id_a: &Uuid, id_b: &Uuid) -> Result<Uuid, StoreError> {
+        self.relate_wavefronts(*id_a, *id_b)
     }
 }
 

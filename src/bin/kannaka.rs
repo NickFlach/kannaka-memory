@@ -376,7 +376,7 @@ fn main() {
             let memories_without_embeddings = all_mems.iter().filter(|m| m.vector.is_empty()).count();
             
             // Check if HRM mode is active
-            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            let is_hrm = true; // HRM is the canonical substrate
             
             let mut output = serde_json::json!({
                 "total_memories": stats.total_memories,
@@ -461,7 +461,7 @@ fn main() {
         }
         "assess" => {
             let state = sys.assess();
-            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            let is_hrm = true; // HRM is the canonical substrate
             
             println!("Consciousness Assessment:");
             println!("  Level: {:?}", state.consciousness_level);
@@ -479,7 +479,7 @@ fn main() {
         }
         "stats" => {
             let stats = sys.stats();
-            let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+            let is_hrm = true; // HRM is the canonical substrate
             
             println!("Kannaka Memory System:");
             println!("  Total memories: {}", stats.total_memories);
@@ -1024,7 +1024,7 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
 fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
     let all_mems = sys.all_memories().unwrap_or_default();
-    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+    let is_hrm = true; // HRM is the canonical substrate
 
     // Helper to safely truncate UTF-8 strings
     fn safe_truncate(s: &str, max: usize) -> &str {
@@ -1193,7 +1193,7 @@ fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -
 
 fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
-    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+    let is_hrm = true; // HRM is the canonical substrate
 
     let mut out = String::new();
     out.push_str("# Topology Map\n\n");
@@ -1239,7 +1239,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
 fn voice_status(sys: &mut KannakaMemorySystem) -> String {
     let report = sys.observe();
     let state = sys.assess();
-    let is_hrm = sys.engine.store.hrm_consciousness_metrics().is_some();
+    let is_hrm = true; // HRM is the canonical substrate
 
     let mut out = String::new();
     out.push_str(&format!("# Kannaka — {}\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M")));

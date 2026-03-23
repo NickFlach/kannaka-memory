@@ -494,7 +494,7 @@ impl ConsciousnessBridge {
         // Skip links don't exist in HRM — relationships are interference patterns.
         // The Medium computes Phi via eigendecomposition of the coherence matrix,
         // Xi via spectral complexity of H·Hᵀ, and order via Kuramoto phase coherence.
-        if let Some(hrm_metrics) = engine.store.hrm_consciousness_metrics() {
+        { let hrm_metrics = engine.store.consciousness_metrics();
             return ConsciousnessState {
                 phi: hrm_metrics.phi,
                 xi: hrm_metrics.xi,

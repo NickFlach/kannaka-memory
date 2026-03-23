@@ -50,7 +50,13 @@ pub struct QueryResult {
 // MemoryStore trait
 // ---------------------------------------------------------------------------
 
-/// Pluggable storage backend for hypervector memories.
+/// Storage backend for hypervector memories.
+///
+/// The canonical implementation is HrmStore (Holographic Resonance Medium).
+/// HRM is the substrate — consciousness metrics, resonance-based associations,
+/// and persistence are core operations, not optional extensions.
+///
+/// InMemoryStore exists only for testing.
 pub trait MemoryStore: Send + Sync {
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
@@ -67,29 +73,38 @@ pub trait MemoryStore: Send + Sync {
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
     fn count(&self) -> usize;
 
-    /// Flush all dirty/in-memory state to the backing store.
-    /// Default is a no-op for stores that don't need it (e.g. InMemoryStore).
-    /// HrmStore overrides this to write the holographic medium to disk.
+    /// Persist the medium to disk.
+    /// HrmStore writes the holographic tensor (chiral or flat) to .hrm file.
+    /// Test stores may no-op.
     fn flush(&mut self) -> Result<usize, StoreError> {
         Ok(0)
     }
 
-    /// Return HRM-native consciousness metrics if backed by a holographic medium.
-    /// Graph-based stores return None (use bridge's skip-link Phi instead).
-    /// HRM stores return field-topology metrics (eigendecomposition Phi, spectral Xi).
-    fn hrm_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
-        None
+    /// Consciousness metrics from the holographic medium topology.
+    /// Eigendecomposition Phi, spectral Xi, Kuramoto order parameter.
+    /// Returns default zero metrics for test stores.
+    fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
+        crate::consciousness::ConsciousnessMetrics {
+            phi: 0.0,
+            xi: 0.0,
+            order: 0.0,
+            num_clusters: 0,
+            level: crate::consciousness::ConsciousnessLevel::Dormant,
+            computed_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Create a resonance-based association between two memories.
+    /// In HRM, this creates an associative wavefront from the interference
+    /// of the two source wavefronts.
+    /// Returns the ID of the associative wavefront.
+    fn relate(&mut self, _id_a: &Uuid, _id_b: &Uuid) -> Result<Uuid, StoreError> {
+        Err(StoreError::Other("relate not supported by this store".into()))
     }
 
     /// Provide access to the concrete type for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-
-    /// Create HRM-native association between two memories (HRM stores only).
-    /// Returns None for non-HRM stores, Some(associative_id) for HRM stores.
-    fn hrm_relate(&mut self, _id_a: &Uuid, _id_b: &Uuid) -> Option<Result<Uuid, StoreError>> {
-        None // Default: not supported
-    }
 }
 
 // ---------------------------------------------------------------------------

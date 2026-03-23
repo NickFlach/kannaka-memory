@@ -290,7 +290,7 @@ impl KannakaMemorySystem {
         let total_links: usize;
         let total_hallucinations: usize;
         
-        if self.engine.store.hrm_consciousness_metrics().is_some() {
+        if true {
             // HRM store detected - note: full HRM dreaming would require mutable store access
             // For now, traditional consolidation works with HRM stores too
             let reports = if let Some(since) = self.last_dream {
@@ -452,29 +452,11 @@ impl KannakaMemorySystem {
     }
 
     /// Create a skip link (relationship) between two memories.
-    pub fn relate(&mut self, source: &Uuid, target: &Uuid, strength: f32) -> Result<(), SystemError> {
-        // Try HRM-native association first
-        if let Some(result) = self.engine.store.hrm_relate(source, target) {
-            // HRM store: created associative wavefront
-            result.map(|_associative_id| ()).map_err(SystemError::Store)
-        } else {
-            // Traditional skip link for graph-based stores
-            let mut modulated_strength = strength;
-            
-            // If both memories have geometry, modulate link strength using geometric similarity
-            let source_mem = self.engine.store.get(source).ok().flatten();
-            let target_mem = self.engine.store.get(target).ok().flatten();
-            
-            if let (Some(src), Some(tgt)) = (source_mem, target_mem) {
-                if let (Some(ref src_coords), Some(ref tgt_coords)) = (&src.geometry, &tgt.geometry) {
-                    let geo_sim = geometric_similarity(src_coords, tgt_coords);
-                    modulated_strength *= geo_sim as f32;
-                }
-            }
-            
-            self.engine.reinforce_link(source, target, modulated_strength);
-            Ok(())
-        }
+    pub fn relate(&mut self, source: &Uuid, target: &Uuid, _strength: f32) -> Result<(), SystemError> {
+        // Create resonance-based association via the holographic medium
+        self.engine.store.relate(source, target)
+            .map(|_associative_id| ())
+            .map_err(SystemError::Store)
     }
 
     /// Generate a full observability report.
@@ -1106,3 +1088,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
