@@ -29,7 +29,16 @@ fn data_dir() -> PathBuf {
 }
 
 fn dirs_or_default() -> PathBuf {
-    // Use current directory / .kannaka as fallback
+    // Check env var first, then home directory, then CWD as last resort
+    if let Ok(dir) = std::env::var("KANNAKA_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(home) = dirs::home_dir() {
+        let home_kannaka = home.join(".kannaka");
+        if home_kannaka.exists() {
+            return home_kannaka;
+        }
+    }
     PathBuf::from(".kannaka")
 }
 
