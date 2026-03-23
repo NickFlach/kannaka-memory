@@ -114,18 +114,28 @@ pub struct KannakaMemorySystem {
 }
 
 impl KannakaMemorySystem {
-    /// Initialize a new system.
-    /// TODO(chiral): This now requires init_with_engine() with an HrmStore.
-    /// The legacy DiskStore/HnswStore/load_state path has been removed.
+    /// Initialize a new system with HrmStore as the default backend.
+    /// Loads existing .hrm file if present, creates new one otherwise.
     pub fn init(data_dir: PathBuf) -> Result<Self, SystemError> {
         std::fs::create_dir_all(&data_dir)?;
 
         let pipeline = make_pipeline();
-        let engine = MemoryEngine::new(
-            Box::new(crate::store::InMemoryStore::new()),
-            pipeline,
-        );
+        let hrm_path = data_dir.join("kannaka.hrm");
 
+        let store: Box<dyn crate::store::MemoryStore> = if hrm_path.exists() {
+            match crate::hrm_store::HrmStore::load(pipeline, hrm_path) {
+                Ok(s) => Box::new(s),
+                Err(e) => {
+                    eprintln!("[init] Failed to load HRM: {}. Starting fresh.", e);
+                    let pipeline = make_pipeline();
+                    Box::new(crate::hrm_store::HrmStore::new(pipeline, data_dir.join("kannaka.hrm")))
+                }
+            }
+        } else {
+            Box::new(crate::hrm_store::HrmStore::new(pipeline, hrm_path))
+        };
+
+        let engine = MemoryEngine::new(store, make_pipeline());
         Self::init_with_engine(data_dir, engine)
     }
 
