@@ -80,8 +80,9 @@ pub trait MemoryStore: Send + Sync {
     }
 
     /// Resonance-based recall from the holographic medium.
-    /// Default delegates to search() for backward compat.
-    fn recall_text(&self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+    /// Recall IS observation — attention reshapes the field.
+    /// Requires &mut self because reading changes the substrate.
+    fn recall_text(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
         let _ = (query, top_k);
         Err(StoreError::Other("recall_text not implemented — use search()".into()))
     }

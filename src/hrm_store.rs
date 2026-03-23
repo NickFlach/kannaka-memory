@@ -613,14 +613,26 @@ impl MemoryStore for HrmStore {
         }
     }
 
-    fn recall_text(&self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+    fn recall_text(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
         if let Some(ref chiral) = self.chiral {
+            // Chiral bilateral resonance
             let results = chiral.recall(query, top_k, &self.pipeline)
                 .map_err(|e| StoreError::Other(format!("chiral recall failed: {}", e)))?;
+
+            // Observation: recall reshapes the field — attention IS computation
+            for (i, r) in results.iter().enumerate() {
+                let ranking_factor = 1.0 - (i as f32 / results.len().max(1) as f32);
+                let intensity = r.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
+                if let Some(index) = self.medium.get_wavefront_index(&r.id) {
+                    self.medium.observe_wavefront(index, intensity);
+                }
+            }
+            self.mark_dirty();
+
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
         } else {
-            let results = self.medium.recall(query, top_k, &self.pipeline)
-                .map_err(|e| StoreError::Other(format!("recall failed: {}", e)))?;
+            // Flat medium: resonance recall with observation
+            let results = self.recall_resonance_with_observation(query, top_k)?;
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
         }
     }
