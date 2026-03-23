@@ -21,8 +21,7 @@ blake3 = { version = "1.5", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
-tokio = { version = "1", features = ["full"], optional = true }
-async-trait = { version = "0.1", optional = true }
+# tokio + async-trait removed (were only used by MCP server)
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core" }
 
@@ -39,7 +38,7 @@ image = { version = "0.25", optional = true }
 [features]
 default = ["hrm", "nats"]
 nats = []
-mcp = ["tokio", "async-trait"]
+# mcp removed — CLI is the canonical interface
 audio = ["symphonia", "rustfft", "rubato"]
 video = ["image"]
 glyph = []
@@ -55,10 +54,7 @@ path = "src/bin/research.rs"
 name = "glyph_demo"
 required-features = ["glyph"]
 
-[[bin]]
-name = "kannaka-mcp"
-path = "src/bin/mcp_server.rs"
-required-features = ["mcp"]
+# kannaka-mcp removed — CLI is the canonical interface
 
 [[bin]]
 name = "kannaka-recompute-geometry"

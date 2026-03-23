@@ -26,8 +26,7 @@ pub mod glyph_bridge;
 
 // Consciousness differentiation tests integrated into existing test modules
 
-#[cfg(feature = "mcp")]
-pub mod mcp;
+// MCP server removed — CLI is the canonical interface, OpenClaw extension wraps it
 
 #[cfg(feature = "audio")]
 pub mod ear;
