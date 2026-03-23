@@ -301,7 +301,8 @@ impl ConsolidationEngine {
                 None => continue,
             };
 
-            // Request k_neighbors+1 to ensure real neighbors aren't displaced by self
+            // Internal search for dream consolidation — raw similarity without observation.
+            // Dreams should NOT count as attention (observation would amplify during annealing).
             let neighbors = match engine.store.search(&vec_a, k_neighbors + 1) {
                 Ok(n) => n,
                 Err(_) => continue,

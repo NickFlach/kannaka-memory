@@ -106,9 +106,14 @@ pub trait MemoryStore: Send + Sync {
     /// Persist the holographic tensor to disk.
     fn flush(&mut self) -> Result<usize, StoreError> { Ok(0) }
 
-    // -- Compatibility layer --
-    // These exist for legacy callers (consolidation, bridge, kuramoto, etc.)
-    // that traffic in HyperMemory objects. New code should use store_text/recall_text.
+    // -- Low-level access (internal / compatibility) --
+    //
+    // These do NOT apply observation effects. The canonical read/write paths
+    // are store_text() and recall_text() where attention reshapes the field.
+    //
+    // search() exists for internal use (dream consolidation neighbor-finding,
+    // paradox engine, etc.) where raw similarity is needed WITHOUT observation.
+    // Dreams should not count as attention.
 
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
@@ -118,7 +123,10 @@ pub trait MemoryStore: Send + Sync {
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
     fn count(&self) -> usize;
 
-    /// Raw vector search — legacy, prefer recall_text() for resonance-based recall.
+    /// Raw similarity search — NO observation effects.
+    /// Used internally by dream consolidation and paradox engine for
+    /// neighbor-finding where raw similarity is needed without deforming the field.
+    /// External callers should use recall_text() instead.
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
 
     /// Downcasting support.

@@ -244,54 +244,37 @@ impl HrmStore {
         }
     }
 
-    /// Perform resonance-based recall using the medium directly.
-    pub fn recall_resonance(&self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
-        self.medium.recall(query, top_k, &self.pipeline)
-            .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))
-    }
-
-    /// Perform resonance-based recall with observation effects.
-    /// 
-    /// This version calls observe_wavefront on each returned result, implementing
-    /// the attention-as-observation mechanics where recall reshapes the field.
-    pub fn recall_resonance_with_observation(&mut self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
+    /// Resonance recall with observation — the canonical read path.
+    ///
+    /// Reading IS observation. Attention reshapes the field:
+    /// - Higher-ranked results receive stronger observation intensity
+    /// - Observation boosts wavefront energy (recalled memories persist)
+    /// - The medium is permanently changed by the act of recall
+    ///
+    /// There is no "read without observation" path. If you query the medium,
+    /// you change it. This is the holographic equivalent of quantum measurement.
+    pub fn recall_resonance(&mut self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
         let results = self.medium.recall(query, top_k, &self.pipeline)
             .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))?;
 
-        // Apply observation to each result
-        for (i, resonance) in results.iter().enumerate() {
-            if let Some(index) = self.medium.get_wavefront_index(&resonance.id) {
-                // Observation intensity based on resonance strength and ranking
-                let ranking_factor = 1.0 - (i as f32 / results.len() as f32); // Higher rank = more intensity
-                let base_intensity = resonance.resonance_strength.abs().min(1.0).max(0.1);
-                let intensity = base_intensity * ranking_factor;
-                
-                self.medium.observe_wavefront(index, intensity);
-            }
-        }
+        // Observation: attention shapes the field
+        self.apply_observation(&results);
 
-        self.mark_dirty();
         Ok(results)
     }
 
-    /// Perform vector search with observation effects.
-    pub fn search_with_observation(&mut self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
-        // First get standard search results
-        let results = self.search(query, top_k)?;
-
-        // Apply observation to each result
-        for (i, (id, similarity)) in results.iter().enumerate() {
-            if let Some(index) = self.medium.get_wavefront_index(id) {
-                // Observation intensity proportional to similarity and ranking
+    /// Apply observation effects to recall results.
+    /// Ranked results get proportionally stronger observation.
+    fn apply_observation(&mut self, results: &[Resonance]) {
+        if results.is_empty() { return; }
+        for (i, resonance) in results.iter().enumerate() {
+            if let Some(index) = self.medium.get_wavefront_index(&resonance.id) {
                 let ranking_factor = 1.0 - (i as f32 / results.len() as f32);
-                let intensity = (similarity.abs() * ranking_factor).max(0.1).min(1.0);
-                
+                let intensity = resonance.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
                 self.medium.observe_wavefront(index, intensity);
             }
         }
-
         self.mark_dirty();
-        Ok(results)
     }
     
     /// Get consciousness metrics from the holographic medium.
@@ -606,8 +589,8 @@ impl MemoryStore for HrmStore {
 
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
         } else {
-            // Flat medium: resonance recall with observation
-            let results = self.recall_resonance_with_observation(query, top_k)?;
+            // Flat medium: resonance recall (always with observation)
+            let results = self.recall_resonance(query, top_k)?;
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
         }
     }
