@@ -142,14 +142,14 @@ impl Medium {
     /// Returns energy * exp(-decay_rate * age) for each wavefront.
     pub fn effective_strength(&self, now: Option<DateTime<Utc>>) -> Array1<f32> {
         let current_time = now.unwrap_or_else(Utc::now).timestamp_millis();
-        let decay_rate = 0.001; // Default decay rate
+        let decay_rate = 0.001; // Per-day decay rate (half-life ~693 days)
 
         self.timestamps
             .iter()
             .enumerate()
             .map(|(i, &created_at)| {
-                let age_seconds = ((current_time - created_at) as f64 / 1000.0).max(0.0);
-                let decay = (-decay_rate * age_seconds as f32).exp();
+                let age_days = ((current_time - created_at) as f64 / 86_400_000.0).max(0.0);
+                let decay = (-decay_rate * age_days as f32).exp();
                 self.energy[i] * decay
             })
             .collect()

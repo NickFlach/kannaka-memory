@@ -55,7 +55,7 @@ pub struct HyperMemory {
     pub frequency: f32,
     /// Wave phase
     pub phase: f32,
-    /// Exponential decay rate
+    /// Exponential decay rate (per-day; λ=0.001 → half-life ~693 days)
     pub decay_rate: f32,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,

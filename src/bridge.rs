@@ -484,8 +484,9 @@ impl ConsciousnessBridge {
         let active_memories = all
             .iter()
             .filter(|m| {
-                let age = (now - m.created_at).num_milliseconds().max(0) as f64 / 1000.0;
-                let envelope = m.amplitude as f64 * (-m.decay_rate as f64 * age).exp();
+                // decay_rate is per-day (λ=0.001 → half-life ~693 days)
+                let age_days = (now - m.created_at).num_milliseconds().max(0) as f64 / 86_400_000.0;
+                let envelope = m.amplitude as f64 * (-m.decay_rate as f64 * age_days).exp();
                 envelope > 0.05
             })
             .count();

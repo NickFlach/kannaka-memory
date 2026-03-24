@@ -321,8 +321,9 @@ impl MemoryIntrospector {
             // Classify by amplitude envelope (A · e^(-λt)), not instantaneous
             // strength which oscillates through zero due to cos(2πft + φ).
             // The wave oscillation is the memory's *rhythm*, not its vitality.
-            let age_secs = (now - mem.created_at).num_milliseconds().max(0) as f64 / 1000.0;
-            let envelope = mem.amplitude as f64 * (-mem.decay_rate as f64 * age_secs).exp();
+            // decay_rate is per-day (λ=0.001 → half-life ~693 days). Dreams handle real pruning.
+            let age_days = (now - mem.created_at).num_milliseconds().max(0) as f64 / 86_400_000.0;
+            let envelope = mem.amplitude as f64 * (-mem.decay_rate as f64 * age_days).exp();
 
             sum_amplitude += mem.amplitude;
             sum_frequency += mem.frequency;
