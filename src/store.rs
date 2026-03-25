@@ -139,6 +139,17 @@ pub trait MediumBackend: Send + Sync {
     /// External callers should use recall_text() instead.
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
 
+    /// Wave-native dream using Medium's eigenstructure annealing.
+    /// Only supported by HrmStore. Default returns an error for other backends.
+    fn dream_native(
+        &mut self,
+        _cycles: usize,
+        _temperature: Option<f32>,
+        _chiral_eta: f32,
+    ) -> Result<crate::medium::types::DreamReport, StoreError> {
+        Err(StoreError::Other("dream_native not supported by this backend".into()))
+    }
+
     /// Downcasting support.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;

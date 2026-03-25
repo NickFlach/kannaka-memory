@@ -324,6 +324,79 @@ impl HrmStore {
         }
     }
 
+    /// Wave-native dream using Medium's eigenstructure annealing.
+    ///
+    /// Bypasses the old particle-based consolidation pipeline entirely.
+    /// O(n×k) instead of O(n²). Operates on the holographic medium directly.
+    ///
+    /// # Arguments
+    /// * `cycles` - Number of annealing cycles
+    /// * `temperature` - Initial temperature for annealing (None = 1.0)
+    /// * `chiral_eta` - Optional chiral perturbation strength (0.0 = none)
+    pub fn dream_native(
+        &mut self,
+        cycles: usize,
+        temperature: Option<f32>,
+        chiral_eta: f32,
+    ) -> crate::medium::DreamReport {
+        // Apply chiral field perturbation before dreaming (break lock-step)
+        if chiral_eta > 0.0 {
+            if let Some(ref mut chiral) = self.chiral {
+                chiral.right.apply_chiral_field_perturbation(chiral_eta);
+            } else {
+                self.medium.apply_chiral_field_perturbation(chiral_eta);
+            }
+        }
+
+        // Route to chiral or flat medium dream
+        let report = if let Some(ref mut chiral) = self.chiral {
+            // Chiral: use ChiralMedium.dream() which operates on right hemisphere
+            let count_before = chiral.right.count();
+            let energy_before = if count_before > 0 {
+                chiral.right.energy.sum() / count_before as f32
+            } else {
+                0.0
+            };
+
+            chiral.dream(true, cycles); // deep=true → right hemisphere annealing
+
+            let count_after = chiral.right.count();
+            let energy_after = if count_after > 0 {
+                chiral.right.energy.sum() / count_after as f32
+            } else {
+                0.0
+            };
+
+            let dissolved = if count_before > count_after { count_before - count_after } else { 0 };
+
+            crate::medium::DreamReport {
+                cycles_completed: cycles,
+                wavefronts_dissolved: dissolved,
+                wavefronts_strengthened: 0, // chiral dream doesn't track this separately
+                wavefronts_hallucinated: 0,
+                energy_before,
+                energy_after,
+                final_temperature: 0.0,
+                converged: true,
+            }
+        } else {
+            // Flat medium: use Medium's eigenstructure annealing
+            self.medium.dream(cycles, temperature)
+        };
+
+        // Rebuild cache and sync after dreaming
+        self.sync_medium_from_chiral();
+        self.rebuild_cache().ok();
+        self.mark_dirty();
+
+        // Save the .hrm file
+        if let Err(e) = self.save_medium() {
+            eprintln!("[hrm] Failed to save after dream_native: {}", e);
+        }
+
+        report
+    }
+
     /// Reset all wavefront energies to target value (bias voltage restoration).
     pub fn reset_energies(&mut self, target: f32) {
         self.medium.reset_energies(target);
@@ -546,6 +619,15 @@ impl MediumBackend for HrmStore {
     fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
         // Use the public method which handles chiral vs flat medium
         Self::consciousness_metrics(self)
+    }
+
+    fn dream_native(
+        &mut self,
+        cycles: usize,
+        temperature: Option<f32>,
+        chiral_eta: f32,
+    ) -> Result<crate::medium::types::DreamReport, StoreError> {
+        Ok(Self::dream_native(self, cycles, temperature, chiral_eta))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

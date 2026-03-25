@@ -567,4 +567,34 @@ impl Medium {
 
         removed_count
     }
+
+    /// Apply chiral field perturbation to break phase lock-step.
+    ///
+    /// Computes a field-level order parameter (Kuramoto-style) and applies
+    /// phase noise proportional to each wavefront's energy. Higher global
+    /// coherence → stronger perturbation to prevent crystallization.
+    ///
+    /// # Arguments
+    /// * `eta` - Perturbation strength (typical: 0.01–0.1)
+    pub fn apply_chiral_field_perturbation(&mut self, eta: f32) {
+        let n = self.wavefront_count();
+        if n < 2 {
+            return;
+        }
+
+        // Compute field-level order parameter (Kuramoto R)
+        let sum_cos: f32 = self.phase.iter().map(|p| p.cos()).sum();
+        let sum_sin: f32 = self.phase.iter().map(|p| p.sin()).sum();
+        let order = (sum_cos * sum_cos + sum_sin * sum_sin).sqrt() / n as f32;
+
+        // Higher order → stronger perturbation (break lock-step)
+        let strength = eta * order;
+
+        // Apply phase noise proportional to energy
+        let mean_energy = self.energy.mean().unwrap_or(1.0);
+        for i in 0..n {
+            let noise = strength * (self.energy[i] / mean_energy);
+            self.phase[i] += noise * (self.frequency[i] * 7.0 + self.phase[i] * 13.0).sin();
+        }
+    }
 }

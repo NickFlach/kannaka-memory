@@ -282,36 +282,32 @@ impl KannakaMemorySystem {
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
         
-        // Route to HRM eigenstructure dreaming or traditional consolidation
-        let total_strengthened: usize;
-        let total_pruned: usize;
-        let total_links: usize;
-        let total_hallucinations: usize;
-        
-        if true {
-            // HRM store detected - note: full HRM dreaming would require mutable store access
-            // For now, traditional consolidation works with HRM stores too
-            let reports = if let Some(since) = self.last_dream {
-                self.dream_state.dream_incremental(&mut self.engine, since)
-            } else {
-                self.dream_state.dream(&mut self.engine)
-            };
-            total_strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
-            total_pruned = reports.iter().map(|r| r.memories_pruned).sum();
-            total_links = reports.iter().map(|r| r.skip_links_created).sum();
-            total_hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
-        } else {
-            // Traditional consolidation for legacy stores (transitional)
-            let reports = if let Some(since) = self.last_dream {
-                self.dream_state.dream_incremental(&mut self.engine, since)
-            } else {
-                self.dream_state.dream(&mut self.engine)
-            };
-            total_strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
-            total_pruned = reports.iter().map(|r| r.memories_pruned).sum();
-            total_links = reports.iter().map(|r| r.skip_links_created).sum();
-            total_hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
-        }
+        // ADR-0022: Wave-native dreaming via Medium's eigenstructure annealing.
+        // Bypasses the old O(n²) particle-based consolidation pipeline.
+        let chiral_eta = self.dream_state.engine.chiral_perturbation;
+        let medium_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta);
+
+        let (total_strengthened, total_pruned, total_hallucinations) = match medium_report {
+            Ok(report) => {
+                eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
+                    report.cycles_completed, report.wavefronts_dissolved,
+                    report.wavefronts_strengthened, report.wavefronts_hallucinated);
+                (report.wavefronts_strengthened, report.wavefronts_dissolved, report.wavefronts_hallucinated)
+            }
+            Err(e) => {
+                // Fallback to traditional consolidation for non-HRM stores
+                eprintln!("[dream] dream_native not available ({}), falling back to consolidation", e);
+                let reports = if let Some(since) = self.last_dream {
+                    self.dream_state.dream_incremental(&mut self.engine, since)
+                } else {
+                    self.dream_state.dream(&mut self.engine)
+                };
+                let strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
+                let pruned = reports.iter().map(|r| r.memories_pruned).sum();
+                let hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
+                (strengthened, pruned, hallucinations)
+            }
+        };
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
@@ -325,7 +321,7 @@ impl KannakaMemorySystem {
         // ADR-0011: publish dream completed event (best-effort)
         if let Some(ref publisher) = self.flux {
             let _ = publisher.publish(FluxEventPayload::DreamCompleted {
-                cycles: 1, // Fixed: traditional consolidation or HRM dream is one cycle
+                cycles: 3,
                 memories_strengthened: total_strengthened,
                 memories_pruned: total_pruned,
                 hallucinations_created: total_hallucinations,
@@ -337,10 +333,10 @@ impl KannakaMemorySystem {
         self.post_dream_swarm_sync();
 
         Ok(DreamReport {
-            cycles: 1, // Fixed: both traditional and HRM dreams count as 1 cycle
+            cycles: 3,
             memories_strengthened: total_strengthened,
             memories_pruned: total_pruned,
-            new_connections: total_links,
+            new_connections: 0, // Wave-native dreams use interference, not explicit links
             consciousness_before: level_name(&before.consciousness_level),
             consciousness_after: level_name(&after.consciousness_level),
             emerged,

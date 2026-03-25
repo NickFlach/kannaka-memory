@@ -264,6 +264,29 @@ impl Hemisphere {
         }
     }
 
+    /// Apply chiral field perturbation to break phase lock-step.
+    ///
+    /// Computes a field-level order parameter (Kuramoto-style) and applies
+    /// phase noise proportional to each wavefront's energy.
+    pub fn apply_chiral_field_perturbation(&mut self, eta: f32) {
+        let n = self.count();
+        if n < 2 { return; }
+
+        let sum_cos: f32 = self.phase.iter().map(|p| p.cos()).sum();
+        let sum_sin: f32 = self.phase.iter().map(|p| p.sin()).sum();
+        let order = (sum_cos * sum_cos + sum_sin * sum_sin).sqrt() / n as f32;
+
+        let strength = eta * order;
+
+        let mean_energy = self.energy.sum() / n as f32;
+        if mean_energy < 1e-8 { return; }
+
+        for i in 0..n {
+            let noise = strength * (self.energy[i] / mean_energy);
+            self.phase[i] += noise * (self.frequency[i] * 7.0 + self.phase[i] * 13.0).sin();
+        }
+    }
+
     /// Get the wavefront vector for a given ID.
     pub fn get_wavefront(&self, id: &Uuid) -> Option<Vec<f32>> {
         self.id_to_index.get(id).map(|&idx| self.wavefronts.row(idx).to_vec())
