@@ -905,7 +905,13 @@ impl ConsolidationEngine {
         let parent_ids: Vec<String> = selected_memories.iter().map(|(id, _, _, _, _)| id.to_string()).collect();
         let parent_phrases: Vec<String> = selected_memories.iter()
             .map(|(_, _, content, _, _)| {
-                if content.len() > 60 { &content[..60] } else { content.as_str() }
+                // Safe truncation: find nearest char boundary at or before byte 60
+                if content.len() > 60 {
+                    let end = content.floor_char_boundary(60);
+                    &content[..end]
+                } else {
+                    content.as_str()
+                }
             })
             .map(|s| s.to_string())
             .collect();
@@ -1027,7 +1033,7 @@ impl ConsolidationEngine {
         let parent_phrases: Vec<&str> = parent_indices.iter()
             .map(|&i| {
                 let c = &candidates[i].2;
-                if c.len() > 60 { &c[..60] } else { c.as_str() }
+                if c.len() > 60 { &c[..c.floor_char_boundary(60)] } else { c.as_str() }
             })
             .collect();
         let content = format!("[hallucination] Synthesis of: {}", parent_phrases.join(" | "));

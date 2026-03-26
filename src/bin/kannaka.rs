@@ -915,7 +915,7 @@ fn main() {
                         for &memory_id in &cluster.memory_ids {
                             if let Ok(Some(memory)) = sys.get_memory(&memory_id) {
                                 let preview = if memory.content.len() > 60 {
-                                    format!("{}...", &memory.content[..60])
+                                    format!("{}...", &memory.content[..memory.content.floor_char_boundary(60)])
                                 } else {
                                     memory.content.clone()
                                 };
@@ -962,7 +962,7 @@ fn main() {
                                     let membership = kannaka_memory::cmf_membership(memory, cmf);
                                     if membership.fitness > 0.1 {
                                         let preview = if memory.content.len() > 40 {
-                                            format!("{}...", &memory.content[..40])
+                                            format!("{}...", &memory.content[..memory.content.floor_char_boundary(40)])
                                         } else {
                                             memory.content.clone()
                                         };

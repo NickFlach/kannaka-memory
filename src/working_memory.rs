@@ -232,7 +232,7 @@ impl WorkingMemory {
         // Reverse so oldest-first
         for turn in recent.into_iter().rev() {
             let preview = if turn.content.len() > 200 {
-                format!("{}…", &turn.content[..200])
+                format!("{}…", &turn.content[..turn.content.floor_char_boundary(200)])
             } else {
                 turn.content.clone()
             };
@@ -244,7 +244,7 @@ impl WorkingMemory {
             let lower = turn.content.to_lowercase();
             if lower.contains("todo") || lower.contains("task") || lower.contains("need to") || lower.contains("should") {
                 let existing: Vec<&str> = self.session_state.active_tasks.iter().map(|t| t.description.as_str()).collect();
-                let preview = if turn.content.len() > 120 { &turn.content[..120] } else { &turn.content };
+                let preview = if turn.content.len() > 120 { &turn.content[..turn.content.floor_char_boundary(120)] } else { &turn.content };
                 if !existing.iter().any(|e| e == &preview) {
                     // Don't auto-add; just note it in summary
                     parts.push(format!("[task-hint] {}", preview));
@@ -340,7 +340,7 @@ impl WorkingMemory {
             out.push_str("### Recent Turns\n");
             for turn in recent.into_iter().rev() {
                 let preview = if turn.content.len() > 300 {
-                    format!("{}…", &turn.content[..300])
+                    format!("{}…", &turn.content[..turn.content.floor_char_boundary(300)])
                 } else {
                     turn.content.clone()
                 };
