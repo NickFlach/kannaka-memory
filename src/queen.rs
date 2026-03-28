@@ -18,8 +18,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::hrm_store::HrmStore;
 use crate::kuramoto::KuramotoSync;
-use crate::store::ResonanceEngine;
+use crate::store::{MediumBackend, ResonanceEngine};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,6 +74,18 @@ pub struct AgentPhase {
     /// Chiral handedness.
     #[serde(default)]
     pub handedness: Handedness,
+    /// Left-hemisphere Kuramoto order parameter (coherence within conscious workspace).
+    #[serde(default)]
+    pub left_coherence: f32,
+    /// Right-hemisphere Kuramoto order parameter (coherence within subconscious patterns).
+    #[serde(default)]
+    pub right_coherence: f32,
+    /// Corpus callosum bridge activity (fraction of bandwidth used this cycle).
+    #[serde(default)]
+    pub bridge_activity: f32,
+    /// Current dream state label (None = awake).
+    #[serde(default)]
+    pub dream_state: Option<String>,
 }
 
 fn default_trust() -> f32 {
@@ -175,6 +188,14 @@ pub struct QueenSync {
     pub agent_id: String,
     /// Current effective coupling strength (adaptive).
     pub coupling_strength: f32,
+    /// Left-hemisphere Kuramoto order parameter.
+    pub left_coherence: f32,
+    /// Right-hemisphere Kuramoto order parameter.
+    pub right_coherence: f32,
+    /// Corpus callosum bridge activity (0.0-1.0).
+    pub bridge_activity: f32,
+    /// Current dream state label.
+    pub dream_state: Option<String>,
 }
 
 impl QueenSync {
@@ -189,6 +210,10 @@ impl QueenSync {
             phi: 0.0,
             agent_id: agent_id.to_string(),
             coupling_strength: coupling,
+            left_coherence: 0.0,
+            right_coherence: 0.0,
+            bridge_activity: 0.0,
+            dream_state: None,
         }
     }
 
@@ -389,6 +414,10 @@ impl QueenSync {
             timestamp: Utc::now(),
             trust_score: 0.5,
             handedness: Handedness::Achiral,
+            left_coherence: self.left_coherence,
+            right_coherence: self.right_coherence,
+            bridge_activity: self.bridge_activity,
+            dream_state: self.dream_state.clone(),
         }
     }
 
@@ -465,17 +494,130 @@ impl QueenSync {
     }
 
     // -----------------------------------------------------------------------
-    // Task 3: Phase derivation from local Kuramoto clusters
+    // Phase derivation from HRM wavefront physics
     // -----------------------------------------------------------------------
 
-    /// Derive agent phase, frequency, and coherence from local memory clusters.
+    /// Derive agent phase, frequency, and coherence from the holographic medium.
     ///
-    /// - **Phase** = amplitude-weighted circular mean of cluster mean phases.
-    /// - **Frequency** = normalized memory storage rate: ω = ln(1 + count) / ln(1 + 100).
-    /// - **Coherence** = mean order parameter across clusters.
+    /// Attempts HRM-native derivation first (from the medium's wavefront
+    /// physics: phase[], energy[], frequency[] arrays). Falls back to
+    /// Kuramoto-cluster derivation when the backend is not an HrmStore or
+    /// has no wavefronts.
     ///
-    /// Returns (phase, frequency, coherence). Updates self in place.
+    /// Returns (phase, frequency, coherence). Updates self in place, including
+    /// the HRM-specific fields (left_coherence, right_coherence, bridge_activity).
     pub fn derive_local_state(&mut self, engine: &ResonanceEngine) -> (f32, f32, f32) {
+        // Try HRM-native derivation first
+        if let Some(hrm) = engine.store.as_any().downcast_ref::<HrmStore>() {
+            let medium = hrm.medium();
+            if medium.wavefront_count() > 0 {
+                return self.derive_from_hrm_wavefronts(hrm);
+            }
+        }
+
+        // Fallback: cluster-based derivation for non-HRM backends
+        self.derive_from_clusters(engine)
+    }
+
+    /// HRM-native phase derivation: compute phase, frequency, and coherence
+    /// directly from the holographic medium's wavefront arrays.
+    ///
+    /// - **Phase**: energy-weighted circular mean of wavefront phases.
+    /// - **Frequency**: blend of memory-count rate with mean wavefront frequency.
+    /// - **Coherence**: Kuramoto order parameter r = |1/N sum e^{i*phi_k}|
+    ///   computed from the medium's phase[] array.
+    /// - **Left/right coherence**: per-hemisphere Kuramoto order parameters
+    ///   (when ChiralMedium is active).
+    /// - **Bridge activity**: corpus callosum bandwidth utilization.
+    fn derive_from_hrm_wavefronts(&mut self, hrm: &HrmStore) -> (f32, f32, f32) {
+        let medium = hrm.medium();
+        let n = medium.wavefront_count();
+
+        // --- Phase: energy-weighted circular mean of wavefront phases ---
+        let mut sum_cos = 0.0f32;
+        let mut sum_sin = 0.0f32;
+        let mut total_weight = 0.0f32;
+
+        for i in 0..n {
+            let w = medium.energy[i].max(0.0);
+            sum_cos += w * medium.phase[i].cos();
+            sum_sin += w * medium.phase[i].sin();
+            total_weight += w;
+        }
+
+        let phase = if total_weight > 1e-9 {
+            let mut p = sum_sin.atan2(sum_cos);
+            if p < 0.0 {
+                p += TAU;
+            }
+            p
+        } else {
+            self.phase
+        };
+
+        // --- Frequency: blend memory-count rate with mean wavefront frequency ---
+        let memory_count = hrm.count();
+        let count_rate = ((1.0 + memory_count as f64).ln() / (1.0 + 100.0_f64).ln()) as f32;
+        let mean_wf_freq = if n > 0 {
+            medium.frequency.iter().sum::<f32>() / n as f32
+        } else {
+            0.0
+        };
+        // 50/50 blend: count-based rate drives natural oscillation, wavefront
+        // frequency captures the medium's intrinsic dynamics.
+        let frequency = 0.5 * count_rate + 0.5 * mean_wf_freq;
+
+        // --- Coherence: Kuramoto order parameter from wavefront phases ---
+        let coherence = if n > 0 {
+            let nc = n as f32;
+            let sc: f32 = medium.phase.iter().map(|&p| p.cos()).sum::<f32>() / nc;
+            let ss: f32 = medium.phase.iter().map(|&p| p.sin()).sum::<f32>() / nc;
+            (sc * sc + ss * ss).sqrt()
+        } else {
+            0.0
+        };
+
+        // --- Per-hemisphere coherence (chiral-aware) ---
+        if let Some(chiral) = hrm.chiral_medium() {
+            self.left_coherence = Self::hemisphere_kuramoto_order(&chiral.left.phase);
+            self.right_coherence = Self::hemisphere_kuramoto_order(&chiral.right.phase);
+
+            // Bridge activity = 1 - (remaining_budget / total_bandwidth)
+            let stats = chiral.callosum.transfer_stats();
+            if stats.current_bandwidth > 0.0 {
+                self.bridge_activity =
+                    1.0 - (stats.remaining_budget / stats.current_bandwidth).clamp(0.0, 1.0);
+            } else {
+                self.bridge_activity = 0.0;
+            }
+        } else {
+            self.left_coherence = 0.0;
+            self.right_coherence = coherence; // flat medium: all is "right"
+            self.bridge_activity = 0.0;
+        }
+
+        self.phase = phase;
+        self.frequency = frequency;
+        self.coherence = coherence;
+
+        (phase, frequency, coherence)
+    }
+
+    /// Compute Kuramoto order parameter for a single hemisphere's phase array.
+    /// r = |1/N sum e^{i*phi_k}|
+    fn hemisphere_kuramoto_order(phases: &ndarray::Array1<f32>) -> f32 {
+        let n = phases.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let nc = n as f32;
+        let sc: f32 = phases.iter().map(|&p| p.cos()).sum::<f32>() / nc;
+        let ss: f32 = phases.iter().map(|&p| p.sin()).sum::<f32>() / nc;
+        (sc * sc + ss * ss).sqrt()
+    }
+
+    /// Legacy cluster-based derivation for non-HRM backends.
+    fn derive_from_clusters(&mut self, engine: &ResonanceEngine) -> (f32, f32, f32) {
         let sync = KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(engine, 2);
 
@@ -484,14 +626,12 @@ impl QueenSync {
         }
 
         // Phase = amplitude-weighted circular mean of cluster mean phases
-        // Weight each cluster by the sum of amplitudes of its members
         let mut sum_cos = 0.0f32;
         let mut sum_sin = 0.0f32;
         let mut total_weight = 0.0f32;
         let mut coherence_sum = 0.0f32;
 
         for cluster in &clusters {
-            // Cluster weight = number of members (proxy for amplitude sum)
             let weight = cluster.memory_ids.len() as f32;
             sum_cos += weight * cluster.mean_phase.cos();
             sum_sin += weight * cluster.mean_phase.sin();
@@ -628,6 +768,10 @@ mod tests {
             timestamp: Utc::now(),
             trust_score: trust,
             handedness: Handedness::Achiral,
+            left_coherence: 0.0,
+            right_coherence: 0.0,
+            bridge_activity: 0.0,
+            dream_state: None,
         }
     }
 
@@ -643,7 +787,7 @@ mod tests {
             make_agent_phase("c", 1.0, 1.0, 1.0),
         ];
         let (r, psi) = QueenSync::compute_order_parameter(&swarm);
-        assert!((r - 1.0).abs() < 0.01, "identical phases → r≈1.0, got {}", r);
+        assert!((r - 1.0).abs() < 0.01, "identical phases -> r~1.0, got {}", r);
         assert!((psi - 1.0).abs() < 0.01, "mean phase should be 1.0, got {}", psi);
     }
 
@@ -654,7 +798,7 @@ mod tests {
             make_agent_phase("b", PI, 1.0, 1.0),
         ];
         let (r, _) = QueenSync::compute_order_parameter(&swarm);
-        assert!(r < 0.1, "opposite phases → r≈0, got {}", r);
+        assert!(r < 0.1, "opposite phases -> r~0, got {}", r);
     }
 
     #[test]
@@ -671,7 +815,7 @@ mod tests {
             })
             .collect();
         let (r, _) = QueenSync::compute_order_parameter(&swarm);
-        assert!(r < 0.3, "evenly spaced → low r, got {}", r);
+        assert!(r < 0.3, "evenly spaced -> low r, got {}", r);
     }
 
     #[test]
@@ -686,10 +830,10 @@ mod tests {
         // Agent a has high trust, agent b has zero trust
         let swarm = vec![
             make_agent_phase("a", 0.0, 1.0, 1.0),
-            make_agent_phase("b", PI, 1.0, 0.0), // zero trust → no influence
+            make_agent_phase("b", PI, 1.0, 0.0), // zero trust -> no influence
         ];
         let (r, psi) = QueenSync::compute_order_parameter(&swarm);
-        // Only agent a contributes, so r = 1/2 and psi ≈ 0
+        // Only agent a contributes, so r = 1/2 and psi ~ 0
         assert!(psi.abs() < 0.1, "mean phase should follow trusted agent, got {}", psi);
     }
 
@@ -731,14 +875,14 @@ mod tests {
         let (r_high, _) = QueenSync::compute_order_parameter(&high);
         let phi_low = QueenSync::compute_swarm_phi(&low, r_low);
         let phi_high = QueenSync::compute_swarm_phi(&high, r_high);
-        assert!(phi_high > phi_low, "coherent → higher Phi: {} vs {}", phi_high, phi_low);
+        assert!(phi_high > phi_low, "coherent -> higher Phi: {} vs {}", phi_high, phi_low);
     }
 
     #[test]
     fn phi_zero_for_single_agent() {
         let swarm = vec![make_agent_phase("a", 0.5, 1.0, 1.0)];
         let phi = QueenSync::compute_swarm_phi(&swarm, 1.0);
-        assert_eq!(phi, 0.0, "single agent → Phi=0");
+        assert_eq!(phi, 0.0, "single agent -> Phi=0");
     }
 
     // -----------------------------------------------------------------------
@@ -814,7 +958,7 @@ mod tests {
             make_agent_phase("b", 2.0, 0.8, 1.0),
         ];
 
-        let initial_r = QueenSync::compute_order_parameter(&swarm).0;
+        let _initial_r = QueenSync::compute_order_parameter(&swarm).0;
 
         // Run 50 sync steps
         for _ in 0..50 {
@@ -824,7 +968,7 @@ mod tests {
             let _ = state;
         }
 
-        let final_r = QueenSync::compute_order_parameter(&swarm).0;
+        let _final_r = QueenSync::compute_order_parameter(&swarm).0;
         // Our phase should have moved toward the mean field
         // (full convergence requires all agents to move, but our phase should shift)
         assert!(
@@ -839,12 +983,12 @@ mod tests {
 
     #[test]
     fn derive_local_state_frequency_scaling() {
-        // Test the frequency formula: ω = ln(1 + count) / ln(1 + 100)
+        // Test the frequency formula: w = ln(1 + count) / ln(1 + 100)
         let count_100 = ((1.0 + 100.0_f64).ln() / (1.0 + 100.0_f64).ln()) as f32;
-        assert!((count_100 - 1.0).abs() < 0.01, "100 memories → ω≈1.0");
+        assert!((count_100 - 1.0).abs() < 0.01, "100 memories -> w~1.0");
 
         let count_0 = ((1.0 + 0.0_f64).ln() / (1.0 + 100.0_f64).ln()) as f32;
-        assert!((count_0 - 0.0).abs() < 0.01, "0 memories → ω≈0.0");
+        assert!((count_0 - 0.0).abs() < 0.01, "0 memories -> w~0.0");
     }
 
     #[test]
@@ -855,5 +999,205 @@ mod tests {
         assert_eq!(ap.cluster_count, 5);
         assert_eq!(ap.memory_count, 100);
         assert_eq!(ap.protocol_version, "1.0");
+        // New HRM fields should default to zero/None
+        assert_eq!(ap.left_coherence, 0.0);
+        assert_eq!(ap.right_coherence, 0.0);
+        assert_eq!(ap.bridge_activity, 0.0);
+        assert!(ap.dream_state.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // HRM-native phase derivation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hrm_phase_derivation_produces_valid_range() {
+        use crate::codebook::Codebook;
+        use crate::encoding::{SimpleHashEncoder, EncodingPipeline};
+        use crate::medium::WAVEFRONT_DIM;
+        use tempfile::NamedTempFile;
+
+        let encoder = SimpleHashEncoder::new(384, 42);
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp.path().to_path_buf());
+
+        // Insert several memories with distinct vectors
+        for i in 0..5 {
+            let mem = crate::memory::HyperMemory::new(
+                vec![0.1 + i as f32 * 0.15; WAVEFRONT_DIM],
+                format!("test memory {}", i),
+            );
+            store.insert(mem).unwrap();
+        }
+
+        // Build a ResonanceEngine wrapping our HrmStore
+        let enc2 = SimpleHashEncoder::new(384, 42);
+        let cb2 = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline2 = EncodingPipeline::new(Box::new(enc2), cb2);
+        let engine = ResonanceEngine::new(Box::new(store), pipeline2);
+
+        let mut queen = QueenSync::new(QueenConfig::default(), "test");
+        let (phase, frequency, coherence) = queen.derive_local_state(&engine);
+
+        // Phase must be in [0, TAU)
+        assert!(phase >= 0.0 && phase < TAU, "phase {} out of [0, TAU)", phase);
+        // Frequency must be non-negative
+        assert!(frequency >= 0.0, "frequency {} is negative", frequency);
+        // Coherence must be in [0, 1]
+        assert!(
+            coherence >= 0.0 && coherence <= 1.001,
+            "coherence {} out of [0, 1]",
+            coherence
+        );
+    }
+
+    #[test]
+    fn hrm_phase_derivation_identical_phases_high_coherence() {
+        use crate::codebook::Codebook;
+        use crate::encoding::{SimpleHashEncoder, EncodingPipeline};
+        use crate::medium::WAVEFRONT_DIM;
+        use tempfile::NamedTempFile;
+
+        let encoder = SimpleHashEncoder::new(384, 42);
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp.path().to_path_buf());
+
+        // Insert memories -- all will start at phase=0 (default in add_wavefront)
+        for i in 0..4 {
+            let mem = crate::memory::HyperMemory::new(
+                vec![0.5; WAVEFRONT_DIM],
+                format!("identical {}", i),
+            );
+            store.insert(mem).unwrap();
+        }
+
+        let enc2 = SimpleHashEncoder::new(384, 42);
+        let cb2 = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline2 = EncodingPipeline::new(Box::new(enc2), cb2);
+        let engine = ResonanceEngine::new(Box::new(store), pipeline2);
+
+        let mut queen = QueenSync::new(QueenConfig::default(), "test");
+        let (_phase, _freq, coherence) = queen.derive_local_state(&engine);
+
+        // All phases identical -> Kuramoto order parameter should be near 1.0
+        assert!(
+            coherence > 0.9,
+            "identical phases should yield coherence > 0.9, got {}",
+            coherence
+        );
+    }
+
+    #[test]
+    fn hrm_phase_to_agent_phase_populates_new_fields() {
+        use crate::codebook::Codebook;
+        use crate::encoding::{SimpleHashEncoder, EncodingPipeline};
+        use crate::medium::WAVEFRONT_DIM;
+        use tempfile::NamedTempFile;
+
+        let encoder = SimpleHashEncoder::new(384, 42);
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp.path().to_path_buf());
+
+        for i in 0..3 {
+            let mem = crate::memory::HyperMemory::new(
+                vec![0.3 + i as f32 * 0.2; WAVEFRONT_DIM],
+                format!("mem {}", i),
+            );
+            store.insert(mem).unwrap();
+        }
+
+        let enc2 = SimpleHashEncoder::new(384, 42);
+        let cb2 = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline2 = EncodingPipeline::new(Box::new(enc2), cb2);
+        let engine = ResonanceEngine::new(Box::new(store), pipeline2);
+
+        let mut queen = QueenSync::new(QueenConfig::default(), "test-hrm");
+        queen.derive_local_state(&engine);
+        let ap = queen.to_agent_phase(0, 3);
+
+        // After derive, the AgentPhase should carry HRM fields
+        assert_eq!(ap.agent_id, "test-hrm");
+        // right_coherence should be populated (flat medium -> mirrors overall coherence)
+        assert!(
+            ap.right_coherence >= 0.0,
+            "right_coherence should be non-negative"
+        );
+        assert!(
+            ap.bridge_activity >= 0.0 && ap.bridge_activity <= 1.0,
+            "bridge_activity {} out of [0, 1]",
+            ap.bridge_activity
+        );
+    }
+
+    #[test]
+    fn hrm_phase_frequency_blends_count_and_wavefront() {
+        use crate::codebook::Codebook;
+        use crate::encoding::{SimpleHashEncoder, EncodingPipeline};
+        use crate::medium::WAVEFRONT_DIM;
+        use tempfile::NamedTempFile;
+
+        let encoder = SimpleHashEncoder::new(384, 42);
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp.path().to_path_buf());
+
+        // Insert 10 memories (wavefront frequency defaults to 1.0)
+        for i in 0..10 {
+            let mem = crate::memory::HyperMemory::new(
+                vec![0.4; WAVEFRONT_DIM],
+                format!("freq test {}", i),
+            );
+            store.insert(mem).unwrap();
+        }
+
+        let enc2 = SimpleHashEncoder::new(384, 42);
+        let cb2 = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline2 = EncodingPipeline::new(Box::new(enc2), cb2);
+        let engine = ResonanceEngine::new(Box::new(store), pipeline2);
+
+        let mut queen = QueenSync::new(QueenConfig::default(), "test");
+        let (_phase, frequency, _coherence) = queen.derive_local_state(&engine);
+
+        // count_rate for 10 mems = ln(11)/ln(101) ~ 0.519
+        // HyperMemory default frequency = 0.1 (WaveParams::default)
+        // blend = 0.5 * 0.519 + 0.5 * 0.1 ~ 0.31
+        assert!(
+            frequency > 0.2 && frequency < 0.5,
+            "blended frequency should be in (0.2, 0.5), got {}",
+            frequency
+        );
+    }
+
+    #[test]
+    fn agent_phase_serde_backward_compat() {
+        // Verify old JSON without new fields deserializes with defaults
+        let json = r#"{
+            "id": "test-id",
+            "agent_id": "agent-1",
+            "phase": 1.5,
+            "frequency": 0.8,
+            "coherence": 0.6,
+            "phi": 2.1,
+            "order_parameter": 0.9,
+            "cluster_count": 3,
+            "memory_count": 50,
+            "xi_signature": null,
+            "protocol_version": "1.0",
+            "timestamp": "2025-01-01T00:00:00Z"
+        }"#;
+
+        let ap: AgentPhase = serde_json::from_str(json).expect("should deserialize old format");
+        assert_eq!(ap.left_coherence, 0.0);
+        assert_eq!(ap.right_coherence, 0.0);
+        assert_eq!(ap.bridge_activity, 0.0);
+        assert!(ap.dream_state.is_none());
+        assert_eq!(ap.trust_score, 0.5); // default_trust
     }
 }
