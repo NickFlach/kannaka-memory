@@ -72,8 +72,8 @@ fn usage() {
     eprintln!("Usage: kannaka <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  remember <text> [--importance N] [--category CAT]");
-    eprintln!("                            Store a memory (importance: 0.0-1.0, category: knowledge/experience/emotion/social/skill)");
+    eprintln!("  remember <text> [--importance N] [--category CAT] [--modality MOD]");
+    eprintln!("                            Store a memory (importance: 0.0-1.0, category: knowledge/experience/emotion/social/skill, modality: audio/visual/semantic/network/mixed)");
     eprintln!("  recall <query> [--top-k N] [--limit N]");
     eprintln!("                            Search memories (default top-k=5)");
     eprintln!("  forget <id>               Delete a memory by UUID");
@@ -190,11 +190,12 @@ fn main() {
     match args[command_start].as_str() {
         "remember" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka remember <text> [--importance N] [--category CAT]");
+                eprintln!("Usage: kannaka remember <text> [--importance N] [--category CAT] [--modality MOD]");
                 process::exit(1);
             }
             let mut importance: Option<f64> = None;
             let mut category: Option<String> = None;
+            let mut modality_arg: Option<String> = None;
             let mut text_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
@@ -205,6 +206,10 @@ fn main() {
                     }
                     "--category" if i + 1 < args.len() => {
                         category = Some(args[i + 1].clone());
+                        i += 2;
+                    }
+                    "--modality" if i + 1 < args.len() => {
+                        modality_arg = Some(args[i + 1].clone());
                         i += 2;
                     }
                     "--tags" if i + 1 < args.len() => {
@@ -219,6 +224,17 @@ fn main() {
                     }
                 }
             }
+
+            // Parse modality if provided
+            let modality: kannaka_memory::medium::Modality = if let Some(ref m) = modality_arg {
+                m.parse().unwrap_or_else(|e| {
+                    eprintln!("Warning: {e} -- defaulting to Unknown");
+                    kannaka_memory::medium::Modality::Unknown
+                })
+            } else {
+                kannaka_memory::medium::Modality::Unknown
+            };
+
             let text = text_parts.join(" ");
             let result = if let Some(cat) = category {
                 sys.remember_with_category(&text, &cat, importance.unwrap_or(0.5))
@@ -226,7 +242,15 @@ fn main() {
                 sys.remember(&text)
             };
             match result {
-                Ok(id) => println!("{id}"),
+                Ok(id) => {
+                    // Tag the wavefront with modality after insertion
+                    if modality != kannaka_memory::medium::Modality::Unknown {
+                        if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
+                            hrm.set_modality(&id, modality);
+                        }
+                    }
+                    println!("{id}");
+                }
                 Err(e) => {
                     eprintln!("Error: {e}");
                     process::exit(1);
@@ -361,10 +385,21 @@ fn main() {
             // Count memories without embeddings
             let all_mems = sys.engine.store.all_memories().unwrap_or_default();
             let memories_without_embeddings = all_mems.iter().filter(|m| m.vector.is_empty()).count();
-            
+
+            // Compute modality distribution
+            let mut modality_counts = std::collections::HashMap::new();
+            for m in &all_mems {
+                let key = m.modality.to_string();
+                *modality_counts.entry(key).or_insert(0u64) += 1;
+            }
+            let modality_json: serde_json::Value = modality_counts.into_iter()
+                .map(|(k, v)| (k, serde_json::json!(v)))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+                .into();
+
             // Check if HRM mode is active
             let is_hrm = true; // HRM is the canonical substrate
-            
+
             let mut output = serde_json::json!({
                 "total_memories": stats.total_memories,
                 "active_memories": stats.active_memories,
@@ -375,8 +410,9 @@ fn main() {
                 "mean_order": state.mean_order,
                 "num_clusters": state.num_clusters,
                 "memories_without_embeddings": memories_without_embeddings,
+                "modality_distribution": modality_json,
             });
-            
+
             // Skip links removed — ChiralMedium uses interference patterns
             output["field_mode"] = serde_json::json!("HRM");
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -783,6 +819,10 @@ fn main() {
                             "coherence": local_phase.coherence,
                             "phi": local_phase.phi,
                             "memory_count": local_phase.memory_count,
+                            "left_coherence": local_phase.left_coherence,
+                            "right_coherence": local_phase.right_coherence,
+                            "bridge_activity": local_phase.bridge_activity,
+                            "dream_state": local_phase.dream_state,
                         },
                         "swarm": {
                             "peers": peer_count,

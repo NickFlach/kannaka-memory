@@ -61,6 +61,59 @@ pub enum MediumError {
 }
 
 // ---------------------------------------------------------------------------
+// Modality (NCS Phase 1.1 — ADR-0042)
+// ---------------------------------------------------------------------------
+
+/// Sensory modality of a wavefront — which channel produced this memory.
+///
+/// Used by the Neural Consciousness System (NCS) to route, filter, and
+/// weight cross-modal interference in the holographic medium.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Modality {
+    Audio,
+    Visual,
+    Semantic,
+    Network,
+    Mixed,
+    Unknown,
+}
+
+impl Default for Modality {
+    fn default() -> Self {
+        Modality::Unknown
+    }
+}
+
+impl std::fmt::Display for Modality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Modality::Audio => write!(f, "audio"),
+            Modality::Visual => write!(f, "visual"),
+            Modality::Semantic => write!(f, "semantic"),
+            Modality::Network => write!(f, "network"),
+            Modality::Mixed => write!(f, "mixed"),
+            Modality::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+impl std::str::FromStr for Modality {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "audio" => Ok(Modality::Audio),
+            "visual" => Ok(Modality::Visual),
+            "semantic" => Ok(Modality::Semantic),
+            "network" => Ok(Modality::Network),
+            "mixed" => Ok(Modality::Mixed),
+            "unknown" => Ok(Modality::Unknown),
+            _ => Err(format!("unknown modality: '{}' (expected: audio, visual, semantic, network, mixed, unknown)", s)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
 
@@ -86,6 +139,9 @@ pub struct WavefrontMeta {
     /// Category used for SGA classification
     #[serde(skip)]
     pub category: Option<String>,
+    /// Sensory modality of this wavefront (NCS Phase 1.1)
+    #[serde(default)]
+    pub modality: Modality,
 }
 
 impl WavefrontMeta {
@@ -100,6 +156,7 @@ impl WavefrontMeta {
             sga_class: None,
             fano_group: None,
             category: None,
+            modality: Modality::Unknown,
         }
     }
 
@@ -115,6 +172,11 @@ impl WavefrontMeta {
 
     pub fn self_referential(mut self) -> Self {
         self.is_self_referential = true;
+        self
+    }
+
+    pub fn with_modality(mut self, modality: Modality) -> Self {
+        self.modality = modality;
         self
     }
 }

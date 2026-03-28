@@ -133,6 +133,7 @@ impl HrmStore {
                     disputed: false,
                     updated_at: Some(meta.created_at),
                     retrieval_count: 0,
+                    modality: meta.modality,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -162,6 +163,7 @@ impl HrmStore {
                     disputed: false,
                     updated_at: Some(meta.created_at),
                     retrieval_count: 0,
+                    modality: meta.modality,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -454,6 +456,30 @@ impl HrmStore {
     /// Get a reference to the ChiralMedium (if in chiral mode).
     pub fn chiral_medium(&self) -> Option<&ChiralMedium> {
         self.chiral.as_ref()
+    }
+
+    /// Set the modality of a wavefront (NCS Phase 1.1).
+    pub fn set_modality(&mut self, id: &Uuid, modality: crate::medium::Modality) {
+        // Tag the flat medium
+        if let Some(&idx) = self.medium.id_to_index.get(id) {
+            self.medium.metadata[idx].modality = modality;
+        }
+        // Tag chiral hemisphere(s)
+        if let Some(ref mut chiral) = self.chiral {
+            if let Some(&idx) = chiral.right.id_to_index.get(id) {
+                chiral.right.metadata[idx].modality = modality;
+            }
+            if let Some(left_id) = chiral.right_to_left.get(id).copied() {
+                if let Some(&idx) = chiral.left.id_to_index.get(&left_id) {
+                    chiral.left.metadata[idx].modality = modality;
+                }
+            }
+        }
+        // Tag cache
+        if let Some(mem) = self.memory_cache.get_mut(id) {
+            mem.modality = modality;
+        }
+        self.mark_dirty();
     }
 
     /// Classify a wavefront with SGA coordinates (called after insert to tag the memory).

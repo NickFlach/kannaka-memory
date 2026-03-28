@@ -95,7 +95,7 @@ pub use cmf::{
 };
 
 pub use medium::{
-    Medium, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
+    Medium, Modality, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
     PhaseState, HrmCommit
 };
 

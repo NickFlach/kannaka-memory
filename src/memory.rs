@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::geometry::MemoryCoordinates;
+use crate::medium::Modality;
 use crate::wave::WaveParams;
 
 /// Stub type for backward compatibility with serialized data that had skip links.
@@ -104,6 +105,9 @@ pub struct HyperMemory {
     /// Each retrieval adds energy to the wave function (EXP-003: f(x) term).
     #[serde(default)]
     pub retrieval_count: u32,
+    /// Sensory modality of this memory (NCS Phase 1.1)
+    #[serde(default)]
+    pub modality: Modality,
 }
 
 impl HyperMemory {
@@ -132,6 +136,7 @@ impl HyperMemory {
             disputed: false,
             updated_at: None,
             retrieval_count: 0,
+            modality: Modality::default(),
         }
     }
 
@@ -205,5 +210,39 @@ mod tests {
         for (i, &x) in ev2.iter().enumerate() {
             assert!((x - 0.5 * s).abs() < 1e-4, "mismatch at index {}", i);
         }
+    }
+
+    #[test]
+    fn hyper_memory_default_modality_is_unknown() {
+        let mem = HyperMemory::new(vec![1.0; 10], "test".into());
+        assert_eq!(mem.modality, Modality::Unknown);
+    }
+
+    #[test]
+    fn hyper_memory_modality_deserializes_from_json_without_field() {
+        // Backward compat: old serialized data missing the modality field
+        let json = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "vector": [0.1, 0.2, 0.3],
+            "amplitude": 1.0,
+            "frequency": 1.0,
+            "phase": 0.0,
+            "decay_rate": 0.001,
+            "created_at": "2025-01-01T00:00:00Z",
+            "layer_depth": 0,
+            "content": "legacy memory"
+        });
+        let mem: HyperMemory = serde_json::from_value(json).unwrap();
+        assert_eq!(mem.modality, Modality::Unknown);
+        assert_eq!(mem.content, "legacy memory");
+    }
+
+    #[test]
+    fn hyper_memory_modality_round_trips_through_json() {
+        let mut mem = HyperMemory::new(vec![0.5; 10], "audio mem".into());
+        mem.modality = Modality::Audio;
+        let json = serde_json::to_string(&mem).unwrap();
+        let deserialized: HyperMemory = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.modality, Modality::Audio);
     }
 }

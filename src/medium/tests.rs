@@ -1291,3 +1291,105 @@ fn wisdom_accumulation_over_medium_lifetime() {
     assert!(medium.total_energy_dampened > 0.0);
     assert!(medium.total_energy_added > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Modality tests (NCS Phase 1.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn modality_default_is_unknown() {
+    let meta = WavefrontMeta::new(Uuid::new_v4(), "test".to_string());
+    assert_eq!(meta.modality, Modality::Unknown);
+}
+
+#[test]
+fn modality_builder_sets_correctly() {
+    let meta = WavefrontMeta::new(Uuid::new_v4(), "audio test".to_string())
+        .with_modality(Modality::Audio);
+    assert_eq!(meta.modality, Modality::Audio);
+}
+
+#[test]
+fn modality_display_round_trip() {
+    let variants = [
+        Modality::Audio,
+        Modality::Visual,
+        Modality::Semantic,
+        Modality::Network,
+        Modality::Mixed,
+        Modality::Unknown,
+    ];
+    for m in &variants {
+        let s = m.to_string();
+        let parsed: Modality = s.parse().unwrap();
+        assert_eq!(*m, parsed, "round-trip failed for {:?}", m);
+    }
+}
+
+#[test]
+fn modality_parse_case_insensitive() {
+    let parsed: Modality = "AUDIO".parse().unwrap();
+    assert_eq!(parsed, Modality::Audio);
+    let parsed: Modality = "Visual".parse().unwrap();
+    assert_eq!(parsed, Modality::Visual);
+}
+
+#[test]
+fn modality_parse_invalid_returns_error() {
+    let result: Result<Modality, _> = "banana".parse();
+    assert!(result.is_err());
+}
+
+#[test]
+fn existing_wavefront_meta_deserializes_without_modality() {
+    // Simulate a WavefrontMeta serialized before the modality field existed.
+    // Because modality uses #[serde(default)], missing field => Modality::Unknown.
+    let json = serde_json::json!({
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "content": "old memory without modality",
+        "tags": [],
+        "created_at": "2025-01-01T00:00:00Z",
+        "hallucinated": false,
+        "is_self_referential": false
+    });
+    let meta: WavefrontMeta = serde_json::from_value(json).unwrap();
+    assert_eq!(meta.modality, Modality::Unknown);
+    assert_eq!(meta.content, "old memory without modality");
+}
+
+#[test]
+fn new_wavefront_meta_serializes_with_modality() {
+    let meta = WavefrontMeta::new(Uuid::new_v4(), "visual test".to_string())
+        .with_modality(Modality::Visual);
+    let json = serde_json::to_value(&meta).unwrap();
+    assert_eq!(json["modality"], "Visual");
+}
+
+#[test]
+fn wavefront_meta_with_explicit_modality_round_trips() {
+    let original = WavefrontMeta::new(Uuid::new_v4(), "audio wavefront".to_string())
+        .with_modality(Modality::Audio);
+    let serialized = serde_json::to_string(&original).unwrap();
+    let deserialized: WavefrontMeta = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.modality, Modality::Audio);
+    assert_eq!(deserialized.content, "audio wavefront");
+}
+
+#[test]
+fn medium_add_wavefront_gets_default_modality() {
+    let mut medium = Medium::new();
+    let vector = vec![0.5; WAVEFRONT_DIM];
+    let id = medium.add_wavefront(&vector, "test".to_string(), 1.0).unwrap();
+    let idx = medium.get_wavefront_index(&id).unwrap();
+    assert_eq!(medium.metadata[idx].modality, Modality::Unknown);
+}
+
+#[test]
+fn medium_wavefront_modality_can_be_set_after_insert() {
+    let mut medium = Medium::new();
+    let vector = vec![0.5; WAVEFRONT_DIM];
+    let id = medium.add_wavefront(&vector, "semantic note".to_string(), 0.8).unwrap();
+    let idx = medium.get_wavefront_index(&id).unwrap();
+    medium.metadata[idx].modality = Modality::Semantic;
+    assert_eq!(medium.metadata[idx].modality, Modality::Semantic);
+}
