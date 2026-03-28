@@ -1,0 +1,31 @@
+# systemd service file for NATS on the QueenSync Oracle VM (QS-8, #59)
+# Install: sudo cp nats-server.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable nats-server
+#          sudo systemctl start nats-server
+
+[Unit]
+Description=NATS Server for QueenSync
+Documentation=https://docs.nats.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nats
+Group=nats
+ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats-server.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nats /var/log/nats /etc/nats/certs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

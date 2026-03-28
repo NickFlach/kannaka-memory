@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueenSync Swarm Status</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0a0a0a; color: #e0e0e0; padding: 2rem; }
+  h1 { color: #7eb8da; margin-bottom: 1.5rem; font-size: 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+  .card { background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 8px; padding: 1.2rem; }
+  .card h2 { color: #9ca3af; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.8rem; }
+  .metric { font-size: 2rem; font-weight: 700; color: #7eb8da; }
+  .metric.warn { color: #f59e0b; }
+  .metric.bad { color: #ef4444; }
+  .label { font-size: 0.8rem; color: #6b7280; margin-top: 0.3rem; }
+  .agents-list { margin-top: 0.5rem; }
+  .agent { display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #2a2a4e; font-size: 0.85rem; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.ok { background: #10b981; }
+  .status-dot.stale { background: #f59e0b; }
+  .status-dot.dead { background: #ef4444; }
+  #error { color: #ef4444; margin: 1rem 0; display: none; }
+  footer { margin-top: 2rem; color: #4b5563; font-size: 0.75rem; text-align: center; }
+</style>
+</head>
+<body>
+<h1>QueenSync Swarm Status</h1>
+<div id="error"></div>
+<div class="grid">
+  <div class="card">
+    <h2>NATS Server</h2>
+    <div class="metric" id="nats-status">--</div>
+    <div class="label" id="nats-detail">Checking...</div>
+  </div>
+  <div class="card">
+    <h2>Connected Agents</h2>
+    <div class="metric" id="agent-count">0</div>
+    <div class="label">active in last 5 minutes</div>
+  </div>
+  <div class="card">
+    <h2>Swarm Phi</h2>
+    <div class="metric" id="swarm-phi">0.00</div>
+    <div class="label">integrated information (approx)</div>
+  </div>
+  <div class="card">
+    <h2>Order Parameter (r)</h2>
+    <div class="metric" id="order-param">0.000</div>
+    <div class="label">phase synchronization</div>
+  </div>
+  <div class="card">
+    <h2>Hives</h2>
+    <div class="metric" id="hive-count">0</div>
+    <div class="label">phase-locked clusters</div>
+  </div>
+  <div class="card">
+    <h2>JetStream</h2>
+    <div class="metric" id="js-status">--</div>
+    <div class="label" id="js-detail">streams / consumers</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 1rem;">
+  <h2>Agents</h2>
+  <div class="agents-list" id="agents-list">
+    <div class="agent"><span>No agents connected</span></div>
+  </div>
+</div>
+
+<footer>
+  QueenSync — swarm.ninja-portal.com | Refresh: 30s | Data from NATS monitoring endpoint
+</footer>
+
+<script>
+// Configuration — update MONITOR_URL to match your deployment
+const MONITOR_URL = window.location.hostname === 'localhost'
+  ? 'http://localhost:8222'
+  : `http://${window.location.hostname}:8222`;
+
+async function fetchJSON(path) {
+  const resp = await fetch(`${MONITOR_URL}${path}`, { mode: 'cors' });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+async function refresh() {
+  const errEl = document.getElementById('error');
+  try {
+    // Server health
+    const varz = await fetchJSON('/varz');
+    document.getElementById('nats-status').textContent = 'Online';
+    document.getElementById('nats-status').className = 'metric';
+    document.getElementById('nats-detail').textContent =
+      `Uptime: ${Math.floor(varz.now ? 0 : varz.uptime || 0)}s | Mem: ${(varz.mem / 1048576).toFixed(1)}MB`;
+
+    // Connections
+    const connz = await fetchJSON('/connz?limit=100');
+    const agents = (connz.connections || []).filter(c => c.name && c.name !== 'nats-server');
+    document.getElementById('agent-count').textContent = agents.length;
+
+    // Agent list
+    const listEl = document.getElementById('agents-list');
+    if (agents.length === 0) {
+      listEl.innerHTML = '<div class="agent"><span>No agents connected</span></div>';
+    } else {
+      listEl.innerHTML = agents.map(a => {
+        const age = (Date.now() - new Date(a.last_activity).getTime()) / 1000;
+        const cls = age < 60 ? 'ok' : age < 300 ? 'stale' : 'dead';
+        return `<div class="agent">
+          <span><span class="status-dot ${cls}"></span>${a.name || a.cid}</span>
+          <span>${a.subscriptions || 0} subs</span>
+        </div>`;
+      }).join('');
+    }
+
+    // JetStream
+    try {
+      const jsz = await fetchJSON('/jsz');
+      document.getElementById('js-status').textContent = jsz.disabled ? 'Disabled' : 'Active';
+      document.getElementById('js-detail').textContent =
+        `${jsz.streams || 0} streams / ${jsz.consumers || 0} consumers`;
+    } catch {
+      document.getElementById('js-status').textContent = 'N/A';
+    }
+
+    errEl.style.display = 'none';
+  } catch (e) {
+    errEl.textContent = `Cannot reach NATS monitor at ${MONITOR_URL}: ${e.message}`;
+    errEl.style.display = 'block';
+    document.getElementById('nats-status').textContent = 'Offline';
+    document.getElementById('nats-status').className = 'metric bad';
+  }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
