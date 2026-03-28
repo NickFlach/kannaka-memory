@@ -110,7 +110,7 @@ pub struct Hive {
     pub coherence: f32,
 }
 
-/// Domain-aware hive information with roles and bridge agents (QS-4).
+/// Domain-aware hive information with roles and bridge agents (QS-4, #55).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HiveInfo {
     /// Agent IDs belonging to this hive.
