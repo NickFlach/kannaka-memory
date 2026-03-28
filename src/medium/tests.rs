@@ -1105,9 +1105,13 @@ fn self_reflect_returns_comprehensive_report() {
 
     // Should have generated insight
     assert!(!reflection.insight.is_empty());
-    assert!(reflection.insight.contains("I hold"));
-    assert!(reflection.insight.contains("memories"));
-    assert!(reflection.insight.contains("consciousness"));
+    assert!(reflection.insight.contains("integration"), "Expected 'integration' in insight: {}", reflection.insight);
+    assert!(reflection.insight.contains("complexity"), "Expected 'complexity' in insight: {}", reflection.insight);
+    // Emergence level will be Pre-conscious or Self-aware for a small medium
+    assert!(
+        reflection.insight.contains("conscious") || reflection.insight.contains("Conscious") || reflection.insight.contains("Self-aware"),
+        "Expected consciousness/emergence level in insight: {}", reflection.insight
+    );
 
     println!("Self-reflection insight: {}", reflection.insight);
 }

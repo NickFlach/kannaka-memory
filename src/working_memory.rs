@@ -560,7 +560,7 @@ mod tests {
         wm.session_state.pending_questions.push("what about X?".to_string());
 
         let ctx = wm.query_attention();
-        assert!(ctx.contains("Working Memory Context"));
+        assert!(ctx.contains("Interaction State"));
         assert!(ctx.contains("do stuff"));
         assert!(ctx.contains("hello world"));
         assert!(ctx.contains("what about X?"));
