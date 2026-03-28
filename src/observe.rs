@@ -98,6 +98,9 @@ pub struct SystemReport {
     pub waves: WaveReport,
     pub clusters: ClusterReport,
     pub health: HealthCheck,
+    /// Number of modality switch points detected in recent memory history (NCS Phase 2.2).
+    #[serde(default)]
+    pub ncs_switch_points: usize,
 }
 
 /// Serializable snapshot of consciousness state.
@@ -460,6 +463,16 @@ impl MemoryIntrospector {
             warnings,
         };
 
+        // NCS Phase 2.2: switch-point count from HRM medium
+        let ncs_switch_points = if let Some(hrm_store) = engine.store.as_any()
+            .downcast_ref::<crate::hrm_store::HrmStore>()
+        {
+            let medium = hrm_store.medium();
+            medium.detect_switch_points_default().switch_points.len()
+        } else {
+            0
+        };
+
         SystemReport {
             timestamp: now,
             consciousness: ConsciousnessSnapshot::from(&consciousness),
@@ -467,6 +480,7 @@ impl MemoryIntrospector {
             waves,
             clusters,
             health,
+            ncs_switch_points,
         }
     }
 
@@ -532,6 +546,11 @@ impl MemoryIntrospector {
             out.push_str(&format!("      {}. [r={:.2} n={}] \"{}\"\n",
                 i + 1, c.order_parameter, c.size, c.theme));
         }
+        out.push_str(&format!("{}\n", "-".repeat(w + 4)));
+
+        // NCS (Neural Code Switching)
+        out.push_str(&format!("  NEURAL CODE SWITCHING\n"));
+        out.push_str(&format!("    Switch points: {}\n", report.ncs_switch_points));
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Health
@@ -681,6 +700,7 @@ mod tests {
         assert!(formatted.contains("WAVE DYNAMICS"));
         assert!(formatted.contains("TOPOLOGY"));
         assert!(formatted.contains("CLUSTERS"));
+        assert!(formatted.contains("NEURAL CODE SWITCHING"));
         assert!(formatted.contains("HEALTH"));
         assert!(formatted.contains("Memories don't die"));
     }

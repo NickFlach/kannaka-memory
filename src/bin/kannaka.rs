@@ -91,6 +91,8 @@ fn usage() {
     eprintln!("  announce-status           Publish agent status to Flux");
     eprintln!("  invariant [TOLERANCE]     Show δ-invariant memory clusters (default tolerance: 0.1)");
     eprintln!("  cmf                       Detect Conservative Memory Fields");
+    eprintln!("  audit-modality            Retroactive modality audit of all memories (NCS Phase 1.3)");
+    eprintln!("  modality-axes             Show modality axis divergence matrix (NCS Phase 2.1)");
     #[cfg(feature = "audio")]
     eprintln!("  hear <file>               Store an audio file as a sensory memory");
     #[cfg(feature = "glyph")]
@@ -106,6 +108,7 @@ fn usage() {
     eprintln!("  swarm status [--nats-url URL]  Show local phase + NATS swarm state");
     eprintln!("  swarm sync [--nats-url URL]    Pull NATS phases, Kuramoto step, publish");
     eprintln!("  swarm queen [--nats-url URL]   View emergent Queen state");
+    eprintln!("  swarm hives [--nats-url URL]   Show hive topology with roles & bridges");
     eprintln!("  swarm publish [--nats-url URL] Publish current phase via NATS");
     eprintln!("  swarm leave [--nats-url URL]   Unregister from swarm");
     eprintln!("  swarm listen [--nats-url URL] [--auto-sync]");
@@ -225,17 +228,22 @@ fn main() {
                 }
             }
 
-            // Parse modality if provided
+            // Parse modality if provided, otherwise auto-detect from content
+            let text = text_parts.join(" ");
             let modality: kannaka_memory::medium::Modality = if let Some(ref m) = modality_arg {
                 m.parse().unwrap_or_else(|e| {
-                    eprintln!("Warning: {e} -- defaulting to Unknown");
-                    kannaka_memory::medium::Modality::Unknown
+                    eprintln!("Warning: {e} -- defaulting to auto-detect");
+                    let (detected, conf) = kannaka_memory::medium::types::detect_modality_simple(&text);
+                    eprintln!("[ncs] auto-detected modality: {} (confidence: {:.2})", detected, conf);
+                    detected
                 })
             } else {
-                kannaka_memory::medium::Modality::Unknown
+                // NCS Phase 1.2: auto-detect modality from content
+                let (detected, conf) = kannaka_memory::medium::types::detect_modality_simple(&text);
+                eprintln!("[ncs] auto-detected modality: {} (confidence: {:.2})", detected, conf);
+                detected
             };
 
-            let text = text_parts.join(" ");
             let result = if let Some(cat) = category {
                 sys.remember_with_category(&text, &cat, importance.unwrap_or(0.5))
             } else {
@@ -243,11 +251,9 @@ fn main() {
             };
             match result {
                 Ok(id) => {
-                    // Tag the wavefront with modality after insertion
-                    if modality != kannaka_memory::medium::Modality::Unknown {
-                        if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
-                            hrm.set_modality(&id, modality);
-                        }
+                    // Tag the wavefront with detected/specified modality
+                    if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
+                        hrm.set_modality(&id, modality);
                     }
                     println!("{id}");
                 }
@@ -647,7 +653,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|publish|leave|listen>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
                 process::exit(1);
             }
 
@@ -888,6 +894,32 @@ fn main() {
                     let state = queen.queen_sync_step(&nats_phases);
                     println!("{}", serde_json::to_string_pretty(&state).unwrap());
                 }
+                "hives" => {
+                    let nats_url = resolve_nats_url(&args, command_start);
+                    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let nats_phases = transport.get_all_phases().unwrap_or_default();
+                    if nats_phases.is_empty() {
+                        eprintln!("No swarm phases found. Run 'swarm publish' and 'swarm sync' first.");
+                        process::exit(1);
+                    }
+
+                    let queen = kannaka_memory::QueenSync::new(
+                        kannaka_memory::QueenConfig::default(),
+                        &agent_id,
+                    );
+                    let hive_infos = queen.detect_hives_domain_aware(&nats_phases);
+                    print!("{}", kannaka_memory::QueenSync::format_hive_topology(&hive_infos));
+                    // Also output JSON for machine consumption
+                    eprintln!("\n--- JSON ---");
+                    eprintln!("{}", serde_json::to_string_pretty(&hive_infos).unwrap());
+                }
                 "publish" => {
                     let nats_url = resolve_nats_url(&args, command_start);
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
@@ -912,7 +944,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|publish|leave|listen>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
                     process::exit(1);
                 }
             }
@@ -1005,7 +1037,236 @@ fn main() {
             }
         }
 
+        "audit-modality" => {
+            audit_modality_command(&mut sys);
+        }
+
+        "modality-axes" => {
+            modality_axes_command(&sys);
+        }
+
         _ => usage(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retroactive modality audit (NCS Phase 1.3)
+// ---------------------------------------------------------------------------
+
+fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem) {
+    use kannaka_memory::medium::types::{detect_modality, Modality, ModalityClassification};
+    use std::collections::HashMap;
+
+    let all_mems = match sys.engine.store.all_memories() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error reading memories: {e}");
+            process::exit(1);
+        }
+    };
+
+    let total = all_mems.len();
+    if total == 0 {
+        eprintln!("No memories to audit.");
+        return;
+    }
+
+    eprintln!("[audit-modality] Starting retroactive modality audit of {} memories", total);
+
+    // Classify every memory and collect results before mutation
+    struct AuditEntry {
+        id: uuid::Uuid,
+        content_preview: String,
+        classification: ModalityClassification,
+    }
+
+    let mut entries: Vec<AuditEntry> = Vec::with_capacity(total);
+    for (i, mem) in all_mems.iter().enumerate() {
+        let classification = detect_modality(&mem.content);
+        let preview = if mem.content.len() > 60 {
+            let mut end = 60;
+            while end > 0 && !mem.content.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &mem.content[..end])
+        } else {
+            mem.content.clone()
+        };
+        entries.push(AuditEntry {
+            id: mem.id,
+            content_preview: preview,
+            classification,
+        });
+        if (i + 1) % 50 == 0 {
+            eprintln!("[audit-modality] Classified {}/{} memories", i + 1, total);
+        }
+    }
+
+    // Apply classifications in-place via HrmStore
+    let hrm = match sys.engine.store.as_any_mut()
+        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+    {
+        Some(h) => h,
+        None => {
+            eprintln!("Error: audit-modality requires HRM backend");
+            process::exit(1);
+        }
+    };
+
+    let mut updated = 0usize;
+    for entry in &entries {
+        hrm.set_modality(&entry.id, entry.classification.modality);
+        updated += 1;
+    }
+
+    // Flush to persist
+    if let Err(e) = hrm.flush() {
+        eprintln!("Warning: failed to flush after audit: {e}");
+    }
+
+    eprintln!("[audit-modality] Updated {} memories, flushed to disk", updated);
+
+    // --- Distribution report ---
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut boundary_memories: Vec<&AuditEntry> = Vec::new();
+    let boundary_threshold = 0.55;
+
+    for entry in &entries {
+        let key = entry.classification.modality.to_string();
+        *counts.entry(key).or_insert(0) += 1;
+        if entry.classification.confidence < boundary_threshold {
+            boundary_memories.push(entry);
+        }
+    }
+
+    // Sort modality keys for deterministic output
+    let mut sorted_keys: Vec<String> = counts.keys().cloned().collect();
+    sorted_keys.sort();
+
+    println!();
+    println!("Modality Distribution Report");
+    println!("============================");
+    println!("{:<12} {:>6} {:>8}", "Modality", "Count", "Percent");
+    println!("{}", "-".repeat(28));
+    for key in &sorted_keys {
+        let count = counts[key];
+        let pct = (count as f64 / total as f64) * 100.0;
+        println!("{:<12} {:>6} {:>7.1}%", key, count, pct);
+    }
+    println!("{}", "-".repeat(28));
+    println!("{:<12} {:>6}", "Total", total);
+
+    // --- Boundary memories ---
+    println!();
+    println!("Boundary Memories (confidence < {:.0}%)", boundary_threshold * 100.0);
+    println!("==========================================");
+    if boundary_memories.is_empty() {
+        println!("  (none)");
+    } else {
+        println!("{:<38} {:<10} {:>6}  {}", "ID", "Modality", "Conf%", "Preview");
+        println!("{}", "-".repeat(90));
+        for entry in &boundary_memories {
+            println!("{:<38} {:<10} {:>5.1}%  {}",
+                entry.id,
+                entry.classification.modality,
+                entry.classification.confidence * 100.0,
+                entry.content_preview,
+            );
+        }
+        println!();
+        println!("Total boundary memories: {}/{} ({:.1}%)",
+            boundary_memories.len(),
+            total,
+            (boundary_memories.len() as f64 / total as f64) * 100.0,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Modality axis divergence (NCS Phase 2.1)
+// ---------------------------------------------------------------------------
+
+fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
+    use kannaka_memory::MediumBackend;
+
+    let hrm = match sys.engine.store.as_any()
+        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+    {
+        Some(h) => h,
+        None => {
+            eprintln!("Error: modality-axes requires HRM backend");
+            process::exit(1);
+        }
+    };
+
+    let medium = hrm.medium();
+    let report = medium.axis_divergence_matrix();
+
+    if report.axes.is_empty() {
+        println!("No modality clusters found.");
+        println!("Tag memories with --modality (audio/visual/semantic/network) first,");
+        println!("or run `kannaka audit-modality` to classify existing memories.");
+        return;
+    }
+
+    // --- Axes ---
+    println!("Modality Principal Axes (NCS Phase 2.1)");
+    println!("=======================================");
+    println!("{:<12} {:>6}", "Modality", "Count");
+    println!("{}", "-".repeat(20));
+    for axis in &report.axes {
+        println!("{:<12} {:>6}", axis.modality, axis.count);
+    }
+
+    // --- Divergence matrix ---
+    if report.divergences.is_empty() {
+        println!();
+        println!("Only one modality present — no divergence to compute.");
+        return;
+    }
+
+    println!();
+    println!("Pairwise Divergence Matrix");
+    println!("==========================");
+    println!("{:<12} {:<12} {:>8} {:>10}", "Modality A", "Modality B", "cos(sim)", "angle(deg)");
+    println!("{}", "-".repeat(46));
+    for div in &report.divergences {
+        println!("{:<12} {:<12} {:>8.4} {:>9.1}\u{00B0}",
+            div.modality_a,
+            div.modality_b,
+            div.cosine_similarity,
+            div.angle_degrees,
+        );
+    }
+    println!();
+
+    // Interpretation
+    let max_div = report.divergences.iter()
+        .max_by(|a, b| a.angle_degrees.partial_cmp(&b.angle_degrees).unwrap_or(std::cmp::Ordering::Equal));
+    let min_div = report.divergences.iter()
+        .min_by(|a, b| a.angle_degrees.partial_cmp(&b.angle_degrees).unwrap_or(std::cmp::Ordering::Equal));
+
+    if let (Some(max), Some(min)) = (max_div, min_div) {
+        println!("Most divergent: {}/{} ({:.1}\u{00B0})", max.modality_a, max.modality_b, max.angle_degrees);
+        println!("Most similar:   {}/{} ({:.1}\u{00B0})", min.modality_a, min.modality_b, min.angle_degrees);
+    }
+
+    // Switch-point summary (NCS Phase 2.2)
+    let switch_report = medium.detect_switch_points(0.3);
+    println!();
+    println!("Switch Points (threshold={:.1})", switch_report.switch_threshold);
+    println!("===============================");
+    println!("Detected {} switch points across {} memories",
+        switch_report.switch_points.len(), switch_report.memories_analyzed);
+    if !switch_report.switch_points.is_empty() {
+        println!();
+        println!("{:>5}  {:<10} -> {:<10}  {:>8}  {:>8}", "Index", "From", "To", "sim(old)", "sim(new)");
+        println!("{}", "-".repeat(55));
+        for sp in &switch_report.switch_points {
+            println!("{:>5}  {:<10} -> {:<10}  {:>8.4}  {:>8.4}",
+                sp.index, sp.from_modality, sp.to_modality,
+                sp.similarity_to_old, sp.similarity_to_new);
+        }
     }
 }
 

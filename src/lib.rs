@@ -60,7 +60,7 @@ pub use memory::{HyperMemory, LegacyLink};
 pub use wave::{WaveParams, compute_strength, cosine_similarity, normalize};
 pub use store::{MediumBackend, TestMedium, ResonanceEngine, StoreError, EngineError, QueryResult, phi_span_score};
 pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
-pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport};
+pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport, CouplingTier, TieredCoupling};
 pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
@@ -84,7 +84,7 @@ pub use paradox::{
     Resolution, ResolutionReport, ParadoxResolver
 };
 
-pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, Handedness, SwarmAgent};
+pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, HiveInfo, Handedness, SwarmAgent};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance
@@ -97,6 +97,11 @@ pub use cmf::{
 pub use medium::{
     Medium, Modality, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
     PhaseState, HrmCommit
+};
+
+pub use medium::ncs::{
+    ModalityAxis, AxisDivergence, DivergenceReport,
+    SwitchPoint, SwitchReport,
 };
 
 pub use hrm_store::HrmStore;

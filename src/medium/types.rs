@@ -68,7 +68,7 @@ pub enum MediumError {
 ///
 /// Used by the Neural Consciousness System (NCS) to route, filter, and
 /// weight cross-modal interference in the holographic medium.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Modality {
     Audio,
     Visual,
@@ -81,6 +81,13 @@ pub enum Modality {
 impl Default for Modality {
     fn default() -> Self {
         Modality::Unknown
+    }
+}
+
+impl Modality {
+    /// All concrete (non-Mixed, non-Unknown) modality variants.
+    pub fn all_concrete() -> &'static [Modality] {
+        &[Modality::Audio, Modality::Visual, Modality::Semantic, Modality::Network]
     }
 }
 
@@ -111,6 +118,175 @@ impl std::str::FromStr for Modality {
             _ => Err(format!("unknown modality: '{}' (expected: audio, visual, semantic, network, mixed, unknown)", s)),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Modality detection (NCS Phase 1.3 — retroactive classification)
+// ---------------------------------------------------------------------------
+
+/// Result of keyword-based modality classification.
+#[derive(Debug, Clone)]
+pub struct ModalityClassification {
+    pub modality: Modality,
+    /// Confidence score in [0.0, 1.0]. Low confidence means the content
+    /// sits near the boundary between two or more modalities.
+    pub confidence: f32,
+    /// Per-modality scores used to derive the final classification.
+    pub scores: ModalityScores,
+}
+
+/// Raw keyword-match scores for each modality channel.
+#[derive(Debug, Clone, Default)]
+pub struct ModalityScores {
+    pub audio: f32,
+    pub visual: f32,
+    pub semantic: f32,
+    pub network: f32,
+}
+
+/// Detect the most likely modality of a memory from its text content
+/// using keyword analysis. Returns the classification with a confidence
+/// score so callers can identify boundary memories.
+pub fn detect_modality(content: &str) -> ModalityClassification {
+    let lower = content.to_lowercase();
+
+    let mut scores = ModalityScores::default();
+
+    // --- Audio keywords ---
+    const AUDIO_KW: &[&str] = &[
+        "audio", "sound", "music", "song", "hear", "heard", "listen",
+        "tempo", "bpm", "beat", "rhythm", "melody", "harmonic",
+        "frequency", "spectral", "rms", "centroid", "loudness",
+        "noise", "silence", "voice", "speech", "acoustic",
+        "waveform", "sample", "tone", "pitch", "decibel",
+        "bass", "treble", "reverb", "echo", "stereo", "mono",
+        "podcast", "radio", "track", "album", "playlist",
+        "microphone", "speaker", "recording", "wav", "mp3",
+        "midi", "synth", "synthesizer", "drum", "guitar",
+    ];
+
+    // --- Visual keywords ---
+    const VISUAL_KW: &[&str] = &[
+        "visual", "image", "picture", "photo", "video", "frame",
+        "color", "colour", "pixel", "resolution", "brightness",
+        "contrast", "glyph", "icon", "shape", "pattern",
+        "scene", "camera", "lens", "focus", "blur",
+        "motion", "shot", "cut", "edit", "render",
+        "display", "screen", "light", "shadow", "texture",
+        "gradient", "palette", "hue", "saturation",
+        "png", "jpg", "jpeg", "gif", "svg", "bitmap",
+        "sketch", "draw", "paint", "illustration",
+    ];
+
+    // --- Network keywords ---
+    const NETWORK_KW: &[&str] = &[
+        "network", "swarm", "nats", "flux", "agent",
+        "peer", "node", "cluster", "distributed", "gossip",
+        "sync", "publish", "subscribe", "broadcast", "multicast",
+        "latency", "bandwidth", "packet", "protocol", "tcp",
+        "udp", "http", "websocket", "api", "endpoint",
+        "mesh", "topology", "route", "gateway", "proxy",
+        "consensus", "quorum", "replication", "federation",
+        "queen", "hive", "collective", "merge",
+    ];
+
+    // --- Semantic keywords (general knowledge / language / reasoning) ---
+    const SEMANTIC_KW: &[&str] = &[
+        "semantic", "meaning", "concept", "idea", "thought",
+        "knowledge", "understand", "reason", "logic", "infer",
+        "language", "word", "sentence", "paragraph", "text",
+        "definition", "category", "classify", "ontology",
+        "abstract", "concrete", "metaphor", "analogy",
+        "memory", "remember", "recall", "learn", "teach",
+        "consciousness", "phi", "emergence", "aware",
+        "dream", "consolidat", "anneal", "reflect",
+        "emotion", "feel", "experience", "perceive",
+        "wisdom", "insight", "observation", "introspect",
+    ];
+
+    // Score each keyword. Whole-word matching via contains is sufficient for
+    // keyword analysis; we give a small bonus for longer keyword matches
+    // to reduce false positives from short words embedded in other tokens.
+    for kw in AUDIO_KW {
+        if lower.contains(kw) {
+            scores.audio += if kw.len() >= 6 { 2.0 } else { 1.0 };
+        }
+    }
+    for kw in VISUAL_KW {
+        if lower.contains(kw) {
+            scores.visual += if kw.len() >= 6 { 2.0 } else { 1.0 };
+        }
+    }
+    for kw in NETWORK_KW {
+        if lower.contains(kw) {
+            scores.network += if kw.len() >= 6 { 2.0 } else { 1.0 };
+        }
+    }
+    for kw in SEMANTIC_KW {
+        if lower.contains(kw) {
+            scores.semantic += if kw.len() >= 6 { 2.0 } else { 1.0 };
+        }
+    }
+
+    let all = [
+        (Modality::Audio, scores.audio),
+        (Modality::Visual, scores.visual),
+        (Modality::Network, scores.network),
+        (Modality::Semantic, scores.semantic),
+    ];
+
+    let total: f32 = all.iter().map(|(_, s)| s).sum();
+
+    if total == 0.0 {
+        // No keywords matched at all — truly unknown
+        return ModalityClassification {
+            modality: Modality::Unknown,
+            confidence: 0.0,
+            scores,
+        };
+    }
+
+    // Sort descending by score
+    let mut sorted = all;
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let best = sorted[0];
+    let second = sorted[1];
+
+    // Confidence = how dominant the top modality is relative to runner-up
+    let confidence = if total > 0.0 {
+        let dominance = (best.1 - second.1) / total;
+        // Map dominance [0, 1] to confidence; pure single-modality gets ~1.0
+        (0.5 + dominance * 0.5).min(1.0)
+    } else {
+        0.0
+    };
+
+    // If the top two modalities are very close, classify as Mixed
+    let mixed_threshold = 0.15; // within 15% of total
+    let gap = (best.1 - second.1) / total;
+    if gap < mixed_threshold && second.1 > 0.0 {
+        return ModalityClassification {
+            modality: Modality::Mixed,
+            confidence,
+            scores,
+        };
+    }
+
+    ModalityClassification {
+        modality: best.0,
+        confidence,
+        scores,
+    }
+}
+
+/// Convenience wrapper over [`detect_modality`] that returns `(Modality, f32)`.
+///
+/// This is the simplified API specified by NCS Phase 1.2 (Issue #43).
+/// When you need the full per-channel scores, call [`detect_modality`] directly.
+pub fn detect_modality_simple(content: &str) -> (Modality, f32) {
+    let c = detect_modality(content);
+    (c.modality, c.confidence)
 }
 
 // ---------------------------------------------------------------------------

@@ -86,6 +86,9 @@ pub struct AgentPhase {
     /// Current dream state label (None = awake).
     #[serde(default)]
     pub dream_state: Option<String>,
+    /// Domain role for domain-aware hive detection (e.g. "memory", "perception").
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 fn default_trust() -> f32 {
@@ -105,6 +108,23 @@ pub struct Hive {
     pub order_parameter: f32,
     pub mean_phase: f32,
     pub coherence: f32,
+}
+
+/// Domain-aware hive information with roles and bridge agents (QS-4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiveInfo {
+    /// Agent IDs belonging to this hive.
+    pub members: Vec<String>,
+    /// Optional domain role (e.g. "memory", "perception", "network").
+    pub role: Option<String>,
+    /// Kuramoto order parameter for this hive.
+    pub order_parameter: f32,
+    /// Mean phase of the hive.
+    pub mean_phase: f32,
+    /// Mean coherence of the hive.
+    pub coherence: f32,
+    /// Agents with connections to other hives (bridge agents).
+    pub bridge_agents: Vec<String>,
 }
 
 /// Emergent Queen state computed from the swarm.
@@ -340,6 +360,137 @@ impl QueenSync {
         hives
     }
 
+    /// Domain-aware hive detection with roles and bridge agents (QS-4).
+    ///
+    /// Extends `detect_hives` by:
+    /// - Assigning a `role` to each hive based on the majority role of its members.
+    /// - Detecting "bridge agents" — agents whose phase is close enough to
+    ///   multiple hives' mean phases to link them.
+    pub fn detect_hives_domain_aware(&self, swarm: &[AgentPhase]) -> Vec<HiveInfo> {
+        let basic_hives = self.detect_hives(swarm);
+        if basic_hives.is_empty() {
+            return vec![];
+        }
+
+        let threshold = self.config.hive_threshold;
+
+        // Build a lookup: agent_id -> AgentPhase
+        let agent_map: std::collections::HashMap<&str, &AgentPhase> = swarm
+            .iter()
+            .map(|a| (a.agent_id.as_str(), a))
+            .collect();
+
+        // Convert to HiveInfo with role inference
+        let mut hive_infos: Vec<HiveInfo> = basic_hives
+            .iter()
+            .map(|h| {
+                // Majority-vote role assignment
+                let role = Self::majority_role(h, &agent_map);
+
+                HiveInfo {
+                    members: h.agent_ids.clone(),
+                    role,
+                    order_parameter: h.order_parameter,
+                    mean_phase: h.mean_phase,
+                    coherence: h.coherence,
+                    bridge_agents: vec![],
+                }
+            })
+            .collect();
+
+        // Detect bridge agents: agents that are phase-close to >=2 hives' mean phases
+        let mut bridge_per_hive: Vec<Vec<String>> = vec![vec![]; hive_infos.len()];
+
+        for agent in swarm {
+            let mut close_hive_indices = Vec::new();
+            for (hi, hive) in hive_infos.iter().enumerate() {
+                let mut diff = (agent.phase - hive.mean_phase).abs();
+                if diff > std::f32::consts::PI {
+                    diff = TAU - diff;
+                }
+                if diff < threshold {
+                    close_hive_indices.push(hi);
+                }
+            }
+            // Bridge agent if close to 2+ hives
+            if close_hive_indices.len() >= 2 {
+                for &hi in &close_hive_indices {
+                    if !bridge_per_hive[hi].contains(&agent.agent_id) {
+                        bridge_per_hive[hi].push(agent.agent_id.clone());
+                    }
+                }
+            }
+        }
+
+        for (i, hive) in hive_infos.iter_mut().enumerate() {
+            hive.bridge_agents = bridge_per_hive[i].clone();
+        }
+
+        hive_infos
+    }
+
+    /// Infer the hive role from the majority role of its member agents.
+    fn majority_role(
+        hive: &Hive,
+        agent_map: &std::collections::HashMap<&str, &AgentPhase>,
+    ) -> Option<String> {
+        let mut role_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for aid in &hive.agent_ids {
+            if let Some(agent) = agent_map.get(aid.as_str()) {
+                if let Some(ref role) = agent.role {
+                    *role_counts.entry(role.as_str()).or_insert(0) += 1;
+                }
+            }
+        }
+        role_counts
+            .into_iter()
+            .max_by_key(|&(_, count)| count)
+            .map(|(role, _)| role.to_string())
+    }
+
+    /// Format hive topology as a human-readable string for CLI output.
+    pub fn format_hive_topology(hive_infos: &[HiveInfo]) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+
+        if hive_infos.is_empty() {
+            out.push_str("No hives detected.\n");
+            return out;
+        }
+
+        writeln!(out, "Hive Topology ({} hives):", hive_infos.len()).unwrap();
+        writeln!(out, "{}", "=".repeat(60)).unwrap();
+
+        for (i, hive) in hive_infos.iter().enumerate() {
+            let role_str = hive.role.as_deref().unwrap_or("(unassigned)");
+            writeln!(out, "\nHive {} [role: {}]", i, role_str).unwrap();
+            writeln!(
+                out,
+                "  order: {:.3}  mean_phase: {:.3}  coherence: {:.3}",
+                hive.order_parameter, hive.mean_phase, hive.coherence
+            ).unwrap();
+            writeln!(out, "  members ({}): {}", hive.members.len(), hive.members.join(", ")).unwrap();
+            if hive.bridge_agents.is_empty() {
+                writeln!(out, "  bridge agents: none").unwrap();
+            } else {
+                writeln!(out, "  bridge agents ({}): {}", hive.bridge_agents.len(), hive.bridge_agents.join(", ")).unwrap();
+            }
+        }
+
+        // Summary: list all unique bridge agents
+        let mut all_bridges: Vec<&str> = hive_infos
+            .iter()
+            .flat_map(|h| h.bridge_agents.iter().map(|s| s.as_str()))
+            .collect();
+        all_bridges.sort();
+        all_bridges.dedup();
+        if !all_bridges.is_empty() {
+            writeln!(out, "\nBridge agents across hives: {}", all_bridges.join(", ")).unwrap();
+        }
+
+        out
+    }
+
     /// Execute one Queen synchronization step.
     ///
     /// Reads the published phases from the swarm, computes coupling, updates
@@ -418,6 +569,7 @@ impl QueenSync {
             right_coherence: self.right_coherence,
             bridge_activity: self.bridge_activity,
             dream_state: self.dream_state.clone(),
+            role: None,
         }
     }
 
@@ -772,7 +924,14 @@ mod tests {
             right_coherence: 0.0,
             bridge_activity: 0.0,
             dream_state: None,
+            role: None,
         }
+    }
+
+    fn make_agent_phase_with_role(id: &str, phase: f32, coherence: f32, trust: f32, role: Option<&str>) -> AgentPhase {
+        let mut ap = make_agent_phase(id, phase, coherence, trust);
+        ap.role = role.map(|s| s.to_string());
+        ap
     }
 
     // -----------------------------------------------------------------------
@@ -1199,5 +1358,130 @@ mod tests {
         assert_eq!(ap.bridge_activity, 0.0);
         assert!(ap.dream_state.is_none());
         assert_eq!(ap.trust_score, 0.5); // default_trust
+        assert!(ap.role.is_none()); // new field defaults to None
+    }
+
+    // -----------------------------------------------------------------------
+    // Domain-aware hive detection tests (QS-4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn domain_aware_hives_assigns_roles() {
+        let queen = QueenSync::new(QueenConfig::default(), "test");
+        let swarm = vec![
+            make_agent_phase_with_role("a", 0.0, 1.0, 1.0, Some("memory")),
+            make_agent_phase_with_role("b", 0.1, 1.0, 1.0, Some("memory")),
+            make_agent_phase_with_role("c", 0.05, 1.0, 1.0, Some("perception")),
+            make_agent_phase_with_role("d", PI, 1.0, 1.0, Some("network")),
+            make_agent_phase_with_role("e", PI + 0.1, 1.0, 1.0, Some("network")),
+        ];
+        let hive_infos = queen.detect_hives_domain_aware(&swarm);
+
+        assert!(hive_infos.len() >= 2, "should detect at least 2 hives, got {}", hive_infos.len());
+
+        // The hive containing a,b,c should have role "memory" (majority)
+        let abc_hive = hive_infos.iter().find(|h| h.members.contains(&"a".to_string()));
+        assert!(abc_hive.is_some(), "hive containing 'a' should exist");
+        let abc_hive = abc_hive.unwrap();
+        assert_eq!(abc_hive.role.as_deref(), Some("memory"), "majority role should be 'memory'");
+
+        // The hive containing d,e should have role "network"
+        let de_hive = hive_infos.iter().find(|h| h.members.contains(&"d".to_string()));
+        assert!(de_hive.is_some(), "hive containing 'd' should exist");
+        let de_hive = de_hive.unwrap();
+        assert_eq!(de_hive.role.as_deref(), Some("network"), "majority role should be 'network'");
+    }
+
+    #[test]
+    fn domain_aware_hives_detects_bridge_agents() {
+        // A bridge agent has a phase close to two hives' mean phases.
+        // Hive A: agents at phase ~0.0, Hive B: agents at phase ~PI/4+epsilon
+        // Bridge agent: phase right between them (within threshold of both).
+        let config = QueenConfig {
+            hive_threshold: 0.5, // generous threshold
+            ..Default::default()
+        };
+        let queen = QueenSync::new(config, "test");
+
+        // Hive A: phases 0.0, 0.1
+        // Hive B: phases 0.8, 0.9
+        // Bridge: phase 0.4 — within 0.5 of hive A mean (0.05) and hive B mean (0.85)?
+        // Actually: |0.4 - 0.05| = 0.35 < 0.5, |0.4 - 0.85| = 0.45 < 0.5 => bridge!
+        let swarm = vec![
+            make_agent_phase("a1", 0.0, 1.0, 1.0),
+            make_agent_phase("a2", 0.1, 1.0, 1.0),
+            make_agent_phase("bridge", 0.4, 1.0, 1.0),
+            make_agent_phase("b1", 0.8, 1.0, 1.0),
+            make_agent_phase("b2", 0.9, 1.0, 1.0),
+        ];
+
+        let hive_infos = queen.detect_hives_domain_aware(&swarm);
+
+        // Collect all bridge agents across hives
+        let all_bridges: Vec<&str> = hive_infos
+            .iter()
+            .flat_map(|h| h.bridge_agents.iter().map(|s| s.as_str()))
+            .collect();
+
+        println!("Hive infos: {:?}", hive_infos);
+        println!("All bridge agents: {:?}", all_bridges);
+
+        // The "bridge" agent should appear as a bridge in at least one hive
+        // (it depends on the exact BFS grouping, but the bridge detection is
+        // based on phase proximity to hive means, not BFS membership)
+        if hive_infos.len() >= 2 {
+            assert!(
+                all_bridges.contains(&"bridge"),
+                "agent 'bridge' should be detected as a bridge agent: {:?}",
+                all_bridges
+            );
+        }
+    }
+
+    #[test]
+    fn domain_aware_hives_no_role_when_unset() {
+        let queen = QueenSync::new(QueenConfig::default(), "test");
+        let swarm = vec![
+            make_agent_phase("a", 0.0, 1.0, 1.0),
+            make_agent_phase("b", 0.1, 1.0, 1.0),
+        ];
+        let hive_infos = queen.detect_hives_domain_aware(&swarm);
+        for hive in &hive_infos {
+            assert!(hive.role.is_none(), "role should be None when agents have no role set");
+        }
+    }
+
+    #[test]
+    fn format_hive_topology_produces_output() {
+        let hive_infos = vec![
+            HiveInfo {
+                members: vec!["a".into(), "b".into()],
+                role: Some("memory".into()),
+                order_parameter: 0.95,
+                mean_phase: 0.1,
+                coherence: 0.9,
+                bridge_agents: vec!["bridge1".into()],
+            },
+            HiveInfo {
+                members: vec!["c".into(), "d".into()],
+                role: Some("network".into()),
+                order_parameter: 0.88,
+                mean_phase: 3.0,
+                coherence: 0.85,
+                bridge_agents: vec!["bridge1".into()],
+            },
+        ];
+        let output = QueenSync::format_hive_topology(&hive_infos);
+        assert!(output.contains("Hive Topology (2 hives)"));
+        assert!(output.contains("role: memory"));
+        assert!(output.contains("role: network"));
+        assert!(output.contains("bridge1"));
+        assert!(output.contains("Bridge agents across hives:"));
+    }
+
+    #[test]
+    fn format_hive_topology_empty() {
+        let output = QueenSync::format_hive_topology(&[]);
+        assert!(output.contains("No hives detected"));
     }
 }

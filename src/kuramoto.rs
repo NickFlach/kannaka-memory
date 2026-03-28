@@ -3,12 +3,65 @@
 //! Implements the Kuramoto model for memory phase alignment, where clusters
 //! of related memories phase-lock into coherent narratives. The order parameter
 //! r measures collective coherence: r=1 means perfect sync, r≈0 means incoherent.
+//!
+//! Tiered coupling (QS-3): agents within the same hive sync with strong positive K
+//! (intra-hive), agents in different hives repel with weak/negative K (inter-hive),
+//! and during initial detection all agents use a shared K (detection).
 
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
 use crate::store::ResonanceEngine;
 use crate::wave::{cosine_similarity, normalize};
+
+/// Coupling tier for the Kuramoto model.
+///
+/// Controls the effective coupling constant K depending on the relationship
+/// between two agents/memories:
+/// - `Detection`: shared K during the initial detection window (all sync together)
+/// - `IntraHive`: strong positive K for agents in the same hive
+/// - `InterHive`: weak or negative K for agents in different hives
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CouplingTier {
+    /// Initial detection window — all agents use shared coupling to find structure.
+    Detection,
+    /// Same hive — strong positive coupling pulls phases together.
+    IntraHive,
+    /// Different hives — weak/negative coupling maintains distinct phase clusters.
+    InterHive,
+}
+
+/// Per-tier coupling constants.
+#[derive(Debug, Clone, Copy)]
+pub struct TieredCoupling {
+    /// K for detection phase (shared sync window).
+    pub detection_k: f32,
+    /// K for intra-hive coupling (strong positive).
+    pub intra_hive_k: f32,
+    /// K for inter-hive coupling (weak or negative).
+    pub inter_hive_k: f32,
+}
+
+impl Default for TieredCoupling {
+    fn default() -> Self {
+        Self {
+            detection_k: 0.5,
+            intra_hive_k: 2.0,
+            inter_hive_k: -0.3,
+        }
+    }
+}
+
+impl TieredCoupling {
+    /// Return the effective K for a given tier.
+    pub fn k_for_tier(&self, tier: CouplingTier) -> f32 {
+        match tier {
+            CouplingTier::Detection => self.detection_k,
+            CouplingTier::IntraHive => self.intra_hive_k,
+            CouplingTier::InterHive => self.inter_hive_k,
+        }
+    }
+}
 
 /// Kuramoto synchronization model for memory phase alignment.
 pub struct KuramotoSync {
@@ -122,6 +175,135 @@ impl KuramotoSync {
             }
 
             // Check convergence
+            let current_order = {
+                let refs: Vec<&HyperMemory> = memories.iter().map(|m| &**m).collect();
+                self.order_parameter(&refs)
+            };
+            if (current_order - prev_order).abs() < 1e-6 && step > 0 {
+                return SyncReport {
+                    memories_synced: n,
+                    initial_order,
+                    final_order: current_order,
+                    steps_taken: step + 1,
+                    converged: true,
+                };
+            }
+            prev_order = current_order;
+        }
+
+        let final_order = {
+            let refs: Vec<&HyperMemory> = memories.iter().map(|m| &**m).collect();
+            self.order_parameter(&refs)
+        };
+
+        SyncReport {
+            memories_synced: n,
+            initial_order,
+            final_order,
+            steps_taken: self.steps,
+            converged: false,
+        }
+    }
+
+    /// Compute pairwise coupling weights with tiered K values.
+    ///
+    /// `hive_labels[i]` is the hive index for memory `i` (or `None` if unassigned).
+    /// During the `Detection` tier, hive labels are ignored and all pairs use the
+    /// detection K. For `IntraHive`/`InterHive`, the tier is selected per-pair
+    /// based on whether the two memories share a hive label.
+    pub fn compute_tiered_weights(
+        &self,
+        memories: &[&HyperMemory],
+        hive_labels: &[Option<usize>],
+        tiered: &TieredCoupling,
+        tier: CouplingTier,
+    ) -> Vec<Vec<f32>> {
+        let n = memories.len();
+        let mut weights = vec![vec![0.0f32; n]; n];
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
+                if sim <= self.coupling_threshold {
+                    continue;
+                }
+
+                let effective_tier = match tier {
+                    CouplingTier::Detection => CouplingTier::Detection,
+                    _ => {
+                        // Determine per-pair tier from hive labels
+                        match (hive_labels[i], hive_labels[j]) {
+                            (Some(a), Some(b)) if a == b => CouplingTier::IntraHive,
+                            (Some(_), Some(_)) => CouplingTier::InterHive,
+                            // Unassigned agents use detection coupling
+                            _ => CouplingTier::Detection,
+                        }
+                    }
+                };
+
+                let k = tiered.k_for_tier(effective_tier);
+                let w = sim * k;
+                weights[i][j] = w;
+                weights[j][i] = w;
+            }
+        }
+
+        weights
+    }
+
+    /// Run Kuramoto integration with tiered coupling.
+    ///
+    /// Like `sync_cluster`, but uses `TieredCoupling` to differentiate intra-hive,
+    /// inter-hive, and detection coupling strengths. The `hive_labels` slice maps
+    /// each memory to its hive index (`None` if unassigned). The `tier` parameter
+    /// selects whether we are in the detection window (shared K) or the
+    /// specialization phase (per-pair K from hive labels).
+    pub fn sync_cluster_tiered(
+        &self,
+        memories: &mut [&mut HyperMemory],
+        hive_labels: &[Option<usize>],
+        tiered: &TieredCoupling,
+        tier: CouplingTier,
+    ) -> SyncReport {
+        let n = memories.len();
+        if n < 2 {
+            return SyncReport {
+                memories_synced: n,
+                initial_order: 1.0,
+                final_order: 1.0,
+                steps_taken: 0,
+                converged: true,
+            };
+        }
+
+        // Compute tiered coupling weights
+        let refs: Vec<&HyperMemory> = memories.iter().map(|m| &**m).collect();
+        let weights = self.compute_tiered_weights(&refs, hive_labels, tiered, tier);
+
+        let initial_order = self.order_parameter(&refs);
+        let nf = n as f32;
+        let mut prev_order = initial_order;
+
+        for step in 0..self.steps {
+            let phases: Vec<f32> = memories.iter().map(|m| m.phase).collect();
+            let freqs: Vec<f32> = memories.iter().map(|m| m.frequency).collect();
+
+            let mut dphi = vec![0.0f32; n];
+            for i in 0..n {
+                let mut coupling_sum = 0.0f32;
+                for j in 0..n {
+                    if i != j {
+                        coupling_sum += weights[i][j] * (phases[j] - phases[i]).sin();
+                    }
+                }
+                // Use 1/N normalisation (coupling sign is baked into the weights)
+                dphi[i] = freqs[i] + (1.0 / nf) * coupling_sum;
+            }
+
+            for i in 0..n {
+                memories[i].phase += dphi[i] * self.dt;
+            }
+
             let current_order = {
                 let refs: Vec<&HyperMemory> = memories.iter().map(|m| &**m).collect();
                 self.order_parameter(&refs)
@@ -579,5 +761,171 @@ mod tests {
         println!("Report: {:?}", report);
 
         assert!(r_after > r_before, "phases should converge: {} -> {}", r_before, r_after);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tiered coupling tests (QS-3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tiered_coupling_k_for_tier() {
+        let tc = TieredCoupling::default();
+        assert_eq!(tc.k_for_tier(CouplingTier::Detection), 0.5);
+        assert_eq!(tc.k_for_tier(CouplingTier::IntraHive), 2.0);
+        assert_eq!(tc.k_for_tier(CouplingTier::InterHive), -0.3);
+    }
+
+    #[test]
+    fn detection_tier_syncs_all_agents() {
+        // During detection, all memories use shared K — they should converge.
+        let sync = KuramotoSync {
+            coupling_strength: 1.0,
+            dt: 0.1,
+            steps: 50,
+            coupling_threshold: 0.3,
+        };
+        let dim = 100;
+        let v = similar_vec(dim);
+        let tiered = TieredCoupling {
+            detection_k: 2.0,
+            intra_hive_k: 2.0,
+            inter_hive_k: -0.3,
+        };
+
+        let mut m1 = make_memory_with_phase(v.clone(), "d1", 0.0);
+        let mut m2 = make_memory_with_phase(v.clone(), "d2", 1.0);
+        let mut m3 = make_memory_with_phase(v.clone(), "d3", 2.0);
+
+        let initial_r = {
+            let refs: Vec<&HyperMemory> = vec![&m1, &m2, &m3];
+            sync.order_parameter(&refs)
+        };
+
+        // All unassigned — detection tier
+        let labels: Vec<Option<usize>> = vec![None, None, None];
+        let mut refs: Vec<&mut HyperMemory> = vec![&mut m1, &mut m2, &mut m3];
+        let report = sync.sync_cluster_tiered(&mut refs, &labels, &tiered, CouplingTier::Detection);
+
+        println!("Detection tier: initial_r={}, final_r={}", initial_r, report.final_order);
+        assert!(
+            report.final_order > initial_r,
+            "detection tier should increase order: {} -> {}",
+            initial_r, report.final_order
+        );
+    }
+
+    #[test]
+    fn intra_hive_tier_syncs_same_hive() {
+        // Memories in the same hive should converge with strong positive K.
+        let sync = KuramotoSync {
+            coupling_strength: 1.0,
+            dt: 0.1,
+            steps: 50,
+            coupling_threshold: 0.3,
+        };
+        let dim = 100;
+        let v = similar_vec(dim);
+        let tiered = TieredCoupling {
+            detection_k: 0.5,
+            intra_hive_k: 3.0,
+            inter_hive_k: -0.3,
+        };
+
+        let mut m1 = make_memory_with_phase(v.clone(), "h1a", 0.0);
+        let mut m2 = make_memory_with_phase(v.clone(), "h1b", 1.5);
+        let mut m3 = make_memory_with_phase(v.clone(), "h1c", 3.0);
+
+        let initial_r = {
+            let refs: Vec<&HyperMemory> = vec![&m1, &m2, &m3];
+            sync.order_parameter(&refs)
+        };
+
+        // All in hive 0
+        let labels: Vec<Option<usize>> = vec![Some(0), Some(0), Some(0)];
+        let mut refs: Vec<&mut HyperMemory> = vec![&mut m1, &mut m2, &mut m3];
+        let report = sync.sync_cluster_tiered(&mut refs, &labels, &tiered, CouplingTier::IntraHive);
+
+        println!("IntraHive tier: initial_r={}, final_r={}", initial_r, report.final_order);
+        assert!(
+            report.final_order > initial_r,
+            "intra-hive tier should increase order: {} -> {}",
+            initial_r, report.final_order
+        );
+    }
+
+    #[test]
+    fn inter_hive_tier_maintains_separation() {
+        // Memories in different hives should NOT converge (negative K pushes apart).
+        let sync = KuramotoSync {
+            coupling_strength: 1.0,
+            dt: 0.05,
+            steps: 30,
+            coupling_threshold: 0.3,
+        };
+        let dim = 100;
+        let v = similar_vec(dim);
+        let tiered = TieredCoupling {
+            detection_k: 0.5,
+            intra_hive_k: 2.0,
+            inter_hive_k: -1.0, // strong repulsion
+        };
+
+        // Two clusters at distinct phases
+        let mut m1 = make_memory_with_phase(v.clone(), "h0a", 0.0);
+        let mut m2 = make_memory_with_phase(v.clone(), "h0b", 0.1);
+        let mut m3 = make_memory_with_phase(v.clone(), "h1a", PI);
+        let mut m4 = make_memory_with_phase(v.clone(), "h1b", PI + 0.1);
+
+        let initial_r = {
+            let refs: Vec<&HyperMemory> = vec![&m1, &m2, &m3, &m4];
+            sync.order_parameter(&refs)
+        };
+
+        // hive 0 vs hive 1 — inter-hive coupling is negative
+        let labels: Vec<Option<usize>> = vec![Some(0), Some(0), Some(1), Some(1)];
+        let mut refs: Vec<&mut HyperMemory> = vec![&mut m1, &mut m2, &mut m3, &mut m4];
+        let report = sync.sync_cluster_tiered(&mut refs, &labels, &tiered, CouplingTier::IntraHive);
+
+        println!("InterHive tier: initial_r={}, final_r={}", initial_r, report.final_order);
+
+        // Global order should stay low (the two hives are kept apart)
+        assert!(
+            report.final_order < 0.8,
+            "inter-hive negative coupling should prevent full global sync: r={}",
+            report.final_order
+        );
+    }
+
+    #[test]
+    fn tiered_weights_detection_uses_shared_k() {
+        let sync = KuramotoSync {
+            coupling_strength: 1.0,
+            dt: 0.1,
+            steps: 10,
+            coupling_threshold: 0.3,
+        };
+        let dim = 100;
+        let v = similar_vec(dim);
+        let tiered = TieredCoupling {
+            detection_k: 0.7,
+            intra_hive_k: 2.0,
+            inter_hive_k: -0.5,
+        };
+
+        let m1 = make_memory_with_phase(v.clone(), "a", 0.0);
+        let m2 = make_memory_with_phase(v.clone(), "b", 1.0);
+        let refs: Vec<&HyperMemory> = vec![&m1, &m2];
+
+        // Detection tier ignores hive labels
+        let labels: Vec<Option<usize>> = vec![Some(0), Some(1)];
+        let weights = sync.compute_tiered_weights(&refs, &labels, &tiered, CouplingTier::Detection);
+
+        let sim = cosine_similarity(&m1.vector, &m2.vector);
+        let expected = sim * 0.7; // detection_k = 0.7
+        assert!(
+            (weights[0][1] - expected).abs() < 1e-5,
+            "detection tier should use detection_k: got {}, expected {}",
+            weights[0][1], expected
+        );
     }
 }

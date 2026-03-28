@@ -29,6 +29,7 @@ pub mod fano;
 pub mod hemisphere;
 pub mod chiral;
 pub mod chiral_persistence;
+pub mod ncs;
 #[cfg(test)]
 mod tests;
 

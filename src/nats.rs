@@ -1356,6 +1356,8 @@ mod tests {
 
         transport.create_kv_bucket("TEST_KV", 60).expect("create bucket");
         transport.kv_put("TEST_KV", "hello", "world").expect("kv_put");
+        // Small delay to let JetStream persist
+        std::thread::sleep(Duration::from_millis(200));
         let val = transport.kv_get("TEST_KV", "hello").expect("kv_get");
         assert_eq!(val, "world");
 
@@ -1378,6 +1380,7 @@ mod tests {
         transport.create_kv_bucket("TEST_KEYS", 60).expect("create bucket");
         transport.kv_put("TEST_KEYS", "a", "1").expect("put a");
         transport.kv_put("TEST_KEYS", "b", "2").expect("put b");
+        std::thread::sleep(Duration::from_millis(200));
 
         let keys = transport.kv_keys("TEST_KEYS").expect("kv_keys");
         assert!(keys.contains(&"a".to_string()), "keys should contain 'a': {:?}", keys);

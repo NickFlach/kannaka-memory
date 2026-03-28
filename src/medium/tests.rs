@@ -1393,3 +1393,76 @@ fn medium_wavefront_modality_can_be_set_after_insert() {
     medium.metadata[idx].modality = Modality::Semantic;
     assert_eq!(medium.metadata[idx].modality, Modality::Semantic);
 }
+
+// ---------------------------------------------------------------------------
+// NCS Phase 1.2 — Modality detection classifier (Issue #43)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn detect_modality_audio_content() {
+    let content = "I can hear the music playing at 120 BPM with heavy bass frequency";
+    let cls = detect_modality(content);
+    assert_eq!(cls.modality, Modality::Audio, "audio keywords should classify as Audio");
+    assert!(cls.confidence > 0.5, "audio confidence should be high, got {}", cls.confidence);
+
+    // Also test the simple tuple API
+    let (m, c) = detect_modality_simple(content);
+    assert_eq!(m, Modality::Audio);
+    assert!(c > 0.5);
+}
+
+#[test]
+fn detect_modality_visual_content() {
+    let content = "render the glyph on the canvas with bright color and pixel alignment";
+    let cls = detect_modality(content);
+    assert_eq!(cls.modality, Modality::Visual, "visual keywords should classify as Visual");
+    assert!(cls.confidence > 0.5, "visual confidence should be high, got {}", cls.confidence);
+
+    let (m, _) = detect_modality_simple(content);
+    assert_eq!(m, Modality::Visual);
+}
+
+#[test]
+fn detect_modality_network_content() {
+    let content = "NATS swarm agent phase sync across mesh nodes with gossip protocol";
+    let cls = detect_modality(content);
+    assert_eq!(cls.modality, Modality::Network, "network keywords should classify as Network");
+    assert!(cls.confidence > 0.5, "network confidence should be high, got {}", cls.confidence);
+}
+
+#[test]
+fn detect_modality_semantic_default() {
+    let content = "this is a plan about an idea and its concept design architecture";
+    let cls = detect_modality(content);
+    assert_eq!(cls.modality, Modality::Semantic, "semantic keywords should classify as Semantic");
+    assert!(cls.confidence > 0.5, "semantic confidence should be high, got {}", cls.confidence);
+}
+
+#[test]
+fn detect_modality_mixed_content() {
+    // Content with roughly equal audio and visual keywords => Mixed
+    let content = "audio sound song image color pixel";
+    let cls = detect_modality(content);
+    // Both audio and visual should score similarly
+    assert!(
+        cls.modality == Modality::Mixed
+            || (cls.modality == Modality::Audio || cls.modality == Modality::Visual),
+        "balanced audio+visual content should be Mixed or borderline, got {:?} (audio={}, visual={})",
+        cls.modality, cls.scores.audio, cls.scores.visual
+    );
+}
+
+#[test]
+fn detect_modality_unknown_no_keywords() {
+    let content = "xyz qwerty foobar";
+    let cls = detect_modality(content);
+    assert_eq!(cls.modality, Modality::Unknown, "gibberish should classify as Unknown");
+    assert!(cls.confidence < 0.01, "unknown content confidence should be ~0, got {}", cls.confidence);
+}
+
+#[test]
+fn detect_modality_simple_returns_tuple() {
+    let (modality, confidence) = detect_modality_simple("listen to the music track");
+    assert_eq!(modality, Modality::Audio);
+    assert!(confidence > 0.0);
+}
