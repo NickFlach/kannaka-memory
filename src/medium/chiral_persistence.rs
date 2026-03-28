@@ -17,6 +17,39 @@ use super::hemisphere::Hemisphere;
 use super::types::*;
 use super::Medium;
 
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use uuid::Uuid;
+
+/// Pre-NCS WavefrontMeta (before modality field was added).
+/// Used for backward-compatible deserialization of old .hrm files.
+#[derive(Deserialize)]
+struct WavefrontMetaLegacy {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub hallucinated: bool,
+    pub is_self_referential: bool,
+}
+
+impl From<WavefrontMetaLegacy> for WavefrontMeta {
+    fn from(legacy: WavefrontMetaLegacy) -> Self {
+        WavefrontMeta {
+            id: legacy.id,
+            content: legacy.content,
+            tags: legacy.tags,
+            created_at: legacy.created_at,
+            hallucinated: legacy.hallucinated,
+            is_self_referential: legacy.is_self_referential,
+            sga_class: None,
+            fano_group: None,
+            category: None,
+            modality: Modality::Unknown,
+        }
+    }
+}
+
 impl ChiralMedium {
     /// Save the chiral medium to a .hrm v2 file.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
@@ -277,14 +310,21 @@ impl ChiralMedium {
             *ts = i64::from_le_bytes(bytes);
         }
 
-        // Metadata
+        // Metadata — try current format first, fall back to pre-NCS format without modality
         let mut len_bytes = [0u8; 4];
         r.read_exact(&mut len_bytes)?;
         let meta_len = u32::from_le_bytes(len_bytes) as usize;
         let mut meta_bytes = vec![0u8; meta_len];
         r.read_exact(&mut meta_bytes)?;
-        let metadata: Vec<WavefrontMeta> = bincode::deserialize(&meta_bytes)
-            .map_err(|e| MediumError::Serialization(e))?;
+        let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&meta_bytes) {
+            Ok(m) => m,
+            Err(_) => {
+                // Pre-NCS format: deserialize without modality field, then add default
+                let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
+                    .map_err(|e| MediumError::Serialization(e))?;
+                legacy.into_iter().map(|l| l.into()).collect()
+            }
+        };
 
         // Build ID index
         let mut id_to_index = HashMap::new();
