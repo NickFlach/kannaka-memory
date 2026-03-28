@@ -62,7 +62,7 @@ pub use store::{MediumBackend, TestMedium, ResonanceEngine, StoreError, EngineEr
 pub use encoding::{EncodingPipeline, TextEncoder, SimpleHashEncoder, EncodingError};
 pub use kuramoto::{KuramotoSync, MemoryCluster, SyncReport, CouplingTier, TieredCoupling};
 pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};
-pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
+pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState, ModalityDreamReport, SwarmDreamReport};
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
 
 pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot, NcsSnapshot};

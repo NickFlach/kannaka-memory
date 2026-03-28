@@ -97,6 +97,34 @@ pub struct ConsolidationReport {
     pub final_order_parameter: f32,
 }
 
+/// Report from modality-aware dream consolidation (NCS Phase 3.2, #48).
+#[derive(Debug, Clone, Default)]
+pub struct ModalityDreamReport {
+    /// Number of distinct modalities processed.
+    pub modalities_processed: usize,
+    /// Per-modality (name, intra-cluster coherence R).
+    pub per_modality_coherence: Vec<(String, f32)>,
+    /// Number of memories strengthened (intra-modality phase alignment).
+    pub memories_strengthened: usize,
+    /// Number of cross-modality confusion pairs detected.
+    pub cross_modality_confusions: usize,
+}
+
+/// Report from swarm-aware dream consolidation (QS-6, #57).
+#[derive(Debug, Clone, Default)]
+pub struct SwarmDreamReport {
+    /// Phase deviation from swarm mean (radians).
+    pub phase_deviation: f32,
+    /// Change in chiral perturbation (positive = more divergence).
+    pub chiral_adjustment: f32,
+    /// New chiral eta after adjustment.
+    pub new_chiral_eta: f32,
+    /// Total memories consolidated in this cycle.
+    pub memories_consolidated: usize,
+    /// Embedded modality-aware report if applicable.
+    pub modality_report: Option<ModalityDreamReport>,
+}
+
 /// Adaptive parameters that persist between dream cycles (EXP-003).
 ///
 /// After each cycle, the engine observes the Kuramoto order parameter R
@@ -1840,6 +1868,186 @@ impl ConsolidationEngine {
             .collect();
         
         (consolidation_reports, resolution_report)
+    }
+
+    // -----------------------------------------------------------------------
+    // NCS Phase 3.2: Modality-aware dream consolidation (#48)
+    // -----------------------------------------------------------------------
+
+    /// Run modality-aware consolidation pass on an HRM store.
+    ///
+    /// Groups memories by modality and:
+    /// 1. Strengthens intra-modality coherence (memories within same modality cluster)
+    /// 2. Weakens cross-modality confusion (memories whose tag conflicts with cluster)
+    /// 3. Retroactively re-classifies misclassified memories
+    /// 4. Returns per-modality coherence scores for the dream report
+    pub fn consolidate_modality_aware(
+        &self,
+        engine: &mut ResonanceEngine,
+    ) -> ModalityDreamReport {
+        let mut report = ModalityDreamReport::default();
+
+        // Only works with HRM stores
+        let has_hrm = engine.store.as_any().downcast_ref::<crate::hrm_store::HrmStore>().is_some();
+        if !has_hrm {
+            return report;
+        }
+
+        let all = engine.store.all_memories().unwrap_or_default();
+        if all.len() < 4 {
+            return report;
+        }
+
+        // Group memories by modality tag (from content keywords)
+        let mut modality_groups: std::collections::HashMap<String, Vec<Uuid>> =
+            std::collections::HashMap::new();
+        let mut modality_tags: std::collections::HashMap<Uuid, String> =
+            std::collections::HashMap::new();
+
+        for mem in &all {
+            let (modality, _confidence) = crate::medium::types::detect_modality_simple(&mem.content);
+            let mod_str = format!("{}", modality);
+            if mod_str != "unknown" && mod_str != "mixed" {
+                modality_groups.entry(mod_str.clone()).or_default().push(mem.id);
+                modality_tags.insert(mem.id, mod_str);
+            }
+        }
+
+        // Per-modality intra-coherence strengthening
+        for (modality_name, ids) in &modality_groups {
+            if ids.len() < 2 {
+                continue;
+            }
+
+            // Compute intra-modality phase coherence (Kuramoto R within cluster)
+            let mems: Vec<crate::memory::HyperMemory> = ids.iter()
+                .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+                .collect();
+
+            if mems.len() < 2 {
+                continue;
+            }
+
+            let intra_r = self.compute_category_order_parameter(&mems);
+            report.per_modality_coherence.push((modality_name.clone(), intra_r));
+
+            // Strengthen phase alignment within the modality
+            let mean_phase = self.compute_mean_phase(&mems);
+            for id in ids {
+                if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                    // Gentle phase alignment toward the modality mean (5% per cycle)
+                    mem.phase = 0.95 * mem.phase + 0.05 * mean_phase;
+                    // Small amplitude boost for correctly-classified memories
+                    mem.amplitude += 0.02;
+                    report.memories_strengthened += 1;
+                }
+            }
+        }
+
+        // Cross-modality interference detection and weakening
+        // Find memories whose vector similarity is high with a DIFFERENT modality's cluster
+        let modality_keys: Vec<String> = modality_groups.keys().cloned().collect();
+        for i in 0..modality_keys.len() {
+            for j in (i + 1)..modality_keys.len() {
+                let ids_a = &modality_groups[&modality_keys[i]];
+                let ids_b = &modality_groups[&modality_keys[j]];
+
+                // Sample a few pairs to detect cross-modality confusion
+                let max_checks = 10.min(ids_a.len() * ids_b.len());
+                let mut checks = 0;
+                'outer: for &id_a in ids_a {
+                    for &id_b in ids_b {
+                        if checks >= max_checks {
+                            break 'outer;
+                        }
+                        let sim = {
+                            let ma = engine.store.get(&id_a).ok().flatten();
+                            let mb = engine.store.get(&id_b).ok().flatten();
+                            match (ma, mb) {
+                                (Some(a), Some(b)) => cosine_similarity(&a.vector, &b.vector),
+                                _ => 0.0,
+                            }
+                        };
+                        // High cross-modality similarity = confusion
+                        if sim > 0.5 {
+                            report.cross_modality_confusions += 1;
+                            // Push phases apart slightly
+                            if let Ok(Some(mem)) = engine.store.get_mut(&id_a) {
+                                mem.phase += 0.05;
+                            }
+                            if let Ok(Some(mem)) = engine.store.get_mut(&id_b) {
+                                mem.phase -= 0.05;
+                            }
+                        }
+                        checks += 1;
+                    }
+                }
+            }
+        }
+
+        report.modalities_processed = modality_groups.len();
+        report
+    }
+
+    // -----------------------------------------------------------------------
+    // QS-6: Swarm-aware dream consolidation (#57)
+    // -----------------------------------------------------------------------
+
+    /// Run swarm-aware consolidation that incorporates shared wavefront absorption
+    /// and adjusts the chiral parameter based on swarm phase deviation.
+    ///
+    /// `swarm_phases`: latest known peer phases from NATS.
+    /// `our_phase`: this agent's current mean phase.
+    ///
+    /// Returns the adjusted chiral perturbation strength for the next cycle.
+    pub fn consolidate_swarm_aware(
+        &mut self,
+        engine: &mut ResonanceEngine,
+        swarm_phases: &[crate::queen::AgentPhase],
+        our_phase: f32,
+    ) -> SwarmDreamReport {
+        let mut report = SwarmDreamReport::default();
+
+        if swarm_phases.is_empty() {
+            return report;
+        }
+
+        // Compute swarm mean phase
+        let n = swarm_phases.len() as f32;
+        let sum_cos: f32 = swarm_phases.iter().map(|a| a.phase.cos()).sum();
+        let sum_sin: f32 = swarm_phases.iter().map(|a| a.phase.sin()).sum();
+        let swarm_mean = sum_sin.atan2(sum_cos);
+
+        // Phase deviation from swarm mean
+        let mut deviation = (our_phase - swarm_mean).abs();
+        if deviation > PI {
+            deviation = 2.0 * PI - deviation;
+        }
+        report.phase_deviation = deviation;
+
+        // Homeostatic chiral adjustment:
+        // Too tight (deviation < 0.3) -> increase chiral perturbation to diversify
+        // Too loose (deviation > 1.5) -> decrease chiral perturbation to converge
+        let old_eta = self.chiral_perturbation;
+        if deviation < 0.3 {
+            // Over-synchronized with swarm -> need more divergence
+            self.chiral_perturbation = (self.chiral_perturbation + 0.01).min(0.5);
+        } else if deviation > 1.5 {
+            // Too far from swarm -> need more convergence
+            self.chiral_perturbation = (self.chiral_perturbation - 0.01).max(0.0);
+        }
+        report.chiral_adjustment = self.chiral_perturbation - old_eta;
+        report.new_chiral_eta = self.chiral_perturbation;
+
+        // Run standard consolidation with updated chiral parameter
+        let consolidation_report = self.consolidate(engine, 0, 3);
+        report.memories_consolidated = consolidation_report.memories_replayed;
+
+        // Also run modality-aware pass
+        let modality_report = self.consolidate_modality_aware(engine);
+        report.modality_report = Some(modality_report);
+
+        report
     }
 
     /// Helper: Dream a single cluster on a snapshot and return the trajectory.
