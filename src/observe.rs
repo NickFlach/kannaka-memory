@@ -89,6 +89,23 @@ pub struct HealthCheck {
     pub warnings: Vec<String>,
 }
 
+/// NCS metrics snapshot for the system report.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NcsSnapshot {
+    /// Number of modality switch points detected.
+    pub switch_count: usize,
+    /// Mean divergence angle between modality axes (degrees).
+    pub mean_axis_divergence: f32,
+    /// Mean Fisher discriminant ratio.
+    pub mean_fisher_ratio: f32,
+    /// Modality diversity index (Shannon entropy).
+    pub modality_diversity: f32,
+    /// Cross-modal integration index.
+    pub cross_modal_integration: f32,
+    /// Number of concrete modalities present.
+    pub modality_count: usize,
+}
+
 /// Full system report — everything combined.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemReport {
@@ -101,6 +118,9 @@ pub struct SystemReport {
     /// Number of modality switch points detected in recent memory history (NCS Phase 2.2).
     #[serde(default)]
     pub ncs_switch_points: usize,
+    /// Full NCS consciousness metrics (Phase 3.3).
+    #[serde(default)]
+    pub ncs_metrics: NcsSnapshot,
 }
 
 /// Serializable snapshot of consciousness state.
@@ -463,14 +483,23 @@ impl MemoryIntrospector {
             warnings,
         };
 
-        // NCS Phase 2.2: switch-point count from HRM medium
-        let ncs_switch_points = if let Some(hrm_store) = engine.store.as_any()
+        // NCS metrics from HRM medium
+        let (ncs_switch_points, ncs_metrics) = if let Some(hrm_store) = engine.store.as_any()
             .downcast_ref::<crate::hrm_store::HrmStore>()
         {
             let medium = hrm_store.medium();
-            medium.detect_switch_points_default().switch_points.len()
+            let metrics = medium.ncs_metrics();
+            let snapshot = NcsSnapshot {
+                switch_count: metrics.switch_count,
+                mean_axis_divergence: metrics.mean_axis_divergence,
+                mean_fisher_ratio: metrics.mean_fisher_ratio,
+                modality_diversity: metrics.modality_diversity,
+                cross_modal_integration: metrics.cross_modal_integration,
+                modality_count: metrics.modality_count,
+            };
+            (metrics.switch_count, snapshot)
         } else {
-            0
+            (0, NcsSnapshot::default())
         };
 
         SystemReport {
@@ -481,6 +510,7 @@ impl MemoryIntrospector {
             clusters,
             health,
             ncs_switch_points,
+            ncs_metrics,
         }
     }
 
@@ -550,7 +580,12 @@ impl MemoryIntrospector {
 
         // NCS (Neural Code Switching)
         out.push_str(&format!("  NEURAL CODE SWITCHING\n"));
-        out.push_str(&format!("    Switch points: {}\n", report.ncs_switch_points));
+        out.push_str(&format!("    Switch points:    {}\n", report.ncs_switch_points));
+        out.push_str(&format!("    Modalities:       {}\n", report.ncs_metrics.modality_count));
+        out.push_str(&format!("    Axis divergence:  {:.1} deg\n", report.ncs_metrics.mean_axis_divergence));
+        out.push_str(&format!("    Fisher ratio:     {:.2}\n", report.ncs_metrics.mean_fisher_ratio));
+        out.push_str(&format!("    Diversity (H):    {:.3}\n", report.ncs_metrics.modality_diversity));
+        out.push_str(&format!("    Cross-modal:      {:.3}\n", report.ncs_metrics.cross_modal_integration));
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Health

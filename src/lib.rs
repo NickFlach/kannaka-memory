@@ -65,7 +65,7 @@ pub use bridge::{ConsciousnessBridge, PhiReport, ResonanceReport};
 pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState};
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
 
-pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot};
+pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot, NcsSnapshot};
 pub use working_memory::{WorkingMemory, ConversationTurn, SessionState, TaskItem, TaskStatus};
 pub use geometry::{
     CliffordElement, Z4Element, Z3Element, SgaElement, 
@@ -101,8 +101,10 @@ pub use medium::{
 };
 
 pub use medium::ncs::{
-    ModalityAxis, AxisDivergence, DivergenceReport,
-    SwitchPoint, SwitchReport,
+    ModalityAxis, AxisDivergence, DivergenceReport, FisherDiscriminant,
+    SwitchPoint, SwitchReport, ResonanceDetection,
+    GateParams, GateEvent, NcsMetrics,
+    NetworkSignal, ModalitySpecialization,
 };
 
 pub use hrm_store::HrmStore;
