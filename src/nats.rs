@@ -1,15 +1,18 @@
 //! NATS real-time transport for QueenSync phase gossip.
 //!
 //! Implements a minimal NATS client using raw TCP (the `nats` crate is broken
-//! with rand 0.9). Supports PUB/SUB for phase announcements and uses
-//! per-agent subjects for last-value semantics (simulating KV).
+//! with rand 0.9). Supports PUB/SUB for phase announcements, JetStream KV
+//! for agent registry / discovery, structured event streams, and automatic
+//! reconnection with message buffering.
 //!
 //! Subject layout:
 //! - `QUEEN.phase.<agent_id>` — each agent's latest phase (publish per agent)
 //! - `QUEEN.phase.*` — wildcard subscribe to get all phases
-//! - `QUEEN.announce` — join/leave events
+//! - `QUEEN.event.<type>` — structured events (join, leave, dream.start, etc.)
+//! - `QUEEN.announce` — legacy join/leave (still published for compat)
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
@@ -19,6 +22,11 @@ use crate::queen::AgentPhase;
 
 pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
+const EVENTS_STREAM_NAME: &str = "QUEEN_EVENTS";
+const KV_BUCKET_AGENTS: &str = "QUEEN_AGENTS";
+
+/// Maximum number of messages to buffer during disconnect.
+const PUBLISH_BUFFER_LIMIT: usize = 100;
 
 /// Minimal base64 decoder (standard alphabet, with padding).
 fn base64_decode(input: &str) -> Result<Vec<u8>, NatsError> {
@@ -50,6 +58,8 @@ pub enum NatsError {
     Io(std::io::Error),
     Protocol(String),
     Serialize(String),
+    Disconnected(String),
+    KvNotFound(String),
 }
 
 impl std::fmt::Display for NatsError {
@@ -59,6 +69,8 @@ impl std::fmt::Display for NatsError {
             Self::Io(e) => write!(f, "NATS I/O: {}", e),
             Self::Protocol(msg) => write!(f, "NATS protocol: {}", msg),
             Self::Serialize(msg) => write!(f, "NATS serialize: {}", msg),
+            Self::Disconnected(msg) => write!(f, "NATS disconnected: {}", msg),
+            Self::KvNotFound(key) => write!(f, "NATS KV key not found: {}", key),
         }
     }
 }
@@ -99,12 +111,21 @@ fn new_inbox(tag: &str) -> String {
     format!("_INBOX.{}.{}", tag, nonce)
 }
 
-/// A minimal synchronous NATS client.
+/// A message buffered during disconnect, replayed on reconnect.
+#[derive(Clone)]
+struct BufferedMessage {
+    subject: String,
+    payload: Vec<u8>,
+}
+
+/// A minimal synchronous NATS client with JetStream KV, events, and reconnection.
 pub struct SwarmTransport {
     stream: Arc<Mutex<TcpStream>>,
     url: String,
     next_sid: u64,
     jetstream_ok: bool,
+    connected: Arc<Mutex<bool>>,
+    publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
 }
 
 impl SwarmTransport {
@@ -112,7 +133,6 @@ impl SwarmTransport {
     pub fn connect(url: &str) -> Result<Self, NatsError> {
         let (host, port) = parse_nats_url(url)?;
         let addr = format!("{}:{}", host, port);
-        // Resolve hostname to socket address (DNS lookup)
         use std::net::ToSocketAddrs;
         let socket_addr = addr
             .to_socket_addrs()
@@ -151,7 +171,6 @@ impl SwarmTransport {
         let mut pong_line = String::new();
         reader.read_line(&mut pong_line)?;
         if !pong_line.trim().starts_with("PONG") && !pong_line.trim().starts_with("+OK") {
-            // Some servers send +OK before PONG, try reading one more line
             let mut pong2 = String::new();
             reader.read_line(&mut pong2)?;
             if !pong2.trim().starts_with("PONG") {
@@ -168,10 +187,15 @@ impl SwarmTransport {
             url: url.to_string(),
             next_sid: 1,
             jetstream_ok: false,
+            connected: Arc::new(Mutex::new(true)),
+            publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
         };
 
-        // Try to ensure JetStream stream exists
+        // Try to ensure JetStream streams exist
         transport.jetstream_ok = transport.ensure_stream().is_ok();
+        if transport.jetstream_ok {
+            let _ = transport.ensure_events_stream();
+        }
 
         Ok(transport)
     }
@@ -191,35 +215,189 @@ impl SwarmTransport {
         &self.url
     }
 
+    // -----------------------------------------------------------------------
+    // Reconnection
+    // -----------------------------------------------------------------------
+
+    /// Attempt to reconnect to the NATS server, replaying any buffered messages.
+    pub fn reconnect(&mut self) -> Result<(), NatsError> {
+        let (host, port) = parse_nats_url(&self.url)?;
+        let addr = format!("{}:{}", host, port);
+        use std::net::ToSocketAddrs;
+        let socket_addr = addr
+            .to_socket_addrs()
+            .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
+            .next()
+            .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
+
+        let new_stream = TcpStream::connect_timeout(
+            &socket_addr,
+            Duration::from_secs(5),
+        )
+        .map_err(|e| NatsError::Connect(format!("reconnect failed to {}: {}", addr, e)))?;
+
+        new_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        new_stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+        // Read INFO
+        let mut reader = BufReader::new(new_stream.try_clone()?);
+        let mut info_line = String::new();
+        reader.read_line(&mut info_line)?;
+        if !info_line.starts_with("INFO ") {
+            return Err(NatsError::Protocol(format!(
+                "reconnect: expected INFO, got: {}",
+                info_line.trim()
+            )));
+        }
+
+        // Send CONNECT + PING
+        let connect_payload = r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#;
+        let mut raw = reader.into_inner();
+        write!(raw, "CONNECT {}\r\n", connect_payload)?;
+        write!(raw, "PING\r\n")?;
+        raw.flush()?;
+
+        // Read PONG
+        let mut reader = BufReader::new(raw.try_clone()?);
+        let mut pong_line = String::new();
+        reader.read_line(&mut pong_line)?;
+        if !pong_line.trim().starts_with("PONG") && !pong_line.trim().starts_with("+OK") {
+            let mut pong2 = String::new();
+            reader.read_line(&mut pong2)?;
+            if !pong2.trim().starts_with("PONG") {
+                return Err(NatsError::Protocol(format!(
+                    "reconnect: expected PONG, got: {} / {}",
+                    pong_line.trim(),
+                    pong2.trim()
+                )));
+            }
+        }
+
+        // Swap in the new stream
+        {
+            let mut guard = self.stream.lock().map_err(|e| {
+                NatsError::Protocol(format!("lock poisoned: {}", e))
+            })?;
+            *guard = reader.into_inner();
+        }
+
+        // Mark connected
+        if let Ok(mut c) = self.connected.lock() {
+            *c = true;
+        }
+
+        // Re-check JetStream
+        self.jetstream_ok = self.ensure_stream().is_ok();
+        if self.jetstream_ok {
+            let _ = self.ensure_events_stream();
+        }
+
+        // Replay buffered messages
+        let buffered: Vec<BufferedMessage> = {
+            let mut buf = self.publish_buffer.lock().map_err(|e| {
+                NatsError::Protocol(format!("lock poisoned: {}", e))
+            })?;
+            buf.drain(..).collect()
+        };
+        for msg in buffered {
+            let _ = self.publish_raw(&msg.subject, &msg.payload);
+        }
+
+        Ok(())
+    }
+
+    /// Check if connection is still alive.
+    pub fn is_connected(&self) -> bool {
+        if let Ok(c) = self.connected.lock() {
+            if !*c {
+                return false;
+            }
+        }
+        self.ping().is_ok()
+    }
+
+    /// Mark the connection as disconnected (used internally on I/O failure).
+    fn mark_disconnected(&self) {
+        if let Ok(mut c) = self.connected.lock() {
+            *c = false;
+        }
+    }
+
+    /// Buffer a message for later replay (up to PUBLISH_BUFFER_LIMIT).
+    fn buffer_message(&self, subject: &str, payload: &[u8]) {
+        if let Ok(mut buf) = self.publish_buffer.lock() {
+            if buf.len() >= PUBLISH_BUFFER_LIMIT {
+                buf.pop_front();
+            }
+            buf.push_back(BufferedMessage {
+                subject: subject.to_string(),
+                payload: payload.to_vec(),
+            });
+        }
+    }
+
+    /// Return the number of messages currently buffered.
+    pub fn buffered_count(&self) -> usize {
+        self.publish_buffer.lock().map(|b| b.len()).unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // JetStream stream management
+    // -----------------------------------------------------------------------
+
     /// Ensure the QUEEN_PHASES JetStream stream exists.
     fn ensure_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            STREAM_NAME,
+            serde_json::json!({
+                "name": STREAM_NAME,
+                "subjects": ["QUEEN.phase.>"],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Ensure the QUEEN_EVENTS JetStream stream exists.
+    fn ensure_events_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            EVENTS_STREAM_NAME,
+            serde_json::json!({
+                "name": EVENTS_STREAM_NAME,
+                "subjects": ["QUEEN.event.>"],
+                "retention": "limits",
+                "max_msgs": 10000,
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Generic helper: create-or-update a JetStream stream.
+    fn ensure_js_stream(
+        &self,
+        stream_name: &str,
+        config: serde_json::Value,
+    ) -> Result<(), NatsError> {
         let inbox = new_inbox("jscreate");
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
         })?;
 
-        // Subscribe to inbox for reply
         write!(stream, "SUB {} 99\r\n", inbox)?;
         stream.flush()?;
 
-        // Send stream create request
-        let create_payload = serde_json::json!({
-            "name": STREAM_NAME,
-            "subjects": ["QUEEN.phase.>"],
-            "retention": "limits",
-            "max_msgs_per_subject": 1,
-            "storage": "file",
-            "discard": "old",
-            "num_replicas": 1
-        });
-        let payload_bytes = create_payload.to_string();
-        let subject = format!("$JS.API.STREAM.CREATE.{}", STREAM_NAME);
+        let payload_bytes = config.to_string();
+        let subject = format!("$JS.API.STREAM.CREATE.{}", stream_name);
         write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload_bytes.len())?;
         stream.write_all(payload_bytes.as_bytes())?;
         write!(stream, "\r\n")?;
         stream.flush()?;
 
-        // Read reply (with timeout)
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
         let mut got_reply = false;
@@ -248,12 +426,47 @@ impl SwarmTransport {
                             let mut crlf = String::new();
                             reader.read_line(&mut crlf).ok();
 
-                            // Check for error — code 10058 means stream already exists (OK)
                             if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
                                 if let Some(err) = resp.get("error") {
                                     let code = err.get("err_code").and_then(|c| c.as_u64()).unwrap_or(0);
                                     if code == 10058 {
-                                        // Stream already exists — try UPDATE instead to ensure config
+                                        // Stream already exists -- attempt UPDATE to sync config.
+                                        // Send UPDATE, then drain its reply so nothing lingers.
+                                        let upd_subject = format!("$JS.API.STREAM.UPDATE.{}", stream_name);
+                                        let mut ws = reader.get_ref().try_clone().map_err(NatsError::Io)?;
+                                        write!(ws, "PUB {} {} {}\r\n", upd_subject, inbox, payload_bytes.len())?;
+                                        ws.write_all(payload_bytes.as_bytes())?;
+                                        write!(ws, "\r\n")?;
+                                        ws.flush()?;
+                                        // Read the UPDATE reply to drain it
+                                        for _ in 0..10 {
+                                            let mut uline = String::new();
+                                            match reader.read_line(&mut uline) {
+                                                Ok(0) => break,
+                                                Ok(_) => {
+                                                    let ut = uline.trim();
+                                                    if ut.starts_with("PING") {
+                                                        let mut ps = reader.get_ref().try_clone().map_err(NatsError::Io)?;
+                                                        write!(ps, "PONG\r\n")?;
+                                                        ps.flush()?;
+                                                        continue;
+                                                    }
+                                                    if ut == "PONG" || ut == "+OK" { continue; }
+                                                    if ut.starts_with("MSG ") {
+                                                        let up: Vec<&str> = ut.split_whitespace().collect();
+                                                        if up.len() >= 4 {
+                                                            let ub: usize = up.last().unwrap().parse().unwrap_or(0);
+                                                            let mut ubuf = vec![0u8; ub];
+                                                            reader.read_exact(&mut ubuf).ok();
+                                                            let mut ucrlf = String::new();
+                                                            reader.read_line(&mut ucrlf).ok();
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
                                         got_reply = true;
                                         break;
                                     }
@@ -273,7 +486,6 @@ impl SwarmTransport {
             }
         }
 
-        // Unsubscribe
         drop(reader);
         write!(stream, "UNSUB 99\r\n")?;
         stream.flush()?;
@@ -282,36 +494,62 @@ impl SwarmTransport {
         if got_reply {
             Ok(())
         } else {
-            Err(NatsError::Protocol("no JetStream reply for stream create".into()))
+            Err(NatsError::Protocol(format!(
+                "no JetStream reply for stream create: {}", stream_name
+            )))
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Low-level publish (with disconnect buffering)
+    // -----------------------------------------------------------------------
 
     /// Publish a raw message to a subject with an optional reply-to.
     fn publish_raw_reply(&self, subject: &str, reply_to: Option<&str>, payload: &[u8]) -> Result<(), NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
         })?;
-        match reply_to {
-            Some(rt) => write!(stream, "PUB {} {} {}\r\n", subject, rt, payload.len())?,
-            None => write!(stream, "PUB {} {}\r\n", subject, payload.len())?,
+        let result = (|| -> Result<(), NatsError> {
+            match reply_to {
+                Some(rt) => write!(stream, "PUB {} {} {}\r\n", subject, rt, payload.len())?,
+                None => write!(stream, "PUB {} {}\r\n", subject, payload.len())?,
+            }
+            stream.write_all(payload)?;
+            write!(stream, "\r\n")?;
+            stream.flush()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(stream);
+            self.mark_disconnected();
+            self.buffer_message(subject, payload);
         }
-        stream.write_all(payload)?;
-        write!(stream, "\r\n")?;
-        stream.flush()?;
-        Ok(())
+        result
     }
 
-    /// Publish a raw message to a subject.
+    /// Publish a raw message to a subject, buffering on disconnect.
     fn publish_raw(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
         })?;
-        write!(stream, "PUB {} {}\r\n", subject, payload.len())?;
-        stream.write_all(payload)?;
-        write!(stream, "\r\n")?;
-        stream.flush()?;
-        Ok(())
+        let result = (|| -> Result<(), NatsError> {
+            write!(stream, "PUB {} {}\r\n", subject, payload.len())?;
+            stream.write_all(payload)?;
+            write!(stream, "\r\n")?;
+            stream.flush()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(stream);
+            self.mark_disconnected();
+            self.buffer_message(subject, payload);
+        }
+        result
     }
+
+    // -----------------------------------------------------------------------
+    // Phase publishing
+    // -----------------------------------------------------------------------
 
     /// Publish this agent's phase state.
     pub fn publish_phase(&self, phase: &AgentPhase) -> Result<(), NatsError> {
@@ -335,11 +573,11 @@ impl SwarmTransport {
         self.publish_raw("KANNAKA.dreams", &payload)
     }
 
+    // -----------------------------------------------------------------------
+    // Phase reading
+    // -----------------------------------------------------------------------
+
     /// Read all current agent phases.
-    ///
-    /// If JetStream is available, fetches stored phases from the QUEEN_PHASES
-    /// stream (reliable, no timing dependency). Falls back to legacy PUB/SUB
-    /// collection if JetStream is unavailable.
     pub fn get_all_phases(&self) -> Result<Vec<AgentPhase>, NatsError> {
         if self.jetstream_ok {
             self.get_all_phases_jetstream()
@@ -355,14 +593,12 @@ impl SwarmTransport {
         })?;
 
         let inbox = new_inbox("phases");
-        // Subscribe to inbox
         write!(stream, "SUB {} 98\r\n", inbox)?;
         stream.flush()?;
 
         let mut phases: HashMap<String, AgentPhase> = HashMap::new();
         let mut next_seq: u64 = 1;
 
-        // Iterate through stored messages using next_by_subj
         loop {
             let req = serde_json::json!({
                 "seq": next_seq,
@@ -375,7 +611,6 @@ impl SwarmTransport {
             write!(stream, "\r\n")?;
             stream.flush()?;
 
-            // Read reply
             stream.set_read_timeout(Some(Duration::from_secs(3)))?;
             let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
             let mut got_message = false;
@@ -404,24 +639,18 @@ impl SwarmTransport {
                                 let mut crlf = String::new();
                                 reader.read_line(&mut crlf).ok();
 
-                                // Parse the JS API response
                                 if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                                    // Check for error (no more messages)
                                     if resp.get("error").is_some() {
-                                        // No more messages in stream
                                         break;
                                     }
-                                    // Extract the message data (base64 encoded)
                                     if let Some(msg) = resp.get("message") {
                                         if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
-                                            // Decode base64 payload
                                             if let Ok(decoded) = base64_decode(data_b64) {
                                                 if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&decoded) {
                                                     phases.insert(phase.agent_id.clone(), phase);
                                                 }
                                             }
                                         }
-                                        // Get the sequence number for next iteration
                                         if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
                                             next_seq = seq + 1;
                                             got_message = true;
@@ -450,7 +679,6 @@ impl SwarmTransport {
             }
         }
 
-        // Unsubscribe
         write!(stream, "UNSUB 98\r\n")?;
         stream.flush()?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -518,29 +746,325 @@ impl SwarmTransport {
         Ok(phases.into_values().collect())
     }
 
+    // -----------------------------------------------------------------------
+    // Structured event publishing
+    // -----------------------------------------------------------------------
+
+    /// Publish a structured event to `QUEEN.event.<event_type>`.
+    ///
+    /// Event types: "join", "leave", "dream.start", "dream.end", "memory.shared"
+    /// Events are stored in the QUEEN_EVENTS JetStream stream (if available).
+    pub fn announce_event(
+        &self,
+        event_type: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let envelope = serde_json::json!({
+            "event": event_type,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "payload": payload,
+        });
+        let bytes = serde_json::to_vec(&envelope)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let subject = format!("QUEEN.event.{}", event_type);
+        self.publish_raw(&subject, &bytes)
+    }
+
     /// Announce joining the swarm.
+    ///
+    /// Publishes to both the new event stream (`QUEEN.event.join`) and the
+    /// legacy `QUEEN.announce` subject for backward compatibility.
     pub fn announce_join(&self, agent_id: &str) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
+        let event_payload = serde_json::json!({ "agent_id": agent_id });
+        self.announce_event("join", &event_payload)?;
+
+        let legacy = serde_json::json!({
             "event": "join",
             "agent_id": agent_id,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
-        let bytes = serde_json::to_vec(&payload)
+        let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("QUEEN.announce", &bytes)
     }
 
     /// Announce leaving the swarm.
+    ///
+    /// Publishes to both the new event stream (`QUEEN.event.leave`) and the
+    /// legacy `QUEEN.announce` subject for backward compatibility.
     pub fn announce_leave(&self, agent_id: &str) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
+        let event_payload = serde_json::json!({ "agent_id": agent_id });
+        self.announce_event("leave", &event_payload)?;
+
+        let legacy = serde_json::json!({
             "event": "leave",
             "agent_id": agent_id,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
-        let bytes = serde_json::to_vec(&payload)
+        let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("QUEEN.announce", &bytes)
     }
+
+    // -----------------------------------------------------------------------
+    // JetStream KV bucket operations
+    // -----------------------------------------------------------------------
+
+    /// Create a NATS JetStream KV bucket.
+    ///
+    /// Under the hood this creates a stream named `KV_<name>` with subjects
+    /// `$KV.<name>.>`, max 1 message per subject (last-value semantics),
+    /// and an optional TTL in seconds.
+    pub fn create_kv_bucket(&self, name: &str, ttl_seconds: u64) -> Result<(), NatsError> {
+        let stream_name = format!("KV_{}", name);
+        let subjects = format!("$KV.{}.>", name);
+        let config = if ttl_seconds > 0 {
+            serde_json::json!({
+                "name": stream_name,
+                "subjects": [subjects],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "max_age": ttl_seconds * 1_000_000_000_u64,
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1,
+                "allow_rollup_hdrs": true
+            })
+        } else {
+            serde_json::json!({
+                "name": stream_name,
+                "subjects": [subjects],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1,
+                "allow_rollup_hdrs": true
+            })
+        };
+        self.ensure_js_stream(&stream_name, config)
+    }
+
+    /// Put a value into a NATS KV bucket.
+    pub fn kv_put(&self, bucket: &str, key: &str, value: &str) -> Result<(), NatsError> {
+        let subject = format!("$KV.{}.{}", bucket, key);
+        self.publish_raw(&subject, value.as_bytes())
+    }
+
+    /// Get a value from a NATS KV bucket.
+    ///
+    /// Returns the latest value for the given key, or `NatsError::KvNotFound`
+    /// if the key does not exist.
+    pub fn kv_get(&self, bucket: &str, key: &str) -> Result<String, NatsError> {
+        let stream_name = format!("KV_{}", bucket);
+        let target_subject = format!("$KV.{}.{}", bucket, key);
+        let inbox = new_inbox("kvget");
+
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+
+        write!(stream, "SUB {} 97\r\n", inbox)?;
+        stream.flush()?;
+
+        let req = serde_json::json!({ "last_by_subj": target_subject });
+        let req_bytes = req.to_string();
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        write!(stream, "PUB {} {} {}\r\n", api_subject, inbox, req_bytes.len())?;
+        stream.write_all(req_bytes.as_bytes())?;
+        write!(stream, "\r\n")?;
+        stream.flush()?;
+
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+        let mut result: Option<String> = None;
+
+        for _ in 0..10 {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("PING") {
+                        let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
+                        write!(s, "PONG\r\n")?;
+                        s.flush()?;
+                        continue;
+                    }
+                    if trimmed == "PONG" || trimmed == "+OK" {
+                        continue;
+                    }
+                    if trimmed.starts_with("MSG ") {
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        if parts.len() >= 4 {
+                            let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
+                            let mut payload = vec![0u8; nbytes];
+                            reader.read_exact(&mut payload).ok();
+                            let mut crlf = String::new();
+                            reader.read_line(&mut crlf).ok();
+
+                            if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                                if resp.get("error").is_some() {
+                                    break;
+                                }
+                                if let Some(msg) = resp.get("message") {
+                                    if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
+                                        if let Ok(decoded) = base64_decode(data_b64) {
+                                            result = Some(String::from_utf8_lossy(&decoded).to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    drop(reader);
+                    write!(stream, "UNSUB 97\r\n")?;
+                    stream.flush()?;
+                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    return Err(NatsError::Io(e));
+                }
+            }
+        }
+
+        drop(reader);
+        write!(stream, "UNSUB 97\r\n")?;
+        stream.flush()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+        result.ok_or_else(|| NatsError::KvNotFound(format!("{}/{}", bucket, key)))
+    }
+
+    /// List all keys in a NATS KV bucket.
+    pub fn kv_keys(&self, bucket: &str) -> Result<Vec<String>, NatsError> {
+        let stream_name = format!("KV_{}", bucket);
+        let inbox = new_inbox("kvkeys");
+
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+
+        write!(stream, "SUB {} 96\r\n", inbox)?;
+        stream.flush()?;
+
+        let mut keys = Vec::new();
+        let mut next_seq: u64 = 1;
+        let prefix = format!("$KV.{}.", bucket);
+
+        loop {
+            let req = serde_json::json!({
+                "seq": next_seq,
+                "next_by_subj": format!("$KV.{}.>", bucket),
+            });
+            let req_bytes = req.to_string();
+            let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+            write!(stream, "PUB {} {} {}\r\n", api_subject, inbox, req_bytes.len())?;
+            stream.write_all(req_bytes.as_bytes())?;
+            write!(stream, "\r\n")?;
+            stream.flush()?;
+
+            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+            let mut got_message = false;
+
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("PING") {
+                            let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
+                            write!(s, "PONG\r\n")?;
+                            s.flush()?;
+                            continue;
+                        }
+                        if trimmed == "PONG" || trimmed == "+OK" {
+                            continue;
+                        }
+                        if trimmed.starts_with("MSG ") {
+                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                            if parts.len() >= 4 {
+                                let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
+                                let mut payload = vec![0u8; nbytes];
+                                reader.read_exact(&mut payload).ok();
+                                let mut crlf = String::new();
+                                reader.read_line(&mut crlf).ok();
+
+                                if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                                    if resp.get("error").is_some() {
+                                        break;
+                                    }
+                                    if let Some(msg) = resp.get("message") {
+                                        if let Some(subj) = msg.get("subject").and_then(|s| s.as_str()) {
+                                            if let Some(key) = subj.strip_prefix(&prefix) {
+                                                keys.push(key.to_string());
+                                            }
+                                        }
+                                        if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
+                                            next_seq = seq + 1;
+                                            got_message = true;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        drop(reader);
+                        write!(stream, "UNSUB 96\r\n")?;
+                        stream.flush()?;
+                        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                        return Err(NatsError::Io(e));
+                    }
+                }
+            }
+
+            drop(reader);
+            if !got_message {
+                break;
+            }
+        }
+
+        write!(stream, "UNSUB 96\r\n")?;
+        stream.flush()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+        Ok(keys)
+    }
+
+    /// Discover all agents registered in the QUEEN_AGENTS KV bucket.
+    ///
+    /// Returns a map of agent_id -> registration JSON value.
+    pub fn discover_peers(&self) -> Result<HashMap<String, serde_json::Value>, NatsError> {
+        let keys = self.kv_keys(KV_BUCKET_AGENTS)?;
+        let mut peers = HashMap::new();
+        for key in keys {
+            match self.kv_get(KV_BUCKET_AGENTS, &key) {
+                Ok(val) => {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val) {
+                        peers.insert(key, parsed);
+                    } else {
+                        peers.insert(key, serde_json::Value::String(val));
+                    }
+                }
+                Err(NatsError::KvNotFound(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(peers)
+    }
+
+    // -----------------------------------------------------------------------
+    // Subscriptions / PING
+    // -----------------------------------------------------------------------
 
     /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
     pub fn subscribe_phases(&self) -> Result<NatsSubscription, NatsError> {
@@ -575,11 +1099,6 @@ impl SwarmTransport {
         write!(stream, "PING\r\n")?;
         stream.flush()?;
         Ok(())
-    }
-
-    /// Check if connection is still alive.
-    pub fn is_connected(&self) -> bool {
-        self.ping().is_ok()
     }
 }
 
@@ -617,7 +1136,6 @@ impl NatsSubscription {
                 Ok(_) => {
                     let trimmed = line.trim();
                     if trimmed.starts_with("PING") {
-                        // Reply to server PING
                         if let Ok(mut s) = self.reader.get_ref().try_clone() {
                             let _ = write!(s, "PONG\r\n");
                             let _ = s.flush();
@@ -633,13 +1151,11 @@ impl NatsSubscription {
                             if self.reader.read_exact(&mut payload).is_err() {
                                 return None;
                             }
-                            // Consume trailing \r\n
                             let mut crlf = String::new();
                             let _ = self.reader.read_line(&mut crlf);
                             return Some(NatsMessage { subject, payload });
                         }
                     }
-                    // Skip other messages (+OK, INFO, etc.)
                 }
                 Err(_) => return None,
             }
@@ -684,12 +1200,9 @@ mod tests {
 
     #[test]
     fn connect_default_graceful_failure() {
-        // Should fail gracefully without a live NATS server
-        // (CI/local dev may not have NATS running)
         match SwarmTransport::connect("nats://127.0.0.1:19999") {
             Ok(_) => panic!("should not connect to nonexistent server"),
             Err(e) => {
-                // Expected: connection refused or timeout
                 let msg = format!("{}", e);
                 assert!(
                     msg.contains("connect") || msg.contains("Connect"),
@@ -718,6 +1231,10 @@ mod tests {
             timestamp: Utc::now(),
             trust_score: 0.5,
             handedness: crate::queen::Handedness::Achiral,
+            left_coherence: 0.0,
+            right_coherence: 0.0,
+            bridge_activity: 0.0,
+            dream_state: None,
         };
         let bytes = serde_json::to_vec(&phase).unwrap();
         let decoded: AgentPhase = serde_json::from_slice(&bytes).unwrap();
@@ -725,16 +1242,77 @@ mod tests {
         assert!((decoded.phase - 1.5).abs() < 0.001);
     }
 
-    /// Integration test — only runs if NATS is actually available.
-    /// Skips gracefully otherwise.
     #[test]
-    fn integration_publish_and_read() {
-        let transport = match SwarmTransport::connect(DEFAULT_NATS_URL) {
-            Ok(t) => t,
+    fn base64_decode_roundtrip() {
+        let decoded = base64_decode("aGVsbG8=").unwrap();
+        assert_eq!(&decoded, b"hello");
+    }
+
+    #[test]
+    fn base64_decode_empty() {
+        let decoded = base64_decode("").unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn nats_error_display_variants() {
+        let e = NatsError::Disconnected("lost connection".into());
+        assert!(format!("{}", e).contains("disconnected"));
+
+        let e = NatsError::KvNotFound("mybucket/mykey".into());
+        assert!(format!("{}", e).contains("KV key not found"));
+    }
+
+    #[test]
+    fn buffered_message_clone() {
+        let msg = BufferedMessage {
+            subject: "QUEEN.event.join".to_string(),
+            payload: b"test".to_vec(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.subject, msg.subject);
+        assert_eq!(cloned.payload, msg.payload);
+    }
+
+    #[test]
+    fn publish_buffer_limit() {
+        let buf: Arc<Mutex<VecDeque<BufferedMessage>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        {
+            let mut guard = buf.lock().unwrap();
+            for i in 0..PUBLISH_BUFFER_LIMIT + 20 {
+                if guard.len() >= PUBLISH_BUFFER_LIMIT {
+                    guard.pop_front();
+                }
+                guard.push_back(BufferedMessage {
+                    subject: format!("test.{}", i),
+                    payload: vec![],
+                });
+            }
+            assert_eq!(guard.len(), PUBLISH_BUFFER_LIMIT);
+            assert_eq!(guard.front().unwrap().subject, "test.20");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests -- skip if NATS unavailable
+    // -----------------------------------------------------------------------
+
+    fn connect_or_skip() -> Option<SwarmTransport> {
+        match SwarmTransport::connect(DEFAULT_NATS_URL) {
+            Ok(t) => Some(t),
             Err(_) => {
                 eprintln!("NATS not available, skipping integration test");
-                return;
+                None
             }
+        }
+    }
+
+    #[test]
+    fn integration_publish_and_read() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
         };
 
         let phase = AgentPhase {
@@ -752,15 +1330,127 @@ mod tests {
             timestamp: chrono::Utc::now(),
             trust_score: 0.5,
             handedness: crate::queen::Handedness::Achiral,
+            left_coherence: 0.0,
+            right_coherence: 0.0,
+            bridge_activity: 0.0,
+            dream_state: None,
         };
 
-        // Publish
         transport.publish_phase(&phase).expect("publish should work");
         transport.announce_join("test-integration").expect("announce should work");
 
-        // Note: get_all_phases may not return our message since plain NATS
-        // doesn't retain messages. This test just verifies no errors.
         let phases = transport.get_all_phases().unwrap_or_default();
         eprintln!("Got {} phases from NATS", phases.len());
+    }
+
+    #[test]
+    fn integration_kv_put_get() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+        if !transport.has_jetstream() {
+            eprintln!("JetStream not available, skipping KV test");
+            return;
+        }
+
+        transport.create_kv_bucket("TEST_KV", 60).expect("create bucket");
+        transport.kv_put("TEST_KV", "hello", "world").expect("kv_put");
+        let val = transport.kv_get("TEST_KV", "hello").expect("kv_get");
+        assert_eq!(val, "world");
+
+        transport.kv_put("TEST_KV", "hello", "updated").expect("kv_put overwrite");
+        let val2 = transport.kv_get("TEST_KV", "hello").expect("kv_get updated");
+        assert_eq!(val2, "updated");
+    }
+
+    #[test]
+    fn integration_kv_keys() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+        if !transport.has_jetstream() {
+            eprintln!("JetStream not available, skipping KV keys test");
+            return;
+        }
+
+        transport.create_kv_bucket("TEST_KEYS", 60).expect("create bucket");
+        transport.kv_put("TEST_KEYS", "a", "1").expect("put a");
+        transport.kv_put("TEST_KEYS", "b", "2").expect("put b");
+
+        let keys = transport.kv_keys("TEST_KEYS").expect("kv_keys");
+        assert!(keys.contains(&"a".to_string()), "keys should contain 'a': {:?}", keys);
+        assert!(keys.contains(&"b".to_string()), "keys should contain 'b': {:?}", keys);
+    }
+
+    #[test]
+    fn integration_kv_get_missing() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+        if !transport.has_jetstream() {
+            eprintln!("JetStream not available, skipping KV missing test");
+            return;
+        }
+
+        transport.create_kv_bucket("TEST_MISSING", 60).expect("create bucket");
+        match transport.kv_get("TEST_MISSING", "nonexistent") {
+            Err(NatsError::KvNotFound(_)) => {}
+            other => panic!("expected KvNotFound, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn integration_discover_peers() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+        if !transport.has_jetstream() {
+            eprintln!("JetStream not available, skipping discover_peers test");
+            return;
+        }
+
+        transport.create_kv_bucket(KV_BUCKET_AGENTS, 300).expect("create agents bucket");
+        let info = serde_json::json!({
+            "agent_id": "test-discover",
+            "role": "tester",
+            "joined_at": chrono::Utc::now().to_rfc3339(),
+        });
+        transport.kv_put(KV_BUCKET_AGENTS, "test-discover", &info.to_string())
+            .expect("register agent");
+
+        let peers = transport.discover_peers().expect("discover_peers");
+        assert!(peers.contains_key("test-discover"), "should find test-discover: {:?}", peers);
+    }
+
+    #[test]
+    fn integration_announce_event() {
+        let transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+
+        let payload = serde_json::json!({ "agent_id": "test-events" });
+        transport.announce_event("join", &payload).expect("announce join event");
+        transport.announce_event("dream.start", &payload).expect("announce dream.start");
+        transport.announce_event("memory.shared", &payload).expect("announce memory.shared");
+    }
+
+    #[test]
+    fn integration_reconnect_live() {
+        let mut transport = match connect_or_skip() {
+            Some(t) => t,
+            None => return,
+        };
+
+        assert!(transport.is_connected());
+        transport.reconnect().expect("reconnect to live server");
+        assert!(transport.is_connected());
+
+        let payload = serde_json::json!({ "agent_id": "reconnect-test" });
+        transport.announce_event("join", &payload).expect("announce after reconnect");
     }
 }
