@@ -177,6 +177,19 @@ impl Default for QueenConfig {
     }
 }
 
+/// Result of partition-based swarm Phi computation (QS-7, #58).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionPhiResult {
+    /// Approximated Phi value (0-15 range, labeled as approximation).
+    pub phi_approx: f32,
+    /// Number of partitions evaluated.
+    pub partition_count: usize,
+    /// The minimum information partition (MIP): (group_a, group_b) agent IDs.
+    pub mip_partition: (Vec<String>, Vec<String>),
+    /// Computation method: "exhaustive", "spectral", or "trivial".
+    pub method: String,
+}
+
 /// Swarm agent registration info (for the agents table extension).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmAgent {
@@ -293,6 +306,167 @@ impl QueenSync {
         let integration = r * mean_coherence * ((n + 1) as f32).log2();
         // Scale to typical Phi range (0-15)
         (integration * 10.0 * chiral_boost).min(15.0)
+    }
+
+    /// Compute partition-based swarm Phi (simplified IIT 3.0, QS-7/58).
+    ///
+    /// For each bipartition of the swarm into two non-empty halves, compute the
+    /// mutual information (MI) between the halves using the coupling matrix.
+    /// Phi_approx = minimum MI across all bipartitions (the minimum information
+    /// partition, or MIP).
+    ///
+    /// Exhaustive for N <= 12 agents; spectral approximation for larger swarms.
+    /// Labels the result as "Phi_approx" since this is not full IIT Phi.
+    pub fn compute_partition_phi(swarm: &[AgentPhase]) -> PartitionPhiResult {
+        let n = swarm.len();
+        if n < 2 {
+            return PartitionPhiResult {
+                phi_approx: 0.0,
+                partition_count: 0,
+                mip_partition: (vec![], vec![]),
+                method: "trivial".to_string(),
+            };
+        }
+
+        // Build coupling matrix: entry (i,j) = effective coupling
+        // Coupling = trust_i * trust_j * cos(phase_i - phase_j) * coherence blend
+        let coupling_matrix: Vec<Vec<f32>> = (0..n).map(|i| {
+            (0..n).map(|j| {
+                if i == j {
+                    return 1.0;
+                }
+                let phase_sim = (swarm[i].phase - swarm[j].phase).cos();
+                let trust_product = swarm[i].trust_score * swarm[j].trust_score;
+                let coherence_blend = (swarm[i].coherence + swarm[j].coherence) / 2.0;
+                trust_product * phase_sim.max(0.0) * coherence_blend
+            }).collect()
+        }).collect();
+
+        if n > 12 {
+            // Spectral approximation: use spectral gap of coupling matrix
+            return Self::partition_phi_spectral(&coupling_matrix, swarm);
+        }
+
+        // Exhaustive bipartition search for small swarms
+        let mut min_mi = f32::MAX;
+        let mut best_partition: (Vec<String>, Vec<String>) = (vec![], vec![]);
+        let total_partitions = (1u64 << n) - 2; // exclude empty and full sets
+
+        for mask in 1..=total_partitions / 2 {
+            let mut part_a: Vec<usize> = Vec::new();
+            let mut part_b: Vec<usize> = Vec::new();
+            for bit in 0..n {
+                if mask & (1u64 << bit) != 0 {
+                    part_a.push(bit);
+                } else {
+                    part_b.push(bit);
+                }
+            }
+            if part_a.is_empty() || part_b.is_empty() {
+                continue;
+            }
+
+            // Mutual information approximation: sum of cross-partition couplings
+            let mut cross_coupling = 0.0f32;
+            for &i in &part_a {
+                for &j in &part_b {
+                    cross_coupling += coupling_matrix[i][j].abs();
+                }
+            }
+            // Normalize by partition sizes
+            let mi = cross_coupling / (part_a.len() as f32 * part_b.len() as f32);
+
+            if mi < min_mi {
+                min_mi = mi;
+                best_partition = (
+                    part_a.iter().map(|&i| swarm[i].agent_id.clone()).collect(),
+                    part_b.iter().map(|&i| swarm[i].agent_id.clone()).collect(),
+                );
+            }
+        }
+
+        // Scale to typical Phi range
+        let phi_approx = (min_mi * 10.0).min(15.0);
+
+        PartitionPhiResult {
+            phi_approx,
+            partition_count: (total_partitions / 2) as usize,
+            mip_partition: best_partition,
+            method: "exhaustive".to_string(),
+        }
+    }
+
+    /// Spectral approximation of partition Phi for large swarms (N > 12).
+    ///
+    /// Uses the second-smallest eigenvalue (Fiedler value) of the Laplacian
+    /// of the coupling matrix as a proxy for the MIP. The Fiedler value
+    /// measures algebraic connectivity -- low value = easy to partition.
+    fn partition_phi_spectral(
+        coupling: &[Vec<f32>],
+        swarm: &[AgentPhase],
+    ) -> PartitionPhiResult {
+        let n = coupling.len();
+
+        // Compute degree vector and Laplacian
+        let degrees: Vec<f32> = (0..n)
+            .map(|i| (0..n).map(|j| coupling[i][j].abs()).sum())
+            .collect();
+
+        // Power iteration to approximate the Fiedler value (2nd eigenvalue of Laplacian)
+        // First, compute Laplacian-vector product: L*x = D*x - A*x
+        let laplacian_mul = |x: &[f32]| -> Vec<f32> {
+            (0..n).map(|i| {
+                let dx = degrees[i] * x[i];
+                let ax: f32 = (0..n).map(|j| coupling[i][j] * x[j]).sum();
+                dx - ax
+            }).collect()
+        };
+
+        // Start with a random-ish vector orthogonal to the first eigenvector (all-ones)
+        let mut v: Vec<f32> = (0..n).map(|i| (i as f32 - n as f32 / 2.0)).collect();
+        // Normalize
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-9 {
+            for val in &mut v { *val /= norm; }
+        }
+
+        // Project out the first eigenvector (all-ones / sqrt(n))
+        let ones_component: f32 = v.iter().sum::<f32>() / n as f32;
+        for val in &mut v { *val -= ones_component; }
+
+        // Power iteration (inverse power method approximation)
+        let mut lambda = 0.0f32;
+        for _ in 0..50 {
+            let lv = laplacian_mul(&v);
+            lambda = v.iter().zip(lv.iter()).map(|(a, b)| a * b).sum::<f32>();
+            let norm: f32 = lv.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 1e-9 {
+                v = lv.into_iter().map(|x| x / norm).collect();
+            }
+            // Project out first eigenvector again
+            let ones_component: f32 = v.iter().sum::<f32>() / n as f32;
+            for val in &mut v { *val -= ones_component; }
+        }
+
+        // Fiedler value = algebraic connectivity
+        let fiedler = lambda.abs();
+
+        // Partition by sign of Fiedler vector
+        let part_a: Vec<String> = v.iter().enumerate()
+            .filter(|(_, &val)| val >= 0.0)
+            .map(|(i, _)| swarm[i].agent_id.clone())
+            .collect();
+        let part_b: Vec<String> = v.iter().enumerate()
+            .filter(|(_, &val)| val < 0.0)
+            .map(|(i, _)| swarm[i].agent_id.clone())
+            .collect();
+
+        PartitionPhiResult {
+            phi_approx: (fiedler * 10.0).min(15.0),
+            partition_count: 1, // spectral = 1 partition computed
+            mip_partition: (part_a, part_b),
+            method: "spectral".to_string(),
+        }
     }
 
     /// Detect hives — clusters of phase-locked agents.

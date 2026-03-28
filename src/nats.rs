@@ -83,6 +83,91 @@ impl From<std::io::Error> for NatsError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SharedWavefront protocol (QS-5, #56)
+// ---------------------------------------------------------------------------
+
+/// A wavefront with routing metadata for resonance-based memory sharing.
+///
+/// Communication speed 2 (medium): shared memories propagate via constructive
+/// interference during dreams. Faster than Dolt merges, slower than NATS gossip.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SharedWavefront {
+    /// Source agent that created this wavefront.
+    pub source_agent: String,
+    /// Target agent ID, or None for broadcast to all peers.
+    pub target: Option<String>,
+    /// Minimum cosine similarity required for the target to absorb this wavefront.
+    pub resonance_threshold: f32,
+    /// Dream cycles before expiry (shared wavefronts fade if never absorbed).
+    pub ttl: u32,
+    /// The wavefront vector (high-dimensional embedding).
+    pub vector: Vec<f32>,
+    /// Content/description of the shared memory.
+    pub content: String,
+    /// Amplitude/importance of the shared memory.
+    pub amplitude: f32,
+    /// Modality tag.
+    pub modality: String,
+    /// Timestamp of creation.
+    pub created_at: String,
+}
+
+impl SharedWavefront {
+    /// Create a new shared wavefront for broadcasting.
+    pub fn broadcast(
+        source_agent: &str,
+        vector: Vec<f32>,
+        content: String,
+        amplitude: f32,
+        modality: &str,
+    ) -> Self {
+        Self {
+            source_agent: source_agent.to_string(),
+            target: None,
+            resonance_threshold: 0.4,
+            ttl: 7,
+            vector,
+            content,
+            amplitude,
+            modality: modality.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    /// Create a shared wavefront targeted at a specific agent.
+    pub fn targeted(
+        source_agent: &str,
+        target_agent: &str,
+        vector: Vec<f32>,
+        content: String,
+        amplitude: f32,
+        resonance_threshold: f32,
+    ) -> Self {
+        Self {
+            source_agent: source_agent.to_string(),
+            target: Some(target_agent.to_string()),
+            resonance_threshold,
+            ttl: 7,
+            vector,
+            content,
+            amplitude,
+            modality: "unknown".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    /// Check if this wavefront has expired (ttl decremented each dream cycle).
+    pub fn is_expired(&self) -> bool {
+        self.ttl == 0
+    }
+
+    /// Decrement TTL by one dream cycle.
+    pub fn tick(&mut self) {
+        self.ttl = self.ttl.saturating_sub(1);
+    }
+}
+
 /// Parse a NATS URL into (host, port).
 fn parse_nats_url(url: &str) -> Result<(String, u16), NatsError> {
     let stripped = url
@@ -571,6 +656,41 @@ impl SwarmTransport {
         let payload = serde_json::to_vec(report)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.dreams", &payload)
+    }
+
+    // -----------------------------------------------------------------------
+    // SharedWavefront protocol (QS-5, #56)
+    // -----------------------------------------------------------------------
+
+    /// Publish a shared wavefront for resonance-based memory sharing.
+    ///
+    /// Subject: `queen.memory.shared.{target}` where target is an agent_id
+    /// or "broadcast" for all agents. JetStream retains for 7 days.
+    pub fn publish_shared_wavefront(&self, wavefront: &SharedWavefront) -> Result<(), NatsError> {
+        let target = wavefront.target.as_deref().unwrap_or("broadcast");
+        let subject = format!("queen.memory.shared.{}", target);
+        let payload = serde_json::to_vec(wavefront)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &payload)
+    }
+
+    /// Publish a dream lifecycle event (start or end).
+    ///
+    /// Used by swarm-aware consolidation to coordinate dream timing.
+    pub fn publish_dream_lifecycle(
+        &self,
+        event_type: &str,
+        agent_id: &str,
+        details: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "event": event_type,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "details": details,
+        });
+        let event_name = format!("dream.{}", event_type);
+        self.announce_event(&event_name, &payload)
     }
 
     // -----------------------------------------------------------------------
