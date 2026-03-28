@@ -4,9 +4,9 @@
 //! of related memories phase-lock into coherent narratives. The order parameter
 //! r measures collective coherence: r=1 means perfect sync, r≈0 means incoherent.
 //!
-//! Tiered coupling (QS-3): agents within the same hive sync with strong positive K
-//! (intra-hive), agents in different hives repel with weak/negative K (inter-hive),
-//! and during initial detection all agents use a shared K (detection).
+//! Tiered coupling (QS-3, #54): agents within the same hive sync with strong
+//! positive K (intra-hive), agents in different hives repel with weak/negative K
+//! (inter-hive), and during initial detection all agents use a shared K (detection).
 
 use uuid::Uuid;
 
