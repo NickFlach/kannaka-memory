@@ -344,26 +344,13 @@ fn main() {
                     i += 1;
                 }
             }
-            // Create a legacy link between the two memories
-            // TODO(chiral): replace with ChiralMedium interference-based relating
-            use kannaka_memory::LegacyLink;
-            let link = LegacyLink {
-                target_id,
-                strength: 0.8,
-                resonance_key: Vec::new(),
-                span: 1,
-            };
-            match sys.engine.get_memory_mut(&source_id) {
-                Ok(Some(mem)) => {
-                    mem.connections.push(link);
-                    println!("Related {} → {} (type: {})", source_id, target_id, relation_type);
-                }
-                Ok(None) => {
-                    eprintln!("Source memory not found: {source_id}");
-                    process::exit(1);
+            // Create association via wavefront interference in the ChiralMedium
+            match sys.relate(&source_id, &target_id, 0.8) {
+                Ok(()) => {
+                    println!("Related {} → {} (type: {}) via wavefront interference", source_id, target_id, relation_type);
                 }
                 Err(e) => {
-                    eprintln!("Error: {e}");
+                    eprintln!("Error relating memories: {e}");
                     process::exit(1);
                 }
             }

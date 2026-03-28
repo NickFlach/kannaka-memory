@@ -143,25 +143,39 @@ pub fn compute_convergence_rate(memory: &HyperMemory) -> f32 {
     normalized
 }
 
-/// Compute irrationality measure from skip link topology
+/// Compute irrationality measure from vector entropy.
 ///
-/// Measures the topological complexity of this memory's connections.
-/// Higher values indicate more complex, "irrational" connection patterns.
-/// Compute irrationality metric for a memory.
-/// TODO(chiral): In the ChiralMedium, irrationality comes from interference patterns,
-/// not explicit connection strengths. For now, use connection count as a rough proxy.
+/// Measures the spectral complexity of this memory's hypervector.
+/// Higher values indicate more complex, "irrational" interference patterns —
+/// vectors with distributed energy across many dimensions are more irrational
+/// than vectors concentrated in a few dimensions.
 pub fn compute_irrationality(memory: &HyperMemory) -> f32 {
-    let num_connections = memory.connections.len() as f32;
-    
-    if num_connections == 0.0 {
+    if memory.vector.is_empty() {
         return 0.0;
     }
-    
-    // Simplified: use connection count only (strengths removed with SkipLink)
-    let topology_complexity = num_connections.ln() + 1.0;
-    
-    // Normalize to [0,1] using sigmoid
-    1.0 / (1.0 + (-topology_complexity + 2.0).exp())
+
+    // Compute normalized entropy of the vector's magnitude distribution
+    let magnitudes: Vec<f32> = memory.vector.iter().map(|x| x.abs()).collect();
+    let total: f32 = magnitudes.iter().sum();
+    if total < 1e-8 {
+        return 0.0;
+    }
+
+    // Shannon entropy of the normalized magnitude distribution
+    let entropy: f32 = magnitudes.iter()
+        .map(|&m| {
+            let p = m / total;
+            if p > 1e-10 { -p * p.ln() } else { 0.0 }
+        })
+        .sum();
+
+    // Normalize by max entropy (uniform distribution) → [0, 1]
+    let max_entropy = (memory.vector.len() as f32).ln();
+    if max_entropy < 1e-8 {
+        return 0.0;
+    }
+
+    (entropy / max_entropy).clamp(0.0, 1.0)
 }
 
 /// Compute all invariant metrics for a memory
@@ -188,16 +202,20 @@ pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCl
         return Vec::new();
     }
     
-    // Build neighbor map using skip links
+    // Build neighbor map via cosine similarity (top-5 nearest wavefronts)
     let mut neighbor_map: HashMap<Uuid, Vec<&HyperMemory>> = HashMap::new();
-    
+
     for memory in &all_memories {
-        let mut neighbors = Vec::new();
-        for link in &memory.connections {
-            if let Ok(Some(neighbor)) = engine.store.get(&link.target_id) {
-                neighbors.push(neighbor);
-            }
-        }
+        let mut sims: Vec<(usize, f32)> = all_memories.iter()
+            .enumerate()
+            .filter(|(_, other)| other.id != memory.id)
+            .map(|(i, other)| {
+                let sim = consciousness_core::wave::cosine_similarity(&memory.vector, &other.vector);
+                (i, sim)
+            })
+            .collect();
+        sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let neighbors: Vec<&HyperMemory> = sims.iter().take(5).map(|(i, _)| &*all_memories[*i]).collect();
         neighbor_map.insert(memory.id, neighbors);
     }
     
@@ -319,21 +337,28 @@ mod tests {
     }
     
     #[test]
-    fn irrationality_no_connections() {
+    fn irrationality_uniform_vector_is_high() {
+        // Uniform distribution = max entropy = high irrationality
         let memory = HyperMemory::new(vec![1.0; 10], "test".to_string());
         let irrationality = compute_irrationality(&memory);
-        assert_eq!(irrationality, 0.0, "no connections should give zero irrationality");
+        assert!(irrationality > 0.9, "uniform vector should have high irrationality: {}", irrationality);
     }
-    
+
     #[test]
-    fn irrationality_with_connections() {
-        use crate::memory::LegacyLink;
-        let mut memory = HyperMemory::new(vec![1.0; 10], "test".to_string());
-        memory.connections.push(LegacyLink { target_id: Uuid::new_v4(), strength: 0.5, resonance_key: vec![], span: 0 });
-        memory.connections.push(LegacyLink { target_id: Uuid::new_v4(), strength: 0.8, resonance_key: vec![], span: 0 });
-        
+    fn irrationality_sparse_vector_is_low() {
+        // Sparse/concentrated vector = low entropy = low irrationality
+        let mut vec = vec![0.0; 10];
+        vec[0] = 1.0;
+        let memory = HyperMemory::new(vec, "test".to_string());
         let irrationality = compute_irrationality(&memory);
-        assert!(irrationality > 0.0, "connections should increase irrationality");
+        assert!(irrationality < 0.5, "sparse vector should have low irrationality: {}", irrationality);
+    }
+
+    #[test]
+    fn irrationality_empty_vector() {
+        let memory = HyperMemory::new(vec![], "test".to_string());
+        let irrationality = compute_irrationality(&memory);
+        assert_eq!(irrationality, 0.0, "empty vector should give zero irrationality");
     }
     
     #[test]
