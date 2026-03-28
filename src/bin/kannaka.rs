@@ -1187,8 +1187,6 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
 // ---------------------------------------------------------------------------
 
 fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
-    use kannaka_memory::MediumBackend;
-
     let hrm = match sys.engine.store.as_any()
         .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
     {
