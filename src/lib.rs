@@ -96,7 +96,8 @@ pub use cmf::{
 
 pub use medium::{
     Medium, Modality, WavefrontMeta, Resonance, MediumError, WAVEFRONT_DIM,
-    PhaseState, HrmCommit
+    PhaseState, HrmCommit, detect_modality, detect_modality_simple,
+    ModalityClassification, ModalityScores,
 };
 
 pub use medium::ncs::{
