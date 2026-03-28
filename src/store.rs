@@ -116,16 +116,7 @@ pub trait MediumBackend: Send + Sync {
     /// Persist the holographic tensor to disk.
     fn flush(&mut self) -> Result<usize, StoreError> { Ok(0) }
 
-    // -- Low-level access (internal / compatibility) --
-    //
-    // These do NOT apply observation effects. The canonical read/write paths
-    // are store_text() and recall_text() where attention reshapes the field.
-    //
-    // search() exists for internal use (dream consolidation neighbor-finding,
-    // paradox engine, etc.) where raw similarity is needed WITHOUT observation.
-    // Dreams should not count as attention.
-
-    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
+    // -- Low-level access (internal / read-only) --
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
     fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError>;
     fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError>;
@@ -133,10 +124,27 @@ pub trait MediumBackend: Send + Sync {
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError>;
     fn count(&self) -> usize;
 
-    /// Raw similarity search — NO observation effects.
-    /// Used internally by dream consolidation and paradox engine for
-    /// neighbor-finding where raw similarity is needed without deforming the field.
-    /// External callers should use recall_text() instead.
+    // -- Legacy Compatibility (quarantined) -----------------------------------------------
+    // These methods exist only for ResonanceEngine backward compat.
+    // New code MUST use absorb()/resonate_query()/relate()/dream_native()/flush().
+    //
+    // insert() bypasses HRM encoding/classification/routing.
+    // search() bypasses observation effects (attention does not reshape the field).
+    //
+    // DEPRECATED: Use absorb() instead of insert(). Use resonate_query() instead of search().
+    // These will be removed once all internal consumers (dream consolidation, paradox engine,
+    // hallucination pipeline) migrate to HRM-native paths.
+    // -------------------------------------------------------------------------------------
+
+    /// **DEPRECATED** -- Use `absorb()` instead.
+    /// Raw insert bypasses HRM encoding, SGA classification, and Fano routing.
+    /// Kept only for ResonanceEngine compat fallback and hallucination pipeline.
+    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
+
+    /// **DEPRECATED** -- Use `resonate_query()` instead.
+    /// Raw similarity search with NO observation effects.
+    /// Kept for dream consolidation neighbor-finding and paradox engine
+    /// where raw similarity is needed without deforming the field.
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError>;
 
     /// Wave-native dream using Medium's eigenstructure annealing.

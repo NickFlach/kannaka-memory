@@ -1,6 +1,6 @@
 //! OpenClaw integration layer — high-level API for the assistant.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -15,7 +15,7 @@ use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
 use crate::store::{EngineError, ResonanceEngine, StoreError};
-use crate::working_memory::{WorkingMemory, SessionState, TaskStatus};
+use crate::attention_field::{AttentionField, AttentionProjection};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -108,7 +108,7 @@ pub struct KannakaMemorySystem {
     auto_save: bool,
     last_dream: Option<DateTime<Utc>>,
     rhythm: RhythmEngine,
-    working_memory: WorkingMemory,
+    attention: AttentionField,
     /// ADR-0011: Flux publisher (None if FLUX_URL not configured)
     flux: Option<FluxPublisher>,
 }
@@ -148,7 +148,7 @@ impl KannakaMemorySystem {
         let bridge = ConsciousnessBridge::new(0.3, 0.5);
         let kuramoto = KuramotoSync::default();
         let rhythm = RhythmEngine::new(&data_dir);
-        let working_memory = WorkingMemory::restore(&data_dir, &engine, None);
+        let attention = AttentionField::new(None, None);
 
         let flux = {
             let publisher = FluxPublisher::from_env();
@@ -169,7 +169,7 @@ impl KannakaMemorySystem {
             auto_save: true,
             last_dream: None,
             rhythm,
-            working_memory,
+            attention,
             flux,
         })
     }
@@ -418,11 +418,8 @@ impl KannakaMemorySystem {
 
     // migrate_from_sqlite removed — use chiral_migrate binary instead
 
-    /// Persist to disk (working memory JSON + flush HRM medium).
+    /// Persist to disk -- flush HRM medium. The medium IS the persistence layer.
     pub fn save(&mut self) -> Result<(), SystemError> {
-        // TODO(chiral): legacy kannaka.bin save removed — HrmStore persists via medium
-        self.working_memory.save_json(&self.data_dir)?;
-        // Flush all in-memory state to the medium (HRM file).
         let flushed = self.engine.store.flush()
             .map_err(|e| SystemError::Engine(crate::store::EngineError::Store(e)))?;
         if flushed > 0 {
@@ -482,51 +479,13 @@ impl KannakaMemorySystem {
     }
 
     // ------------------------------------------------------------------
-    // Transient interaction state (transitional — becomes left hemisphere)
+    // HRM-native attention projection
     // ------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
-    // Transitional: context_* methods (pre-HRM working memory)
-    //
-    // These wrap a ring-buffer session tracker that predates the chiral
-    // architecture. In the HRM vision, working memory IS the left hemisphere.
-    // These are kept for MCP tool compatibility but should migrate to
-    // left-hemisphere wavefront operations.
-    // -----------------------------------------------------------------------
-
-    /// Log a conversation turn. Transitional — should become a left-hemisphere wavefront.
-    pub fn context_turn(&mut self, role: &str, content: &str) {
-        self.working_memory.add_turn(role, content);
-    }
-
-    /// Checkpoint session state. Transitional.
-    pub fn context_checkpoint(&mut self) -> Result<(), SystemError> {
-        self.working_memory.checkpoint(&self.data_dir, &mut self.engine)
-            .map_err(SystemError::Io)?;
-        if self.auto_save {
-            self.save()?;
-        }
-        Ok(())
-    }
-
-    /// Get session state. Transitional.
-    pub fn context_restore(&self) -> SessionState {
-        self.working_memory.session_state().clone()
-    }
-
-    /// Get context summary. Transitional — should become left-hemisphere recall.
-    pub fn interaction_state(&self) -> String {
-        self.working_memory.query_attention()
-    }
-
-    /// Update task. Transitional.
-    pub fn context_update_task(&mut self, description: &str, status: TaskStatus) {
-        self.working_memory.update_task(description, status);
-    }
-
-    /// Clear completed tasks. Transitional.
-    pub fn context_clear_completed(&mut self) {
-        self.working_memory.clear_completed();
+    /// Project attention over the HRM store -- returns highest-energy wavefronts
+    /// as structured data. The medium IS the interaction state.
+    pub fn project_attention(&self) -> AttentionProjection {
+        self.attention.project_attention(&*self.engine.store)
     }
 
     /// Store a hallucinated memory from an LLM synthesis.

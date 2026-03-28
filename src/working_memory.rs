@@ -1,23 +1,19 @@
-//! Transient Interaction State — session-scoped conversation tracking.
+//! Attention Field — session-scoped attention tracking over HRM wavefronts.
 //!
-//! **Transitional module.** In the chiral HRM vision, transient interaction
-//! state IS the left hemisphere — conversation turns are conscious wavefronts,
-//! task tracking is attention-weighted energy, and summarization is a
-//! lite dream cycle on the conscious workspace.
+//! The HRM IS the persistence layer. This module provides a transient
+//! ring buffer for the current conversation window and structured
+//! attention projection over the highest-energy wavefronts.
 //!
-//! Currently implements a ring buffer + JSON persistence that runs parallel
-//! to the holographic medium. Should be absorbed into left-hemisphere
-//! wavefront operations as the chiral architecture matures.
+//! No JSON persistence. No checkpoint-driven survival logic. The medium
+//! is the sole truth store.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::HyperMemory;
-use crate::store::ResonanceEngine;
+use crate::medium::Modality;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,43 +91,39 @@ impl Default for SessionState {
     }
 }
 
-/// Serializable snapshot of the full working memory (for JSON persistence).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkingMemorySnapshot {
-    turns: Vec<ConversationTurn>,
-    session_state: SessionState,
-    max_turns: usize,
-    last_checkpoint: Option<DateTime<Utc>>,
-    summary_model: String,
+/// HRM-native attention projection -- returns highest-energy wavefronts
+/// instead of formatted markdown text.
+pub struct AttentionProjection {
+    pub active_wavefronts: Vec<(Uuid, f32, String)>,  // (id, energy, content_preview)
+    pub dominant_modality: Modality,
+    pub attention_coherence: f32,
+    pub recent_switch_points: usize,
 }
 
 // ---------------------------------------------------------------------------
-// WorkingMemory
+// AttentionField (formerly WorkingMemory)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_TURNS: usize = 50;
 const AUTO_SUMMARY_INTERVAL: usize = 10;
-const SESSION_STATE_TAG: &str = "session-state";
 
-pub struct WorkingMemory {
+pub struct AttentionField {
     turns: VecDeque<ConversationTurn>,
     session_state: SessionState,
     max_turns: usize,
-    last_checkpoint: Option<DateTime<Utc>>,
     ollama_url: Option<String>,
     summary_model: String,
     /// Tracks turns since last auto-summary.
     turns_since_summary: usize,
 }
 
-impl WorkingMemory {
-    /// Create a new empty working memory.
+impl AttentionField {
+    /// Create a new empty attention field.
     pub fn new(ollama_url: Option<String>, summary_model: Option<String>) -> Self {
         Self {
             turns: VecDeque::with_capacity(DEFAULT_MAX_TURNS),
             session_state: SessionState::default(),
             max_turns: DEFAULT_MAX_TURNS,
-            last_checkpoint: None,
             ollama_url,
             summary_model: summary_model.unwrap_or_else(|| "phi3:mini".to_string()),
             turns_since_summary: 0,
@@ -287,167 +279,70 @@ impl WorkingMemory {
     }
 
     // ------------------------------------------------------------------
-    // Context output
+    // HRM-native attention projection
     // ------------------------------------------------------------------
 
-    /// Query the transient interaction state.
-    ///
-    /// Transitional: in the chiral vision, this becomes a resonance query
-    /// against the left hemisphere — "what am I currently attending to?"
-    /// The conscious workspace would return its highest-energy wavefronts
-    /// rather than formatting markdown.
-    pub fn query_attention(&self) -> String {
-        let mut out = String::new();
-        out.push_str("## Interaction State\n\n");
+    /// Project attention over the HRM store -- returns highest-energy wavefronts
+    /// as structured data instead of formatted markdown.
+    pub fn project_attention(&self, store: &dyn crate::store::MediumBackend) -> AttentionProjection {
+        let mut wavefronts = Vec::new();
 
-        // Summary
-        if !self.session_state.conversation_summary.is_empty() {
-            out.push_str("### Conversation Summary\n");
-            out.push_str(&self.session_state.conversation_summary);
-            out.push_str("\n\n");
-        }
+        if let Ok(all) = store.all_memories() {
+            // Sort by amplitude (energy) descending, take top N
+            let mut sorted: Vec<&crate::memory::HyperMemory> = all.into_iter().collect();
+            sorted.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
 
-        // Active tasks
-        if !self.session_state.active_tasks.is_empty() {
-            out.push_str("### Active Tasks\n");
-            for task in &self.session_state.active_tasks {
-                out.push_str(&format!("- [{}] {}\n", task.status, task.description));
-            }
-            out.push('\n');
-        }
-
-        // Pending questions
-        if !self.session_state.pending_questions.is_empty() {
-            out.push_str("### Pending Questions\n");
-            for q in &self.session_state.pending_questions {
-                out.push_str(&format!("- {}\n", q));
-            }
-            out.push('\n');
-        }
-
-        // Waiting on
-        if !self.session_state.waiting_on.is_empty() {
-            out.push_str("### Waiting On\n");
-            for w in &self.session_state.waiting_on {
-                out.push_str(&format!("- {}\n", w));
-            }
-            out.push('\n');
-        }
-
-        // Recent turns (last 5)
-        let recent: Vec<&ConversationTurn> = self.turns.iter().rev().take(5).collect();
-        if !recent.is_empty() {
-            out.push_str("### Recent Turns\n");
-            for turn in recent.into_iter().rev() {
-                let preview = if turn.content.len() > 300 {
-                    format!("{}…", &turn.content[..turn.content.floor_char_boundary(300)])
+            for mem in sorted.into_iter().take(10) {
+                let preview = if mem.content.len() > 200 {
+                    format!("{}...", &mem.content[..mem.content.floor_char_boundary(200)])
                 } else {
-                    turn.content.clone()
+                    mem.content.clone()
                 };
-                out.push_str(&format!("**{}**: {}\n", turn.role, preview));
+                wavefronts.push((mem.id, mem.amplitude, preview));
             }
         }
 
-        out
-    }
-
-    // ------------------------------------------------------------------
-    // Persistence — JSON fast path
-    // ------------------------------------------------------------------
-
-    fn json_path(data_dir: &Path) -> PathBuf {
-        data_dir.join("working_memory.json")
-    }
-
-    /// Save to `working_memory.json` in the given data directory.
-    pub fn save_json(&self, data_dir: &Path) -> Result<(), std::io::Error> {
-        let snapshot = WorkingMemorySnapshot {
-            turns: self.turns.iter().cloned().collect(),
-            session_state: self.session_state.clone(),
-            max_turns: self.max_turns,
-            last_checkpoint: self.last_checkpoint,
-            summary_model: self.summary_model.clone(),
+        // Determine dominant modality from top wavefronts
+        let dominant_modality = if wavefronts.is_empty() {
+            Modality::Unknown
+        } else {
+            // Count modalities in top wavefronts
+            let mut counts = std::collections::HashMap::new();
+            if let Ok(all) = store.all_memories() {
+                let mut sorted: Vec<&crate::memory::HyperMemory> = all.into_iter().collect();
+                sorted.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
+                for mem in sorted.into_iter().take(10) {
+                    *counts.entry(mem.modality).or_insert(0u32) += 1;
+                }
+            }
+            counts.into_iter()
+                .max_by_key(|(_, c)| *c)
+                .map(|(m, _)| m)
+                .unwrap_or(Modality::Unknown)
         };
-        let json = serde_json::to_string_pretty(&snapshot)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(Self::json_path(data_dir), json)
-    }
 
-    /// Load from `working_memory.json`. Returns None if file doesn't exist or is corrupt.
-    pub fn load_json(data_dir: &Path, ollama_url: Option<String>) -> Option<Self> {
-        let path = Self::json_path(data_dir);
-        let data = std::fs::read_to_string(&path).ok()?;
-        let snap: WorkingMemorySnapshot = serde_json::from_str(&data).ok()?;
-        Some(Self {
-            turns: snap.turns.into_iter().collect(),
-            session_state: snap.session_state,
-            max_turns: snap.max_turns,
-            last_checkpoint: snap.last_checkpoint,
-            ollama_url,
-            summary_model: snap.summary_model,
-            turns_since_summary: 0,
-        })
-    }
+        // Compute attention coherence from amplitude variance
+        let attention_coherence = if wavefronts.len() >= 2 {
+            let energies: Vec<f32> = wavefronts.iter().map(|(_, e, _)| *e).collect();
+            let mean = energies.iter().sum::<f32>() / energies.len() as f32;
+            let variance = energies.iter().map(|e| (e - mean).powi(2)).sum::<f32>() / energies.len() as f32;
+            // Low variance = high coherence (attention focused)
+            1.0 / (1.0 + variance)
+        } else {
+            0.0
+        };
 
-    // ------------------------------------------------------------------
-    // Persistence — absorb interaction state into the medium
-    // ------------------------------------------------------------------
-
-    /// Absorb the current interaction state into the holographic medium.
-    /// Saves JSON snapshot + creates a high-amplitude wavefront tagged "session-state"
-    /// so the interaction context survives dream consolidation.
-    ///
-    /// Transitional: when the left hemisphere IS the interaction state,
-    /// this becomes a no-op — the state is already in the medium.
-    pub fn checkpoint(&mut self, data_dir: &Path, engine: &mut ResonanceEngine) -> Result<(), std::io::Error> {
-        // 1. Save JSON (fast path)
-        self.save_json(data_dir)?;
-
-        // 2. Build checkpoint content
-        let checkpoint_content = self.query_attention();
-        let tagged_content = format!("[{}] {}", SESSION_STATE_TAG, checkpoint_content);
-
-        // 3. Store as high-amplitude memory in engine
-        let store_result = engine.remember(&tagged_content);
-        if let Ok(id) = store_result {
-            if let Ok(Some(mem)) = engine.get_memory_mut(&id) {
-                mem.amplitude = 2.0; // High amplitude so it survives consolidation
-                mem.layer_depth = 2; // Mark as higher layer
-            }
+        AttentionProjection {
+            active_wavefronts: wavefronts,
+            dominant_modality,
+            attention_coherence,
+            recent_switch_points: 0, // TODO: derive from NCS switch detection
         }
-
-        self.last_checkpoint = Some(Utc::now());
-        Ok(())
-    }
-
-    /// Restore working memory. Tries JSON first, then searches engine for session-state memories.
-    pub fn restore(data_dir: &Path, engine: &ResonanceEngine, ollama_url: Option<String>) -> Self {
-        // Fast path: JSON file
-        if let Some(wm) = Self::load_json(data_dir, ollama_url.clone()) {
-            return wm;
-        }
-
-        // Fallback: search engine for session-state tagged memories
-        let mut wm = Self::new(ollama_url, None);
-
-        // Look for the most recent session-state memory
-        if let Ok(results) = engine.store.all_memories() {
-            let mut session_mems: Vec<&&HyperMemory> = results.iter()
-                .filter(|m| m.content.starts_with(&format!("[{}]", SESSION_STATE_TAG)))
-                .collect();
-            session_mems.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-            if let Some(mem) = session_mems.first() {
-                // Parse the summary back into session state
-                let content = mem.content.strip_prefix(&format!("[{}] ", SESSION_STATE_TAG)).unwrap_or(&mem.content);
-                wm.session_state.conversation_summary = content.to_string();
-                wm.session_state.last_updated = mem.created_at;
-            }
-        }
-
-        wm
     }
 }
+
+/// Backward-compatible type alias.
+pub type WorkingMemory = AttentionField;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -457,123 +352,84 @@ impl WorkingMemory {
 mod tests {
     use super::*;
 
-    fn make_wm() -> WorkingMemory {
-        WorkingMemory::new(None, None)
+    fn make_af() -> AttentionField {
+        AttentionField::new(None, None)
     }
 
     #[test]
     fn ring_buffer_overflow() {
-        let mut wm = make_wm().with_max_turns(3);
-        wm.add_turn("user", "one");
-        wm.add_turn("assistant", "two");
-        wm.add_turn("user", "three");
-        assert_eq!(wm.turn_count(), 3);
+        let mut af = make_af().with_max_turns(3);
+        af.add_turn("user", "one");
+        af.add_turn("assistant", "two");
+        af.add_turn("user", "three");
+        assert_eq!(af.turn_count(), 3);
 
-        wm.add_turn("assistant", "four");
-        assert_eq!(wm.turn_count(), 3);
+        af.add_turn("assistant", "four");
+        assert_eq!(af.turn_count(), 3);
         // Oldest ("one") should be gone
-        let contents: Vec<&str> = wm.turns().map(|t| t.content.as_str()).collect();
+        let contents: Vec<&str> = af.turns().map(|t| t.content.as_str()).collect();
         assert_eq!(contents, vec!["two", "three", "four"]);
     }
 
     #[test]
     fn turn_logging() {
-        let mut wm = make_wm();
-        wm.add_turn("user", "hello");
-        wm.add_turn("assistant", "hi there");
+        let mut af = make_af();
+        af.add_turn("user", "hello");
+        af.add_turn("assistant", "hi there");
 
-        assert_eq!(wm.turn_count(), 2);
-        let first = wm.turns().next().unwrap();
+        assert_eq!(af.turn_count(), 2);
+        let first = af.turns().next().unwrap();
         assert_eq!(first.role, "user");
         assert_eq!(first.content, "hello");
     }
 
     #[test]
     fn task_management() {
-        let mut wm = make_wm();
-        wm.update_task("build feature", TaskStatus::InProgress);
-        wm.update_task("write tests", TaskStatus::InProgress);
-        assert_eq!(wm.session_state().active_tasks.len(), 2);
+        let mut af = make_af();
+        af.update_task("build feature", TaskStatus::InProgress);
+        af.update_task("write tests", TaskStatus::InProgress);
+        assert_eq!(af.session_state().active_tasks.len(), 2);
 
         // Update existing
-        wm.update_task("build feature", TaskStatus::Done);
-        assert_eq!(wm.session_state().active_tasks[0].status, TaskStatus::Done);
+        af.update_task("build feature", TaskStatus::Done);
+        assert_eq!(af.session_state().active_tasks[0].status, TaskStatus::Done);
 
         // Clear completed
-        wm.clear_completed();
-        assert_eq!(wm.session_state().active_tasks.len(), 1);
-        assert_eq!(wm.session_state().active_tasks[0].description, "write tests");
+        af.clear_completed();
+        assert_eq!(af.session_state().active_tasks.len(), 1);
+        assert_eq!(af.session_state().active_tasks[0].description, "write tests");
     }
 
     #[test]
     fn extractive_summary_fallback() {
-        let mut wm = make_wm();
-        wm.add_turn("user", "Can you help me with Rust?");
-        wm.add_turn("assistant", "Sure! What do you need?");
-        wm.add_turn("user", "I need to build a ring buffer");
+        let mut af = make_af();
+        af.add_turn("user", "Can you help me with Rust?");
+        af.add_turn("assistant", "Sure! What do you need?");
+        af.add_turn("user", "I need to build a ring buffer");
 
-        wm.summarize();
-        let summary = &wm.session_state().conversation_summary;
+        af.summarize();
+        let summary = &af.session_state().conversation_summary;
         assert!(!summary.is_empty());
         assert!(summary.contains("ring buffer") || summary.contains("Rust"));
     }
 
     #[test]
-    fn checkpoint_restore_roundtrip() {
-        use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
-        use crate::codebook::Codebook;
-        use crate::store::{ResonanceEngine, TestMedium};
-
-        let dir = std::env::temp_dir().join(format!("kannaka_wm_test_{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let encoder = SimpleHashEncoder::new(384, 42);
-        let codebook = Codebook::new(384, 10_000, 42);
-        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-        let mut engine = ResonanceEngine::new(Box::new(TestMedium::new()), pipeline);
-
-        let mut wm = WorkingMemory::new(None, None);
-        wm.add_turn("user", "checkpoint test");
-        wm.update_task("test task", TaskStatus::InProgress);
-        wm.checkpoint(&dir, &mut engine).unwrap();
-
-        // Restore from JSON
-        let wm2 = WorkingMemory::restore(&dir, &engine, None);
-        assert_eq!(wm2.turn_count(), 1);
-        assert_eq!(wm2.session_state().active_tasks.len(), 1);
-        assert_eq!(wm2.session_state().active_tasks[0].description, "test task");
-
-        // Delete JSON, restore from engine fallback
-        std::fs::remove_file(dir.join("working_memory.json")).unwrap();
-        let wm3 = WorkingMemory::restore(&dir, &engine, None);
-        // Should have recovered summary from engine
-        assert!(!wm3.session_state().conversation_summary.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn get_context_formatting() {
-        let mut wm = make_wm();
-        wm.add_turn("user", "hello world");
-        wm.update_task("do stuff", TaskStatus::InProgress);
-        wm.session_state.pending_questions.push("what about X?".to_string());
-
-        let ctx = wm.query_attention();
-        assert!(ctx.contains("Interaction State"));
-        assert!(ctx.contains("do stuff"));
-        assert!(ctx.contains("hello world"));
-        assert!(ctx.contains("what about X?"));
+    fn attention_projection_empty_store() {
+        let af = make_af();
+        let store = crate::store::TestMedium::new();
+        let proj = af.project_attention(&store);
+        assert!(proj.active_wavefronts.is_empty());
+        assert_eq!(proj.attention_coherence, 0.0);
     }
 
     #[test]
     fn auto_summary_triggers() {
-        let mut wm = make_wm();
+        let mut af = make_af();
         // Add AUTO_SUMMARY_INTERVAL turns to trigger auto-summary
         for i in 0..AUTO_SUMMARY_INTERVAL {
-            wm.add_turn("user", &format!("message {}", i));
+            af.add_turn("user", &format!("message {}", i));
         }
         // Summary should have been triggered
-        assert!(!wm.session_state().conversation_summary.is_empty());
+        assert!(!af.session_state().conversation_summary.is_empty());
     }
 }

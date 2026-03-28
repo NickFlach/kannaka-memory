@@ -18,7 +18,10 @@ pub mod memory;
 pub mod store;
 pub mod wave;
 pub mod geometry;
-pub mod working_memory;
+#[path = "working_memory.rs"]
+pub mod attention_field;
+/// Backward-compatible alias for the renamed module.
+pub use attention_field as working_memory;
 pub mod xi_operator;
 
 #[cfg(feature = "glyph")]
@@ -66,7 +69,9 @@ pub use consolidation::{ConsolidationEngine, ConsolidationReport, DreamState, Mo
 pub use rhythm::{RhythmEngine, RhythmState, Signal as RhythmSignal};
 
 pub use observe::{MemoryIntrospector, SystemReport, TopologyReport, WaveReport, ClusterReport, ClusterInfo, HealthCheck, LinkInfo, MemoryInfo, ConsciousnessSnapshot, NcsSnapshot};
-pub use working_memory::{WorkingMemory, ConversationTurn, SessionState, TaskItem, TaskStatus};
+pub use attention_field::{AttentionField, AttentionProjection, ConversationTurn, SessionState, TaskItem, TaskStatus};
+/// Backward-compatible type alias.
+pub type WorkingMemory = AttentionField;
 pub use geometry::{
     CliffordElement, Z4Element, Z3Element, SgaElement, 
     ClassComponents, MemoryCoordinates,
