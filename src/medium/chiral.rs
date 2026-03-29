@@ -98,6 +98,7 @@ impl ChiralMedium {
             right.timestamps.push(medium.timestamps[i]);
             right.metadata.push(meta.clone());
             right.id_to_index.insert(id, index);
+            right.len += 1;
         }
 
         let mut chiral = Self {

@@ -216,22 +216,23 @@ impl ChiralMedium {
         let n = h.count() as u32;
         w.write_all(&n.to_le_bytes())?;
 
-        // Wavefronts tensor (row-major)
-        for row in h.wavefronts.outer_iter() {
-            for &val in row.iter() {
-                w.write_all(&val.to_le_bytes())?;
+        // Wavefronts tensor (row-major) — only active rows
+        let active = n as usize;
+        for i in 0..active {
+            for j in 0..h.dims {
+                w.write_all(&h.wavefronts[[i, j]].to_le_bytes())?;
             }
         }
 
-        // Energy, frequency, phase
-        for &val in h.energy.iter() {
-            w.write_all(&val.to_le_bytes())?;
+        // Energy, frequency, phase — only active entries
+        for i in 0..active {
+            w.write_all(&h.energy[i].to_le_bytes())?;
         }
-        for &val in h.frequency.iter() {
-            w.write_all(&val.to_le_bytes())?;
+        for i in 0..active {
+            w.write_all(&h.frequency[i].to_le_bytes())?;
         }
-        for &val in h.phase.iter() {
-            w.write_all(&val.to_le_bytes())?;
+        for i in 0..active {
+            w.write_all(&h.phase[i].to_le_bytes())?;
         }
 
         // Timestamps
@@ -332,6 +333,7 @@ impl ChiralMedium {
             id_to_index.insert(meta.id, i);
         }
 
+        let len = metadata.len();
         Ok(Hemisphere {
             hand,
             wavefronts,
@@ -342,6 +344,7 @@ impl ChiralMedium {
             metadata,
             id_to_index,
             dims,
+            len,
         })
     }
 }

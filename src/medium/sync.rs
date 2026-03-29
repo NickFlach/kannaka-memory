@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
+use ndarray::s;
 use uuid::Uuid;
 
 use super::Medium;
@@ -74,8 +75,8 @@ impl Medium {
     /// # Arguments
     /// * `agent_id` - Identifier for the agent exporting this state
     pub fn export_phase_state(&self, agent_id: &str) -> PhaseState {
-        let phases = self.phase.to_vec();
-        let energies = self.energy.to_vec();
+        let phases = self.phase.slice(s![..self.len]).to_vec();
+        let energies = self.energy.slice(s![..self.len]).to_vec();
 
         // Compute content hashes for matching (blake3 hash of content text)
         let content_hashes = self

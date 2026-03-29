@@ -239,13 +239,14 @@ fn apply_dynamics_changes_energy() {
     medium.add_wavefront(&vector1, "first".to_string(), 1.0).unwrap();
     medium.add_wavefront(&vector2, "second".to_string(), 0.8).unwrap();
 
-    let initial_energy: Vec<f32> = medium.energy.to_vec();
+    let n = medium.wavefront_count();
+    let initial_energy: Vec<f32> = (0..n).map(|i| medium.energy[i]).collect();
 
     // Apply dynamics
     medium.apply_dynamics(0.1);
 
     // Energy should have changed due to dynamics
-    let final_energy: Vec<f32> = medium.energy.to_vec();
+    let final_energy: Vec<f32> = (0..n).map(|i| medium.energy[i]).collect();
     assert_ne!(initial_energy, final_energy);
 
     // Energy should remain positive

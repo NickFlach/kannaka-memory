@@ -15,6 +15,8 @@ use super::types::*;
 
 impl Medium {
     /// Save the medium to a .hrm file (atomic: writes to .tmp then renames).
+    /// Note: callers should call `compact()` before saving if the medium has
+    /// excess capacity from amortized growth. `save_and_commit` handles this.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
         let path_ref = path.as_ref();
         let tmp_path = path_ref.with_extension("hrm.tmp");
@@ -37,22 +39,22 @@ impl Medium {
         writer.write_all(&n.to_le_bytes())?;
         writer.write_all(&d.to_le_bytes())?;
 
-        // Wavefronts tensor (row-major f32 array)
-        for row in self.wavefronts.outer_iter() {
-            for &val in row.iter() {
-                writer.write_all(&val.to_le_bytes())?;
+        // Wavefronts tensor (row-major f32 array) — only active rows
+        for i in 0..n as usize {
+            for j in 0..WAVEFRONT_DIM {
+                writer.write_all(&self.wavefronts[[i, j]].to_le_bytes())?;
             }
         }
 
-        // Energy, frequency, phase arrays
-        for &val in self.energy.iter() {
-            writer.write_all(&val.to_le_bytes())?;
+        // Energy, frequency, phase arrays — only active entries
+        for i in 0..n as usize {
+            writer.write_all(&self.energy[i].to_le_bytes())?;
         }
-        for &val in self.frequency.iter() {
-            writer.write_all(&val.to_le_bytes())?;
+        for i in 0..n as usize {
+            writer.write_all(&self.frequency[i].to_le_bytes())?;
         }
-        for &val in self.phase.iter() {
-            writer.write_all(&val.to_le_bytes())?;
+        for i in 0..n as usize {
+            writer.write_all(&self.phase[i].to_le_bytes())?;
         }
 
         // Timestamps
@@ -120,7 +122,7 @@ impl Medium {
     ) -> Result<String, MediumError> {
         let path_ref = path.as_ref();
 
-        // 1. Save the .hrm file
+        // 1. Save the .hrm file (save uses wavefront_count() which returns self.len)
         self.save(path_ref)?;
 
         // 2. Git add the file
@@ -468,6 +470,7 @@ impl Medium {
         }
 
         Ok(Self {
+            len: n,
             wavefronts,
             energy,
             frequency,

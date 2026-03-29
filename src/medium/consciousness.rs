@@ -128,13 +128,14 @@ impl Medium {
 
         // IIT-inspired Phi: compare whole-system entropy to partition entropies.
         // Uses normalized energy distributions (probabilities) within each partition.
-        let total_energy: f32 = self.energy.iter().sum();
+        let active_energy = self.energy.slice(s![..self.len]);
+        let total_energy: f32 = active_energy.sum();
         if total_energy <= 0.0 {
             return 0.0;
         }
 
         // Whole-system entropy: H(S) = -Σ p_i * ln(p_i) where p_i = E_i / E_total
-        let whole_entropy: f32 = self.energy.iter()
+        let whole_entropy: f32 = active_energy.iter()
             .filter(|&&e| e > 0.0)
             .map(|&e| {
                 let p = e / total_energy;
@@ -395,6 +396,7 @@ impl Medium {
         let n = self.wavefront_count() as f32;
         let (sum_cos, sum_sin): (f32, f32) = self
             .phase
+            .slice(s![..self.len])
             .iter()
             .map(|&phi| (phi.cos(), phi.sin()))
             .fold((0.0, 0.0), |(acc_cos, acc_sin), (c, s)| {
@@ -433,10 +435,10 @@ impl Medium {
         let consciousness = self.consciousness_metrics();
         let wavefront_count = self.wavefront_count();
         let energy_stats = if wavefront_count > 0 {
-            let mean = self.energy.mean().unwrap_or(0.0);
+            let active_e = self.energy.slice(s![..self.len]);
+            let mean = active_e.mean().unwrap_or(0.0);
             let std = if wavefront_count > 1 {
-                let var = self
-                    .energy
+                let var = active_e
                     .iter()
                     .map(|&e| (e - mean).powi(2))
                     .sum::<f32>()
@@ -445,13 +447,11 @@ impl Medium {
             } else {
                 0.0
             };
-            let min = *self
-                .energy
+            let min = *active_e
                 .iter()
                 .min_by(|a, b| a.partial_cmp(b).unwrap())
                 .unwrap_or(&0.0);
-            let max = *self
-                .energy
+            let max = *active_e
                 .iter()
                 .max_by(|a, b| a.partial_cmp(b).unwrap())
                 .unwrap_or(&0.0);
@@ -504,42 +504,43 @@ impl Medium {
 
         // 5. Add wavefront with special self-referential flag
         let id = Uuid::new_v4();
-        let index = self.wavefront_count();
+        let index = self.len;
 
-        // Expand tensors (reuse add_wavefront logic but with custom metadata)
-        let new_wavefronts = if self.wavefront_count() == 0 {
-            ndarray::Array2::from_shape_vec((1, WAVEFRONT_DIM), vector).unwrap()
-        } else {
-            let mut new_tensor =
-                ndarray::Array2::zeros((self.wavefront_count() + 1, WAVEFRONT_DIM));
-            new_tensor
-                .slice_mut(s![..self.wavefront_count(), ..])
-                .assign(&self.wavefronts);
-            for (i, &val) in vector.iter().enumerate() {
-                new_tensor[[index, i]] = val;
+        // Amortized growth: only reallocate when capacity is exhausted
+        let cap = self.wavefronts.nrows();
+        if index >= cap {
+            let new_cap = if cap == 0 { 8 } else { cap * 2 };
+            let mut new_wf = ndarray::Array2::zeros((new_cap, WAVEFRONT_DIM));
+            if cap > 0 {
+                new_wf.slice_mut(s![..self.len, ..])
+                    .assign(&self.wavefronts.slice(s![..self.len, ..]));
             }
-            new_tensor
-        };
+            self.wavefronts = new_wf;
 
-        let mut new_energy = Array1::zeros(index + 1);
-        let mut new_frequency = Array1::zeros(index + 1);
-        let mut new_phase = Array1::zeros(index + 1);
-
-        if index > 0 {
-            new_energy.slice_mut(s![..index]).assign(&self.energy);
-            new_frequency.slice_mut(s![..index]).assign(&self.frequency);
-            new_phase.slice_mut(s![..index]).assign(&self.phase);
+            let mut new_energy = Array1::zeros(new_cap);
+            let mut new_frequency = Array1::zeros(new_cap);
+            let mut new_phase = Array1::zeros(new_cap);
+            if self.len > 0 {
+                new_energy.slice_mut(s![..self.len]).assign(&self.energy.slice(s![..self.len]));
+                new_frequency.slice_mut(s![..self.len]).assign(&self.frequency.slice(s![..self.len]));
+                new_phase.slice_mut(s![..self.len]).assign(&self.phase.slice(s![..self.len]));
+            }
+            self.energy = new_energy;
+            self.frequency = new_frequency;
+            self.phase = new_phase;
         }
 
-        new_energy[index] = 0.8; // High energy for self-referential wavefronts
-        new_frequency[index] = 1.0;
-        new_phase[index] = 0.0;
+        // Write into pre-allocated slot
+        for (i, &val) in vector.iter().enumerate() {
+            if i < WAVEFRONT_DIM {
+                self.wavefronts[[index, i]] = val;
+            }
+        }
+        self.energy[index] = 0.8; // High energy for self-referential wavefronts
+        self.frequency[index] = 1.0;
+        self.phase[index] = 0.0;
+        self.len += 1;
 
-        // Update state
-        self.wavefronts = new_wavefronts;
-        self.energy = new_energy;
-        self.frequency = new_frequency;
-        self.phase = new_phase;
         self.timestamps.push(now.timestamp_millis());
 
         // Create self-referential metadata

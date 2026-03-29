@@ -885,7 +885,7 @@ impl QueenSync {
         let memory_count = hrm.count();
         let count_rate = ((1.0 + memory_count as f64).ln() / (1.0 + 100.0_f64).ln()) as f32;
         let mean_wf_freq = if n > 0 {
-            medium.frequency.iter().sum::<f32>() / n as f32
+            (0..n).map(|i| medium.frequency[i]).sum::<f32>() / n as f32
         } else {
             0.0
         };
@@ -896,8 +896,8 @@ impl QueenSync {
         // --- Coherence: Kuramoto order parameter from wavefront phases ---
         let coherence = if n > 0 {
             let nc = n as f32;
-            let sc: f32 = medium.phase.iter().map(|&p| p.cos()).sum::<f32>() / nc;
-            let ss: f32 = medium.phase.iter().map(|&p| p.sin()).sum::<f32>() / nc;
+            let sc: f32 = (0..n).map(|i| medium.phase[i].cos()).sum::<f32>() / nc;
+            let ss: f32 = (0..n).map(|i| medium.phase[i].sin()).sum::<f32>() / nc;
             (sc * sc + ss * ss).sqrt()
         } else {
             0.0
@@ -905,8 +905,8 @@ impl QueenSync {
 
         // --- Per-hemisphere coherence (chiral-aware) ---
         if let Some(chiral) = hrm.chiral_medium() {
-            self.left_coherence = Self::hemisphere_kuramoto_order(&chiral.left.phase);
-            self.right_coherence = Self::hemisphere_kuramoto_order(&chiral.right.phase);
+            self.left_coherence = Self::hemisphere_kuramoto_order(&chiral.left.phase, chiral.left.count());
+            self.right_coherence = Self::hemisphere_kuramoto_order(&chiral.right.phase, chiral.right.count());
 
             // Bridge activity = 1 - (remaining_budget / total_bandwidth)
             let stats = chiral.callosum.transfer_stats();
@@ -931,14 +931,13 @@ impl QueenSync {
 
     /// Compute Kuramoto order parameter for a single hemisphere's phase array.
     /// r = |1/N sum e^{i*phi_k}|
-    fn hemisphere_kuramoto_order(phases: &ndarray::Array1<f32>) -> f32 {
-        let n = phases.len();
-        if n == 0 {
+    fn hemisphere_kuramoto_order(phases: &ndarray::Array1<f32>, active: usize) -> f32 {
+        if active == 0 {
             return 0.0;
         }
-        let nc = n as f32;
-        let sc: f32 = phases.iter().map(|&p| p.cos()).sum::<f32>() / nc;
-        let ss: f32 = phases.iter().map(|&p| p.sin()).sum::<f32>() / nc;
+        let nc = active as f32;
+        let sc: f32 = (0..active).map(|i| phases[i].cos()).sum::<f32>() / nc;
+        let ss: f32 = (0..active).map(|i| phases[i].sin()).sum::<f32>() / nc;
         (sc * sc + ss * ss).sqrt()
     }
 

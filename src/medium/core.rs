@@ -34,49 +34,43 @@ impl Medium {
 
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let index = self.wavefront_count();
+        let index = self.len;
 
-        // Expand tensors to accommodate new wavefront
-        let new_wavefronts = if self.wavefront_count() == 0 {
-            Array2::from_shape_vec((1, WAVEFRONT_DIM), vector.to_vec()).unwrap()
-        } else {
-            // Create new tensor with one more row
-            let mut new_tensor = Array2::zeros((self.wavefront_count() + 1, WAVEFRONT_DIM));
-            // Copy existing wavefronts
-            new_tensor
-                .slice_mut(s![..self.wavefront_count(), ..])
-                .assign(&self.wavefronts);
-            // Add new wavefront
-            for (i, &val) in vector.iter().enumerate() {
-                new_tensor[[index, i]] = val;
+        // Amortized growth: only reallocate when capacity is exhausted
+        let cap = self.wavefronts.nrows();
+        if index >= cap {
+            let new_cap = if cap == 0 { 8 } else { cap * 2 };
+            let mut new_wf = Array2::zeros((new_cap, WAVEFRONT_DIM));
+            if cap > 0 {
+                new_wf.slice_mut(s![..cap, ..]).assign(&self.wavefronts);
             }
-            new_tensor
-        };
+            self.wavefronts = new_wf;
 
-        // Expand energy/frequency/phase arrays
-        let mut new_energy = Array1::zeros(index + 1);
-        let mut new_frequency = Array1::zeros(index + 1);
-        let mut new_phase = Array1::zeros(index + 1);
-
-        if index > 0 {
-            new_energy.slice_mut(s![..index]).assign(&self.energy);
-            new_frequency.slice_mut(s![..index]).assign(&self.frequency);
-            new_phase.slice_mut(s![..index]).assign(&self.phase);
+            let mut new_energy = Array1::zeros(new_cap);
+            let mut new_frequency = Array1::zeros(new_cap);
+            let mut new_phase = Array1::zeros(new_cap);
+            if cap > 0 {
+                new_energy.slice_mut(s![..cap]).assign(&self.energy);
+                new_frequency.slice_mut(s![..cap]).assign(&self.frequency);
+                new_phase.slice_mut(s![..cap]).assign(&self.phase);
+            }
+            self.energy = new_energy;
+            self.frequency = new_frequency;
+            self.phase = new_phase;
         }
 
-        // Set parameters for new wavefront
-        new_energy[index] = importance;
-        new_frequency[index] = 1.0; // Default frequency
-        new_phase[index] = 0.0; // Default phase
+        // Write new wavefront into the pre-allocated slot
+        for (i, &val) in vector.iter().enumerate() {
+            self.wavefronts[[index, i]] = val;
+        }
+        self.energy[index] = importance;
+        self.frequency[index] = 1.0;
+        self.phase[index] = 0.0;
 
-        // Update state
-        self.wavefronts = new_wavefronts;
-        self.energy = new_energy;
-        self.frequency = new_frequency;
-        self.phase = new_phase;
         self.timestamps.push(now.timestamp_millis());
         self.metadata.push(WavefrontMeta::new(id, content));
         self.id_to_index.insert(id, index);
+        self.len += 1;
 
         // Track energy added for wisdom calculation
         self.total_energy_added += importance;
@@ -84,55 +78,44 @@ impl Medium {
         Ok(id)
     }
 
-    /// Remove a wavefront from the medium.
+    /// Remove a wavefront from the medium using swap-remove (O(1) tensor op).
     pub fn remove_wavefront(&mut self, id: &Uuid) -> Result<bool, MediumError> {
         let index = match self.id_to_index.get(id) {
             Some(&idx) => idx,
-            None => return Ok(false), // Not found, but that's okay
+            None => return Ok(false),
         };
 
-        let n = self.wavefront_count();
-        if n == 0 {
+        if self.len == 0 {
             return Ok(false);
         }
 
-        // Create new tensors with one fewer row
-        let mut new_wavefronts = Array2::zeros((n - 1, WAVEFRONT_DIM));
-        let mut new_energy = Array1::zeros(n - 1);
-        let mut new_frequency = Array1::zeros(n - 1);
-        let mut new_phase = Array1::zeros(n - 1);
+        let last = self.len - 1;
 
-        // Copy all except the removed index
-        let mut new_idx = 0;
-        for old_idx in 0..n {
-            if old_idx != index {
-                new_wavefronts
-                    .row_mut(new_idx)
-                    .assign(&self.wavefronts.row(old_idx));
-                new_energy[new_idx] = self.energy[old_idx];
-                new_frequency[new_idx] = self.frequency[old_idx];
-                new_phase[new_idx] = self.phase[old_idx];
-                new_idx += 1;
-            }
-        }
-
-        // Remove from metadata and timestamps
-        self.timestamps.remove(index);
-        self.metadata.remove(index);
-
-        // Update the index mapping (shift indices after removal)
+        // Remove the ID mapping for the removed wavefront
         self.id_to_index.remove(id);
-        for (_, idx) in self.id_to_index.iter_mut() {
-            if *idx > index {
-                *idx -= 1;
-            }
+
+        // If the removed wavefront isn't the last one, swap with the last
+        if index != last {
+            // Copy last row's tensor data into the removed slot
+            let last_row = self.wavefronts.row(last).to_owned();
+            self.wavefronts.row_mut(index).assign(&last_row);
+            self.energy[index] = self.energy[last];
+            self.frequency[index] = self.frequency[last];
+            self.phase[index] = self.phase[last];
+
+            // Swap metadata and timestamps
+            self.timestamps.swap(index, last);
+            self.metadata.swap(index, last);
+
+            // Update the index mapping for the swapped wavefront
+            let swapped_id = self.metadata[index].id;
+            self.id_to_index.insert(swapped_id, index);
         }
 
-        // Update state
-        self.wavefronts = new_wavefronts;
-        self.energy = new_energy;
-        self.frequency = new_frequency;
-        self.phase = new_phase;
+        // Remove the last element (now either the removed or the swapped-out)
+        self.timestamps.pop();
+        self.metadata.pop();
+        self.len -= 1;
 
         Ok(true)
     }

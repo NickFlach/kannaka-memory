@@ -16,7 +16,7 @@ use super::types::*;
 pub struct Hemisphere {
     /// Which hand this hemisphere represents
     pub hand: Hand,
-    /// N x D_h tensor of wavefront patterns
+    /// N x D_h tensor of wavefront patterns (capacity may exceed active count)
     pub wavefronts: Array2<f32>,
     /// Energy (amplitude) per wavefront
     pub energy: Array1<f32>,
@@ -32,6 +32,8 @@ pub struct Hemisphere {
     pub(crate) id_to_index: HashMap<Uuid, usize>,
     /// Current dimension count for this hemisphere
     pub dims: usize,
+    /// Active wavefront count (tensor capacity may be larger for amortized growth)
+    pub(crate) len: usize,
 }
 
 impl Hemisphere {
@@ -47,20 +49,32 @@ impl Hemisphere {
             metadata: Vec::new(),
             id_to_index: HashMap::new(),
             dims,
+            len: 0,
         }
     }
 
-    /// Number of wavefronts in this hemisphere.
+    /// Number of active wavefronts in this hemisphere.
     pub fn count(&self) -> usize {
-        self.wavefronts.nrows()
+        self.len
     }
 
-    /// Total energy across all wavefronts.
+    /// Shrink tensors to exactly fit active wavefronts.
+    pub fn compact(&mut self) {
+        if self.len < self.wavefronts.nrows() {
+            self.wavefronts = self.wavefronts.slice(s![..self.len, ..]).to_owned();
+            self.energy = self.energy.slice(s![..self.len]).to_owned();
+            self.frequency = self.frequency.slice(s![..self.len]).to_owned();
+            self.phase = self.phase.slice(s![..self.len]).to_owned();
+        }
+    }
+
+    /// Total energy across all active wavefronts.
     pub fn total_energy(&self) -> f32 {
-        self.energy.sum()
+        if self.len == 0 { return 0.0; }
+        self.energy.slice(s![..self.len]).sum()
     }
 
-    /// Mean energy across all wavefronts (0.0 if empty).
+    /// Mean energy across all active wavefronts (0.0 if empty).
     pub fn mean_energy(&self) -> f32 {
         if self.count() == 0 { 0.0 } else { self.total_energy() / self.count() as f32 }
     }
@@ -95,86 +109,78 @@ impl Hemisphere {
         let adapted = Self::adapt_vector(vector, self.dims);
 
         let id = Uuid::new_v4();
-        let index = self.count();
+        let index = self.len;
 
-        // Expand tensors
-        let new_wavefronts = if self.count() == 0 {
-            Array2::from_shape_vec((1, self.dims), adapted).unwrap()
-        } else {
-            let mut new_tensor = Array2::zeros((self.count() + 1, self.dims));
-            new_tensor
-                .slice_mut(s![..self.count(), ..])
-                .assign(&self.wavefronts);
-            for (i, &val) in adapted.iter().enumerate() {
-                if i < self.dims {
-                    new_tensor[[index, i]] = val;
-                }
+        // Amortized growth: only reallocate when capacity is exhausted
+        let cap = self.wavefronts.nrows();
+        if index >= cap {
+            let new_cap = if cap == 0 { 8 } else { cap * 2 };
+            let mut new_wf = Array2::zeros((new_cap, self.dims));
+            if cap > 0 {
+                new_wf.slice_mut(s![..cap, ..]).assign(&self.wavefronts);
             }
-            new_tensor
-        };
+            self.wavefronts = new_wf;
 
-        let mut new_energy = Array1::zeros(index + 1);
-        let mut new_frequency = Array1::zeros(index + 1);
-        let mut new_phase = Array1::zeros(index + 1);
-
-        if index > 0 {
-            new_energy.slice_mut(s![..index]).assign(&self.energy);
-            new_frequency.slice_mut(s![..index]).assign(&self.frequency);
-            new_phase.slice_mut(s![..index]).assign(&self.phase);
+            let mut new_energy = Array1::zeros(new_cap);
+            let mut new_frequency = Array1::zeros(new_cap);
+            let mut new_phase = Array1::zeros(new_cap);
+            if cap > 0 {
+                new_energy.slice_mut(s![..cap]).assign(&self.energy);
+                new_frequency.slice_mut(s![..cap]).assign(&self.frequency);
+                new_phase.slice_mut(s![..cap]).assign(&self.phase);
+            }
+            self.energy = new_energy;
+            self.frequency = new_frequency;
+            self.phase = new_phase;
         }
 
-        new_energy[index] = importance;
-        new_frequency[index] = 1.0;
-        new_phase[index] = 0.0;
+        // Write into pre-allocated slot
+        for (i, &val) in adapted.iter().enumerate() {
+            if i < self.dims {
+                self.wavefronts[[index, i]] = val;
+            }
+        }
+        self.energy[index] = importance;
+        self.frequency[index] = 1.0;
+        self.phase[index] = 0.0;
 
-        self.wavefronts = new_wavefronts;
-        self.energy = new_energy;
-        self.frequency = new_frequency;
-        self.phase = new_phase;
         self.timestamps.push(chrono::Utc::now().timestamp_millis());
         self.metadata.push(WavefrontMeta::new(id, content));
         self.id_to_index.insert(id, index);
+        self.len += 1;
 
         Ok(id)
     }
 
-    /// Remove a wavefront from this hemisphere.
+    /// Remove a wavefront from this hemisphere using swap-remove (O(1) tensor op).
     pub fn remove_wavefront(&mut self, id: &Uuid) -> bool {
         let index = match self.id_to_index.get(id) {
             Some(&idx) => idx,
             None => return false,
         };
 
-        let n = self.count();
-        if n == 0 { return false; }
+        if self.len == 0 { return false; }
 
-        let mut new_wavefronts = Array2::zeros((n - 1, self.dims));
-        let mut new_energy = Array1::zeros(n - 1);
-        let mut new_frequency = Array1::zeros(n - 1);
-        let mut new_phase = Array1::zeros(n - 1);
-
-        let mut new_idx = 0;
-        for old_idx in 0..n {
-            if old_idx != index {
-                new_wavefronts.row_mut(new_idx).assign(&self.wavefronts.row(old_idx));
-                new_energy[new_idx] = self.energy[old_idx];
-                new_frequency[new_idx] = self.frequency[old_idx];
-                new_phase[new_idx] = self.phase[old_idx];
-                new_idx += 1;
-            }
-        }
-
-        self.timestamps.remove(index);
-        self.metadata.remove(index);
+        let last = self.len - 1;
         self.id_to_index.remove(id);
-        for (_, idx) in self.id_to_index.iter_mut() {
-            if *idx > index { *idx -= 1; }
+
+        if index != last {
+            let last_row = self.wavefronts.row(last).to_owned();
+            self.wavefronts.row_mut(index).assign(&last_row);
+            self.energy[index] = self.energy[last];
+            self.frequency[index] = self.frequency[last];
+            self.phase[index] = self.phase[last];
+
+            self.timestamps.swap(index, last);
+            self.metadata.swap(index, last);
+
+            let swapped_id = self.metadata[index].id;
+            self.id_to_index.insert(swapped_id, index);
         }
 
-        self.wavefronts = new_wavefronts;
-        self.energy = new_energy;
-        self.frequency = new_frequency;
-        self.phase = new_phase;
+        self.timestamps.pop();
+        self.metadata.pop();
+        self.len -= 1;
 
         true
     }
@@ -291,13 +297,13 @@ impl Hemisphere {
         let n = self.count();
         if n < 2 { return; }
 
-        let sum_cos: f32 = self.phase.iter().map(|p| p.cos()).sum();
-        let sum_sin: f32 = self.phase.iter().map(|p| p.sin()).sum();
+        let sum_cos: f32 = (0..n).map(|i| self.phase[i].cos()).sum();
+        let sum_sin: f32 = (0..n).map(|i| self.phase[i].sin()).sum();
         let order = (sum_cos * sum_cos + sum_sin * sum_sin).sqrt() / n as f32;
 
         let strength = eta * order;
 
-        let mean_energy = self.energy.sum() / n as f32;
+        let mean_energy = self.energy.slice(s![..self.len]).sum() / n as f32;
         if mean_energy < 1e-8 { return; }
 
         for i in 0..n {

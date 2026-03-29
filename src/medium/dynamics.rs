@@ -1,6 +1,6 @@
 //! Wave dynamics: interference, dreaming (annealing), and coherence computation.
 
-use ndarray::Array2;
+use ndarray::{Array2, s};
 
 use super::Medium;
 use super::types::*;
@@ -160,7 +160,7 @@ impl Medium {
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> DreamReport {
         let mut temperature = initial_temperature.unwrap_or(1.0);
         let energy_before = if self.wavefront_count() > 0 {
-            self.energy.mean().unwrap_or(0.0)
+            self.energy.slice(s![..self.len]).mean().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -227,7 +227,7 @@ impl Medium {
         }
 
         let energy_after = if self.wavefront_count() > 0 {
-            self.energy.mean().unwrap_or(0.0)
+            self.energy.slice(s![..self.len]).mean().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -583,15 +583,15 @@ impl Medium {
         }
 
         // Compute field-level order parameter (Kuramoto R)
-        let sum_cos: f32 = self.phase.iter().map(|p| p.cos()).sum();
-        let sum_sin: f32 = self.phase.iter().map(|p| p.sin()).sum();
+        let sum_cos: f32 = (0..n).map(|i| self.phase[i].cos()).sum();
+        let sum_sin: f32 = (0..n).map(|i| self.phase[i].sin()).sum();
         let order = (sum_cos * sum_cos + sum_sin * sum_sin).sqrt() / n as f32;
 
         // Higher order → stronger perturbation (break lock-step)
         let strength = eta * order;
 
         // Apply phase noise proportional to energy
-        let mean_energy = self.energy.mean().unwrap_or(1.0);
+        let mean_energy = self.energy.slice(s![..self.len]).mean().unwrap_or(1.0);
         for i in 0..n {
             let noise = strength * (self.energy[i] / mean_energy);
             self.phase[i] += noise * (self.frequency[i] * 7.0 + self.phase[i] * 13.0).sin();

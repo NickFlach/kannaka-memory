@@ -42,15 +42,15 @@ pub use types::*;
 /// The core HRM structure — a high-dimensional phase space where memories exist as waves in superposition.
 #[derive(Debug, Clone)]
 pub struct Medium {
-    /// N x D tensor of wavefront patterns [N wavefronts, D=10,000 dimensions]
+    /// N x D tensor of wavefront patterns (capacity may exceed active count)
     pub wavefronts: Array2<f32>,
-    /// Energy (amplitude) per wavefront [N]
+    /// Energy (amplitude) per wavefront
     pub energy: Array1<f32>,
-    /// Frequency per wavefront [N]
+    /// Frequency per wavefront
     pub frequency: Array1<f32>,
-    /// Phase per wavefront [N]
+    /// Phase per wavefront
     pub phase: Array1<f32>,
-    /// Creation timestamps [N]
+    /// Creation timestamps
     pub timestamps: Vec<i64>,
     /// Content & metadata (sparse, kept separate from tensor ops)
     pub metadata: Vec<WavefrontMeta>,
@@ -64,6 +64,8 @@ pub struct Medium {
     pub(crate) total_energy_added: f32,
     /// Total energy that has been dampened during dynamics (for wisdom calculation)
     pub(crate) total_energy_dampened: f32,
+    /// Active wavefront count (tensor capacity may be larger for amortized growth)
+    pub(crate) len: usize,
 }
 
 impl Medium {
@@ -81,12 +83,30 @@ impl Medium {
             visual_codebook: Codebook::new(VISUAL_FEATURE_DIM, WAVEFRONT_DIM, VISUAL_CODEBOOK_SEED),
             total_energy_added: 0.0,
             total_energy_dampened: 0.0,
+            len: 0,
         }
     }
 
     /// Number of active wavefronts in the medium.
     pub fn wavefront_count(&self) -> usize {
+        self.len
+    }
+
+    /// Current allocated tensor capacity (rows).
+    pub fn capacity(&self) -> usize {
         self.wavefronts.nrows()
+    }
+
+    /// Shrink tensors to exactly fit active wavefronts.
+    /// Called before persistence to avoid writing unused capacity rows.
+    pub fn compact(&mut self) {
+        use ndarray::s;
+        if self.len < self.wavefronts.nrows() {
+            self.wavefronts = self.wavefronts.slice(s![..self.len, ..]).to_owned();
+            self.energy = self.energy.slice(s![..self.len]).to_owned();
+            self.frequency = self.frequency.slice(s![..self.len]).to_owned();
+            self.phase = self.phase.slice(s![..self.len]).to_owned();
+        }
     }
 
     /// Get the index of a wavefront by its ID (for migration purposes).
