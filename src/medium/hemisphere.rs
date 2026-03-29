@@ -65,6 +65,25 @@ impl Hemisphere {
         if self.count() == 0 { 0.0 } else { self.total_energy() / self.count() as f32 }
     }
 
+    /// Mean wavefront vector (centroid) across all wavefronts.
+    /// Returns None if hemisphere is empty.
+    /// ADR-0024 CS-4: used for hemispheric divergence (Δ) computation.
+    pub fn mean_wavefront(&self) -> Option<Vec<f32>> {
+        let n = self.count();
+        if n == 0 { return None; }
+        let dim = self.wavefronts.ncols();
+        let mut mean = vec![0.0f32; dim];
+        for i in 0..n {
+            for j in 0..dim {
+                mean[j] += self.wavefronts[[i, j]];
+            }
+        }
+        for v in mean.iter_mut() {
+            *v /= n as f32;
+        }
+        Some(mean)
+    }
+
     /// Add a wavefront to this hemisphere.
     pub fn add_wavefront(
         &mut self,

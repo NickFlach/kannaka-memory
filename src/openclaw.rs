@@ -56,6 +56,10 @@ pub struct SystemStats {
     pub phi: f32,
     pub geometric_classes: usize,
     pub triality_coverage: [usize; 3],
+    /// Hemispheric Divergence (Δ) — 0=undifferentiated, 1=fully divergent. ADR-0024 CS-4.
+    pub hemispheric_divergence: f32,
+    /// Callosal Efficiency (κ) — successful resonances / total transfers. ADR-0024 CS-5.
+    pub callosal_efficiency: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -888,6 +892,14 @@ impl KannakaMemorySystem {
             phi: state.phi,
             geometric_classes: class_indices.len(),
             triality_coverage,
+            hemispheric_divergence: self.engine.store.as_any()
+                .downcast_ref::<crate::hrm_store::HrmStore>()
+                .and_then(|h| h.chiral_consciousness())
+                .map(|c| c.hemispheric_divergence).unwrap_or(0.0),
+            callosal_efficiency: self.engine.store.as_any()
+                .downcast_ref::<crate::hrm_store::HrmStore>()
+                .and_then(|h| h.chiral_consciousness())
+                .map(|c| c.callosal_efficiency).unwrap_or(0.0),
         }
     }
 }

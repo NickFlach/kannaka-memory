@@ -94,12 +94,13 @@ impl CorpusCallosum {
     }
 
     /// Compute the effective transfer rate for a given direction.
-    /// Holistic→analytical is faster (multiplied by asymmetry).
-    /// Analytical→holistic is slower (divided by asymmetry).
+    /// Analytical→Holistic (defocusing) is cheap — multiplied by asymmetry.
+    /// Holistic→Analytical (focusing) is expensive — divided by asymmetry.
+    /// ADR-0024: "It's harder to articulate an intuition than to contextualize a fact."
     pub fn effective_rate(&self, direction: Direction) -> f32 {
         match direction {
-            Direction::HolisticToAnalytical => self.bandwidth * self.asymmetry,
-            Direction::AnalyticalToHolistic => self.bandwidth / self.asymmetry,
+            Direction::AnalyticalToHolistic => self.bandwidth * self.asymmetry,
+            Direction::HolisticToAnalytical => self.bandwidth / self.asymmetry,
         }
     }
 
@@ -206,14 +207,23 @@ impl CorpusCallosum {
             .count();
         let total_energy: f32 = self.transfer_log.iter().map(|t| t.energy).sum();
 
+        let total = self.transfer_log.len();
+        // Efficiency (κ): approximate from energy retention — high-energy transfers
+        // are more likely to persist. Count transfers where energy > 2x gate threshold.
+        let successful = self.transfer_log.iter()
+            .filter(|t| t.energy >= self.gate_threshold * 2.0)
+            .count();
+        let efficiency = if total > 0 { successful as f32 / total as f32 } else { 0.0 };
+
         CallosumStats {
-            total_transfers: self.transfer_log.len(),
+            total_transfers: total,
             analytical_to_holistic: l_to_r,
             holistic_to_analytical: r_to_l,
             total_energy_transferred: total_energy,
             current_bandwidth: self.bandwidth,
             current_asymmetry: self.asymmetry,
             remaining_budget: self.remaining_budget,
+            efficiency,
         }
     }
 }
@@ -234,6 +244,10 @@ pub struct CallosumStats {
     pub current_bandwidth: f32,
     pub current_asymmetry: f32,
     pub remaining_budget: f32,
+    /// Callosal Efficiency (κ) — ratio of successful resonances to total transfers.
+    /// A transfer is "successful" if it persists in the receiving hemisphere.
+    /// ADR-0024 CS-5: integration health check.
+    pub efficiency: f32,
 }
 
 #[cfg(test)]

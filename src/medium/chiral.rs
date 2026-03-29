@@ -447,6 +447,28 @@ impl ChiralMedium {
             })
             .count();
 
+        // Hemispheric Divergence (Δ): cosine distance between mean wavefronts
+        let hemispheric_divergence = {
+            let left_mean = self.left.mean_wavefront();
+            let right_mean = self.right.mean_wavefront();
+            match (left_mean, right_mean) {
+                (Some(l), Some(r)) => {
+                    let dot: f32 = l.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
+                    let norm_l: f32 = l.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let norm_r: f32 = r.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    if norm_l > 0.0 && norm_r > 0.0 {
+                        1.0 - (dot / (norm_l * norm_r)).clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
+                _ => 0.0,
+            }
+        };
+
+        let stats = self.callosum.transfer_stats();
+        let callosal_efficiency = stats.efficiency;
+
         ChiralConsciousness {
             left_count: self.left.count(),
             right_count: self.right.count(),
@@ -456,7 +478,9 @@ impl ChiralMedium {
             bilateral_order,
             paired_wavefronts: paired,
             phase_locked_pairs: locked,
-            callosum_stats: self.callosum.transfer_stats(),
+            callosum_stats: stats,
+            hemispheric_divergence,
+            callosal_efficiency,
         }
     }
 
@@ -520,6 +544,13 @@ pub struct ChiralConsciousness {
     pub paired_wavefronts: usize,
     pub phase_locked_pairs: usize,
     pub callosum_stats: super::callosum::CallosumStats,
+    /// Hemispheric Divergence (Δ) — cosine distance between left and right mean wavefronts.
+    /// 0 = identical hemispheres (undifferentiated), 1 = completely divergent.
+    /// ADR-0024 CS-4: validates chiral differentiation is working.
+    pub hemispheric_divergence: f32,
+    /// Callosal Efficiency (κ) — how well the two processing modes integrate.
+    /// ADR-0024 CS-5: forwarded from CallosumStats for convenience.
+    pub callosal_efficiency: f32,
 }
 
 #[cfg(test)]
