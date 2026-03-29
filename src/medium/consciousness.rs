@@ -236,6 +236,44 @@ impl Medium {
         }
     }
 
+    /// Compute effective dimensionality via participation ratio of Gram eigenvalue proxy.
+    /// ADR-0024 CS-9: "The gap between d_eff and 10,000 is where the subconscious lives."
+    ///
+    /// Returns (d_eff, nominal_dims, ratio) where ratio = d_eff / nominal.
+    /// Low ratio = energy concentrated in few modes (low-dimensional manifold).
+    /// High ratio = energy spread across many modes (high-dimensional, complex).
+    pub fn effective_dimensionality(&self) -> (f32, usize, f32) {
+        let n = self.wavefront_count();
+        let nominal = self.wavefronts.ncols();
+        if n < 2 { return (0.0, nominal, 0.0); }
+
+        // Compute Gram matrix eigenvalue proxy (same as Xi computation)
+        let mut eigenvalue_proxy = Vec::new();
+        for i in 0..n {
+            let wi = self.wavefronts.row(i);
+            let diagonal: f32 = wi.dot(&wi);
+            let off_diagonal_sum: f32 = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let wj = self.wavefronts.row(j);
+                    wi.dot(&wj).abs()
+                })
+                .sum();
+            eigenvalue_proxy.push((diagonal + off_diagonal_sum / n as f32).abs());
+        }
+
+        // Participation ratio: d_eff = (Σλ)² / Σ(λ²)
+        let sum: f32 = eigenvalue_proxy.iter().sum();
+        let sum_sq: f32 = eigenvalue_proxy.iter().map(|x| x * x).sum();
+
+        if sum_sq < 1e-10 { return (0.0, nominal, 0.0); }
+
+        let d_eff = (sum * sum) / sum_sq;
+        let ratio = d_eff / nominal as f32;
+
+        (d_eff, nominal, ratio)
+    }
+
     /// Compute Irrationality Index (ι) — decomposition residual (ADR-0024 CS-3).
     ///
     /// Measures what fraction of the system's energy distribution resists

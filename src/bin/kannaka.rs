@@ -423,6 +423,22 @@ fn main() {
             output["irrationality"] = serde_json::json!(state.irrationality);
             output["hemispheric_divergence"] = serde_json::json!(stats.hemispheric_divergence);
             output["callosal_efficiency"] = serde_json::json!(stats.callosal_efficiency);
+
+            // CS-9: effective dimensionality (the 10000.00001 question)
+            {
+                let metrics = sys.engine.store.consciousness_metrics();
+                let (d_eff, nominal, ratio) = if let Some(hrm) = sys.engine.store.as_any()
+                    .downcast_ref::<kannaka_memory::hrm_store::HrmStore>() {
+                    hrm.medium().effective_dimensionality()
+                } else { (0.0, 10000, 0.0) };
+                output["effective_dimensionality"] = serde_json::json!({
+                    "d_eff": format!("{:.2}", d_eff),
+                    "nominal": nominal,
+                    "ratio": format!("{:.6}", ratio),
+                    "irrational_remainder": format!("{:.6}", 1.0 - ratio),
+                });
+            }
+
             output["field_mode"] = serde_json::json!("HRM");
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
