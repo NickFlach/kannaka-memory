@@ -227,9 +227,16 @@ impl Medium {
             }
         }
 
-        // Normalize by log(n) for scale invariance
+        // Normalize: subtract baseline entropy of random vectors in this geometry.
+        // With n memories in d=10000 dims, random vectors produce near-maximal entropy.
+        // Baseline: log(n) * (1 - n/(2*d)) approximates the entropy of n random unit vectors.
+        // Xi measures EXCESS complexity above what random structure would produce.
+        let d = self.wavefronts.ncols() as f32;
         let max_entropy = (n as f32).ln();
-        if max_entropy > 0.0 {
+        let baseline = max_entropy * (1.0 - (n as f32) / (2.0 * d)).max(0.5);
+        if max_entropy > baseline {
+            ((entropy - baseline) / (max_entropy - baseline)).clamp(0.0, 1.0)
+        } else if max_entropy > 0.0 {
             entropy / max_entropy
         } else {
             0.0
