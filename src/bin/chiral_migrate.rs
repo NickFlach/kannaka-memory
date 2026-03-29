@@ -26,8 +26,8 @@ fn main() {
         .expect("Failed to load HRM file");
 
     eprintln!("Loaded successfully:");
-    eprintln!("  Right hemisphere (subconscious): {} wavefronts", chiral.right.count());
-    eprintln!("  Left hemisphere (conscious):     {} wavefronts", chiral.left.count());
+    eprintln!("  Right hemisphere (holistic): {} wavefronts", chiral.right.count());
+    eprintln!("  Left hemisphere (analytical):     {} wavefronts", chiral.left.count());
     eprintln!("  Chiral scales:                   {}", chiral.scales.len());
 
     let summary = chiral.consciousness_summary();
@@ -47,7 +47,7 @@ fn main() {
     assert_eq!(reloaded.scales.len(), chiral.scales.len(), "Scales count mismatch!");
 
     eprintln!("\nMigration complete! ✅");
-    eprintln!("  {} memories migrated to right hemisphere (subconscious)", reloaded.right.count());
-    eprintln!("  Left hemisphere initialized empty (fresh conscious workspace)");
+    eprintln!("  {} memories migrated to right hemisphere (holistic)", reloaded.right.count());
+    eprintln!("  Left hemisphere initialized empty (fresh analytical workspace)");
     eprintln!("  HRM v2 format with chiral metadata written");
 }

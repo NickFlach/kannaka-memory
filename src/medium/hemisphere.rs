@@ -1,8 +1,8 @@
-//! Hemisphere — a handed partition of the holographic medium.
+//! Hemisphere - a handed partition of the holographic medium.
 //!
 //! Each hemisphere is essentially a Medium with awareness of its handedness.
-//! Left (conscious): dx/dt = f(x) — pure growth, no dampening
-//! Right (subconscious): dx/dt = f(x) - Iηx — full ghostmagicOS dynamics
+//! Left (analytical): dx/dt = f(x) - pure growth, no dampening
+//! Right (holistic): dx/dt = f(x) - Iηx - full ghostmagicOS dynamics
 
 use std::collections::HashMap;
 
@@ -209,8 +209,8 @@ impl Hemisphere {
 
     /// Apply dynamics appropriate to this hemisphere's handedness.
     ///
-    /// Left (conscious):     dx/dt = f(x) — no dampening, attention stays sharp
-    /// Right (subconscious): dx/dt = f(x) - Iηx — full ghostmagicOS dynamics
+    /// Left (analytical):     dx/dt = f(x) - no dampening, attention stays sharp
+    /// Right (holistic): dx/dt = f(x) - Iηx - full ghostmagicOS dynamics
     pub fn apply_dynamics(&mut self, dt: f32) {
         if self.count() < 2 { return; }
 
@@ -234,7 +234,7 @@ impl Hemisphere {
         }
 
         let eta = match self.hand {
-            Hand::Left => 0.0,    // NO dampening — conscious workspace stays sharp
+            Hand::Left => 0.0,    // NO dampening - analytical workspace stays sharp
             Hand::Right => 0.02,  // Full ghostmagicOS dampening
         };
 
@@ -377,13 +377,13 @@ mod tests {
     #[test]
     fn hemisphere_adapts_dimensions() {
         let mut h = Hemisphere::new(Hand::Left, 50);
-        // Vector larger than hemisphere dims — should truncate
+        // Vector larger than hemisphere dims - should truncate
         let v: Vec<f32> = vec![1.0; 100];
         let id = h.add_wavefront(&v, "big".into(), 0.5).unwrap();
         let stored = h.get_wavefront(&id).unwrap();
         assert_eq!(stored.len(), 50);
 
-        // Vector smaller than hemisphere dims — should zero-pad
+        // Vector smaller than hemisphere dims - should zero-pad
         let mut h2 = Hemisphere::new(Hand::Right, 100);
         let v_small: Vec<f32> = vec![1.0; 30];
         let id2 = h2.add_wavefront(&v_small, "small".into(), 0.5).unwrap();

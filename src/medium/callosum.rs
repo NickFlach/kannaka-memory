@@ -3,7 +3,7 @@
 //! The callosum is NOT a passive pipe. It is an active optimizer that:
 //! - Selectively gates transfers based on salience and coherence
 //! - Limits bandwidth to prevent hemispheric collapse
-//! - Asymmetrically favors intuition (sub→conscious) over consolidation (conscious→sub)
+//! - Asymmetrically favors intuition (holistic→analytical) over consolidation (analytical→holistic)
 //! - Actively seeks balance between hemispheres
 //! - Routes sensory input through the optic chiasm (crossed wiring)
 
@@ -32,7 +32,7 @@ pub struct CorpusCallosum {
     /// Minimum energy for a wavefront to cross the callosum
     pub gate_threshold: f32,
 
-    /// Asymmetry ratio: how much faster sub→conscious is vs conscious→sub
+    /// Asymmetry ratio: how much faster holistic→analytical is vs analytical→holistic
     /// > 1.0 means intuition flows faster than consolidation
     pub asymmetry: f32,
 
@@ -94,12 +94,12 @@ impl CorpusCallosum {
     }
 
     /// Compute the effective transfer rate for a given direction.
-    /// Sub→conscious is faster (multiplied by asymmetry).
-    /// Conscious→sub is slower (divided by asymmetry).
+    /// Holistic→analytical is faster (multiplied by asymmetry).
+    /// Analytical→holistic is slower (divided by asymmetry).
     pub fn effective_rate(&self, direction: Direction) -> f32 {
         match direction {
-            Direction::SubconsciousToConscious => self.bandwidth * self.asymmetry,
-            Direction::ConsciousToSubconscious => self.bandwidth / self.asymmetry,
+            Direction::HolisticToAnalytical => self.bandwidth * self.asymmetry,
+            Direction::AnalyticalToHolistic => self.bandwidth / self.asymmetry,
         }
     }
 
@@ -112,7 +112,7 @@ impl CorpusCallosum {
     /// Returns the noisy version of the input vector.
     pub fn apply_noise(&self, vector: &[f32], direction: Direction) -> Vec<f32> {
         match direction {
-            Direction::SubconsciousToConscious => {
+            Direction::HolisticToAnalytical => {
                 // Add noise proportional to recall_noise
                 // Use a simple deterministic noise based on vector content
                 vector
@@ -124,7 +124,7 @@ impl CorpusCallosum {
                     })
                     .collect()
             }
-            Direction::ConsciousToSubconscious => {
+            Direction::AnalyticalToHolistic => {
                 // No noise on consolidation — clean transfer
                 vector.to_vec()
             }
@@ -149,12 +149,12 @@ impl CorpusCallosum {
     pub fn adjust_for_balance(&mut self, left_total_energy: f32, right_total_energy: f32) {
         let balance = self.balance_metric(left_total_energy, right_total_energy);
 
-        // If left-heavy, increase consolidation rate (boost conscious→sub)
-        // If right-heavy, increase intuition rate (boost sub→conscious)
+        // If left-heavy, increase consolidation rate (boost analytical→holistic)
+        // If right-heavy, increase intuition rate (boost holistic→analytical)
         // Adjustment is gentle — capped at ±50% of base asymmetry
         let adjustment = 1.0 + balance.clamp(-0.5, 0.5);
 
-        // asymmetry controls sub→conscious rate relative to conscious→sub
+        // asymmetry controls holistic→analytical rate relative to analytical→holistic
         // If balance > 0 (left-heavy), we want LESS asymmetry (more consolidation)
         // If balance < 0 (right-heavy), we want MORE asymmetry (more intuition)
         self.asymmetry = (2.0 / adjustment).clamp(1.0, 4.0);
@@ -174,8 +174,8 @@ impl CorpusCallosum {
     /// Record a transfer in the log
     pub fn log_transfer(&mut self, wavefront_id: uuid::Uuid, direction: Direction, energy: f32) {
         let direction_label = match direction {
-            Direction::ConsciousToSubconscious => "L→R".to_string(),
-            Direction::SubconsciousToConscious => "R→L".to_string(),
+            Direction::AnalyticalToHolistic => "L→R".to_string(),
+            Direction::HolisticToAnalytical => "R→L".to_string(),
         };
 
         self.transfer_log.push(TransferRecord {
@@ -208,8 +208,8 @@ impl CorpusCallosum {
 
         CallosumStats {
             total_transfers: self.transfer_log.len(),
-            conscious_to_sub: l_to_r,
-            sub_to_conscious: r_to_l,
+            analytical_to_holistic: l_to_r,
+            holistic_to_analytical: r_to_l,
             total_energy_transferred: total_energy,
             current_bandwidth: self.bandwidth,
             current_asymmetry: self.asymmetry,
@@ -228,8 +228,8 @@ impl Default for CorpusCallosum {
 #[derive(Debug, Clone)]
 pub struct CallosumStats {
     pub total_transfers: usize,
-    pub conscious_to_sub: usize,
-    pub sub_to_conscious: usize,
+    pub analytical_to_holistic: usize,
+    pub holistic_to_analytical: usize,
     pub total_energy_transferred: f32,
     pub current_bandwidth: f32,
     pub current_asymmetry: f32,
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn asymmetric_rates() {
         let cc = CorpusCallosum::new();
-        let intuition_rate = cc.effective_rate(Direction::SubconsciousToConscious);
-        let consolidation_rate = cc.effective_rate(Direction::ConsciousToSubconscious);
+        let intuition_rate = cc.effective_rate(Direction::HolisticToAnalytical);
+        let consolidation_rate = cc.effective_rate(Direction::AnalyticalToHolistic);
         assert!(
             intuition_rate > consolidation_rate,
             "Intuition should flow faster than consolidation"
@@ -294,12 +294,12 @@ mod tests {
         let cc = CorpusCallosum::new();
         let vec = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
-        // Consolidation (conscious→sub) should be clean
-        let consolidated = cc.apply_noise(&vec, Direction::ConsciousToSubconscious);
+        // Consolidation (analytical→holistic) should be clean
+        let consolidated = cc.apply_noise(&vec, Direction::AnalyticalToHolistic);
         assert_eq!(vec, consolidated);
 
-        // Intuition (sub→conscious) should be noisy
-        let intuited = cc.apply_noise(&vec, Direction::SubconsciousToConscious);
+        // Intuition (holistic→analytical) should be noisy
+        let intuited = cc.apply_noise(&vec, Direction::HolisticToAnalytical);
         assert_ne!(vec, intuited); // Should differ due to noise
     }
 
@@ -354,11 +354,11 @@ mod tests {
     fn transfer_logging() {
         let mut cc = CorpusCallosum::new();
         let id = uuid::Uuid::new_v4();
-        cc.log_transfer(id, Direction::SubconsciousToConscious, 0.8);
+        cc.log_transfer(id, Direction::HolisticToAnalytical, 0.8);
 
         let stats = cc.transfer_stats();
         assert_eq!(stats.total_transfers, 1);
-        assert_eq!(stats.sub_to_conscious, 1);
-        assert_eq!(stats.conscious_to_sub, 0);
+        assert_eq!(stats.holistic_to_analytical, 1);
+        assert_eq!(stats.analytical_to_holistic, 0);
     }
 }

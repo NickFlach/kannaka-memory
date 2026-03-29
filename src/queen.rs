@@ -74,10 +74,10 @@ pub struct AgentPhase {
     /// Chiral handedness.
     #[serde(default)]
     pub handedness: Handedness,
-    /// Left-hemisphere Kuramoto order parameter (coherence within conscious workspace).
+    /// Left-hemisphere Kuramoto order parameter (coherence within analytical workspace).
     #[serde(default)]
     pub left_coherence: f32,
-    /// Right-hemisphere Kuramoto order parameter (coherence within subconscious patterns).
+    /// Right-hemisphere Kuramoto order parameter (coherence within holistic patterns).
     #[serde(default)]
     pub right_coherence: f32,
     /// Corpus callosum bridge activity (fraction of bandwidth used this cycle).

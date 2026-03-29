@@ -1,7 +1,7 @@
 //! Fano Plane Algebra — PG(2,2) fold operations for chiral mirror architecture.
 //!
 //! The Fano plane provides the folding grammar for projecting dimension groups
-//! between the conscious (left) and subconscious (right) hemispheres.
+//! between the analytical (left) and holistic (right) hemispheres.
 //! 
 //! Key properties:
 //! - 7 points, 7 lines

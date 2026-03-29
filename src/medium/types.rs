@@ -557,15 +557,15 @@ pub(crate) fn generate_insight(
 /// Which hemisphere a wavefront lives in
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hand {
-    Left,  // Conscious — attention, working memory
-    Right, // Subconscious — pattern storage, deep association
+    Left,  // Analytical — attention, working memory
+    Right, // Holistic — pattern storage, deep association
 }
 
 /// Direction of callosal transfer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    ConsciousToSubconscious, // Left → Right (consolidation, slow)
-    SubconsciousToConscious, // Right → Left (intuition/recall, fast but noisy)
+    AnalyticalToHolistic, // Left → Right (consolidation, slow)
+    HolisticToAnalytical, // Right → Left (intuition/recall, fast but noisy)
 }
 
 /// Dimensions per Fano group — from Archimedes' 96-gon (π approximation)
@@ -604,9 +604,9 @@ pub(crate) const HRM_VERSION_CHIRAL: u32 = 2;
 pub struct ChiralScale {
     /// Number of magnitude positions (bilateral — always equal on both sides)
     pub positions: u8,
-    /// Left-hand (conscious) weight — grows independently
+    /// Left-hand (analytical) weight — grows independently
     pub left_weight: f32,
-    /// Right-hand (subconscious) weight — grows independently
+    /// Right-hand (holistic) weight — grows independently
     pub right_weight: f32,
 }
 
@@ -616,7 +616,7 @@ impl ChiralScale {
         Self { positions, left_weight, right_weight }
     }
 
-    /// Default scale for a new perception (conscious-dominant)
+    /// Default scale for a new perception (analytical-dominant)
     pub fn perception(importance: f32) -> Self {
         Self {
             positions: 2,
@@ -625,7 +625,7 @@ impl ChiralScale {
         }
     }
 
-    /// Scale for deep memory (subconscious-dominant)
+    /// Scale for deep memory (holistic-dominant)
     pub fn deep_memory() -> Self {
         Self {
             positions: 1,
@@ -646,14 +646,14 @@ impl ChiralScale {
         }
     }
 
-    /// Number of dimensions allocated to the left (conscious) hemisphere
+    /// Number of dimensions allocated to the left (analytical) hemisphere
     pub fn left_dims(&self) -> usize {
         let base = BASE_DIMS_PER_POSITION as f32;
         let scale = 10f32.powi(self.positions as i32 - 1);
         ((self.left_weight / scale) * base).max(DIMS_PER_FANO_GROUP as f32) as usize
     }
 
-    /// Number of dimensions allocated to the right (subconscious) hemisphere
+    /// Number of dimensions allocated to the right (holistic) hemisphere
     pub fn right_dims(&self) -> usize {
         let base = BASE_DIMS_PER_POSITION as f32;
         let scale = 10f32.powi(self.positions as i32 - 1);
@@ -665,7 +665,7 @@ impl ChiralScale {
         self.left_dims() + self.right_dims()
     }
 
-    /// Asymmetry ratio: > 1.0 means conscious-dominant, < 1.0 means subconscious-dominant
+    /// Asymmetry ratio: > 1.0 means analytical-dominant, < 1.0 means holistic-dominant
     pub fn asymmetry(&self) -> f32 {
         if self.right_weight > 0.0 {
             self.left_weight / self.right_weight
@@ -709,14 +709,14 @@ mod chiral_tests {
         assert_eq!(s.positions, 2);
         assert!((s.left_weight - 8.0).abs() < 0.01);
         assert!((s.right_weight - 1.0).abs() < 0.01);
-        assert!(s.asymmetry() > 1.0); // conscious-dominant
+        assert!(s.asymmetry() > 1.0); // analytical-dominant
     }
 
     #[test]
     fn chiral_scale_deep_memory() {
         let s = ChiralScale::deep_memory();
         assert_eq!(s.positions, 1);
-        assert!(s.asymmetry() < 1.0); // subconscious-dominant
+        assert!(s.asymmetry() < 1.0); // holistic-dominant
     }
 
     #[test]
