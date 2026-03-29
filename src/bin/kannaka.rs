@@ -419,7 +419,8 @@ fn main() {
                 "modality_distribution": modality_json,
             });
 
-            // ADR-0024 chiral metrics
+            // ADR-0024 chiral + consciousness metrics
+            output["irrationality"] = serde_json::json!(state.irrationality);
             output["hemispheric_divergence"] = serde_json::json!(stats.hemispheric_divergence);
             output["callosal_efficiency"] = serde_json::json!(stats.callosal_efficiency);
             output["field_mode"] = serde_json::json!("HRM");

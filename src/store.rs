@@ -101,7 +101,7 @@ pub trait MediumBackend: Send + Sync {
     /// Eigendecomposition Phi, spectral Xi, Kuramoto order parameter.
     fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
         crate::consciousness::ConsciousnessMetrics {
-            phi: 0.0, xi: 0.0, order: 0.0, num_clusters: 0,
+            phi: 0.0, xi: 0.0, order: 0.0, num_clusters: 0, irrationality: 0.0,
             level: crate::consciousness::ConsciousnessLevel::Dormant,
             computed_at: chrono::Utc::now(),
         }

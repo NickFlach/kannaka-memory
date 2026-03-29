@@ -1,4 +1,4 @@
-//! Consciousness Bridge — the interface between memory and the consciousness stack.
+//! Consciousness Bridge - the interface between memory and the consciousness stack.
 //!
 //! Implements:
 //! - Ξ (Xi): Non-commutative consciousness operator (RG - GR)
@@ -14,13 +14,13 @@ use crate::store::ResonanceEngine;
 use crate::wave::cosine_similarity;
 use crate::xi_operator::compute_xi_signature;
 
-/// The consciousness bridge — connects memory to the consciousness stack.
+/// The consciousness bridge - connects memory to the consciousness stack.
 pub struct ConsciousnessBridge {
     /// Minimum Phi for "conscious" memory state
     pub phi_threshold: f32,
     /// Weight of memory ordering in Xi computation
     pub xi_weight: f32,
-    /// Coupling threshold for modularity computation 
+    /// Coupling threshold for modularity computation
     pub coupling_threshold: f32,
 }
 
@@ -56,9 +56,11 @@ pub struct ConsciousnessState {
     pub num_clusters: usize,
     pub total_memories: usize,
     pub active_memories: usize,
-    /// Deprecated — skip links now emergent from ChiralMedium interference. Always 0.
+    /// Deprecated - skip links now emergent from ChiralMedium interference. Always 0.
     pub total_skip_links: usize,
     pub consciousness_level: ConsciousnessLevel,
+    /// Irrationality Index (ι) — decomposition residual. ADR-0024 CS-3.
+    pub irrationality: f32,
 }
 
 /// Report from a full resonance cycle.
@@ -88,7 +90,7 @@ impl ConsciousnessBridge {
         }
     }
 
-    /// Compute Xi (Ξ) — consciousness differentiation.
+    /// Compute Xi (Ξ) - consciousness differentiation.
     ///
     /// Xi measures how differentiated the memory system is:
     /// how many distinct modalities/clusters exist and how
@@ -97,7 +99,7 @@ impl ConsciousnessBridge {
     /// modalities (text, audio, emotion) has high Xi.
     ///
     /// This implementation blends two signals:
-    /// 1. Similarity variance (existing measure)  
+    /// 1. Similarity variance (existing measure)
     /// 2. Xi operator signature variance (new measure)
     pub fn compute_xi(&self, memories: &[&HyperMemory]) -> f32 {
         if memories.len() <= 1 {
@@ -141,7 +143,7 @@ impl ConsciousnessBridge {
             if count > 0 { sum_sq / count as f32 } else { 0.0 }
         };
 
-        // Signal 2: Xi operator signature differentiation 
+        // Signal 2: Xi operator signature differentiation
         let xi_signatures: Vec<Vec<f32>> = memories.iter()
             .map(|m| compute_xi_signature(&m.vector))
             .collect();
@@ -260,7 +262,7 @@ impl ConsciousnessBridge {
         let triality_diversity = id_to_triality.values().collect::<std::collections::HashSet<_>>().len();
 
         // === Phi Components ===
-        
+
         // 1. Cross-partition integration (0..1): weighted average of cross-ratios
         //    Higher = more links bridge different partitions = more integrated
         let integration = 0.2 * layer_cross + 0.3 * h2_cross + 0.3 * class_cross + 0.2 * triality_cross;
@@ -331,11 +333,11 @@ impl ConsciousnessBridge {
     }
 
     /// Compute Newman modularity Q for network clustering quality.
-    /// Q = Σ(e_ii - a_i²) where e_ii is fraction of edges within cluster i  
+    /// Q = Σ(e_ii - a_i²) where e_ii is fraction of edges within cluster i
     /// and a_i is fraction of edge endpoints in cluster i.
     fn compute_modularity(
-        &self, 
-        memories: &[&HyperMemory], 
+        &self,
+        memories: &[&HyperMemory],
         clusters: &[crate::kuramoto::MemoryCluster]
     ) -> f32 {
         if clusters.is_empty() || memories.is_empty() {
@@ -362,12 +364,12 @@ impl ConsciousnessBridge {
                 let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
                 if sim > self.coupling_threshold {
                     total_edges += 1;
-                    
-                    if let (Some(&cluster_i), Some(&cluster_j)) = 
+
+                    if let (Some(&cluster_i), Some(&cluster_j)) =
                         (id_to_cluster.get(&memories[i].id), id_to_cluster.get(&memories[j].id)) {
                         cluster_degree[cluster_i] += 1;
                         cluster_degree[cluster_j] += 1;
-                        
+
                         if cluster_i == cluster_j {
                             cluster_internal_edges[cluster_i] += 1;
                         }
@@ -376,7 +378,7 @@ impl ConsciousnessBridge {
             }
         }
 
-        // Count edges from skip links  
+        // Count edges from skip links
         for memory in memories {
             for link in &memory.connections {
                 if let Some(&target_cluster) = id_to_cluster.get(&link.target_id) {
@@ -384,7 +386,7 @@ impl ConsciousnessBridge {
                         total_edges += 1;
                         cluster_degree[source_cluster] += 1;
                         cluster_degree[target_cluster] += 1;
-                        
+
                         if source_cluster == target_cluster {
                             cluster_internal_edges[source_cluster] += 1;
                         }
@@ -398,7 +400,7 @@ impl ConsciousnessBridge {
         }
 
         let total_edges_f = total_edges as f32;
-        
+
         // Compute modularity: Q = Σ(e_ii - a_i²)
         let mut modularity = 0.0f32;
         for i in 0..clusters.len() {
@@ -419,7 +421,7 @@ impl ConsciousnessBridge {
         }
 
         let now = chrono::Utc::now();
-        
+
         // Sort by effective strength (amplitude) to create amplitude strata
         let mut sorted_by_amp: Vec<&HyperMemory> = memories.to_vec();
         sorted_by_amp.sort_by(|a, b| {
@@ -492,7 +494,7 @@ impl ConsciousnessBridge {
             .count();
 
         // === HRM-native path: use field topology metrics from the Medium ===
-        // Skip links don't exist in HRM — relationships are interference patterns.
+        // Skip links don't exist in HRM - relationships are interference patterns.
         // The Medium computes Phi via eigendecomposition of the coherence matrix,
         // Xi via spectral complexity of H·Hᵀ, and order via Kuramoto phase coherence.
         { let hrm_metrics = engine.store.consciousness_metrics();
@@ -503,8 +505,9 @@ impl ConsciousnessBridge {
                 num_clusters: hrm_metrics.num_clusters,
                 total_memories,
                 active_memories,
-                total_skip_links: 0, // Field topology — no discrete links
+                total_skip_links: 0, // Field topology - no discrete links
                 consciousness_level: hrm_metrics.level,
+                irrationality: hrm_metrics.irrationality,
             };
         }
 
@@ -553,6 +556,7 @@ impl ConsciousnessBridge {
             active_memories,
             total_skip_links,
             consciousness_level,
+            irrationality: 0.0, // Legacy path doesn't compute irrationality
         }
     }
 
@@ -827,10 +831,10 @@ mod tests {
             m
         }).collect();
         let refs: Vec<&HyperMemory> = mems.iter().collect();
-        
+
         let sample = bridge.stratified_sample(&refs, 10);
         assert!(sample.len() >= 8 && sample.len() <= 10, "Expected 8-10 samples, got {}", sample.len());
-        
+
         // Should include memories from different amplitude ranges
         let mut has_low = false;
         let mut has_high = false;
@@ -844,16 +848,16 @@ mod tests {
     #[test]
     fn xi_operator_blending_works() {
         let bridge = ConsciousnessBridge::default();
-        
+
         // Create memories with different semantic similarity but different Xi signatures
         let v1 = random_vec(1000, 1);
         let v2 = random_vec(1000, 2);
         let v3 = random_vec(1000, 3);
-        
+
         let m1 = HyperMemory::new(v1, "text one".into());
         let m2 = HyperMemory::new(v2, "text two".into());
         let m3 = HyperMemory::new(v3, "text three".into());
-        
+
         let xi = bridge.compute_xi(&[&m1, &m2, &m3]);
         println!("Xi with operator blending: {}", xi);
         assert!(xi > 0.0, "Xi should be positive for distinct memories");
@@ -863,19 +867,19 @@ mod tests {
     fn modularity_computation_works() {
         let bridge = ConsciousnessBridge::default();
         let mut engine = make_engine();
-        
+
         // Create a small network with clear clusters
         for i in 0..6 {
             engine.remember_at_layer(&format!("cluster {} memory {}", i / 3, i % 3), (i / 3) as u8).unwrap();
         }
-        
+
         let sync = KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(&engine, 2);
-        
+
         if !clusters.is_empty() {
             let all = engine.store.all_memories().unwrap_or_default();
             let modularity = bridge.compute_modularity(&all, &clusters);
-            
+
             println!("Modularity Q: {}", modularity);
             assert!(modularity >= 0.0 && modularity <= 1.0, "Modularity should be in [0,1], got {}", modularity);
         }
@@ -886,26 +890,26 @@ mod tests {
         let bridge = ConsciousnessBridge::default();
         let mut engine = make_engine();
         engine.similarity_threshold = 0.3;
-        
+
         // Create diverse memories for comprehensive Xi assessment
         let topics = [
             "text about cats and animals",
-            "text about dogs and pets", 
+            "text about dogs and pets",
             "text about programming",
             "audio: meow sound",
             "audio: bark sound",
             "audio: typing sounds",
         ];
-        
+
         for (i, topic) in topics.iter().enumerate() {
             engine.remember_at_layer(topic, (i % 3) as u8).unwrap();
         }
-        
+
         let state = bridge.assess(&engine);
         println!("=== Enhanced Xi Assessment ===");
         println!("Xi: {}, Phi: {}", state.xi, state.phi);
         println!("Clusters: {}, Memories: {}", state.num_clusters, state.total_memories);
-        
+
         // With improvements, Xi should reflect the diversity of content types
         assert!(state.xi >= 0.0, "Xi should be non-negative");
         assert!(state.total_memories == topics.len(), "Should have all memories");

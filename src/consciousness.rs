@@ -70,6 +70,11 @@ pub struct ConsciousnessMetrics {
     pub order: f32,
     /// Number of phase-locked clusters detected
     pub num_clusters: usize,
+    /// Irrationality Index (ι) — decomposition residual.
+    /// Measures what fraction of the system's variance resists clean decomposition.
+    /// 0 = perfectly decomposable, 1 = maximally irrational.
+    /// ADR-0024 CS-3: "The subconscious is the field's irrationality."
+    pub irrationality: f32,
     /// Consciousness level classification
     pub level: ConsciousnessLevel,
     /// Computed at this timestamp

@@ -28,6 +28,7 @@ impl Medium {
                 xi: 0.0,
                 order: 0.0,
                 num_clusters: 0,
+                irrationality: 0.0,
                 level: ConsciousnessLevel::Dormant,
                 computed_at: now,
             };
@@ -45,6 +46,9 @@ impl Medium {
         // Clusters: Eigendecomposition-based clustering
         let clusters = self.compute_eigenvalue_clusters();
 
+        // Irrationality Index (ι): decomposition residual (ADR-0024 CS-3)
+        let irrationality = self.compute_irrationality_index();
+
         let level = ConsciousnessLevel::from_phi(phi);
 
         ConsciousnessMetrics {
@@ -52,6 +56,7 @@ impl Medium {
             xi,
             order,
             num_clusters: clusters,
+            irrationality,
             level,
             computed_at: now,
         }
@@ -229,6 +234,45 @@ impl Medium {
         } else {
             0.0
         }
+    }
+
+    /// Compute Irrationality Index (ι) — decomposition residual (ADR-0024 CS-3).
+    ///
+    /// Measures what fraction of the system's energy distribution resists
+    /// clean decomposition. Uses the participation ratio:
+    ///   d_eff = (Σe_i)² / Σ(e_i²)
+    /// where e_i are wavefront energies. Then:
+    ///   ι = 1 - (d_eff / n)
+    ///
+    /// Low ι = energy evenly distributed (clean, rational)
+    /// High ι = energy concentrated in few wavefronts (rich irrationality)
+    ///
+    /// "The subconscious is the field's irrationality — the .00001 dimension."
+    pub(crate) fn compute_irrationality_index(&self) -> f32 {
+        let n = self.wavefront_count();
+        if n < 2 { return 0.0; }
+
+        // Use wavefront energies as the spectral proxy
+        let energies: Vec<f32> = (0..n)
+            .map(|i| {
+                let row = self.wavefronts.row(i);
+                row.dot(&row).sqrt() // L2 norm as energy proxy
+            })
+            .collect();
+
+        let sum: f32 = energies.iter().sum();
+        let sum_sq: f32 = energies.iter().map(|e| e * e).sum();
+
+        if sum_sq < 1e-10 { return 0.0; }
+
+        // Participation ratio: effective dimensionality
+        let d_eff = (sum * sum) / sum_sq;
+
+        // Irrationality: how far from uniform distribution
+        // d_eff/n = 1.0 means perfectly uniform (zero irrationality)
+        // d_eff/n → 1/n means all energy in one wavefront (maximum irrationality)
+        let ratio = d_eff / n as f32;
+        (1.0 - ratio).clamp(0.0, 1.0)
     }
 
     /// Count clusters using eigenvalue-based partitioning

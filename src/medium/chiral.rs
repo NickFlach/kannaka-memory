@@ -308,20 +308,30 @@ impl ChiralMedium {
         results
     }
 
-    /// Dream: anneal the RIGHT hemisphere only.
+    /// Dream: mode-specific hemispheric refinement (ADR-0024 CS-7).
     ///
-    /// Deep dreams operate exclusively on the holistic hemisphere.
-    /// The analytical workspace (left) is untouched.
-    /// Lite dreams do a light consolidation transfer via callosum.
+    /// Deep dreams refine the holistic hemisphere (right):
+    ///   - Lower dt (0.3) preserves broad patterns, subtle field adjustments
+    ///   - Lower prune threshold (0.005) — holistic keeps quiet signals alive
+    ///   - The analytical workspace (left) is untouched
+    ///
+    /// Lite dreams refine the analytical hemisphere (left):
+    ///   - Transfers strongest analytical patterns to holistic via callosum
+    ///   - Sharpens analytical boundaries (pruning low-energy left wavefronts)
+    ///   - Higher prune threshold (0.05) — analytical is aggressive about precision
     pub fn dream(&mut self, deep: bool, cycles: usize) {
         if deep {
-            // Deep dream: anneal right hemisphere
-            for _ in 0..cycles {
-                self.right.apply_dynamics(0.5); // Higher dt for dream intensity
+            // Deep dream: gentle annealing of holistic hemisphere
+            // Lower dt than before (was 0.5) — preserve broad patterns
+            let holistic_dt = 0.3;
+            let holistic_prune_threshold = 0.005;
 
-                // Prune wavefronts below energy threshold
+            for _ in 0..cycles {
+                self.right.apply_dynamics(holistic_dt);
+
+                // Prune only very weak wavefronts — holistic keeps quiet signals
                 let to_prune: Vec<Uuid> = (0..self.right.count())
-                    .filter(|&i| self.right.energy[i] < 0.01)
+                    .filter(|&i| self.right.energy[i] < holistic_prune_threshold)
                     .map(|i| self.right.metadata[i].id)
                     .collect();
 
@@ -334,7 +344,7 @@ impl ChiralMedium {
                 }
             }
 
-            // Left hemisphere is UNTOUCHED
+            // Left hemisphere is UNTOUCHED — deep dreams are holistic refinement
         } else {
             // Lite dream: transfer strongest analytical → holistic
             self.callosum.reset_budget();
@@ -373,6 +383,22 @@ impl ChiralMedium {
 
                 spent += energy;
                 self.callosum.log_transfer(left_id, Direction::AnalyticalToHolistic, energy);
+            }
+
+            // CS-7: Analytical sharpening — prune weak left-hemisphere wavefronts
+            // Higher threshold than holistic: analytical mode is aggressive about precision
+            let analytical_prune_threshold = 0.05;
+            let to_prune_left: Vec<Uuid> = (0..self.left.count())
+                .filter(|&i| self.left.energy[i] < analytical_prune_threshold)
+                .map(|i| self.left.metadata[i].id)
+                .collect();
+
+            for id in &to_prune_left {
+                self.left.remove_wavefront(id);
+                self.scales.remove(id);
+                if let Some(right_id) = self.left_to_right.remove(id) {
+                    self.right_to_left.remove(&right_id);
+                }
             }
         }
 
