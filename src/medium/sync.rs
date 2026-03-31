@@ -28,13 +28,13 @@ impl Medium {
         let threshold = 0.5; // Minimum dot product for phase coherence
 
         for i in 0..self.wavefront_count() {
-            let self_wavefront = self.wavefronts.row(i);
+            let self_wavefront = self.store.wavefronts.row(i);
             let mut best_match_idx = None;
             let mut best_coherence = threshold;
 
             // Find most phase-coherent wavefront in other medium
             for j in 0..other.wavefront_count() {
-                let other_wavefront = other.wavefronts.row(j);
+                let other_wavefront = other.store.wavefronts.row(j);
 
                 // Compute dot product similarity
                 let dot_product: f32 = self_wavefront
@@ -51,18 +51,18 @@ impl Medium {
 
             // Apply Kuramoto coupling if we found a good match
             if let Some(j) = best_match_idx {
-                let phase_diff = other.phase[j] - self.phase[i];
+                let phase_diff = other.store.phase[j] - self.store.phase[i];
 
                 // Kuramoto phase coupling: delta_phi_i = coupling * sin(phi_other - phi_self)
                 let delta_phase = coupling * phase_diff.sin();
-                self.phase[i] += delta_phase;
+                self.store.phase[i] += delta_phase;
 
                 // Amplitude reinforcement: energy_self += coupling * energy_other * coherence
-                let amplitude_boost = coupling * other.energy[j] * best_coherence;
-                self.energy[i] += amplitude_boost * 0.1; // Scale down to prevent runaway
+                let amplitude_boost = coupling * other.store.energy[j] * best_coherence;
+                self.store.energy[i] += amplitude_boost * 0.1; // Scale down to prevent runaway
 
                 // Ensure energy stays positive and reasonable
-                self.energy[i] = self.energy[i].max(0.001).min(10.0);
+                self.store.energy[i] = self.store.energy[i].max(0.001).min(10.0);
             }
         }
     }
@@ -75,12 +75,12 @@ impl Medium {
     /// # Arguments
     /// * `agent_id` - Identifier for the agent exporting this state
     pub fn export_phase_state(&self, agent_id: &str) -> PhaseState {
-        let phases = self.phase.slice(s![..self.len]).to_vec();
-        let energies = self.energy.slice(s![..self.len]).to_vec();
+        let phases = self.store.phase.slice(s![..self.store.len]).to_vec();
+        let energies = self.store.energy.slice(s![..self.store.len]).to_vec();
 
         // Compute content hashes for matching (blake3 hash of content text)
         let content_hashes = self
-            .metadata
+            .store.metadata
             .iter()
             .map(|meta| {
                 let mut hasher = blake3::Hasher::new();
@@ -124,7 +124,7 @@ impl Medium {
 
         // Build hash lookup for our content
         let mut our_hash_to_index = HashMap::new();
-        for (i, meta) in self.metadata.iter().enumerate() {
+        for (i, meta) in self.store.metadata.iter().enumerate() {
             let mut hasher = blake3::Hasher::new();
             hasher.update(meta.content.as_bytes());
             let hash_bytes = hasher.finalize();
@@ -147,15 +147,15 @@ impl Medium {
                 // Found matching content - apply Kuramoto coupling
                 let remote_phase = remote.phases[remote_idx];
                 let remote_energy = remote.energies[remote_idx];
-                let phase_diff = remote_phase - self.phase[our_idx];
+                let phase_diff = remote_phase - self.store.phase[our_idx];
 
                 // Apply phase coupling
                 let delta_phase = coupling * phase_diff.sin();
-                self.phase[our_idx] += delta_phase;
+                self.store.phase[our_idx] += delta_phase;
 
                 // Apply energy coupling (amplitude reinforcement)
                 let energy_boost = coupling * remote_energy * 0.1; // Scale down
-                self.energy[our_idx] = (self.energy[our_idx] + energy_boost).max(0.001).min(10.0);
+                self.store.energy[our_idx] = (self.store.energy[our_idx] + energy_boost).max(0.001).min(10.0);
             }
         }
     }
@@ -172,7 +172,7 @@ impl Medium {
     /// # Returns
     /// Vector of (UUID, coherence_strength) pairs, sorted by strength descending
     pub fn find_associated(&self, id: Uuid, top_k: usize) -> Vec<(Uuid, f32)> {
-        let index = match self.id_to_index.get(&id) {
+        let index = match self.store.id_to_index.get(&id) {
             Some(&idx) => idx,
             None => return Vec::new(),
         };
@@ -183,7 +183,7 @@ impl Medium {
         for j in 0..self.wavefront_count() {
             if j != index {
                 let strength = coherence[[index, j]];
-                associations.push((self.metadata[j].id, strength));
+                associations.push((self.store.metadata[j].id, strength));
             }
         }
 

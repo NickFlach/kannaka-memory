@@ -62,9 +62,9 @@ impl ChiralMedium {
 
         // Migrate all existing wavefronts to right hemisphere
         for i in 0..medium.wavefront_count() {
-            let vector = medium.wavefronts.row(i).to_vec();
-            let meta = &medium.metadata[i];
-            let energy = medium.energy[i];
+            let vector = medium.store.wavefronts.row(i).to_vec();
+            let meta = &medium.store.metadata[i];
+            let energy = medium.store.energy[i];
 
             let id = meta.id;
             let index = right.count();
@@ -88,14 +88,14 @@ impl ChiralMedium {
                 new_phase.slice_mut(ndarray::s![..n]).assign(&right.phase);
             }
             new_energy[index] = energy;
-            new_freq[index] = medium.frequency[i];
-            new_phase[index] = medium.phase[i];
+            new_freq[index] = medium.store.frequency[i];
+            new_phase[index] = medium.store.phase[i];
 
             right.wavefronts = new_wf;
             right.energy = new_energy;
             right.frequency = new_freq;
             right.phase = new_phase;
-            right.timestamps.push(medium.timestamps[i]);
+            right.timestamps.push(medium.store.timestamps[i]);
             right.metadata.push(meta.clone());
             right.id_to_index.insert(id, index);
             right.len += 1;

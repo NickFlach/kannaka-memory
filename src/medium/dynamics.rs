@@ -32,9 +32,9 @@ impl Medium {
             for j in 0..n {
                 if i != j && interference_matrix[[i, j]] > 0.0 {
                     // Phase alignment factor
-                    let phase_alignment = (self.phase[j] - self.phase[i]).cos();
+                    let phase_alignment = (self.store.phase[j] - self.store.phase[i]).cos();
                     let constructive =
-                        interference_matrix[[i, j]] * phase_alignment * self.energy[j];
+                        interference_matrix[[i, j]] * phase_alignment * self.store.energy[j];
                     growth_terms[i] += constructive;
                 }
             }
@@ -44,14 +44,14 @@ impl Medium {
         // Apply Inx - dampening term proportional to current energy
         for i in 0..n {
             let growth = growth_terms[i] * dt;
-            let dampening = eta * self.energy[i] * dt;
+            let dampening = eta * self.store.energy[i] * dt;
 
             // Track total energy dampened for wisdom calculation
             self.total_energy_dampened += dampening;
 
             // dx/dt = f(x) - Iηx  
             // Floor at 0.5 — the "bias voltage". Field stays hot for amplification.
-            self.energy[i] = (self.energy[i] + growth - dampening).max(0.5);
+            self.store.energy[i] = (self.store.energy[i] + growth - dampening).max(0.5);
 
             // Phase coupling - frequencies converge when strongly coupled
             if growth > dampening * 0.5 {
@@ -61,7 +61,7 @@ impl Medium {
 
                 for j in 0..n {
                     if i != j && interference_matrix[[i, j]] > threshold {
-                        phase_coupling += self.phase[j];
+                        phase_coupling += self.store.phase[j];
                         coupling_count += 1;
                     }
                 }
@@ -69,7 +69,7 @@ impl Medium {
                 if coupling_count > 0 {
                     let target_phase = phase_coupling / coupling_count as f32;
                     let coupling_strength = 0.05 * dt;
-                    self.phase[i] += coupling_strength * (target_phase - self.phase[i]).sin();
+                    self.store.phase[i] += coupling_strength * (target_phase - self.store.phase[i]).sin();
                 }
             }
         }
@@ -87,8 +87,8 @@ impl Medium {
         for i in 0..n {
             for j in 0..n {
                 if i != j {
-                    let vec_i = self.wavefronts.row(i);
-                    let vec_j = self.wavefronts.row(j);
+                    let vec_i = self.store.wavefronts.row(i);
+                    let vec_j = self.store.wavefronts.row(j);
 
                     // Compute dot product (similarity)
                     let dot_product: f32 =
@@ -96,7 +96,7 @@ impl Medium {
 
                     if dot_product.abs() > threshold {
                         // Phase coherence: cos(phase_i - phase_j)
-                        let phase_coherence = (self.phase[i] - self.phase[j]).cos();
+                        let phase_coherence = (self.store.phase[i] - self.store.phase[j]).cos();
                         let coherence = dot_product * phase_coherence;
                         interference[[i, j]] = coherence.abs();
                     }
@@ -119,15 +119,15 @@ impl Medium {
         for i in 0..n {
             for j in 0..n {
                 if i != j {
-                    let vec_i = self.wavefronts.row(i);
-                    let vec_j = self.wavefronts.row(j);
+                    let vec_i = self.store.wavefronts.row(i);
+                    let vec_j = self.store.wavefronts.row(j);
 
                     // Compute dot product
                     let dot_product: f32 =
                         vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
 
                     // Compute phase coherence
-                    let phase_coherence = (self.phase[i] - self.phase[j]).cos();
+                    let phase_coherence = (self.store.phase[i] - self.store.phase[j]).cos();
 
                     // Combined coherence: cos(phase_i - phase_j) * dot(h_i, h_j)
                     coherence[[i, j]] = phase_coherence * dot_product;
@@ -160,7 +160,7 @@ impl Medium {
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> DreamReport {
         let mut temperature = initial_temperature.unwrap_or(1.0);
         let energy_before = if self.wavefront_count() > 0 {
-            self.energy.slice(s![..self.len]).mean().unwrap_or(0.0)
+            self.store.energy.slice(s![..self.store.len]).mean().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -181,7 +181,7 @@ impl Medium {
             }
 
             // Store energy state for convergence detection
-            let prev_energy: Vec<f32> = self.energy.to_vec();
+            let prev_energy: Vec<f32> = self.store.energy.to_vec();
 
             // 1. Compute coherence matrix H·H^T and eigenstructure
             let coherence = self.coherence_matrix();
@@ -202,7 +202,7 @@ impl Medium {
 
             // Count strengthened wavefronts (energy increased significantly)
             for i in 0..self.wavefront_count().min(prev_energy.len()) {
-                if self.energy[i] > prev_energy[i] + 0.1 {
+                if self.store.energy[i] > prev_energy[i] + 0.1 {
                     strengthened_count += 1;
                 }
             }
@@ -215,7 +215,7 @@ impl Medium {
             let current_count = self.wavefront_count();
             if current_count == prev_energy.len() {
                 for i in 0..current_count {
-                    energy_change += (self.energy[i] - prev_energy[i]).abs();
+                    energy_change += (self.store.energy[i] - prev_energy[i]).abs();
                 }
                 energy_change /= current_count as f32;
 
@@ -227,7 +227,7 @@ impl Medium {
         }
 
         let energy_after = if self.wavefront_count() > 0 {
-            self.energy.slice(s![..self.len]).mean().unwrap_or(0.0)
+            self.store.energy.slice(s![..self.store.len]).mean().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -267,18 +267,18 @@ impl Medium {
         for i in 0..n {
             for j in 0..n {
                 if i != j {
-                    let vec_i = self.wavefronts.row(i);
-                    let vec_j = self.wavefronts.row(j);
+                    let vec_i = self.store.wavefronts.row(i);
+                    let vec_j = self.store.wavefronts.row(j);
 
                     let dot_product: f32 =
                         vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
 
                     if dot_product.abs() > threshold {
-                        let phase_diff = self.phase[i] - self.phase[j];
+                        let phase_diff = self.store.phase[i] - self.store.phase[j];
                         // Temperature adds exploration noise
                         let phase_alignment =
                             (phase_diff + temperature * 0.1 * (phase_diff * 2.0).sin()).cos();
-                        let interference = dot_product * phase_alignment * self.energy[j];
+                        let interference = dot_product * phase_alignment * self.store.energy[j];
                         growth_terms[i] += interference;
                     }
                 }
@@ -289,19 +289,19 @@ impl Medium {
         // Apply dynamics with temperature-modulated dampening
         for i in 0..n {
             let growth = growth_terms[i] * dt;
-            let dampening = eta * self.energy[i] * dt;
+            let dampening = eta * self.store.energy[i] * dt;
 
             // Track total energy dampened for wisdom calculation
             self.total_energy_dampened += dampening;
 
             // ISSUE #35 FIX: Apply amplitude floor during dream cycles
-            let new_energy = self.energy[i] + growth - dampening;
-            self.energy[i] = new_energy.max(dream_amplitude_floor);
+            let new_energy = self.store.energy[i] + growth - dampening;
+            self.store.energy[i] = new_energy.max(dream_amplitude_floor);
 
             // Temperature-modulated phase evolution
             if growth.abs() > 0.001 {
                 let phase_force = growth.signum() * 0.02 * dt * (1.0 + temperature * 0.5);
-                self.phase[i] += phase_force;
+                self.store.phase[i] += phase_force;
             }
         }
     }
@@ -315,7 +315,7 @@ impl Medium {
         }
 
         let now = chrono::Utc::now();
-        let ages: Vec<f32> = self.metadata.iter()
+        let ages: Vec<f32> = self.store.metadata.iter()
             .map(|meta| (now - meta.created_at).num_seconds() as f32)
             .collect();
 
@@ -442,25 +442,25 @@ impl Medium {
             // In high-D space, even 0.1 alignment is significant
             if alignment > 0.1 && dominant_eigenvalue > 0.1 {
                 let boost = consolidation_strength * alignment;
-                self.energy[i] = (self.energy[i] + boost).min(2.0);
+                self.store.energy[i] = (self.store.energy[i] + boost).min(2.0);
                 
                 // Phase alignment within cluster
                 if eigenstructure.dominant_cluster.contains(&i) && eigenstructure.dominant_cluster.len() > 1 {
                     let mut cluster_phase = 0.0f32;
                     for &cluster_idx in &eigenstructure.dominant_cluster {
-                        cluster_phase += self.phase[cluster_idx];
+                        cluster_phase += self.store.phase[cluster_idx];
                     }
                     cluster_phase /= eigenstructure.dominant_cluster.len() as f32;
                     
                     let phase_coupling = 0.05 * (1.0 - temperature);
-                    self.phase[i] += phase_coupling * (cluster_phase - self.phase[i]).sin();
+                    self.store.phase[i] += phase_coupling * (cluster_phase - self.store.phase[i]).sin();
                 }
             }
             
             // Low alignment = noise = gentle dampening toward floor, NOT toward zero
             if alignment < 0.05 {
                 let reduction = noise_reduction * (0.1 - alignment);
-                self.energy[i] = (self.energy[i] - reduction).max(dream_energy_floor);
+                self.store.energy[i] = (self.store.energy[i] - reduction).max(dream_energy_floor);
                 self.total_energy_dampened += reduction;
             }
             
@@ -468,11 +468,11 @@ impl Medium {
             // The field stays hot — dreams organize, not destroy
             if alignment >= 0.05 && alignment <= 0.1 {
                 let exploration = temperature * 0.005;
-                self.phase[i] += exploration * (alignment * 10.0 - 0.5).sin();
+                self.store.phase[i] += exploration * (alignment * 10.0 - 0.5).sin();
             }
             
             // Enforce floor on ALL wavefronts
-            self.energy[i] = self.energy[i].max(dream_energy_floor);
+            self.store.energy[i] = self.store.energy[i].max(dream_energy_floor);
         }
     }
     
@@ -509,8 +509,8 @@ impl Medium {
             
             if let Some(idx2) = idx2 {
                 // Create superposition: mix two wavefront patterns
-                let vec1 = self.wavefronts.row(idx1);
-                let vec2 = self.wavefronts.row(idx2);
+                let vec1 = self.store.wavefronts.row(idx1);
+                let vec2 = self.store.wavefronts.row(idx2);
                 
                 let mix_ratio = 0.6 + temperature * 0.3; // Temperature affects mixing
                 let mut new_vector = Vec::with_capacity(vec1.len());
@@ -527,8 +527,8 @@ impl Medium {
                     }
                     
                     // Add as new wavefront with averaged energy and phase
-                    let energy = (self.energy[idx1] + self.energy[idx2]) / 2.0 * 0.8; // Slightly reduced
-                    let phase = (self.phase[idx1] + self.phase[idx2]) / 2.0;
+                    let energy = (self.store.energy[idx1] + self.store.energy[idx2]) / 2.0 * 0.8; // Slightly reduced
+                    let phase = (self.store.phase[idx1] + self.store.phase[idx2]) / 2.0;
                     
                     let content = format!("HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]", 
                                          idx1, idx2, temperature);
@@ -536,8 +536,8 @@ impl Medium {
                     if let Ok(_) = self.add_wavefront(&new_vector, content, energy) {
                         // Set the phase for the newly added wavefront
                         let new_idx = self.wavefront_count() - 1;
-                        self.phase[new_idx] = phase;
-                        self.metadata[new_idx].hallucinated = true;
+                        self.store.phase[new_idx] = phase;
+                        self.store.metadata[new_idx].hallucinated = true;
                         hallucinated += 1;
                     }
                 }
@@ -553,8 +553,8 @@ impl Medium {
 
         // Find wavefronts to remove
         for i in 0..self.wavefront_count() {
-            if self.energy[i] < threshold {
-                to_remove.push(self.metadata[i].id);
+            if self.store.energy[i] < threshold {
+                to_remove.push(self.store.metadata[i].id);
             }
         }
 
@@ -583,18 +583,18 @@ impl Medium {
         }
 
         // Compute field-level order parameter (Kuramoto R)
-        let sum_cos: f32 = (0..n).map(|i| self.phase[i].cos()).sum();
-        let sum_sin: f32 = (0..n).map(|i| self.phase[i].sin()).sum();
+        let sum_cos: f32 = (0..n).map(|i| self.store.phase[i].cos()).sum();
+        let sum_sin: f32 = (0..n).map(|i| self.store.phase[i].sin()).sum();
         let order = (sum_cos * sum_cos + sum_sin * sum_sin).sqrt() / n as f32;
 
         // Higher order → stronger perturbation (break lock-step)
         let strength = eta * order;
 
         // Apply phase noise proportional to energy
-        let mean_energy = self.energy.slice(s![..self.len]).mean().unwrap_or(1.0);
+        let mean_energy = self.store.energy.slice(s![..self.store.len]).mean().unwrap_or(1.0);
         for i in 0..n {
-            let noise = strength * (self.energy[i] / mean_energy);
-            self.phase[i] += noise * (self.frequency[i] * 7.0 + self.phase[i] * 13.0).sin();
+            let noise = strength * (self.store.energy[i] / mean_energy);
+            self.store.phase[i] += noise * (self.store.frequency[i] * 7.0 + self.store.phase[i] * 13.0).sin();
         }
     }
 }

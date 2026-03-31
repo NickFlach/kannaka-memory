@@ -865,9 +865,9 @@ impl QueenSync {
         let mut total_weight = 0.0f32;
 
         for i in 0..n {
-            let w = medium.energy[i].max(0.0);
-            sum_cos += w * medium.phase[i].cos();
-            sum_sin += w * medium.phase[i].sin();
+            let w = medium.store.energy[i].max(0.0);
+            sum_cos += w * medium.store.phase[i].cos();
+            sum_sin += w * medium.store.phase[i].sin();
             total_weight += w;
         }
 
@@ -885,7 +885,7 @@ impl QueenSync {
         let memory_count = hrm.count();
         let count_rate = ((1.0 + memory_count as f64).ln() / (1.0 + 100.0_f64).ln()) as f32;
         let mean_wf_freq = if n > 0 {
-            (0..n).map(|i| medium.frequency[i]).sum::<f32>() / n as f32
+            (0..n).map(|i| medium.store.frequency[i]).sum::<f32>() / n as f32
         } else {
             0.0
         };
@@ -896,8 +896,8 @@ impl QueenSync {
         // --- Coherence: Kuramoto order parameter from wavefront phases ---
         let coherence = if n > 0 {
             let nc = n as f32;
-            let sc: f32 = (0..n).map(|i| medium.phase[i].cos()).sum::<f32>() / nc;
-            let ss: f32 = (0..n).map(|i| medium.phase[i].sin()).sum::<f32>() / nc;
+            let sc: f32 = (0..n).map(|i| medium.store.phase[i].cos()).sum::<f32>() / nc;
+            let ss: f32 = (0..n).map(|i| medium.store.phase[i].sin()).sum::<f32>() / nc;
             (sc * sc + ss * ss).sqrt()
         } else {
             0.0

@@ -81,7 +81,7 @@ impl Medium {
         let mut sums: HashMap<Modality, Vec<f32>> = HashMap::new();
         let mut counts: HashMap<Modality, usize> = HashMap::new();
 
-        for (i, meta) in self.metadata.iter().enumerate() {
+        for (i, meta) in self.store.metadata.iter().enumerate() {
             let m = meta.modality;
             // Skip Unknown / Mixed — they don't form a meaningful axis
             if m == Modality::Unknown || m == Modality::Mixed {
@@ -91,7 +91,7 @@ impl Medium {
             let entry = sums
                 .entry(m)
                 .or_insert_with(|| vec![0.0f32; WAVEFRONT_DIM]);
-            let row = self.wavefronts.row(i);
+            let row = self.store.wavefronts.row(i);
             for (j, val) in row.iter().enumerate() {
                 entry[j] += val;
             }
@@ -129,7 +129,7 @@ impl Medium {
 
         // Collect per-modality wavefront indices for Fisher computation
         let mut modality_indices: HashMap<Modality, Vec<usize>> = HashMap::new();
-        for (i, meta) in self.metadata.iter().enumerate() {
+        for (i, meta) in self.store.metadata.iter().enumerate() {
             let m = meta.modality;
             if m != Modality::Unknown && m != Modality::Mixed {
                 modality_indices.entry(m).or_default().push(i);
@@ -205,7 +205,7 @@ impl Medium {
         // Project wavefronts onto the Fisher direction
         let project = |indices: &[usize]| -> Vec<f32> {
             indices.iter().map(|&i| {
-                let row = self.wavefronts.row(i);
+                let row = self.store.wavefronts.row(i);
                 row.iter().zip(direction.iter()).map(|(a, b)| a * b).sum::<f32>()
             }).collect()
         };
@@ -294,7 +294,7 @@ impl Medium {
         let mut switch_points = Vec::new();
         let mut current_modality: Option<Modality> = None;
 
-        for (i, meta) in self.metadata.iter().enumerate() {
+        for (i, meta) in self.store.metadata.iter().enumerate() {
             let m = meta.modality;
             if m == Modality::Unknown || m == Modality::Mixed {
                 continue;
@@ -312,7 +312,7 @@ impl Medium {
             }
 
             // Compute similarity of this wavefront to the current and candidate centroids
-            let wave = self.wavefronts.row(i);
+            let wave = self.store.wavefronts.row(i);
             let wave_slice: Vec<f32> = wave.iter().copied().collect();
 
             let sim_to_current = centroid_map
@@ -563,7 +563,7 @@ impl Medium {
         // Modality diversity: Shannon entropy of modality distribution
         let mut modality_counts: HashMap<Modality, usize> = HashMap::new();
         let mut total = 0usize;
-        for meta in &self.metadata {
+        for meta in &self.store.metadata {
             if meta.modality != Modality::Unknown && meta.modality != Modality::Mixed {
                 *modality_counts.entry(meta.modality).or_insert(0) += 1;
                 total += 1;
@@ -607,7 +607,7 @@ impl Medium {
     pub fn modality_distribution(&self) -> HashMap<Modality, f32> {
         let mut counts: HashMap<Modality, usize> = HashMap::new();
         let mut total = 0usize;
-        for meta in &self.metadata {
+        for meta in &self.store.metadata {
             if meta.modality != Modality::Unknown {
                 *counts.entry(meta.modality).or_insert(0) += 1;
                 total += 1;
@@ -816,7 +816,7 @@ mod tests {
             }
             let id = m.add_wavefront(&v, format!("audio mem {i}"), 1.0).unwrap();
             let idx = m.get_wavefront_index(&id).unwrap();
-            m.metadata[idx].modality = Modality::Audio;
+            m.store.metadata[idx].modality = Modality::Audio;
         }
 
         // Visual cluster: vectors concentrated in dims 200..300
@@ -827,7 +827,7 @@ mod tests {
             }
             let id = m.add_wavefront(&v, format!("visual mem {i}"), 1.0).unwrap();
             let idx = m.get_wavefront_index(&id).unwrap();
-            m.metadata[idx].modality = Modality::Visual;
+            m.store.metadata[idx].modality = Modality::Visual;
         }
 
         // Semantic cluster: vectors concentrated in dims 400..500
@@ -838,7 +838,7 @@ mod tests {
             }
             let id = m.add_wavefront(&v, format!("semantic mem {i}"), 1.0).unwrap();
             let idx = m.get_wavefront_index(&id).unwrap();
-            m.metadata[idx].modality = Modality::Semantic;
+            m.store.metadata[idx].modality = Modality::Semantic;
         }
 
         m
@@ -910,7 +910,7 @@ mod tests {
         for (vec, modality) in patterns {
             let id = m.add_wavefront(&vec, format!("{modality} test"), 1.0).unwrap();
             let idx = m.get_wavefront_index(&id).unwrap();
-            m.metadata[idx].modality = modality;
+            m.store.metadata[idx].modality = modality;
         }
 
         let report = m.detect_switch_points(0.3);
@@ -932,7 +932,7 @@ mod tests {
             for j in 0..100 { v[j] = 1.0 + (i as f32) * 0.001; }
             let id = m.add_wavefront(&v, format!("audio {i}"), 1.0).unwrap();
             let idx = m.get_wavefront_index(&id).unwrap();
-            m.metadata[idx].modality = Modality::Audio;
+            m.store.metadata[idx].modality = Modality::Audio;
         }
 
         let report = m.detect_switch_points(0.3);

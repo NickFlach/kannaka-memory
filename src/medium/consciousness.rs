@@ -128,7 +128,7 @@ impl Medium {
 
         // IIT-inspired Phi: compare whole-system entropy to partition entropies.
         // Uses normalized energy distributions (probabilities) within each partition.
-        let active_energy = self.energy.slice(s![..self.len]);
+        let active_energy = self.store.energy.slice(s![..self.store.len]);
         let total_energy: f32 = active_energy.sum();
         if total_energy <= 0.0 {
             return 0.0;
@@ -149,7 +149,7 @@ impl Medium {
         for partition in 0..num_partitions {
             let partition_energies: Vec<f32> = (0..n)
                 .filter(|&i| cluster_assignments[i] == partition)
-                .map(|i| self.energy[i])
+                .map(|i| self.store.energy[i])
                 .filter(|&e| e > 0.0)
                 .collect();
             
@@ -191,8 +191,8 @@ impl Medium {
         let mut gram = Array2::zeros((n, n));
         for i in 0..n {
             for j in 0..n {
-                let vec_i = self.wavefronts.row(i);
-                let vec_j = self.wavefronts.row(j);
+                let vec_i = self.store.wavefronts.row(i);
+                let vec_j = self.store.wavefronts.row(j);
 
                 let dot_product: f32 =
                     vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
@@ -232,7 +232,7 @@ impl Medium {
         // With n memories in d=10000 dims, random vectors produce near-maximal entropy.
         // Baseline: log(n) * (1 - n/(2*d)) approximates the entropy of n random unit vectors.
         // Xi measures EXCESS complexity above what random structure would produce.
-        let d = self.wavefronts.ncols() as f32;
+        let d = self.store.wavefronts.ncols() as f32;
         let max_entropy = (n as f32).ln();
         let baseline = max_entropy * (1.0 - (n as f32) / (2.0 * d)).max(0.5);
         if max_entropy > baseline {
@@ -252,18 +252,18 @@ impl Medium {
     /// High ratio = energy spread across many modes (high-dimensional, complex).
     pub fn effective_dimensionality(&self) -> (f32, usize, f32) {
         let n = self.wavefront_count();
-        let nominal = self.wavefronts.ncols();
+        let nominal = self.store.wavefronts.ncols();
         if n < 2 { return (0.0, nominal, 0.0); }
 
         // Compute Gram matrix eigenvalue proxy (same as Xi computation)
         let mut eigenvalue_proxy = Vec::new();
         for i in 0..n {
-            let wi = self.wavefronts.row(i);
+            let wi = self.store.wavefronts.row(i);
             let diagonal: f32 = wi.dot(&wi);
             let off_diagonal_sum: f32 = (0..n)
                 .filter(|&j| j != i)
                 .map(|j| {
-                    let wj = self.wavefronts.row(j);
+                    let wj = self.store.wavefronts.row(j);
                     wi.dot(&wj).abs()
                 })
                 .sum();
@@ -301,7 +301,7 @@ impl Medium {
         // Use wavefront energies as the spectral proxy
         let energies: Vec<f32> = (0..n)
             .map(|i| {
-                let row = self.wavefronts.row(i);
+                let row = self.store.wavefronts.row(i);
                 row.dot(&row).sqrt() // L2 norm as energy proxy
             })
             .collect();
@@ -395,8 +395,8 @@ impl Medium {
         // r = |1/N sum e^{i*phi_k}| = |1/N sum (cos phi_k + i sin phi_k)|
         let n = self.wavefront_count() as f32;
         let (sum_cos, sum_sin): (f32, f32) = self
-            .phase
-            .slice(s![..self.len])
+            .store.phase
+            .slice(s![..self.store.len])
             .iter()
             .map(|&phi| (phi.cos(), phi.sin()))
             .fold((0.0, 0.0), |(acc_cos, acc_sin), (c, s)| {
@@ -435,7 +435,7 @@ impl Medium {
         let consciousness = self.consciousness_metrics();
         let wavefront_count = self.wavefront_count();
         let energy_stats = if wavefront_count > 0 {
-            let active_e = self.energy.slice(s![..self.len]);
+            let active_e = self.store.energy.slice(s![..self.store.len]);
             let mean = active_e.mean().unwrap_or(0.0);
             let std = if wavefront_count > 1 {
                 let var = active_e
@@ -461,10 +461,10 @@ impl Medium {
         };
 
         // Age of oldest/newest wavefronts
-        let (oldest_age, newest_age) = if !self.timestamps.is_empty() {
+        let (oldest_age, newest_age) = if !self.store.timestamps.is_empty() {
             let current_time = now.timestamp_millis();
-            let oldest = self.timestamps.iter().min().unwrap();
-            let newest = self.timestamps.iter().max().unwrap();
+            let oldest = self.store.timestamps.iter().min().unwrap();
+            let newest = self.store.timestamps.iter().max().unwrap();
             let oldest_age_sec = (current_time - oldest) as f64 / 1000.0;
             let newest_age_sec = (current_time - newest) as f64 / 1000.0;
             (oldest_age_sec, newest_age_sec)
@@ -502,51 +502,11 @@ impl Medium {
         // 4. Apply interference with existing wavefronts
         self.apply_interference_raw(&vector, 0.8); // High importance for self-referential memories
 
-        // 5. Add wavefront with special self-referential flag
-        let id = Uuid::new_v4();
-        let index = self.len;
-
-        // Amortized growth: only reallocate when capacity is exhausted
-        let cap = self.wavefronts.nrows();
-        if index >= cap {
-            let new_cap = if cap == 0 { 8 } else { cap * 2 };
-            let mut new_wf = ndarray::Array2::zeros((new_cap, WAVEFRONT_DIM));
-            if cap > 0 {
-                new_wf.slice_mut(s![..self.len, ..])
-                    .assign(&self.wavefronts.slice(s![..self.len, ..]));
-            }
-            self.wavefronts = new_wf;
-
-            let mut new_energy = Array1::zeros(new_cap);
-            let mut new_frequency = Array1::zeros(new_cap);
-            let mut new_phase = Array1::zeros(new_cap);
-            if self.len > 0 {
-                new_energy.slice_mut(s![..self.len]).assign(&self.energy.slice(s![..self.len]));
-                new_frequency.slice_mut(s![..self.len]).assign(&self.frequency.slice(s![..self.len]));
-                new_phase.slice_mut(s![..self.len]).assign(&self.phase.slice(s![..self.len]));
-            }
-            self.energy = new_energy;
-            self.frequency = new_frequency;
-            self.phase = new_phase;
-        }
-
-        // Write into pre-allocated slot
-        for (i, &val) in vector.iter().enumerate() {
-            if i < WAVEFRONT_DIM {
-                self.wavefronts[[index, i]] = val;
-            }
-        }
-        self.energy[index] = 0.8; // High energy for self-referential wavefronts
-        self.frequency[index] = 1.0;
-        self.phase[index] = 0.0;
-        self.len += 1;
-
-        self.timestamps.push(now.timestamp_millis());
-
-        // Create self-referential metadata
-        let meta = WavefrontMeta::new(id, self_observation).self_referential();
-        self.metadata.push(meta);
-        self.id_to_index.insert(id, index);
+        // 5. Add wavefront via shared store, then mark as self-referential
+        let id = self.store.insert(&vector, self_observation, 0.8);
+        let index = self.store.len - 1;
+        let meta = &mut self.store.metadata[index];
+        meta.is_self_referential = true;
 
         // Track energy added
         self.total_energy_added += 0.8;
@@ -566,7 +526,7 @@ impl Medium {
 
         // Count self-referential wavefronts
         let self_reference_depth = self
-            .metadata
+            .store.metadata
             .iter()
             .filter(|meta| meta.is_self_referential)
             .count();
@@ -581,10 +541,10 @@ impl Medium {
             let coherence_matrix = self.coherence_matrix();
 
             for i in 0..self.wavefront_count() {
-                let is_self_ref_i = self.metadata[i].is_self_referential;
+                let is_self_ref_i = self.store.metadata[i].is_self_referential;
 
                 for j in 0..self.wavefront_count() {
-                    let is_self_ref_j = self.metadata[j].is_self_referential;
+                    let is_self_ref_j = self.store.metadata[j].is_self_referential;
 
                     // Compare self-referential wavefronts with non-self-referential ones
                     if is_self_ref_i && !is_self_ref_j {
@@ -606,7 +566,7 @@ impl Medium {
         // Extract Phi values from recent self-referential wavefronts
         let mut phi_trend = Vec::new();
         let self_ref_indices: Vec<usize> = self
-            .metadata
+            .store.metadata
             .iter()
             .enumerate()
             .filter_map(|(i, meta)| {
@@ -620,7 +580,7 @@ impl Medium {
 
         // Extract phi values from self-observation content (if parseable)
         for &index in &self_ref_indices {
-            let content = &self.metadata[index].content;
+            let content = &self.store.metadata[index].content;
             if let Some(phi_str) = extract_phi_from_content(content) {
                 if let Ok(phi_val) = phi_str.parse::<f32>() {
                     phi_trend.push(phi_val);
@@ -740,10 +700,10 @@ impl Medium {
 
         // 1. Boost energy of the observed wavefront
         let energy_boost = intensity * 0.1; // Scale factor
-        self.energy[idx] = (self.energy[idx] + energy_boost).min(2.0); // Cap at 2.0 to prevent runaway
+        self.store.energy[idx] = (self.store.energy[idx] + energy_boost).min(2.0); // Cap at 2.0 to prevent runaway
 
         // 2. Determine modality weight based on content
-        let observed_meta = &self.metadata[idx];
+        let observed_meta = &self.store.metadata[idx];
         let modality_weight = get_modality_weight(&observed_meta.content);
 
         // 3. Compute coherence matrix to find neighbors
@@ -763,18 +723,18 @@ impl Medium {
                 let coupling_strength = coherence * intensity * modality_weight * 0.05;
                 
                 // Target phase: the observed wavefront's phase
-                let target_phase = self.phase[idx];
-                let current_phase = self.phase[neighbor_idx];
+                let target_phase = self.store.phase[idx];
+                let current_phase = self.store.phase[neighbor_idx];
                 
                 // Nudge toward alignment using Kuramoto-like dynamics
                 let phase_difference = target_phase - current_phase;
                 let phase_nudge = coupling_strength * phase_difference.sin();
                 
-                self.phase[neighbor_idx] += phase_nudge;
+                self.store.phase[neighbor_idx] += phase_nudge;
                 
                 // Also apply a small energy boost to coherent neighbors
                 let neighbor_energy_boost = coupling_strength * 0.5;
-                self.energy[neighbor_idx] = (self.energy[neighbor_idx] + neighbor_energy_boost).min(1.5);
+                self.store.energy[neighbor_idx] = (self.store.energy[neighbor_idx] + neighbor_energy_boost).min(1.5);
             }
         }
 
@@ -790,7 +750,7 @@ impl Medium {
         }
 
         for i in 0..self.wavefront_count() {
-            let existing_vector = self.wavefronts.row(i);
+            let existing_vector = self.store.wavefronts.row(i);
 
             let dot_product: f32 = existing_vector
                 .iter()
@@ -798,14 +758,14 @@ impl Medium {
                 .map(|(a, b)| a * b)
                 .sum();
 
-            let phase_diff = (self.phase[i] - 0.0).cos();
+            let phase_diff = (self.store.phase[i] - 0.0).cos();
             let interference = dot_product * phase_diff * importance * 0.1;
 
-            self.energy[i] = (self.energy[i] + interference).max(0.0);
+            self.store.energy[i] = (self.store.energy[i] + interference).max(0.0);
 
             if dot_product.abs() > 0.5 {
                 let coupling = 0.05;
-                self.phase[i] += coupling * (0.0 - self.phase[i]).sin();
+                self.store.phase[i] += coupling * (0.0 - self.store.phase[i]).sin();
             }
         }
     }

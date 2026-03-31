@@ -1,7 +1,7 @@
 //! Core wavefront operations: add, remove, store, recall.
 
 use chrono::{DateTime, Utc};
-use ndarray::{Array1, Array2, s};
+use ndarray::Array1;
 use uuid::Uuid;
 
 use crate::encoding::EncodingPipeline;
@@ -32,45 +32,7 @@ impl Medium {
             });
         }
 
-        let id = Uuid::new_v4();
-        let now = Utc::now();
-        let index = self.len;
-
-        // Amortized growth: only reallocate when capacity is exhausted
-        let cap = self.wavefronts.nrows();
-        if index >= cap {
-            let new_cap = if cap == 0 { 8 } else { cap * 2 };
-            let mut new_wf = Array2::zeros((new_cap, WAVEFRONT_DIM));
-            if cap > 0 {
-                new_wf.slice_mut(s![..cap, ..]).assign(&self.wavefronts);
-            }
-            self.wavefronts = new_wf;
-
-            let mut new_energy = Array1::zeros(new_cap);
-            let mut new_frequency = Array1::zeros(new_cap);
-            let mut new_phase = Array1::zeros(new_cap);
-            if cap > 0 {
-                new_energy.slice_mut(s![..cap]).assign(&self.energy);
-                new_frequency.slice_mut(s![..cap]).assign(&self.frequency);
-                new_phase.slice_mut(s![..cap]).assign(&self.phase);
-            }
-            self.energy = new_energy;
-            self.frequency = new_frequency;
-            self.phase = new_phase;
-        }
-
-        // Write new wavefront into the pre-allocated slot
-        for (i, &val) in vector.iter().enumerate() {
-            self.wavefronts[[index, i]] = val;
-        }
-        self.energy[index] = importance;
-        self.frequency[index] = 1.0;
-        self.phase[index] = 0.0;
-
-        self.timestamps.push(now.timestamp_millis());
-        self.metadata.push(WavefrontMeta::new(id, content));
-        self.id_to_index.insert(id, index);
-        self.len += 1;
+        let id = self.store.insert(vector, content, importance);
 
         // Track energy added for wisdom calculation
         self.total_energy_added += importance;
@@ -80,44 +42,7 @@ impl Medium {
 
     /// Remove a wavefront from the medium using swap-remove (O(1) tensor op).
     pub fn remove_wavefront(&mut self, id: &Uuid) -> Result<bool, MediumError> {
-        let index = match self.id_to_index.get(id) {
-            Some(&idx) => idx,
-            None => return Ok(false),
-        };
-
-        if self.len == 0 {
-            return Ok(false);
-        }
-
-        let last = self.len - 1;
-
-        // Remove the ID mapping for the removed wavefront
-        self.id_to_index.remove(id);
-
-        // If the removed wavefront isn't the last one, swap with the last
-        if index != last {
-            // Copy last row's tensor data into the removed slot
-            let last_row = self.wavefronts.row(last).to_owned();
-            self.wavefronts.row_mut(index).assign(&last_row);
-            self.energy[index] = self.energy[last];
-            self.frequency[index] = self.frequency[last];
-            self.phase[index] = self.phase[last];
-
-            // Swap metadata and timestamps
-            self.timestamps.swap(index, last);
-            self.metadata.swap(index, last);
-
-            // Update the index mapping for the swapped wavefront
-            let swapped_id = self.metadata[index].id;
-            self.id_to_index.insert(swapped_id, index);
-        }
-
-        // Remove the last element (now either the removed or the swapped-out)
-        self.timestamps.pop();
-        self.metadata.pop();
-        self.len -= 1;
-
-        Ok(true)
+        Ok(self.store.remove(id))
     }
 
     /// Compute effective strength of all wavefronts with temporal decay.
@@ -127,13 +52,13 @@ impl Medium {
         let current_time = now.unwrap_or_else(Utc::now).timestamp_millis();
         let decay_rate = 0.001; // Per-day decay rate (half-life ~693 days)
 
-        self.timestamps
+        self.store.timestamps
             .iter()
             .enumerate()
             .map(|(i, &created_at)| {
                 let age_days = ((current_time - created_at) as f64 / 86_400_000.0).max(0.0);
                 let decay = (-decay_rate * age_days as f32).exp();
-                self.energy[i] * decay
+                self.store.energy[i] * decay
             })
             .collect()
     }
@@ -142,7 +67,7 @@ impl Medium {
     /// Use after dream over-dampening or migration to restore field potential.
     pub fn reset_energies(&mut self, target: f32) {
         for i in 0..self.wavefront_count() {
-            self.energy[i] = target;
+            self.store.energy[i] = target;
         }
     }
 
@@ -269,7 +194,7 @@ impl Medium {
 
         // Compute dot products between new vector and all existing wavefronts
         for i in 0..self.wavefront_count() {
-            let existing_vector = self.wavefronts.row(i);
+            let existing_vector = self.store.wavefronts.row(i);
 
             let dot_product: f32 = existing_vector
                 .iter()
@@ -278,17 +203,17 @@ impl Medium {
                 .sum();
 
             // Phase difference affects interference pattern
-            let phase_diff = (self.phase[i] - 0.0).cos(); // New wavefront starts at phase 0
+            let phase_diff = (self.store.phase[i] - 0.0).cos(); // New wavefront starts at phase 0
             let interference = dot_product * phase_diff * importance * 0.1; // Scale interference
 
             // Apply constructive/destructive interference
-            self.energy[i] = (self.energy[i] + interference).max(0.0); // Energy can't go negative
+            self.store.energy[i] = (self.store.energy[i] + interference).max(0.0); // Energy can't go negative
 
             // Phase coupling — nearby vectors tend to align phases (Kuramoto-like)
             if dot_product.abs() > 0.5 {
                 // High similarity threshold
                 let coupling = 0.05;
-                self.phase[i] += coupling * (0.0 - self.phase[i]).sin(); // Pull toward phase 0
+                self.store.phase[i] += coupling * (0.0 - self.store.phase[i]).sin(); // Pull toward phase 0
             }
         }
     }
@@ -320,7 +245,7 @@ impl Medium {
         let effective_strengths = self.effective_strength(None);
 
         for i in 0..self.wavefront_count() {
-            let wavefront = self.wavefronts.row(i);
+            let wavefront = self.store.wavefronts.row(i);
 
             // Dot product (similarity)
             let similarity: f32 = wavefront
@@ -331,12 +256,12 @@ impl Medium {
 
             // Modulate by wave dynamics (energy, phase, temporal decay)
             let effective_strength = effective_strengths[i];
-            let phase_modulation = self.phase[i].cos(); // Phase affects resonance
+            let phase_modulation = self.store.phase[i].cos(); // Phase affects resonance
             let resonance_strength = similarity * effective_strength * phase_modulation;
 
             resonances.push(Resonance {
-                id: self.metadata[i].id,
-                content: self.metadata[i].content.clone(),
+                id: self.store.metadata[i].id,
+                content: self.store.metadata[i].content.clone(),
                 similarity,
                 resonance_strength,
                 effective_strength,
@@ -374,14 +299,14 @@ impl Medium {
                 let mut neighbor_candidates = Vec::new();
 
                 for i in 0..self.wavefront_count() {
-                    if i == result_idx || added_ids.contains(&self.metadata[i].id) {
+                    if i == result_idx || added_ids.contains(&self.store.metadata[i].id) {
                         continue;
                     }
 
                     let coherence = coherence_matrix[[result_idx, i]].abs();
                     if coherence > coherence_threshold {
                         // Weight by coherence * energy
-                        let expansion_strength = coherence * self.energy[i];
+                        let expansion_strength = coherence * self.store.energy[i];
 
                         neighbor_candidates.push((i, expansion_strength, coherence));
                     }
@@ -397,15 +322,15 @@ impl Medium {
                         break;
                     }
 
-                    let neighbor_id = self.metadata[neighbor_idx].id;
+                    let neighbor_id = self.store.metadata[neighbor_idx].id;
                     if !added_ids.contains(&neighbor_id) {
                         // Create resonance entry for the expanded neighbor
                         let neighbor_resonance = Resonance {
                             id: neighbor_id,
-                            content: self.metadata[neighbor_idx].content.clone(),
+                            content: self.store.metadata[neighbor_idx].content.clone(),
                             similarity: coherence, // Use coherence as similarity proxy
                             resonance_strength: expansion_strength, // Coherence * energy
-                            effective_strength: self.energy[neighbor_idx],
+                            effective_strength: self.store.energy[neighbor_idx],
                         };
 
                         expanded_results.push(neighbor_resonance);
@@ -439,8 +364,8 @@ impl Medium {
         }
 
         // 1. Create associative wavefront by combining the two patterns
-        let vec_a = self.wavefronts.row(idx_a);
-        let vec_b = self.wavefronts.row(idx_b);
+        let vec_a = self.store.wavefronts.row(idx_a);
+        let vec_b = self.store.wavefronts.row(idx_b);
         
         let mut associative_vector = Vec::with_capacity(WAVEFRONT_DIM);
         for (a, b) in vec_a.iter().zip(vec_b.iter()) {
@@ -461,11 +386,11 @@ impl Medium {
         }
 
         // 2. Set energy as average of the two wavefronts
-        let associative_energy = (self.energy[idx_a] + self.energy[idx_b]) / 2.0;
+        let associative_energy = (self.store.energy[idx_a] + self.store.energy[idx_b]) / 2.0;
         
         // 3. Create content describing the association
-        let content_a = &self.metadata[idx_a].content;
-        let content_b = &self.metadata[idx_b].content;
+        let content_a = &self.store.metadata[idx_a].content;
+        let content_b = &self.store.metadata[idx_b].content;
         let associative_content = format!(
             "ASSOCIATION: [{}] <-> [{}]", 
             content_a.chars().take(50).collect::<String>(),
@@ -478,16 +403,16 @@ impl Medium {
         // 5. Nudge phases of original wavefronts toward each other (mutual alignment)
         let phase_coupling_strength = 0.15; // Stronger than normal coupling for explicit relations
         
-        let phase_a = self.phase[idx_a];
-        let phase_b = self.phase[idx_b];
+        let phase_a = self.store.phase[idx_a];
+        let phase_b = self.store.phase[idx_b];
         
         // Nudge A toward B
         let phase_diff_a = phase_b - phase_a;
-        self.phase[idx_a] += phase_coupling_strength * phase_diff_a.sin();
+        self.store.phase[idx_a] += phase_coupling_strength * phase_diff_a.sin();
         
         // Nudge B toward A  
         let phase_diff_b = phase_a - phase_b;
-        self.phase[idx_b] += phase_coupling_strength * phase_diff_b.sin();
+        self.store.phase[idx_b] += phase_coupling_strength * phase_diff_b.sin();
 
         // 6. Apply light dynamics to let the field settle
         self.apply_dynamics(0.05);

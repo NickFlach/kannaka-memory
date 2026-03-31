@@ -139,14 +139,14 @@ impl HrmStore {
             }
         } else {
             // Legacy: build from flat medium
-            for (i, meta) in self.medium.metadata.iter().enumerate() {
-                let vector = self.medium.wavefronts.row(i).to_vec();
+            for (i, meta) in self.medium.store.metadata.iter().enumerate() {
+                let vector = self.medium.store.wavefronts.row(i).to_vec();
                 let memory = HyperMemory {
                     id: meta.id,
                     vector,
-                    amplitude: self.medium.energy[i],
-                    frequency: self.medium.frequency[i],
-                    phase: self.medium.phase[i],
+                    amplitude: self.medium.store.energy[i],
+                    frequency: self.medium.store.frequency[i],
+                    phase: self.medium.store.phase[i],
                     decay_rate: 0.001,
                     created_at: meta.created_at,
                     layer_depth: 0,
@@ -180,9 +180,9 @@ impl HrmStore {
     fn sync_cache_to_medium(&mut self) {
         for (id, mem) in &self.memory_cache {
             if let Some(index) = self.medium.get_wavefront_index(id) {
-                self.medium.energy[index] = mem.amplitude;
-                self.medium.frequency[index] = mem.frequency;
-                self.medium.phase[index] = mem.phase;
+                self.medium.store.energy[index] = mem.amplitude;
+                self.medium.store.frequency[index] = mem.frequency;
+                self.medium.store.phase[index] = mem.phase;
             }
         }
     }
@@ -235,12 +235,12 @@ impl HrmStore {
                         chiral.right.energy[i],
                     );
                     // Fix the ID to match
-                    let new_id = self.medium.metadata.last().unwrap().id;
+                    let new_id = self.medium.store.metadata.last().unwrap().id;
                     let _ = self.medium.update_wavefront_id(&new_id, meta.id);
                     // Copy wave params
                     let idx = self.medium.wavefront_count() - 1;
-                    self.medium.frequency[idx] = chiral.right.frequency[i];
-                    self.medium.phase[idx] = chiral.right.phase[i];
+                    self.medium.store.frequency[idx] = chiral.right.frequency[i];
+                    self.medium.store.phase[idx] = chiral.right.phase[i];
                 }
             }
         }
@@ -393,7 +393,7 @@ impl HrmStore {
 
         // Save the .hrm file
         if let Err(e) = self.save_medium() {
-            eprintln!("[hrm] Failed to save after dream_native: {}", e);
+            eprintln!("Warning: Failed to save after dream_native: {}", e);
         }
 
         report
@@ -403,7 +403,7 @@ impl HrmStore {
     pub fn reset_energies(&mut self, target: f32) {
         self.medium.reset_energies(target);
         // Update cache
-        for meta in &self.medium.metadata {
+        for meta in &self.medium.store.metadata {
             if let Some(mem) = self.memory_cache.get_mut(&meta.id) {
                 mem.amplitude = target;
             }
@@ -461,8 +461,8 @@ impl HrmStore {
     /// Set the modality of a wavefront (NCS Phase 1.1).
     pub fn set_modality(&mut self, id: &Uuid, modality: crate::medium::Modality) {
         // Tag the flat medium
-        if let Some(&idx) = self.medium.id_to_index.get(id) {
-            self.medium.metadata[idx].modality = modality;
+        if let Some(&idx) = self.medium.store.id_to_index.get(id) {
+            self.medium.store.metadata[idx].modality = modality;
         }
         // Tag chiral hemisphere(s)
         if let Some(ref mut chiral) = self.chiral {
@@ -562,12 +562,12 @@ impl MediumBackend for HrmStore {
         
         // Update wave parameters
         if let Some(index) = self.medium.get_wavefront_index(&id) {
-            self.medium.energy[index] = memory.amplitude;
-            self.medium.frequency[index] = memory.frequency;
-            self.medium.phase[index] = memory.phase;
-            self.medium.timestamps[index] = memory.created_at.timestamp_millis();
-            self.medium.metadata[index].created_at = memory.created_at;
-            self.medium.metadata[index].hallucinated = memory.hallucinated;
+            self.medium.store.energy[index] = memory.amplitude;
+            self.medium.store.frequency[index] = memory.frequency;
+            self.medium.store.phase[index] = memory.phase;
+            self.medium.store.timestamps[index] = memory.created_at.timestamp_millis();
+            self.medium.store.metadata[index].created_at = memory.created_at;
+            self.medium.store.metadata[index].hallucinated = memory.hallucinated;
         }
         
         // Add to cache
@@ -592,8 +592,8 @@ impl MediumBackend for HrmStore {
         // Use the medium's resonance-based search
         let mut scores = Vec::new();
         
-        for (i, meta) in self.medium.metadata.iter().enumerate() {
-            let wavefront = self.medium.wavefronts.row(i);
+        for (i, meta) in self.medium.store.metadata.iter().enumerate() {
+            let wavefront = self.medium.store.wavefronts.row(i);
             let similarity: f32 = wavefront.iter()
                 .zip(query.iter())
                 .map(|(a, b)| a * b)

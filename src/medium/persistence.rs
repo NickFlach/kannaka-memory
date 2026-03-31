@@ -42,28 +42,28 @@ impl Medium {
         // Wavefronts tensor (row-major f32 array) — only active rows
         for i in 0..n as usize {
             for j in 0..WAVEFRONT_DIM {
-                writer.write_all(&self.wavefronts[[i, j]].to_le_bytes())?;
+                writer.write_all(&self.store.wavefronts[[i, j]].to_le_bytes())?;
             }
         }
 
         // Energy, frequency, phase arrays — only active entries
         for i in 0..n as usize {
-            writer.write_all(&self.energy[i].to_le_bytes())?;
+            writer.write_all(&self.store.energy[i].to_le_bytes())?;
         }
         for i in 0..n as usize {
-            writer.write_all(&self.frequency[i].to_le_bytes())?;
+            writer.write_all(&self.store.frequency[i].to_le_bytes())?;
         }
         for i in 0..n as usize {
-            writer.write_all(&self.phase[i].to_le_bytes())?;
+            writer.write_all(&self.store.phase[i].to_le_bytes())?;
         }
 
         // Timestamps
-        for &ts in &self.timestamps {
+        for &ts in &self.store.timestamps {
             writer.write_all(&ts.to_le_bytes())?;
         }
 
         // Metadata (bincode serialized)
-        let metadata_bytes = bincode::serialize(&self.metadata)?;
+        let metadata_bytes = bincode::serialize(&self.store.metadata)?;
         let metadata_len = metadata_bytes.len() as u32;
         writer.write_all(&metadata_len.to_le_bytes())?;
         writer.write_all(&metadata_bytes)?;
@@ -470,14 +470,17 @@ impl Medium {
         }
 
         Ok(Self {
-            len: n,
-            wavefronts,
-            energy,
-            frequency,
-            phase,
-            timestamps,
-            metadata,
-            id_to_index,
+            store: super::WavefrontStore {
+                len: n,
+                dims: WAVEFRONT_DIM,
+                wavefronts,
+                energy,
+                frequency,
+                phase,
+                timestamps,
+                metadata,
+                id_to_index,
+            },
             audio_codebook: Codebook::new(AUDIO_FEATURE_DIM, WAVEFRONT_DIM, AUDIO_CODEBOOK_SEED),
             visual_codebook: Codebook::new(
                 VISUAL_FEATURE_DIM,

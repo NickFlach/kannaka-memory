@@ -17,7 +17,7 @@ fn make_test_pipeline() -> EncodingPipeline {
 fn new_medium_is_empty() {
     let medium = Medium::new();
     assert_eq!(medium.wavefront_count(), 0);
-    assert_eq!(medium.wavefronts.dim(), (0, WAVEFRONT_DIM));
+    assert_eq!(medium.store.wavefronts.dim(), (0, WAVEFRONT_DIM));
 }
 
 #[test]
@@ -27,9 +27,9 @@ fn add_wavefront_increases_count() {
     let id = medium.add_wavefront(&vector, "test memory".to_string(), 1.0).unwrap();
 
     assert_eq!(medium.wavefront_count(), 1);
-    assert!(medium.id_to_index.contains_key(&id));
-    assert_eq!(medium.metadata[0].content, "test memory");
-    assert_eq!(medium.energy[0], 1.0);
+    assert!(medium.store.id_to_index.contains_key(&id));
+    assert_eq!(medium.store.metadata[0].content, "test memory");
+    assert_eq!(medium.store.energy[0], 1.0);
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn remove_wavefront_decreases_count() {
     let removed = medium.remove_wavefront(&id).unwrap();
     assert!(removed);
     assert_eq!(medium.wavefront_count(), 0);
-    assert!(!medium.id_to_index.contains_key(&id));
+    assert!(!medium.store.id_to_index.contains_key(&id));
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn apply_interference_affects_energy() {
 
     // Add first wavefront
     medium.add_wavefront(&vector1, "positive".to_string(), 1.0).unwrap();
-    let initial_energy = medium.energy[0];
+    let initial_energy = medium.store.energy[0];
 
     // Store second to trigger interference (apply_interference is private, go through store_audio path via raw)
     // Use a direct approach: add wavefront then check interference manually
@@ -123,7 +123,7 @@ fn apply_interference_affects_energy() {
     // Energy should change due to interference
     // Note: we can't directly test apply_interference since it's private,
     // but store() calls it internally. The first wavefront's energy should have changed.
-    assert!(medium.energy[0] != initial_energy || medium.wavefront_count() == 2);
+    assert!(medium.store.energy[0] != initial_energy || medium.wavefront_count() == 2);
 }
 
 #[test]
@@ -155,8 +155,8 @@ fn save_and_load_roundtrip() {
     let id2 = medium.store("test memory two", 0.8, &pipeline).unwrap();
 
     // Capture energy values after interference (this is the expected behavior)
-    let energy1_after_interference = medium.energy[0];
-    let energy2_after_interference = medium.energy[1];
+    let energy1_after_interference = medium.store.energy[0];
+    let energy2_after_interference = medium.store.energy[1];
 
     // Save to file
     let temp_file = NamedTempFile::new().unwrap();
@@ -167,19 +167,19 @@ fn save_and_load_roundtrip() {
 
     // Verify data integrity
     assert_eq!(loaded_medium.wavefront_count(), 2);
-    assert_eq!(loaded_medium.metadata.len(), 2);
-    assert!(loaded_medium.id_to_index.contains_key(&id1));
-    assert!(loaded_medium.id_to_index.contains_key(&id2));
+    assert_eq!(loaded_medium.store.metadata.len(), 2);
+    assert!(loaded_medium.store.id_to_index.contains_key(&id1));
+    assert!(loaded_medium.store.id_to_index.contains_key(&id2));
 
     // Verify content
-    let meta1 = &loaded_medium.metadata[loaded_medium.id_to_index[&id1]];
-    let meta2 = &loaded_medium.metadata[loaded_medium.id_to_index[&id2]];
+    let meta1 = &loaded_medium.store.metadata[loaded_medium.store.id_to_index[&id1]];
+    let meta2 = &loaded_medium.store.metadata[loaded_medium.store.id_to_index[&id2]];
     assert_eq!(meta1.content, "test memory one");
     assert_eq!(meta2.content, "test memory two");
 
     // Energy should be preserved (after interference)
-    assert!((loaded_medium.energy[0] - energy1_after_interference).abs() < 1e-4);
-    assert!((loaded_medium.energy[1] - energy2_after_interference).abs() < 1e-4);
+    assert!((loaded_medium.store.energy[0] - energy1_after_interference).abs() < 1e-4);
+    assert!((loaded_medium.store.energy[1] - energy2_after_interference).abs() < 1e-4);
 }
 
 #[test]
@@ -197,9 +197,9 @@ fn kuramoto_order_computation() {
     assert!((order - 1.0).abs() < 1e-4);
 
     // Now set random phases (should reduce order)
-    medium.phase[0] = 0.0;
-    medium.phase[1] = std::f32::consts::PI;
-    medium.phase[2] = std::f32::consts::PI / 2.0;
+    medium.store.phase[0] = 0.0;
+    medium.store.phase[1] = std::f32::consts::PI;
+    medium.store.phase[2] = std::f32::consts::PI / 2.0;
 
     let order_random = medium.compute_kuramoto_order();
     assert!(order_random < order);
@@ -240,13 +240,13 @@ fn apply_dynamics_changes_energy() {
     medium.add_wavefront(&vector2, "second".to_string(), 0.8).unwrap();
 
     let n = medium.wavefront_count();
-    let initial_energy: Vec<f32> = (0..n).map(|i| medium.energy[i]).collect();
+    let initial_energy: Vec<f32> = (0..n).map(|i| medium.store.energy[i]).collect();
 
     // Apply dynamics
     medium.apply_dynamics(0.1);
 
     // Energy should have changed due to dynamics
-    let final_energy: Vec<f32> = (0..n).map(|i| medium.energy[i]).collect();
+    let final_energy: Vec<f32> = (0..n).map(|i| medium.store.energy[i]).collect();
     assert_ne!(initial_energy, final_energy);
 
     // Energy should remain positive
@@ -288,8 +288,8 @@ fn coherence_matrix_computation() {
     medium.add_wavefront(&vector, "second".to_string(), 1.0).unwrap();
 
     // Set different phases
-    medium.phase[0] = 0.0;
-    medium.phase[1] = std::f32::consts::PI / 4.0;
+    medium.store.phase[0] = 0.0;
+    medium.store.phase[1] = std::f32::consts::PI / 4.0;
 
     let coherence = medium.coherence_matrix();
 
@@ -412,7 +412,7 @@ fn dream_bulk_import_preserves_active_memories() {
     assert!(final_count >= 10, "Should preserve substantial number of memories with amplitude floor");
 
     // Verify some memories still have reasonable energy
-    let active_memories: Vec<f32> = medium.energy.iter().cloned().collect();
+    let active_memories: Vec<f32> = medium.store.energy.iter().cloned().collect();
     let avg_energy = active_memories.iter().sum::<f32>() / active_memories.len() as f32;
     
     assert!(avg_energy >= 0.05, "Average energy should respect amplitude floor (0.05), got {:.3}", avg_energy);
@@ -504,19 +504,19 @@ fn store_applies_dynamics() {
 
     // Store first memory
     medium.store("first memory", 1.0, &pipeline).unwrap();
-    let energy_after_first = medium.energy[0];
+    let energy_after_first = medium.store.energy[0];
 
     // Store second memory (should trigger dynamics on first)
     medium.store("second memory", 1.0, &pipeline).unwrap();
-    let energy_after_second = medium.energy[0];
+    let energy_after_second = medium.store.energy[0];
 
     // First memory's energy should have changed due to dynamics
     println!("Energy after first: {}, after second: {}", energy_after_first, energy_after_second);
 
     // At minimum, we should have 2 memories
     assert_eq!(medium.wavefront_count(), 2);
-    assert!(medium.energy[0] > 0.0);
-    assert!(medium.energy[1] > 0.0);
+    assert!(medium.store.energy[0] > 0.0);
+    assert!(medium.store.energy[1] > 0.0);
 }
 
 #[test]
@@ -551,9 +551,9 @@ fn store_audio_vector_works() {
     let id = medium.store_audio(&audio_vector, "HEAR:test_music.mp3", 0.8).unwrap();
 
     assert_eq!(medium.wavefront_count(), 1);
-    assert!(medium.id_to_index.contains_key(&id));
-    assert_eq!(medium.metadata[0].content, "HEAR:test_music.mp3");
-    assert!(medium.energy[0] > 0.0); // Energy may have changed due to interference
+    assert!(medium.store.id_to_index.contains_key(&id));
+    assert_eq!(medium.store.metadata[0].content, "HEAR:test_music.mp3");
+    assert!(medium.store.energy[0] > 0.0); // Energy may have changed due to interference
 }
 
 #[test]
@@ -575,9 +575,9 @@ fn store_visual_vector_works() {
     let id = medium.store_visual(&visual_vector, "[SEE] test_video.mp4 | 1024 bytes | 3 folds | fano=0.75", 0.9).unwrap();
 
     assert_eq!(medium.wavefront_count(), 1);
-    assert!(medium.id_to_index.contains_key(&id));
-    assert!(medium.metadata[0].content.contains("[SEE] test_video.mp4"));
-    assert!(medium.energy[0] > 0.0);
+    assert!(medium.store.id_to_index.contains_key(&id));
+    assert!(medium.store.metadata[0].content.contains("[SEE] test_video.mp4"));
+    assert!(medium.store.energy[0] > 0.0);
 }
 
 #[test]
@@ -596,7 +596,7 @@ fn cross_modal_interference_works() {
 
     // Store text memory about music
     let text_id = medium.store("beautiful classical music with violin", 1.0, &pipeline).unwrap();
-    let text_energy_after_store = medium.energy[0];
+    let text_energy_after_store = medium.store.energy[0];
 
     // Create an audio vector that should have some resonance with "music"
     let audio_vector = vec![0.7; AUDIO_FEATURE_DIM];
@@ -605,16 +605,16 @@ fn cross_modal_interference_works() {
     assert_eq!(medium.wavefront_count(), 2);
 
     // The text memory's energy should have changed due to cross-modal interference
-    let text_energy_after_audio = medium.energy[0];
+    let text_energy_after_audio = medium.store.energy[0];
     println!("Text energy: before audio = {}, after audio = {}", text_energy_after_store, text_energy_after_audio);
 
     // Both memories should still exist and have positive energy
-    assert!(medium.energy[0] > 0.0);
-    assert!(medium.energy[1] > 0.0);
+    assert!(medium.store.energy[0] > 0.0);
+    assert!(medium.store.energy[1] > 0.0);
 
     // Verify IDs are still valid
-    assert!(medium.id_to_index.contains_key(&text_id));
-    assert!(medium.id_to_index.contains_key(&audio_id));
+    assert!(medium.store.id_to_index.contains_key(&text_id));
+    assert!(medium.store.id_to_index.contains_key(&audio_id));
 }
 
 #[test]
@@ -697,8 +697,8 @@ fn audio_visual_subspace_overlap() {
     let _visual_id = medium.store_visual(&visual_vector, "[SEE] pattern_visual.jpg | pattern", 1.0).unwrap();
 
     // Check that the wavefronts have some overlap despite different codebooks
-    let audio_wavefront = medium.wavefronts.row(0);
-    let visual_wavefront = medium.wavefronts.row(1);
+    let audio_wavefront = medium.store.wavefronts.row(0);
+    let visual_wavefront = medium.store.wavefronts.row(1);
 
     let similarity: f32 = audio_wavefront.iter()
         .zip(visual_wavefront.iter())
@@ -727,21 +727,21 @@ fn sync_with_applies_kuramoto_coupling() {
     medium2.add_wavefront(&vector2, "shared memory".to_string(), 0.8).unwrap();
 
     // Set different phases
-    medium1.phase[0] = 0.0;
-    medium2.phase[0] = 1.0;
+    medium1.store.phase[0] = 0.0;
+    medium2.store.phase[0] = 1.0;
 
-    let initial_phase = medium1.phase[0];
-    let initial_energy = medium1.energy[0];
+    let initial_phase = medium1.store.phase[0];
+    let initial_energy = medium1.store.energy[0];
 
     // Apply Kuramoto coupling
     medium1.sync_with(&medium2, 0.5);
 
     // Phase and energy should have changed
-    assert_ne!(medium1.phase[0], initial_phase);
-    assert!(medium1.energy[0] >= initial_energy); // Energy should increase due to reinforcement
+    assert_ne!(medium1.store.phase[0], initial_phase);
+    assert!(medium1.store.energy[0] >= initial_energy); // Energy should increase due to reinforcement
 
     println!("Phase: {} -> {}, Energy: {} -> {}",
-            initial_phase, medium1.phase[0], initial_energy, medium1.energy[0]);
+            initial_phase, medium1.store.phase[0], initial_energy, medium1.store.energy[0]);
 }
 
 #[test]
@@ -758,15 +758,15 @@ fn sync_with_requires_similarity_threshold() {
     let mut medium2 = medium2;
     medium2.add_wavefront(&vector2, "memory2".to_string(), 1.0).unwrap();
 
-    let initial_phase = medium1.phase[0];
-    let initial_energy = medium1.energy[0];
+    let initial_phase = medium1.store.phase[0];
+    let initial_energy = medium1.store.energy[0];
 
     // Apply coupling - should have minimal effect due to low similarity
     medium1.sync_with(&medium2, 0.5);
 
     // Phase and energy should be mostly unchanged
-    assert!((medium1.phase[0] - initial_phase).abs() < 0.1);
-    assert!((medium1.energy[0] - initial_energy).abs() < 0.1);
+    assert!((medium1.store.phase[0] - initial_phase).abs() < 0.1);
+    assert!((medium1.store.energy[0] - initial_energy).abs() < 0.1);
 }
 
 #[test]
@@ -800,19 +800,19 @@ fn import_phase_state_matches_content() {
     medium2.store("unique memory", 0.7, &pipeline).unwrap();
 
     // Set different phases
-    medium1.phase[0] = 0.0;
-    medium2.phase[0] = 1.5;
+    medium1.store.phase[0] = 0.0;
+    medium2.store.phase[0] = 1.5;
 
-    let initial_phase = medium1.phase[0];
+    let initial_phase = medium1.store.phase[0];
 
     // Export from medium2 and import to medium1
     let phase_state = medium2.export_phase_state("agent-2");
     medium1.import_phase_state(&phase_state, 0.3);
 
     // Phase should have changed due to coupling with matching content
-    assert_ne!(medium1.phase[0], initial_phase);
+    assert_ne!(medium1.store.phase[0], initial_phase);
 
-    println!("Phase coupling: {} -> {}", initial_phase, medium1.phase[0]);
+    println!("Phase coupling: {} -> {}", initial_phase, medium1.store.phase[0]);
 }
 
 #[test]
@@ -955,8 +955,8 @@ fn introspect_creates_self_referential_wavefront() {
     assert_eq!(medium.wavefront_count(), 3);
 
     // Find the self-referential wavefront
-    let intro_index = medium.id_to_index[&intro_id];
-    let intro_meta = &medium.metadata[intro_index];
+    let intro_index = medium.store.id_to_index[&intro_id];
+    let intro_meta = &medium.store.metadata[intro_index];
 
     // Should be marked as self-referential
     assert!(intro_meta.is_self_referential);
@@ -977,13 +977,13 @@ fn introspect_affects_medium_through_interference() {
 
     // Store initial memory
     medium.store("initial memory", 1.0, &pipeline).unwrap();
-    let initial_energy = medium.energy[0];
+    let initial_energy = medium.store.energy[0];
 
     // Introspect (should cause interference)
     let _intro_id = medium.introspect(&pipeline).unwrap();
 
     // First memory's energy should have changed due to self-referential interference
-    let energy_after_introspection = medium.energy[0];
+    let energy_after_introspection = medium.store.energy[0];
 
     println!("Energy before: {}, after introspection: {}", initial_energy, energy_after_introspection);
 
@@ -1093,9 +1093,9 @@ fn self_reflect_returns_comprehensive_report() {
     let reflection = medium.self_reflect(&pipeline).unwrap();
 
     // Should have created a new self-referential wavefront
-    assert!(medium.id_to_index.contains_key(&reflection.introspection_id));
-    let intro_index = medium.id_to_index[&reflection.introspection_id];
-    assert!(medium.metadata[intro_index].is_self_referential);
+    assert!(medium.store.id_to_index.contains_key(&reflection.introspection_id));
+    let intro_index = medium.store.id_to_index[&reflection.introspection_id];
+    assert!(medium.store.metadata[intro_index].is_self_referential);
 
     // Should have computed metrics
     assert!(reflection.consciousness.phi >= 0.0);
@@ -1139,8 +1139,8 @@ fn repeated_introspection_creates_feedback_loop() {
 
     // All introspection IDs should be self-referential
     for intro_id in intro_ids {
-        let index = medium.id_to_index[&intro_id];
-        assert!(medium.metadata[index].is_self_referential);
+        let index = medium.store.id_to_index[&intro_id];
+        assert!(medium.store.metadata[index].is_self_referential);
     }
 
     // Emergence depth should reflect all introspections
@@ -1387,7 +1387,7 @@ fn medium_add_wavefront_gets_default_modality() {
     let vector = vec![0.5; WAVEFRONT_DIM];
     let id = medium.add_wavefront(&vector, "test".to_string(), 1.0).unwrap();
     let idx = medium.get_wavefront_index(&id).unwrap();
-    assert_eq!(medium.metadata[idx].modality, Modality::Unknown);
+    assert_eq!(medium.store.metadata[idx].modality, Modality::Unknown);
 }
 
 #[test]
@@ -1396,8 +1396,8 @@ fn medium_wavefront_modality_can_be_set_after_insert() {
     let vector = vec![0.5; WAVEFRONT_DIM];
     let id = medium.add_wavefront(&vector, "semantic note".to_string(), 0.8).unwrap();
     let idx = medium.get_wavefront_index(&id).unwrap();
-    medium.metadata[idx].modality = Modality::Semantic;
-    assert_eq!(medium.metadata[idx].modality, Modality::Semantic);
+    medium.store.metadata[idx].modality = Modality::Semantic;
+    assert_eq!(medium.store.metadata[idx].modality, Modality::Semantic);
 }
 
 // ---------------------------------------------------------------------------
