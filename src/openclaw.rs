@@ -1,6 +1,6 @@
 //! OpenClaw integration layer — high-level API for the assistant.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
