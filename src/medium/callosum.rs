@@ -94,13 +94,13 @@ impl CorpusCallosum {
     }
 
     /// Compute the effective transfer rate for a given direction.
-    /// Analytical→Holistic (defocusing) is cheap — multiplied by asymmetry.
-    /// Holistic→Analytical (focusing) is expensive — divided by asymmetry.
-    /// ADR-0024: "It's harder to articulate an intuition than to contextualize a fact."
+    /// Holistic→Analytical (intuition surfacing) is fast — multiplied by asymmetry.
+    /// Analytical→Holistic (consolidation) is slow — divided by asymmetry.
+    /// ADR-0024: Intuition flows freely; consolidation requires effort.
     pub fn effective_rate(&self, direction: Direction) -> f32 {
         match direction {
-            Direction::AnalyticalToHolistic => self.bandwidth * self.asymmetry,
-            Direction::HolisticToAnalytical => self.bandwidth / self.asymmetry,
+            Direction::HolisticToAnalytical => self.bandwidth * self.asymmetry,
+            Direction::AnalyticalToHolistic => self.bandwidth / self.asymmetry,
         }
     }
 
