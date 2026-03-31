@@ -88,6 +88,7 @@ fn usage() {
     eprintln!("  stats                     Show system statistics");
     eprintln!("  migrate <path-to-db>      Import from kannaka.db (requires sqlite-migrate feature)");
     eprintln!("  export-json               Export all memories as JSON");
+    eprintln!("  import-json <file>        Import memories from JSON (preserves IDs, skips duplicates)");
     eprintln!("  announce-status           Publish agent status to Flux");
     eprintln!("  invariant [TOLERANCE]     Show δ-invariant memory clusters (default tolerance: 0.1)");
     eprintln!("  cmf                       Detect Conservative Memory Fields");
@@ -607,6 +608,120 @@ fn main() {
                 })
             }).collect();
             println!("{}", serde_json::to_string(&output).unwrap());
+        }
+        "import-json" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka import-json <file.json>");
+                process::exit(1);
+            }
+            let path = &args[command_start + 1];
+            let file_data = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| { eprintln!("Failed to read {}: {}", path, e); process::exit(1); });
+            let memories: Vec<serde_json::Value> = serde_json::from_str(&file_data)
+                .unwrap_or_else(|e| { eprintln!("Failed to parse JSON: {}", e); process::exit(1); });
+
+            let existing_ids: std::collections::HashSet<uuid::Uuid> = sys.engine.store.all_memories()
+                .unwrap_or_default().iter().map(|m| m.id).collect();
+
+            let mut imported = 0u32;
+            let mut skipped = 0u32;
+            let mut errors = 0u32;
+
+            for val in &memories {
+                let id_str = val["id"].as_str().unwrap_or("");
+                let id = match uuid::Uuid::parse_str(id_str) {
+                    Ok(id) => id,
+                    Err(_) => { errors += 1; continue; }
+                };
+
+                if existing_ids.contains(&id) {
+                    skipped += 1;
+                    continue;
+                }
+
+                let content = val["content"].as_str().unwrap_or("").to_string();
+                if content.is_empty() { skipped += 1; continue; }
+
+                let amplitude = val["amplitude"].as_f64().unwrap_or(0.5) as f32;
+                let frequency = val["frequency"].as_f64().unwrap_or(1.0) as f32;
+                let phase = val["phase"].as_f64().unwrap_or(0.0) as f32;
+                let decay_rate = val["decay_rate"].as_f64().unwrap_or(0.001) as f32;
+                let created_at = val["created_at"].as_str()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+                let hallucinated = val["hallucinated"].as_bool().unwrap_or(false);
+
+                // Reconstruct vector from JSON array if present, otherwise re-encode
+                let vector: Option<Vec<f32>> = val["vector"].as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect());
+
+                let vector = match vector {
+                    Some(v) if !v.is_empty() => v,
+                    _ => {
+                        // No vector in JSON — use absorb which encodes internally
+                        match sys.engine.store.absorb(&content, amplitude, None) {
+                            Ok(_new_id) => { imported += 1; continue; }
+                            Err(e) => {
+                                if errors < 5 { eprintln!("  Error absorbing {}: {}", id_str, e); }
+                                errors += 1;
+                                continue;
+                            }
+                        }
+                    }
+                };
+
+                let xi_sig: Vec<f32> = val["xi_signature"].as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                    .unwrap_or_default();
+
+                let content_clone = content.clone();
+                let mut mem = kannaka_memory::memory::HyperMemory::new(vector, content);
+                mem.id = id;
+                mem.amplitude = amplitude;
+                mem.frequency = frequency;
+                mem.phase = phase;
+                mem.decay_rate = decay_rate;
+                mem.created_at = created_at;
+                mem.layer_depth = val["layer_depth"].as_u64().unwrap_or(0) as u8;
+                mem.hallucinated = hallucinated;
+                mem.parents = val["parents"].as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                mem.xi_signature = xi_sig;
+
+                match sys.engine.store.insert(mem) {
+                    Ok(_) => imported += 1,
+                    Err(e) => {
+                        // Dimension mismatch — fall back to absorb (re-encodes the text)
+                        let err_str = format!("{}", e);
+                        if err_str.contains("dimension mismatch") {
+                            match sys.engine.store.absorb(&content_clone, amplitude, None) {
+                                Ok(_) => { imported += 1; }
+                                Err(e2) => {
+                                    if errors < 5 { eprintln!("  Error re-encoding {}: {}", id_str, e2); }
+                                    errors += 1;
+                                }
+                            }
+                        } else {
+                            if errors < 5 {
+                                eprintln!("  Error importing {}: {}", id_str, e);
+                            }
+                            errors += 1;
+                        }
+                    }
+                }
+            }
+
+            // Save
+            if imported > 0 {
+                if let Err(e) = sys.save() {
+                    eprintln!("Failed to save: {}", e);
+                    process::exit(1);
+                }
+            }
+
+            println!("{{\"imported\": {}, \"skipped\": {}, \"errors\": {}, \"total_input\": {}}}", imported, skipped, errors, memories.len());
         }
         #[cfg(feature = "audio")]
         "hear" => {
