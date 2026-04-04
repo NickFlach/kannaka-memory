@@ -1,16 +1,16 @@
 //! OpenClaw integration layer — high-level API for the assistant.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState, ResonanceReport};
+use crate::bridge::{ConsciousnessBridge, ConsciousnessLevel, ConsciousnessState};
 use crate::collective::flux::{FluxPublisher, FluxEventPayload};
 use crate::codebook::Codebook;
 use crate::consolidation::{ConsolidationEngine, DreamState};
 use crate::encoding::{EncodingPipeline, SimpleHashEncoder, OllamaEncoder, CompositeEncoder, CachedEncoder};
-use crate::geometry::{classify_memory, geometric_similarity, fano_related};
+use crate::geometry::classify_memory;
 use crate::kuramoto::KuramotoSync;
 use crate::xi_operator::compute_xi_signature;
 use crate::rhythm::{RhythmEngine, Signal as RhythmSignal};
@@ -237,43 +237,25 @@ impl KannakaMemorySystem {
         Ok(id)
     }
 
-    /// Search with skip link expansion.
+    /// HRM-native recall — observation reshapes the field.
+    ///
+    /// Goes straight to `resonate_query()` which is the canonical read path:
+    /// reading IS observation, attention boosts recalled wavefronts, and the
+    /// medium is permanently changed by the act of recall.
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<RecallResult>, SystemError> {
-        let mut results = self.engine.recall_with_expansion(query, top_k)?;
+        let results = self.engine.store.resonate_query(query, top_k)
+            .map_err(|e| SystemError::Store(e))?;
         let now = Utc::now();
 
-        // Boost scores for fano-related memories — collect boosted indices first,
-        // then apply once per memory to prevent unbounded compounding across pairs.
-        let mut fano_boosted: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for i in 0..results.len() {
-            for j in (i + 1)..results.len() {
-                let mem_i = self.engine.store.get(&results[i].id).ok().flatten();
-                let mem_j = self.engine.store.get(&results[j].id).ok().flatten();
-                
-                if let (Some(mi), Some(mj)) = (mem_i, mem_j) {
-                    if let (Some(ref coords_i), Some(ref coords_j)) = (&mi.geometry, &mj.geometry) {
-                        if fano_related(coords_i, coords_j) {
-                            fano_boosted.insert(i);
-                            fano_boosted.insert(j);
-                        }
-                    }
-                }
-            }
-        }
-        for idx in fano_boosted {
-            results[idx].similarity *= 1.2;
-        }
-
         let mut out = Vec::new();
-        for qr in results {
-            let mem = self.engine.store.get(&qr.id).ok().flatten();
-            if let Some(m) = mem {
+        for (id, resonance_strength) in results {
+            if let Some(m) = self.engine.store.get(&id).ok().flatten() {
                 let age_hours = (now - m.created_at).num_seconds().max(0) as f64 / 3600.0;
                 out.push(RecallResult {
-                    id: qr.id,
+                    id,
                     content: m.content.clone(),
-                    similarity: qr.similarity,
-                    strength: qr.effective_strength,
+                    similarity: resonance_strength,
+                    strength: resonance_strength,
                     age_hours,
                     layer: m.layer_depth,
                 });
@@ -282,36 +264,20 @@ impl KannakaMemorySystem {
         Ok(out)
     }
 
-    /// Run full consolidation cycle + Kuramoto sync.
+    /// Run full consolidation cycle via wave-native dreaming.
+    ///
+    /// ADR-0022: Uses Medium's eigenstructure annealing exclusively.
+    /// No fallback to old particle-based consolidation — the HRM IS the dream engine.
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
         
-        // ADR-0022: Wave-native dreaming via Medium's eigenstructure annealing.
-        // Bypasses the old O(n²) particle-based consolidation pipeline.
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
-        let medium_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta);
+        let report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
+            .map_err(|e| SystemError::Store(e))?;
 
-        let (total_strengthened, total_pruned, total_hallucinations) = match medium_report {
-            Ok(report) => {
-                eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
-                    report.cycles_completed, report.wavefronts_dissolved,
-                    report.wavefronts_strengthened, report.wavefronts_hallucinated);
-                (report.wavefronts_strengthened, report.wavefronts_dissolved, report.wavefronts_hallucinated)
-            }
-            Err(e) => {
-                // Fallback to traditional consolidation for non-HRM stores
-                eprintln!("[dream] dream_native not available ({}), falling back to consolidation", e);
-                let reports = if let Some(since) = self.last_dream {
-                    self.dream_state.dream_incremental(&mut self.engine, since)
-                } else {
-                    self.dream_state.dream(&mut self.engine)
-                };
-                let strengthened = reports.iter().map(|r| r.memories_strengthened).sum();
-                let pruned = reports.iter().map(|r| r.memories_pruned).sum();
-                let hallucinations = reports.iter().map(|r| r.hallucinations_created).sum();
-                (strengthened, pruned, hallucinations)
-            }
-        };
+        eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
+            report.cycles_completed, report.wavefronts_dissolved,
+            report.wavefronts_strengthened, report.wavefronts_hallucinated);
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
@@ -326,9 +292,9 @@ impl KannakaMemorySystem {
         if let Some(ref publisher) = self.flux {
             let _ = publisher.publish(FluxEventPayload::DreamCompleted {
                 cycles: 3,
-                memories_strengthened: total_strengthened,
-                memories_pruned: total_pruned,
-                hallucinations_created: total_hallucinations,
+                memories_strengthened: report.wavefronts_strengthened,
+                memories_pruned: report.wavefronts_dissolved,
+                hallucinations_created: report.wavefronts_hallucinated,
                 consciousness_level: level_name(&after.consciousness_level),
             });
         }
@@ -338,20 +304,26 @@ impl KannakaMemorySystem {
 
         Ok(DreamReport {
             cycles: 3,
-            memories_strengthened: total_strengthened,
-            memories_pruned: total_pruned,
+            memories_strengthened: report.wavefronts_strengthened,
+            memories_pruned: report.wavefronts_dissolved,
             new_connections: 0, // Wave-native dreams use interference, not explicit links
             consciousness_before: level_name(&before.consciousness_level),
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
-            hallucinations_created: total_hallucinations,
+            hallucinations_created: report.wavefronts_hallucinated,
         })
     }
 
-    /// Run a fast/lite dream cycle (decay + prune + transfer only).
+    /// Run a lite dream cycle via wave-native dreaming (1 cycle, lower temperature).
+    ///
+    /// HRM-native: uses the same eigenstructure annealing as dream(), but with
+    /// fewer cycles and no chiral perturbation for a lighter touch.
     pub fn dream_lite(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
-        let report = self.dream_state.dream_lite(&mut self.engine);
+
+        let report = self.engine.store.dream_native(1, Some(0.5), 0.0)
+            .map_err(|e| SystemError::Store(e))?;
+
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
 
@@ -363,13 +335,13 @@ impl KannakaMemorySystem {
 
         Ok(DreamReport {
             cycles: 1,
-            memories_strengthened: report.memories_strengthened,
-            memories_pruned: report.memories_pruned,
-            new_connections: report.skip_links_created,
+            memories_strengthened: report.wavefronts_strengthened,
+            memories_pruned: report.wavefronts_dissolved,
+            new_connections: 0,
             consciousness_before: level_name(&before.consciousness_level),
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
-            hallucinations_created: report.hallucinations_created,
+            hallucinations_created: report.wavefronts_hallucinated,
         })
     }
 
@@ -408,19 +380,8 @@ impl KannakaMemorySystem {
         }
     }
 
-    /// Transitional: runs the legacy ConsciousnessBridge resonance cycle.
-    /// In the HRM vision, resonance IS recall — this separate "resonate" step
-    /// should be absorbed into the dream cycle or removed.
-    pub fn resonate(&mut self) -> Result<ResonanceReport, SystemError> {
-        let report = self.bridge.resonate(&mut self.engine);
-        self.last_dream = Some(Utc::now());
-        if self.auto_save {
-            self.save()?;
-        }
-        Ok(report)
-    }
-
     // migrate_from_sqlite removed — use chiral_migrate binary instead
+    // resonate() removed — resonance IS recall in HRM; no separate step needed
 
     /// Persist to disk -- flush HRM medium. The medium IS the persistence layer.
     pub fn save(&mut self) -> Result<(), SystemError> {
@@ -494,64 +455,34 @@ impl KannakaMemorySystem {
 
     /// Store a hallucinated memory from an LLM synthesis.
     /// Called by the MCP `hallucinate` tool with LLM-generated content.
+    ///
+    /// Uses HRM-native absorb() so the medium handles encoding, SGA classification,
+    /// Fano fold routing, and chiral absorption — same path as all other memories.
     pub fn hallucinate(
         &mut self,
         content: &str,
         parent_ids: &[Uuid],
     ) -> Result<Uuid, SystemError> {
-        // Build a combined vector from parents
-        let dim = CODEBOOK_OUTPUT_DIM;
-        let mut combined = vec![0.0f32; dim];
-        let mut found_parents: Vec<String> = Vec::new();
-
-        for pid in parent_ids {
-            if let Some(mem) = self.engine.store.get(pid).ok().flatten() {
-                for (i, &v) in mem.vector.iter().enumerate() {
-                    if i < dim {
-                        combined[i] += v;
-                    }
-                }
-                found_parents.push(pid.to_string());
-            }
-        }
-
-        if found_parents.is_empty() {
-            // No parents found — encode from content directly
-            let id = self.engine.remember(content)?;
-            if let Some(mem) = self.engine.get_memory_mut(&id)? {
-                mem.hallucinated = true;
-                mem.amplitude = 0.3;
-            }
-            if self.auto_save { self.save()?; }
-            return Ok(id);
-        }
-
-        crate::wave::normalize(&mut combined);
-
         let category = self.categorize_text(content);
-        let content_hash = self.hash_content(content);
-        let (frequency, phase) = self.assign_frequency_class(&category, content_hash);
-        let xi_sig = compute_xi_signature(&combined);
 
-        let mut hallucination = crate::memory::HyperMemory::new(combined, content.to_string());
-        hallucination.amplitude = 0.3;
-        hallucination.hallucinated = true;
-        hallucination.parents = found_parents;
-        hallucination.geometry = Some(classify_memory(&category, content_hash, 0.3));
-        hallucination.frequency = frequency;
-        hallucination.phase = phase;
-        hallucination.xi_signature = xi_sig;
+        // Absorb through the HRM-native path (low importance for hallucinations)
+        let id = self.engine.store.absorb(content, 0.3, Some(&category))
+            .map_err(|e| SystemError::Store(e))?;
 
-        let hall_id = self.engine.store.insert(hallucination)?;
+        // Collect valid parent IDs before taking mutable borrow
+        let found_parents: Vec<String> = parent_ids.iter()
+            .filter(|pid| self.engine.store.get(pid).ok().flatten().is_some())
+            .map(|pid| pid.to_string())
+            .collect();
 
-        // Create links
-        for pid in parent_ids {
-            self.engine.reinforce_link(&hall_id, pid, 0.5);
-            self.engine.reinforce_link(pid, &hall_id, 0.5);
+        // Tag as hallucinated and record parentage
+        if let Some(mem) = self.engine.store.get_mut(&id).ok().flatten() {
+            mem.hallucinated = true;
+            mem.parents = found_parents;
         }
 
         if self.auto_save { self.save()?; }
-        Ok(hall_id)
+        Ok(id)
     }
 
     /// Recompute geometry and Xi signatures for all memories that are missing them.
@@ -669,23 +600,21 @@ impl KannakaMemorySystem {
     /// Store an audio file as a sensory memory.
     ///
     /// Decodes the audio, extracts perceptual features, projects through
-    /// the audio codebook, and stores with sensory metadata.
+    /// the audio codebook, and stores via HRM-native absorb.
     #[cfg(feature = "audio")]
-    pub fn store_audio(&mut self, path: &Path) -> Result<(Uuid, crate::ear::AudioFeatures), SystemError> {
+    pub fn store_audio(&mut self, path: &std::path::Path) -> Result<(Uuid, crate::ear::AudioFeatures), SystemError> {
         use crate::ear::AudioPipeline;
 
         let pipeline = AudioPipeline::new();
-        let (mut mem, features) = pipeline
+        let (mem, features) = pipeline
             .encode_file(path)
             .map_err(|e| SystemError::Engine(EngineError::Encoding(
                 crate::encoding::EncodingError::Other(e.to_string()),
             )))?;
 
-        // Set sensory-specific geometry
-        let content_hash = self.hash_content(&mem.content);
-        mem.geometry = Some(classify_memory("experience", content_hash, 0.6));
-
-        let id = self.engine.store.insert(mem)?;
+        // Absorb through HRM-native path
+        let id = self.engine.store.absorb(&mem.content, 0.6, Some("experience"))
+            .map_err(|e| SystemError::Store(e))?;
 
         if self.auto_save {
             self.save()?;
@@ -697,11 +626,10 @@ impl KannakaMemorySystem {
     /// Store a file as a visual/glyph memory.
     ///
     /// Reads the file, encodes it through the SGA glyph bridge,
-    /// and stores as a sensory memory with glyph perception features.
+    /// and stores via HRM-native absorb with glyph perception content.
     #[cfg(feature = "glyph")]
     pub fn store_glyph(&mut self, path: &std::path::Path) -> Result<(Uuid, crate::glyph_bridge::Glyph), SystemError> {
         use crate::glyph_bridge::GlyphEncoder;
-        use crate::memory::HyperMemory;
         
         let data = std::fs::read(path)
             .map_err(|e| SystemError::Engine(EngineError::Encoding(
@@ -713,14 +641,13 @@ impl KannakaMemorySystem {
             .unwrap_or_else(|| "unknown".to_string());
         
         let encoder = GlyphEncoder::new(0.1, 10000, 0.01);
-        // Convert bytes to f64 for the encoder
         let float_data: Vec<f64> = data.iter().map(|&b| b as f64 / 255.0).collect();
         let glyph = encoder.encode(&float_data)
             .map_err(|e| SystemError::Engine(EngineError::Encoding(
                 crate::encoding::EncodingError::Other(format!("Glyph encoding failed: {e}")),
             )))?;
         
-        // Create memory with glyph info
+        // Build content string with glyph perception info
         let content = format!(
             "[SEE] {} | {} bytes | {} folds | fano=[{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}] | centroid=({},{},{})",
             filename, data.len(), glyph.fold_sequence.len(),
@@ -730,25 +657,9 @@ impl KannakaMemorySystem {
             glyph.sga_centroid.0, glyph.sga_centroid.1, glyph.sga_centroid.2,
         );
         
-        let content_hash = self.hash_content(&content);
-        // Use fold amplitudes as the memory vector, padded to 10,000 dims for compatibility
-        let mut vector: Vec<f32> = glyph.fold_amplitudes.iter().map(|&a| a as f32).collect();
-        // Tile the glyph pattern to fill the hypervector space (like a visual texture)
-        let target_dim = 10_000;
-        if vector.len() < target_dim {
-            let pattern = vector.clone();
-            while vector.len() < target_dim {
-                let i = vector.len();
-                // Phase-shift each repetition slightly for richer interference
-                let phase = (i as f32 / pattern.len() as f32) * 0.1;
-                vector.push(pattern[i % pattern.len()] + phase);
-            }
-            vector.truncate(target_dim);
-        }
-        let mut mem = HyperMemory::new(vector, content);
-        mem.geometry = Some(classify_memory("experience", content_hash, 0.7));
-        
-        let id = self.engine.store.insert(mem)?;
+        // Absorb through HRM-native path
+        let id = self.engine.store.absorb(&content, 0.7, Some("experience"))
+            .map_err(|e| SystemError::Store(e))?;
         
         if self.auto_save {
             self.save()?;
