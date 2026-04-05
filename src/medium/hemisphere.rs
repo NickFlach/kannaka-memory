@@ -344,9 +344,9 @@ impl Hemisphere {
             let pruned = self.prune_low_energy_wavefronts(prune_threshold);
             dissolved_count += pruned;
 
-            // Count strengthened wavefronts (energy increased significantly)
+            // Count strengthened wavefronts (energy increased by any meaningful amount)
             for i in 0..self.count().min(prev_energy.len()) {
-                if self.energy[i] > prev_energy[i] + 0.1 {
+                if self.energy[i] > prev_energy[i] + 0.01 {
                     strengthened_count += 1;
                 }
             }
