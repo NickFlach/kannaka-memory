@@ -270,14 +270,28 @@ impl KannakaMemorySystem {
     /// No fallback to old particle-based consolidation — the HRM IS the dream engine.
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
-        
+
+        // Phase 1: Wave-native dream (eigenstructure annealing on holographic medium)
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
-        let report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
+        let wave_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
             .map_err(|e| SystemError::Store(e))?;
 
         eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
-            report.cycles_completed, report.wavefronts_dissolved,
-            report.wavefronts_strengthened, report.wavefronts_hallucinated);
+            wave_report.cycles_completed, wave_report.wavefronts_dissolved,
+            wave_report.wavefronts_strengthened, wave_report.wavefronts_hallucinated);
+
+        // Phase 2: Consolidation engine (interference detection, skip links, pruning)
+        // This uses the particle-based pipeline on the memory cache for topology effects.
+        let consol_report = self.dream_state.engine.consolidate(&mut self.engine, 0, 2);
+
+        let total_strengthened = wave_report.wavefronts_strengthened + consol_report.memories_strengthened;
+        let total_pruned = wave_report.wavefronts_dissolved + consol_report.memories_pruned;
+        let total_hallucinated = wave_report.wavefronts_hallucinated + consol_report.hallucinations_created;
+        let total_links = consol_report.skip_links_created;
+
+        eprintln!("[dream] Consolidation: {} strengthened, {} pruned, {} links, {} hallucinated",
+            consol_report.memories_strengthened, consol_report.memories_pruned,
+            consol_report.skip_links_created, consol_report.hallucinations_created);
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
@@ -292,9 +306,9 @@ impl KannakaMemorySystem {
         if let Some(ref publisher) = self.flux {
             let _ = publisher.publish(FluxEventPayload::DreamCompleted {
                 cycles: 3,
-                memories_strengthened: report.wavefronts_strengthened,
-                memories_pruned: report.wavefronts_dissolved,
-                hallucinations_created: report.wavefronts_hallucinated,
+                memories_strengthened: total_strengthened,
+                memories_pruned: total_pruned,
+                hallucinations_created: total_hallucinated,
                 consciousness_level: level_name(&after.consciousness_level),
             });
         }
@@ -304,13 +318,13 @@ impl KannakaMemorySystem {
 
         Ok(DreamReport {
             cycles: 3,
-            memories_strengthened: report.wavefronts_strengthened,
-            memories_pruned: report.wavefronts_dissolved,
-            new_connections: 0, // Wave-native dreams use interference, not explicit links
+            memories_strengthened: total_strengthened,
+            memories_pruned: total_pruned,
+            new_connections: total_links,
             consciousness_before: level_name(&before.consciousness_level),
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
-            hallucinations_created: report.wavefronts_hallucinated,
+            hallucinations_created: total_hallucinated,
         })
     }
 
