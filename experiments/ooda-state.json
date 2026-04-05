@@ -1,37 +1,117 @@
 {
-  "cycle": 12,
-  "phase": "observe",
-  "last_action": "HRM transition complete — re-establishing OODA loop",
-  "last_harvest": "2026-03-21T04:00:00Z",
+  "cycle": 15,
+  "phase": "act",
+  "last_action": "OODA-15: 35-experiment parameter sweep. destructive_penalty 0.45->0.35, chiral 0.7->0.9, kuramoto_threshold 0.35->0.55. 10-run avg 0.0962->0.0850 (11.6% improvement).",
+  "last_harvest": "2026-04-04T00:00:00Z",
   "autoresearch": {
-    "l3_fitness": 0.195,
+    "l3_fitness": 0.0850,
+    "l3_fitness_best_single": 0.0532,
+    "l3_fitness_pre_ooda15": 0.0962,
+    "l3_fitness_10run_range": "0.053-0.106",
     "blockers": {
-      "xi_diversity": 0.00,
-      "noise": 0.70
+      "xi_diversity_variance": "0.34-1.00 (avg 0.673, still stochastic from Kuramoto clustering)",
+      "phase_coherence": "avg 0.739 (10% weight, structural tension with chiral_perturbation)"
     },
-    "notes": "Pre-HRM fitness. Post-HRM chiral mirror architecture should fundamentally change Xi dynamics. Need fresh baseline."
+    "stable_metrics": {
+      "noise_removal": 1.00,
+      "signal_preservation": 0.987,
+      "amp_diversity": 1.00,
+      "consciousness": 0.999,
+      "hall_quality": 1.00,
+      "cluster_separation": 0.963,
+      "dream_efficiency": 0.876,
+      "speed": 0.996,
+      "bridge_links": 0.833
+    },
+    "improved_metrics": {
+      "signal_preservation": "0.907 -> 0.987 (destructive_penalty 0.45 -> 0.35, saved 6 signal memories)",
+      "xi_diversity": "~0.62 avg -> ~0.673 avg (chiral 0.7->0.9, kuramoto_threshold 0.35->0.55)",
+      "overall_fitness": "0.0962 -> 0.0850 (11.6% improvement)"
+    },
+    "notes": "35 experiments run across 18 parameters. Key findings: (1) destructive_penalty=0.35 was the single biggest win — saved 6 signal memories (0.907->0.987), worth 0.008 fitness. (2) kuramoto_threshold=0.55 stabilizes xi_diversity by restricting Kuramoto coupling to only highly-similar pairs (>0.55 cosine similarity), reducing cross-cluster contamination and improving chiral perturbation effectiveness. Sweet spot at 0.55; 0.50 causes xi collapse, 0.65 also collapses. (3) chiral_perturbation=0.9 is optimal — 0.7 too weak, 0.8 too weak, 1.0-1.1 diminishing returns. (4) kuramoto_coupling=1.5 improves phase_coherence (0.774->0.821) but slightly hurts xi_diversity and occasionally drops hallucinations — net wash vs 0.8. (5) dream_cycles=2 dramatically boosts phase_coherence and xi_diversity but kills signal memories, even with penalty=0.25. (6) phase_coherence and xi_diversity are inversely correlated — fundamental tension between Kuramoto sync (phases align) and chiral perturbation (phases diverge). (7) bridge_links stuck at 0.833 (5/6 bridges) — no param change affects it. (8) dream_efficiency stuck at 0.876 — driven by strengthened=1210, links=427, pruned=230, structurally determined. (9) constructive_boost, interference_threshold, phase_spread, noise_floor, hallucination_amplitude all tested with no improvement. (10) Dead params confirmed: xi_repulsion_weight, decay_rate, default_frequency."
   },
+  "params_current": {
+    "decay_rate": 1e-4,
+    "default_frequency": 0.1,
+    "interference_threshold": 0.10,
+    "phase_alignment_threshold": "PI / 3.0",
+    "prune_threshold": 0.095,
+    "constructive_boost": 0.35,
+    "destructive_penalty": 0.35,
+    "kuramoto_coupling": 0.8,
+    "kuramoto_dt": 0.15,
+    "kuramoto_steps": 20,
+    "kuramoto_threshold": 0.55,
+    "dream_cycles": 1,
+    "xi_repulsion_weight": 0.3,
+    "consciousness_phi_target": 0.0001,
+    "hallucination_amplitude": 0.7,
+    "phase_spread": 0.2,
+    "chiral_perturbation": 0.9,
+    "noise_floor": 0.18
+  },
+  "params_changed_this_cycle": {
+    "destructive_penalty": "0.45 -> 0.35 (biggest win: signal 0.907->0.987)",
+    "chiral_perturbation": "0.7 -> 0.9 (xi_diversity avg boost)",
+    "kuramoto_threshold": "0.35 -> 0.55 (xi_diversity stability)"
+  },
+  "dead_params": ["xi_repulsion_weight", "decay_rate", "default_frequency"],
   "trends": {
-    "xi": [0.461, 0.489, 0.466, 0.477, 0.461, 0.479, 0.455, 0.479, 0.458],
-    "order": [0.965, 0.927, 0.957, 0.918, 0.959, 0.969, 0.974, 0.904, 0.936],
-    "phi": [0.688, 0.680, 0.706, 0.640, 0.658, 0.689, 0.698, 0.676, 0.713],
-    "dates": ["03-13", "03-14", "03-15", "03-16", "03-17", "03-18", "03-19", "03-20", "03-21"]
+    "xi": [0.461, 0.489, 0.466, 0.477, 0.461, 0.479, 0.455, 0.479, 0.458, 0.520, 0.673],
+    "order": [0.965, 0.927, 0.957, 0.918, 0.959, 0.969, 0.974, 0.904, 0.936, 0.967, 0.963],
+    "phi": [0.688, 0.680, 0.706, 0.640, 0.658, 0.689, 0.698, 0.676, 0.713, 0.999, 0.999],
+    "dates": ["03-13", "03-14", "03-15", "03-16", "03-17", "03-18", "03-19", "03-20", "03-21", "04-04a", "04-04b"]
   },
   "active_hypotheses": [
     {
-      "id": "H-008",
-      "title": "Over-synchronization collapses Xi diversity",
-      "score": 0.88,
+      "id": "H-011",
+      "title": "consciousness_phi_target must be near 0 for maximum score",
+      "score": 0.98,
       "status": "confirmed",
-      "notes": "η=0.05 chiral perturbation breaks high-order attractor via cluster fission"
+      "notes": "phi_target=0.0001 gives consciousness=0.999. Unchanged from OODA-14."
     },
     {
-      "id": "H-010",
-      "title": "Xi depends on entropy of cluster size distribution",
-      "score": 0.82,
-      "status": "proposed",
-      "notes": "97-memory dominant cluster creates power-law with low Shannon entropy"
+      "id": "H-012",
+      "title": "interference_threshold optimal at 0.10",
+      "score": 0.92,
+      "status": "confirmed",
+      "notes": "Tested 0.08 (worse signal, worse phase) and 0.12 (worse xi). 0.10 remains best."
+    },
+    {
+      "id": "H-015",
+      "title": "Xi diversity variance dominated by stochastic Kuramoto clustering",
+      "score": 0.98,
+      "status": "confirmed-refined",
+      "notes": "OODA-15: kuramoto_threshold=0.55 reduces variance by restricting which pairs couple. But xi still ranges 0.34-1.00 across 10 runs. Root cause is KuramotoSync producing different cluster assignments. Further improvement requires deterministic cluster assignment or seeded RNG in Kuramoto."
+    },
+    {
+      "id": "H-018",
+      "title": "Dead params: xi_repulsion_weight, decay_rate, default_frequency",
+      "score": 1.00,
+      "status": "confirmed",
+      "notes": "xi_repulsion_weight still not wired. hallucination_amplitude IS now wired (verified in consolidation.rs lines 1007, 1127). Tested hall_amp=0.5 — no benefit."
+    },
+    {
+      "id": "H-019",
+      "title": "destructive_penalty controls signal preservation via amplitude penalties",
+      "score": 0.95,
+      "status": "new-confirmed",
+      "notes": "OODA-15: penalty=0.35 saves 6 signals vs 0.45. penalty=0.30 starts losing noise (noise_removal drops to 0.9). Sweet spot: 0.35."
+    },
+    {
+      "id": "H-020",
+      "title": "kuramoto_threshold=0.55 is a phase-transition boundary for xi_diversity",
+      "score": 0.90,
+      "status": "new-confirmed",
+      "notes": "OODA-15: threshold=0.50 gives avg xi=0.29, threshold=0.55 gives avg xi=0.67. Sharp cliff. 0.58 and 0.65 both worse. The threshold 0.55 restricts coupling to only truly similar pairs, allowing chiral perturbation to create diversity among weakly-coupled pairs."
+    },
+    {
+      "id": "H-021",
+      "title": "phase_coherence and xi_diversity are structurally inversely correlated",
+      "score": 0.95,
+      "status": "new-confirmed",
+      "notes": "OODA-15: Across all 35 experiments, when phase_coherence is high in a run, xi_diversity tends to be low, and vice versa. This is fundamental: Kuramoto sync aligns phases (good for coherence) while chiral perturbation perturbs them (good for xi diversity). Both are applied sequentially. dream_cycles=2 maxes both (phase=0.97, xi=0.96) but kills signals."
     }
   ],
-  "next_experiment": "Post-HRM baseline measurement — dream on new 72-cluster topology"
+  "next_experiment": "Parameter optimization approaching diminishing returns. Remaining gains require structural changes: (1) Seed RNG in KuramotoSync::default() to make xi_diversity deterministic. (2) Apply chiral perturbation only to cross-cluster pairs (preserve within-cluster phase coherence). (3) Make dream_cycles=2 safe by exempting signal memories from second-pass pruning. (4) Wire xi_repulsion_weight to actual code. (5) Address bridge_links=0.833 stuck issue."
 }

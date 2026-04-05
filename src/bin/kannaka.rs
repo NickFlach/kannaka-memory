@@ -42,26 +42,26 @@ fn dirs_or_default() -> PathBuf {
     PathBuf::from(".kannaka")
 }
 
-fn init_with_hrm(data_dir: PathBuf) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
+fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
     // Setup encoding pipeline for HRM
     let encoder = SimpleHashEncoder::new(384, 42);
     let codebook = Codebook::new(384, 10_000, 42);
     let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
-    
+
     // HRM file path
     let hrm_path = data_dir.join("kannaka.hrm");
-    
+
     // Try to load existing HRM file, create new if not found
     let store = if hrm_path.exists() {
-        eprintln!("Loading existing HRM file: {}", hrm_path.display());
+        if !quiet { eprintln!("Loading existing HRM file: {}", hrm_path.display()); }
         HrmStore::load(pipeline, hrm_path)?
     } else {
-        eprintln!("Creating new HRM file: {}", hrm_path.display());
+        if !quiet { eprintln!("Creating new HRM file: {}", hrm_path.display()); }
         HrmStore::new(pipeline, hrm_path)
     };
-    
-    eprintln!("HrmStore initialized with {} memories", store.count());
-    eprintln!("[hrm] Using Holographic Resonance Medium - storage IS computation");
+
+    if !quiet { eprintln!("HrmStore initialized with {} memories", store.count()); }
+    if !quiet { eprintln!("[hrm] Using Holographic Resonance Medium - storage IS computation"); }
 
     let sys = KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -180,9 +180,10 @@ fn main() {
     let dir = data_dir();
 
     // HRM is the sole backend
+    let quiet = std::env::var("KANNAKA_QUIET").is_ok();
     let mut sys = {
-        eprintln!("Using HRM backend (Holographic Resonance Medium)");
-        match init_with_hrm(dir) {
+        if !quiet { eprintln!("Using HRM backend (Holographic Resonance Medium)"); }
+        match init_with_hrm(dir, quiet) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to initialize with HRM: {e}");

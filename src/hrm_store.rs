@@ -302,23 +302,12 @@ impl HrmStore {
     /// In chiral mode, deep dreams only affect the right hemisphere.
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
         if self.chiral.is_some() {
-            // Chiral dream: right hemisphere only
+            // Chiral dream: right hemisphere only (deep dream)
             let chiral = self.chiral.as_mut().unwrap();
-            chiral.dream(true, cycles);
-            let energy_after = chiral.right.total_energy();
+            let report = chiral.dream(true, cycles);
             self.rebuild_cache().ok();
             self.mark_dirty();
-            // Return a compatible report
-            crate::medium::DreamReport {
-                cycles_completed: cycles,
-                wavefronts_dissolved: 0,
-                wavefronts_strengthened: 0,
-                wavefronts_hallucinated: 0,
-                energy_before: 0.0,
-                energy_after,
-                final_temperature: 0.0,
-                converged: true,
-            }
+            report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
             self.mark_dirty();
@@ -352,35 +341,9 @@ impl HrmStore {
 
         // Route to chiral or flat medium dream
         let report = if let Some(ref mut chiral) = self.chiral {
-            // Chiral: use ChiralMedium.dream() which operates on right hemisphere
-            let count_before = chiral.right.count();
-            let energy_before = if count_before > 0 {
-                chiral.right.energy.sum() / count_before as f32
-            } else {
-                0.0
-            };
-
-            chiral.dream(true, cycles); // deep=true → right hemisphere annealing
-
-            let count_after = chiral.right.count();
-            let energy_after = if count_after > 0 {
-                chiral.right.energy.sum() / count_after as f32
-            } else {
-                0.0
-            };
-
-            let dissolved = if count_before > count_after { count_before - count_after } else { 0 };
-
-            crate::medium::DreamReport {
-                cycles_completed: cycles,
-                wavefronts_dissolved: dissolved,
-                wavefronts_strengthened: 0, // chiral dream doesn't track this separately
-                wavefronts_hallucinated: 0,
-                energy_before,
-                energy_after,
-                final_temperature: 0.0,
-                converged: true,
-            }
+            // Chiral: use ChiralMedium.dream() which runs eigenstructure annealing
+            // on the right hemisphere, then callosal coupling
+            chiral.dream(true, cycles) // deep=true → right hemisphere eigenstructure dream
         } else {
             // Flat medium: use Medium's eigenstructure annealing
             self.medium.dream(cycles, temperature)

@@ -312,40 +312,46 @@ impl ChiralMedium {
     /// Dream: mode-specific hemispheric refinement (ADR-0024 CS-7).
     ///
     /// Deep dreams refine the holistic hemisphere (right):
-    ///   - Lower dt (0.3) preserves broad patterns, subtle field adjustments
-    ///   - Lower prune threshold (0.005) — holistic keeps quiet signals alive
+    ///   - Eigenstructure annealing (coherence matrix + eigendecomposition)
+    ///   - Hallucination generation (cross-cluster superposition)
+    ///   - Gentle prune threshold (0.005) — holistic keeps quiet signals alive
+    ///   - Callosal coupling after dream to sync insights between hemispheres
     ///   - The analytical workspace (left) is untouched
     ///
     /// Lite dreams refine the analytical hemisphere (left):
     ///   - Transfers strongest analytical patterns to holistic via callosum
     ///   - Sharpens analytical boundaries (pruning low-energy left wavefronts)
     ///   - Higher prune threshold (0.05) — analytical is aggressive about precision
-    pub fn dream(&mut self, deep: bool, cycles: usize) {
+    ///
+    /// Returns a DreamReport with statistics about what happened.
+    pub fn dream(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
         if deep {
-            // Deep dream: gentle annealing of holistic hemisphere
-            // Lower dt than before (was 0.5) — preserve broad patterns
-            let holistic_dt = 0.3;
+            // Deep dream: eigenstructure annealing of holistic hemisphere
+            // Gentler prune threshold than flat medium — holistic keeps quiet signals
             let holistic_prune_threshold = 0.005;
+            let temperature = 1.0;
 
-            for _ in 0..cycles {
-                self.right.apply_dynamics(holistic_dt);
+            let report = self.right.dream(cycles, Some(temperature), holistic_prune_threshold);
 
-                // Prune only very weak wavefronts — holistic keeps quiet signals
-                let to_prune: Vec<Uuid> = (0..self.right.count())
-                    .filter(|&i| self.right.energy[i] < holistic_prune_threshold)
-                    .map(|i| self.right.metadata[i].id)
-                    .collect();
-
-                for id in &to_prune {
-                    self.right.remove_wavefront(id);
-                    self.scales.remove(id);
-                    if let Some(left_id) = self.right_to_left.remove(id) {
-                        self.left_to_right.remove(&left_id);
-                    }
+            // Clean up chiral bookkeeping for any wavefronts the dream dissolved
+            let right_ids: std::collections::HashSet<Uuid> =
+                self.right.metadata.iter().map(|m| m.id).collect();
+            let stale_right: Vec<Uuid> = self.scales.keys()
+                .filter(|id| !right_ids.contains(id))
+                .copied()
+                .collect();
+            for id in stale_right {
+                self.scales.remove(&id);
+                if let Some(left_id) = self.right_to_left.remove(&id) {
+                    self.left_to_right.remove(&left_id);
                 }
             }
 
+            // Callosal coupling step: sync insights between hemispheres post-dream
+            self.callosal_kuramoto_step(0.5);
+
             // Left hemisphere is UNTOUCHED — deep dreams are holistic refinement
+            report
         } else {
             // Lite dream: transfer strongest analytical → holistic
             self.callosum.reset_budget();
@@ -394,6 +400,7 @@ impl ChiralMedium {
                 .map(|i| self.left.metadata[i].id)
                 .collect();
 
+            let pruned_count = to_prune_left.len();
             for id in &to_prune_left {
                 self.left.remove_wavefront(id);
                 self.scales.remove(id);
@@ -401,13 +408,24 @@ impl ChiralMedium {
                     self.right_to_left.remove(&right_id);
                 }
             }
-        }
 
-        // After dreaming, let the callosum adjust for balance
-        self.callosum.adjust_for_balance(
-            self.left.total_energy(),
-            self.right.total_energy(),
-        );
+            // After lite dreaming, let the callosum adjust for balance
+            self.callosum.adjust_for_balance(
+                self.left.total_energy(),
+                self.right.total_energy(),
+            );
+
+            super::DreamReport {
+                cycles_completed: 1,
+                wavefronts_dissolved: pruned_count,
+                wavefronts_strengthened: 0,
+                wavefronts_hallucinated: 0,
+                energy_before: 0.0,
+                energy_after: self.left.mean_energy(),
+                final_temperature: 0.0,
+                converged: true,
+            }
+        }
     }
 
     /// Run cross-callosal Kuramoto coupling step.

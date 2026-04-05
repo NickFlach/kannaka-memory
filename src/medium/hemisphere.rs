@@ -10,6 +10,7 @@ use ndarray::{Array1, Array2, s};
 use uuid::Uuid;
 
 use super::types::*;
+use super::types::DreamReport;
 
 /// A single hemisphere of the chiral medium.
 #[derive(Debug, Clone)]
@@ -287,6 +288,314 @@ impl Hemisphere {
                 }
             }
         }
+    }
+
+    /// Eigenstructure-aware dream cycles for this hemisphere.
+    ///
+    /// Mirrors Medium::dream() but operates on Hemisphere's own fields.
+    /// Each cycle: coherence matrix, eigenstructure, annealing, hallucination, pruning.
+    ///
+    /// # Arguments
+    /// * `cycles` - Number of annealing cycles to run
+    /// * `initial_temperature` - Starting temperature (default: 1.0)
+    /// * `prune_threshold` - Energy below which wavefronts are pruned (holistic = gentler)
+    pub fn dream(
+        &mut self,
+        cycles: usize,
+        initial_temperature: Option<f32>,
+        prune_threshold: f32,
+    ) -> DreamReport {
+        let mut temperature = initial_temperature.unwrap_or(1.0);
+        let energy_before = if self.count() > 0 {
+            self.energy.slice(s![..self.len]).sum() / self.len as f32
+        } else {
+            0.0
+        };
+
+        let mut dissolved_count = 0;
+        let mut strengthened_count = 0;
+        let mut hallucinated_count = 0;
+        let mut converged = false;
+
+        let convergence_threshold = 0.001;
+        let annealing_rate = 0.95;
+
+        for cycle in 0..cycles {
+            if self.count() < 2 {
+                break;
+            }
+
+            let prev_energy: Vec<f32> = self.energy.slice(s![..self.len]).to_vec();
+
+            // 1. Compute coherence matrix and eigenstructure
+            let coherence = self.coherence_matrix();
+            let eigenstructure = self.compute_eigenstructure(&coherence);
+
+            // 2. Apply eigenstructure-based annealing
+            self.apply_eigenstructure_annealing(&eigenstructure, temperature);
+
+            // 3. Hallucination: create novel wavefronts from cross-cluster superposition
+            if cycle % 3 == 0 && temperature > 0.3 && self.count() < 500 {
+                let hallucinated = self.generate_hallucinated_wavefronts(&eigenstructure, temperature);
+                hallucinated_count += hallucinated;
+            }
+
+            // 4. Prune wavefronts below threshold (forgetting)
+            let pruned = self.prune_low_energy_wavefronts(prune_threshold);
+            dissolved_count += pruned;
+
+            // Count strengthened wavefronts (energy increased significantly)
+            for i in 0..self.count().min(prev_energy.len()) {
+                if self.energy[i] > prev_energy[i] + 0.1 {
+                    strengthened_count += 1;
+                }
+            }
+
+            // 5. Reduce temperature (annealing schedule)
+            temperature *= annealing_rate;
+
+            // Check for convergence
+            let current_count = self.count();
+            if current_count == prev_energy.len() && current_count > 0 {
+                let mut energy_change = 0.0f32;
+                for i in 0..current_count {
+                    energy_change += (self.energy[i] - prev_energy[i]).abs();
+                }
+                energy_change /= current_count as f32;
+
+                if energy_change < convergence_threshold && cycle > 5 {
+                    converged = true;
+                    break;
+                }
+            }
+        }
+
+        let energy_after = if self.count() > 0 {
+            self.energy.slice(s![..self.len]).sum() / self.len as f32
+        } else {
+            0.0
+        };
+
+        DreamReport {
+            cycles_completed: cycles,
+            wavefronts_dissolved: dissolved_count,
+            wavefronts_strengthened: strengthened_count,
+            wavefronts_hallucinated: hallucinated_count,
+            energy_before,
+            energy_after,
+            final_temperature: temperature,
+            converged,
+        }
+    }
+
+    /// Compute pairwise coherence matrix for all wavefronts in this hemisphere.
+    fn coherence_matrix(&self) -> Array2<f32> {
+        let n = self.count();
+        let mut coherence = Array2::zeros((n, n));
+
+        for i in 0..n {
+            for j in 0..n {
+                if i != j {
+                    let vec_i = self.wavefronts.row(i);
+                    let vec_j = self.wavefronts.row(j);
+                    let dot_product: f32 = vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
+                    let phase_coherence = (self.phase[i] - self.phase[j]).cos();
+                    coherence[[i, j]] = phase_coherence * dot_product;
+                } else {
+                    coherence[[i, j]] = 1.0;
+                }
+            }
+        }
+
+        coherence
+    }
+
+    /// Compute eigenstructure of the coherence matrix using power iteration.
+    fn compute_eigenstructure(&self, coherence: &Array2<f32>) -> EigenStructure {
+        let n = self.count();
+        if n < 2 {
+            return EigenStructure::empty();
+        }
+
+        // Power iteration to find dominant eigenvalue/eigenvector
+        let max_iterations = 20;
+        let mut dominant_vector = vec![1.0f32; n];
+        let mut eigenvalue = 0.0f32;
+
+        let norm: f32 = dominant_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut dominant_vector {
+            *x /= norm;
+        }
+
+        for _ in 0..max_iterations {
+            let mut next_vector = vec![0.0f32; n];
+            for i in 0..n {
+                for j in 0..n {
+                    next_vector[i] += coherence[[i, j]] * dominant_vector[j];
+                }
+            }
+
+            let norm: f32 = next_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm < 1e-6 {
+                break;
+            }
+            for i in 0..n {
+                next_vector[i] /= norm;
+            }
+
+            eigenvalue = 0.0;
+            for i in 0..n {
+                eigenvalue += next_vector[i] * {
+                    let mut sum = 0.0f32;
+                    for j in 0..n {
+                        sum += coherence[[i, j]] * next_vector[j];
+                    }
+                    sum
+                };
+            }
+
+            dominant_vector = next_vector;
+        }
+
+        let alignment_threshold = 0.3;
+        let clusters: Vec<usize> = (0..n)
+            .filter(|&i| dominant_vector[i].abs() > alignment_threshold)
+            .collect();
+
+        EigenStructure {
+            eigenvalues: vec![eigenvalue],
+            dominant_cluster: clusters,
+            wavefront_alignments: dominant_vector,
+            spectral_gap: eigenvalue - 0.1,
+        }
+    }
+
+    /// Apply eigenstructure-based annealing to wavefronts.
+    /// Holistic-tuned: gentler than the flat medium. Uses the triode bias principle
+    /// (dreams sculpt, they don't crush -- energy floor preserves bias voltage).
+    fn apply_eigenstructure_annealing(&mut self, eigenstructure: &EigenStructure, temperature: f32) {
+        let n = self.count();
+        if n == 0 || eigenstructure.eigenvalues.is_empty() {
+            return;
+        }
+
+        let dominant_eigenvalue = eigenstructure.eigenvalues[0];
+
+        // Gentle coefficients -- holistic hemisphere preserves broad patterns
+        let consolidation_strength = 0.02 * (1.0 + temperature);
+        let noise_reduction = 0.005 * (2.0 - temperature);
+
+        // Energy floor: bias voltage -- resting potential for amplification
+        let dream_energy_floor = 0.5;
+
+        for i in 0..n {
+            let alignment = eigenstructure.wavefront_alignments[i].abs();
+
+            if alignment > 0.1 && dominant_eigenvalue > 0.1 {
+                let boost = consolidation_strength * alignment;
+                self.energy[i] = (self.energy[i] + boost).min(2.0);
+
+                if eigenstructure.dominant_cluster.contains(&i) && eigenstructure.dominant_cluster.len() > 1 {
+                    let mut cluster_phase = 0.0f32;
+                    for &cluster_idx in &eigenstructure.dominant_cluster {
+                        cluster_phase += self.phase[cluster_idx];
+                    }
+                    cluster_phase /= eigenstructure.dominant_cluster.len() as f32;
+
+                    let phase_coupling = 0.05 * (1.0 - temperature);
+                    self.phase[i] += phase_coupling * (cluster_phase - self.phase[i]).sin();
+                }
+            }
+
+            if alignment < 0.05 {
+                let reduction = noise_reduction * (0.1 - alignment);
+                self.energy[i] = (self.energy[i] - reduction).max(dream_energy_floor);
+            }
+
+            if alignment >= 0.05 && alignment <= 0.1 {
+                let exploration = temperature * 0.005;
+                self.phase[i] += exploration * (alignment * 10.0 - 0.5).sin();
+            }
+
+            self.energy[i] = self.energy[i].max(dream_energy_floor);
+        }
+    }
+
+    /// Generate hallucinated wavefronts by superposing patterns from different clusters.
+    fn generate_hallucinated_wavefronts(&mut self, eigenstructure: &EigenStructure, temperature: f32) -> usize {
+        if self.count() < 4 || eigenstructure.dominant_cluster.len() < 2 {
+            return 0;
+        }
+
+        if temperature < 0.4 {
+            return 0;
+        }
+
+        let mut hallucinated = 0;
+        let max_hallucinations = ((temperature * 3.0) as usize).min(2);
+
+        for _ in 0..max_hallucinations {
+            let idx1 = eigenstructure.dominant_cluster[0];
+
+            let mut idx2 = None;
+            for i in 0..self.count() {
+                if !eigenstructure.dominant_cluster.contains(&i)
+                    && eigenstructure.wavefront_alignments[i].abs() > 0.1
+                {
+                    idx2 = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(idx2) = idx2 {
+                let vec1 = self.wavefronts.row(idx1);
+                let vec2 = self.wavefronts.row(idx2);
+
+                let mix_ratio = 0.6 + temperature * 0.3;
+                let mut new_vector = Vec::with_capacity(vec1.len());
+                for (v1, v2) in vec1.iter().zip(vec2.iter()) {
+                    new_vector.push(mix_ratio * v1 + (1.0 - mix_ratio) * v2);
+                }
+
+                let norm: f32 = new_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 1e-6 {
+                    for x in &mut new_vector {
+                        *x /= norm;
+                    }
+
+                    let energy = (self.energy[idx1] + self.energy[idx2]) / 2.0 * 0.8;
+                    let phase = (self.phase[idx1] + self.phase[idx2]) / 2.0;
+
+                    let content = format!(
+                        "HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]",
+                        idx1, idx2, temperature
+                    );
+
+                    if let Ok(_) = self.add_wavefront(&new_vector, content, energy) {
+                        let new_idx = self.count() - 1;
+                        self.phase[new_idx] = phase;
+                        self.metadata[new_idx].hallucinated = true;
+                        hallucinated += 1;
+                    }
+                }
+            }
+        }
+
+        hallucinated
+    }
+
+    /// Prune wavefronts with energy below threshold (forgetting during dreams).
+    fn prune_low_energy_wavefronts(&mut self, threshold: f32) -> usize {
+        let to_remove: Vec<Uuid> = (0..self.count())
+            .filter(|&i| self.energy[i] < threshold)
+            .map(|i| self.metadata[i].id)
+            .collect();
+
+        let removed_count = to_remove.len();
+        for id in to_remove {
+            self.remove_wavefront(&id);
+        }
+        removed_count
     }
 
     /// Apply chiral field perturbation to break phase lock-step.

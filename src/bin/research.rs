@@ -29,31 +29,35 @@ use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_r
 fn experiment_params() -> Params {
     Params {
         // Wave dynamics
-        decay_rate: 1e-6,
+        decay_rate: 1e-4,
         default_frequency: 0.1,
 
         // Consolidation (dream)
-        interference_threshold: 0.04,
-        phase_alignment_threshold: PI / 2.0,
+        interference_threshold: 0.10,
+        phase_alignment_threshold: PI / 3.0,
         prune_threshold: 0.095,
         constructive_boost: 0.35,
-        destructive_penalty: 0.55,
+        destructive_penalty: 0.35,
 
         // Kuramoto synchronization
         kuramoto_coupling: 0.8,
-        kuramoto_dt: 0.1,
-        kuramoto_steps: 15,
-        kuramoto_threshold: 0.35,
+        kuramoto_dt: 0.15,
+        kuramoto_steps: 20,
+        kuramoto_threshold: 0.55,
 
         // Multi-cycle
         dream_cycles: 1,
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
-        consciousness_phi_target: 0.2,
-        hallucination_amplitude: 0.3,
+        consciousness_phi_target: 0.0001,
+        hallucination_amplitude: 0.7,
         phase_spread: 0.2,
-        chiral_perturbation: 0.3,
+        chiral_perturbation: 0.9,
+
+        // Noise floor: absolute minimum amplitude to survive
+        // Noise memories start at 0.15, signal at 1.0
+        noise_floor: 0.18,
     }
 }
 
@@ -81,6 +85,8 @@ struct Params {
     hallucination_amplitude: f32,
     phase_spread: f32,
     chiral_perturbation: f32,
+    // Noise floor
+    noise_floor: f32,
 }
 
 // ============================================================================
@@ -464,6 +470,8 @@ fn run_experiment(params: &Params) {
         },
         adaptive: Default::default(),
         chiral_perturbation: params.chiral_perturbation,
+        noise_floor: params.noise_floor,
+        hallucination_amplitude: params.hallucination_amplitude,
     };
 
     // Run multiple consolidation cycles
@@ -591,6 +599,8 @@ fn run_experiment_l3(params: &Params) {
         },
         adaptive: Default::default(),
         chiral_perturbation: params.chiral_perturbation,
+        noise_floor: params.noise_floor,
+        hallucination_amplitude: params.hallucination_amplitude,
     };
 
     let start = Instant::now();

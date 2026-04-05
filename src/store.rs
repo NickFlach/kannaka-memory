@@ -216,11 +216,15 @@ impl MediumBackend for TestMedium {
     }
 
     fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError> {
-        Ok(self.memories.values().collect())
+        let mut mems: Vec<&HyperMemory> = self.memories.values().collect();
+        mems.sort_by_key(|m| m.id);
+        Ok(mems)
     }
 
     fn all_ids(&self) -> Result<Vec<Uuid>, StoreError> {
-        Ok(self.memories.keys().copied().collect())
+        let mut ids: Vec<Uuid> = self.memories.keys().copied().collect();
+        ids.sort();
+        Ok(ids)
     }
 
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError> {

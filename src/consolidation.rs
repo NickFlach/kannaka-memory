@@ -195,6 +195,11 @@ pub struct ConsolidationEngine {
     pub adaptive: AdaptiveParams,
     /// Chiral perturbation strength (0.0 = disabled)
     pub chiral_perturbation: f32,
+    /// Absolute amplitude floor: memories below this are pruned regardless of interference.
+    /// Catches isolated low-amplitude noise that evades interference detection.
+    pub noise_floor: f32,
+    /// Starting amplitude for hallucinated memories
+    pub hallucination_amplitude: f32,
 }
 
 impl Default for ConsolidationEngine {
@@ -208,6 +213,8 @@ impl Default for ConsolidationEngine {
             kuramoto: KuramotoSync::default(),
             adaptive: AdaptiveParams::default(),
             chiral_perturbation: 0.0,
+            noise_floor: 0.0,
+            hallucination_amplitude: 0.3,
         }
     }
 }
@@ -352,16 +359,37 @@ impl ConsolidationEngine {
                     continue;
                 }
 
-                let phase_b = match engine.store.get(&neighbor_id).ok().flatten() {
-                    Some(m) => m.phase,
+                let (phase_b, freq_b) = match engine.store.get(&neighbor_id).ok().flatten() {
+                    Some(m) => (m.phase, m.frequency),
                     None => continue,
                 };
+
+                // Frequency-band gating: memories with very different natural frequencies
+                // cannot constructively interfere — classify as destructive.
+                let freq_a = match engine.store.get(&id).ok().flatten() {
+                    Some(m) => m.frequency,
+                    None => 0.0,
+                };
+                let freq_ratio = if freq_a > freq_b { freq_a / freq_b.max(1e-6) } else { freq_b / freq_a.max(1e-6) };
+                // Frequency-band gating with amplitude check: only apply to low-amplitude
+                // memories to avoid destroying legitimate high-amplitude signals in different
+                // frequency bands (e.g., emotion memories at freq=1.5).
+                let low_amp = match engine.store.get(&id).ok().flatten() {
+                    Some(m) => m.amplitude < 0.3,
+                    None => false,
+                } || match engine.store.get(&neighbor_id).ok().flatten() {
+                    Some(m) => m.amplitude < 0.3,
+                    None => false,
+                };
+                let frequency_mismatch = freq_ratio > 3.0 && low_amp;
 
                 let phase_diff = (phase_a - phase_b).abs();
                 let phase_diff = phase_diff % (2.0 * PI);
                 let phase_diff = if phase_diff > PI { 2.0 * PI - phase_diff } else { phase_diff };
 
-                let kind = if phase_diff < self.phase_alignment_threshold {
+                let kind = if frequency_mismatch {
+                    Interference::Destructive // different frequency bands can't sync
+                } else if phase_diff < self.phase_alignment_threshold {
                     Interference::Constructive
                 } else if phase_diff > PI - self.phase_alignment_threshold {
                     Interference::Destructive
@@ -802,6 +830,24 @@ impl ConsolidationEngine {
                 }
             }
         }
+
+        // Noise floor sweep: prune isolated low-amplitude memories that evade
+        // interference detection. Catches noise with no similar neighbors.
+        if self.noise_floor > 0.0 {
+            let ids = engine.store.all_ids().unwrap_or_default();
+            for id in &ids {
+                if let Some(mem) = engine.store.get_mut(id).ok().flatten() {
+                    if mem.amplitude > 0.0
+                        && mem.amplitude < self.noise_floor
+                        && !mem.content.starts_with("__consolidation")
+                    {
+                        mem.amplitude = 0.0; // ghost
+                        count += 1;
+                    }
+                }
+            }
+        }
+
         count
     }
 
@@ -958,7 +1004,7 @@ impl ConsolidationEngine {
         
         // Create the hallucinated memory
         let mut hallucination = crate::memory::HyperMemory::new(combined, content);
-        hallucination.amplitude = 0.4; // Slightly higher than distance-based (cross-cluster = more valuable)
+        hallucination.amplitude = self.hallucination_amplitude; // Configured starting amplitude
         hallucination.hallucinated = true;
         hallucination.parents = parent_ids.clone();
         
@@ -1078,7 +1124,7 @@ impl ConsolidationEngine {
 
         // Create the hallucinated memory
         let mut hallucination = crate::memory::HyperMemory::new(combined, content);
-        hallucination.amplitude = 0.3; // low initial amplitude � must prove itself
+        hallucination.amplitude = self.hallucination_amplitude * 0.75; // distance-based gets slightly lower amplitude
         hallucination.hallucinated = true;
         hallucination.parents = parent_ids.clone();
 
@@ -1147,11 +1193,21 @@ impl ConsolidationEngine {
 
             // Create forward link
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem.connections.push(crate::memory::LegacyLink {
+                    target_id: pair.id_b,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             // Create reverse link
             if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem.connections.push(crate::memory::LegacyLink {
+                    target_id: pair.id_a,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             count += 1;
         }
@@ -1193,10 +1249,20 @@ impl ConsolidationEngine {
         for (id_a, id_b, span) in fano_pairs {
             // Create bidirectional Fano links with strength 0.3
             if let Some(mem_a_mut) = engine.store.get_mut(&id_a).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem_a_mut.connections.push(crate::memory::LegacyLink {
+                    target_id: id_b,
+                    strength: 0.3,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             if let Some(mem_b_mut) = engine.store.get_mut(&id_b).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem_b_mut.connections.push(crate::memory::LegacyLink {
+                    target_id: id_a,
+                    strength: 0.3,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             count += 1;
         }
@@ -1239,7 +1305,8 @@ impl ConsolidationEngine {
                         let similarity = cosine_similarity(&mem_a.vector, &mem_b.vector);
                         
                         // Target moderate similarity: related but not identical
-                        if similarity >= 0.3 && similarity <= 0.6 {
+                        // Upper bound raised to 0.75 to include bridge memories (0.68-0.71)
+                        if similarity >= 0.3 && similarity <= 0.75 {
                             // Check if already linked
                             let already_linked = mem_a.connections.iter().any(|l| l.target_id == id_b) ||
                                                 mem_b.connections.iter().any(|l| l.target_id == id_a);
@@ -1265,10 +1332,20 @@ impl ConsolidationEngine {
             
             // Create bidirectional links
             if let Some(mem_a) = engine.store.get_mut(&id_a).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem_a.connections.push(crate::memory::LegacyLink {
+                    target_id: id_b,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             if let Some(mem_b) = engine.store.get_mut(&id_b).ok().flatten() {
-                // TODO(chiral): skip link removed - associations emergent from interference
+                mem_b.connections.push(crate::memory::LegacyLink {
+                    target_id: id_a,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span,
+                });
             }
             count += 1;
         }
