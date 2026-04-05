@@ -46,7 +46,7 @@ fn experiment_params() -> Params {
         kuramoto_threshold: 0.55,
 
         // Multi-cycle
-        dream_cycles: 1,
+        dream_cycles: 2,
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
@@ -293,13 +293,16 @@ fn eval_amplitude_diversity(engine: &ResonanceEngine) -> f32 {
 /// (not all collapsed to the same representational space)
 fn eval_xi_diversity(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
-    let active: Vec<_> = all.iter()
+    let mut active: Vec<_> = all.iter()
         .filter(|m| !m.content.starts_with("noise") && m.amplitude > 0.01)
         .collect();
 
+    // Sort by content for deterministic evaluation (UUIDs are random across runs)
+    active.sort_by(|a, b| a.content.cmp(&b.content));
+
     if active.len() < 4 { return 0.0; }
 
-    // Sample pairwise Xi diversity boosts
+    // Sample pairwise Xi diversity boosts (use all active memories, sorted deterministically)
     let mut total_boost = 0.0f32;
     let mut count = 0;
     let mut high_sim_count = 0;
@@ -307,9 +310,10 @@ fn eval_xi_diversity(engine: &ResonanceEngine) -> f32 {
     let mut boost_count = 0;
     let mut max_sim_with_repulsion = 0.0f32;
     let mut max_repulsion_with_sim = 0.0f32;
-    
-    for i in 0..active.len().min(15) {
-        for j in (i+1)..active.len().min(15) {
+
+    let sample_size = active.len().min(30);
+    for i in 0..sample_size {
+        for j in (i+1)..sample_size {
             let xi_a = compute_xi_signature(&active[i].vector);
             let xi_b = compute_xi_signature(&active[j].vector);
             let base_sim = cosine_similarity(&active[i].vector, &active[j].vector);
@@ -472,6 +476,7 @@ fn run_experiment(params: &Params) {
         chiral_perturbation: params.chiral_perturbation,
         noise_floor: params.noise_floor,
         hallucination_amplitude: params.hallucination_amplitude,
+        protect_established: false,
     };
 
     // Run multiple consolidation cycles
@@ -549,6 +554,8 @@ fn run_experiment_l3(params: &Params) {
     let ps = params.phase_spread;
     for (i, (vec, content, category)) in corpus.iter().enumerate() {
         let mut mem = HyperMemory::new(vec.clone(), content.clone());
+        // Deterministic UUID: ensures consistent memory ordering across runs
+        mem.id = uuid::Uuid::from_u128((i as u128 + 1) * 0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF);
         mem.phase = match *category {
             "science" => 0.0 + (i as f32 * 0.1 * ps),
             "music" => PI * 0.5 + (i as f32 * 0.08 * ps),
@@ -601,6 +608,7 @@ fn run_experiment_l3(params: &Params) {
         chiral_perturbation: params.chiral_perturbation,
         noise_floor: params.noise_floor,
         hallucination_amplitude: params.hallucination_amplitude,
+        protect_established: true,
     };
 
     let start = Instant::now();

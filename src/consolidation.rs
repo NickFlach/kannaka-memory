@@ -200,6 +200,8 @@ pub struct ConsolidationEngine {
     pub noise_floor: f32,
     /// Starting amplitude for hallucinated memories
     pub hallucination_amplitude: f32,
+    /// Skip destructive dampening for memories with amplitude > 0.5 (signal protection)
+    pub protect_established: bool,
 }
 
 impl Default for ConsolidationEngine {
@@ -215,6 +217,7 @@ impl Default for ConsolidationEngine {
             chiral_perturbation: 0.0,
             noise_floor: 0.0,
             hallucination_amplitude: 0.3,
+            protect_established: false,
         }
     }
 }
@@ -469,17 +472,21 @@ impl ConsolidationEngine {
             };
             let avg_phase = (phase_a + phase_b) / 2.0;
 
-            // Boost amplitude and align phase for memory A
+            // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
-                mem.amplitude += self.constructive_boost;
-                mem.phase = avg_phase;
-                count += 1;
+                if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
+                    mem.amplitude += self.constructive_boost;
+                    mem.phase = avg_phase;
+                    count += 1;
+                }
             }
-            // Boost amplitude and align phase for memory B
+            // Boost amplitude and align phase for memory B (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
-                mem.amplitude += self.constructive_boost;
-                mem.phase = avg_phase;
-                count += 1;
+                if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
+                    mem.amplitude += self.constructive_boost;
+                    mem.phase = avg_phase;
+                    count += 1;
+                }
             }
         }
         
@@ -820,6 +827,12 @@ impl ConsolidationEngine {
         for pair in pairs.iter().filter(|p| p.kind == Interference::Destructive) {
             for id in &[pair.id_a, pair.id_b] {
                 if let Some(mem) = engine.store.get_mut(id).ok().flatten() {
+                    // Signal protection: skip destructive dampening for established memories
+                    // (amplitude > 0.5) when protect_established is enabled. This prevents
+                    // multi-cycle dreams from killing signal memories on repeated passes.
+                    if self.protect_established && mem.amplitude > 0.5 {
+                        continue;
+                    }
                     // Proportional dampening: stronger memories lose more absolute amplitude
                     // but the same fraction, matching exponential decay semantics.
                     mem.amplitude *= 1.0 - self.destructive_penalty * dt;
@@ -1379,14 +1392,14 @@ impl ConsolidationEngine {
             for &memory_id in working_set {
                 if let Ok(Some(mem)) = engine.store.get_mut(&memory_id) {
                     let handedness = if memory_id.as_u128() % 2 == 0 { 1.0 } else { -1.0 };
-                    
+
                     // Phase perturbation
                     let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
                     mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
                     if mem.phase < 0.0 {
                         mem.phase += 2.0 * PI;
                     }
-                    
+
                     // Vector perturbation to create Xi diversity
                     self.apply_chiral_vector_perturbation(&mut mem.vector, handedness, eta);
                 }
@@ -1405,21 +1418,21 @@ impl ConsolidationEngine {
 
         // Apply targeted chiral perturbation for similar memory pairs
         self.apply_targeted_chiral_perturbation(engine, working_set, &id_to_cluster, eta);
-        
-        // Also apply cluster-based perturbation for remaining memories
+
+        // Apply cluster-based perturbation for all memories
         for &memory_id in working_set {
             if let Ok(Some(mem)) = engine.store.get_mut(&memory_id) {
                 if let Some(&cluster_idx) = id_to_cluster.get(&memory_id) {
                     // Alternate handedness by cluster: even = left (+), odd = right (-)
                     let handedness = if cluster_idx % 2 == 0 { 1.0 } else { -1.0 };
-                    
-                    // Phase perturbation: �?�sin(2�phase)
+
+                    // Phase perturbation
                     let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
                     mem.phase = (mem.phase + phase_perturbation) % (2.0 * PI);
                     if mem.phase < 0.0 {
                         mem.phase += 2.0 * PI;
                     }
-                    
+
                     // Vector perturbation to create Xi diversity
                     self.apply_chiral_vector_perturbation(&mut mem.vector, handedness, eta);
                 } else {
@@ -1429,7 +1442,7 @@ impl ConsolidationEngine {
                     if mem.phase < 0.0 {
                         mem.phase += 2.0 * PI;
                     }
-                    
+
                     // Weak vector perturbation for unclustered memories
                     self.apply_chiral_vector_perturbation(&mut mem.vector, 0.0, eta * 0.1);
                 }
@@ -1517,14 +1530,21 @@ impl ConsolidationEngine {
         
         // println!("DEBUG: Found {} similar pairs for targeted chiral perturbation", similar_pairs.len());
         
-        // Apply opposite chirality to each pair
+        // Apply opposite chirality to each pair, using content hash for deterministic assignment
         for (id_a, id_b, similarity) in similar_pairs {
-            // Apply left chirality to first memory
-            if let Ok(Some(mem)) = engine.store.get_mut(&id_a) {
+            // Determine which gets left vs right chirality based on content hash
+            let hash_a = engine.store.get(&id_a).ok().flatten()
+                .map(|m| m.content.as_bytes().iter().map(|&b| b as u64).sum::<u64>())
+                .unwrap_or(0);
+            let hash_b = engine.store.get(&id_b).ok().flatten()
+                .map(|m| m.content.as_bytes().iter().map(|&b| b as u64).sum::<u64>())
+                .unwrap_or(0);
+            let (left_id, right_id) = if hash_a <= hash_b { (id_a, id_b) } else { (id_b, id_a) };
+
+            if let Ok(Some(mem)) = engine.store.get_mut(&left_id) {
                 self.apply_chiral_vector_perturbation(&mut mem.vector, 1.0, eta * similarity);
             }
-            // Apply right chirality to second memory
-            if let Ok(Some(mem)) = engine.store.get_mut(&id_b) {
+            if let Ok(Some(mem)) = engine.store.get_mut(&right_id) {
                 self.apply_chiral_vector_perturbation(&mut mem.vector, -1.0, eta * similarity);
             }
         }

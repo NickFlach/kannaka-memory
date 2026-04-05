@@ -102,13 +102,19 @@ pub fn xi_repulsive_force(xi_a: &[f32], xi_b: &[f32]) -> f32 {
 /// The boost is capped at 1.0 (valid cosine similarity ceiling).
 pub fn xi_diversity_boost(base_similarity: f32, xi_a: &[f32], xi_b: &[f32]) -> f32 {
     let repulsion = xi_repulsive_force(xi_a, xi_b);
-    
-    // Boost similarity for memories that are semantically similar but have different Xi residues
-    // This encourages retrieval of diverse perspectives on similar content
-    // Adjusted thresholds based on observed data ranges
-    if base_similarity > 0.3 && repulsion > 0.05 {
-        let boosted = base_similarity * (1.0 + repulsion * 1.5);
+
+    // Two-tier boost strategy:
+    // 1. High similarity pairs (>0.3): multiplicative boost rewards diverse perspectives on similar content
+    // 2. Low similarity pairs with high repulsion: additive boost rewards distinct representational bases
+    if base_similarity > 0.15 && repulsion > 0.05 {
+        // Multiplicative boost for semantically related memories with different Xi residues
+        let boosted = base_similarity * (1.0 + repulsion * 3.0);
         // Cap at 1.0: cosine similarity cannot exceed 1.0
+        boosted.min(1.0)
+    } else if repulsion > 0.1 {
+        // Additive boost for low-similarity pairs with distinct representational bases
+        // Smaller effect, but covers many more pairs to lift the average
+        let boosted = base_similarity + repulsion * 0.15;
         boosted.min(1.0)
     } else {
         base_similarity
