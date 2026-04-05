@@ -317,7 +317,7 @@ impl Hemisphere {
         let mut hallucinated_count = 0;
         let mut converged = false;
 
-        let convergence_threshold = 0.001;
+        let convergence_threshold = 0.0001;
         let annealing_rate = 0.95;
 
         for cycle in 0..cycles {
@@ -335,7 +335,7 @@ impl Hemisphere {
             self.apply_eigenstructure_annealing(&eigenstructure, temperature);
 
             // 3. Hallucination: create novel wavefronts from cross-cluster superposition
-            if cycle % 3 == 0 && temperature > 0.3 && self.count() < 500 {
+            if cycle % 3 == 0 && temperature > 0.3 && self.count() < 2000 {
                 let hallucinated = self.generate_hallucinated_wavefronts(&eigenstructure, temperature);
                 hallucinated_count += hallucinated;
             }
@@ -481,12 +481,13 @@ impl Hemisphere {
 
         let dominant_eigenvalue = eigenstructure.eigenvalues[0];
 
-        // Gentle coefficients -- holistic hemisphere preserves broad patterns
-        let consolidation_strength = 0.02 * (1.0 + temperature);
-        let noise_reduction = 0.005 * (2.0 - temperature);
+        // Moderate coefficients -- strong enough to produce visible effects
+        // while still preserving the holistic hemisphere's broad patterns
+        let consolidation_strength = 0.08 * (1.0 + temperature);
+        let noise_reduction = 0.02 * (2.0 - temperature);
 
         // Energy floor: bias voltage -- resting potential for amplification
-        let dream_energy_floor = 0.5;
+        let dream_energy_floor = 0.3;
 
         for i in 0..n {
             let alignment = eigenstructure.wavefront_alignments[i].abs();
