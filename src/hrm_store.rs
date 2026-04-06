@@ -82,6 +82,7 @@ impl HrmStore {
                 // Populate flat medium view for backward compat (observe, coherence matrix, etc.)
                 store.sync_medium_from_chiral();
                 store.rebuild_cache()?;
+                store.load_link_graph();
                 Ok(store)
             }
             Err(chiral_err) => {
@@ -98,6 +99,7 @@ impl HrmStore {
                     dirty: false,
                 };
                 store.rebuild_cache()?;
+                store.load_link_graph();
                 Ok(store)
             }
         }
@@ -204,8 +206,45 @@ impl HrmStore {
                 .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {}", e)))?;
         }
 
+        // Save link graph sidecar (connections not stored in HRM binary)
+        self.save_link_graph();
+
         self.dirty = false;
         Ok(())
+    }
+
+    /// Save the link graph as a sidecar JSON file alongside the HRM file.
+    fn save_link_graph(&self) {
+        let links_path = self.hrm_path.with_extension("links.json");
+        let graph: std::collections::HashMap<String, Vec<&crate::memory::LegacyLink>> = self.memory_cache.iter()
+            .filter(|(_, m)| !m.connections.is_empty())
+            .map(|(id, m)| (id.to_string(), m.connections.iter().collect()))
+            .collect();
+        if graph.is_empty() { return; }
+        if let Ok(json) = serde_json::to_vec(&graph) {
+            let _ = std::fs::write(&links_path, json);
+        }
+    }
+
+    /// Load link graph from sidecar file and merge into memory cache.
+    fn load_link_graph(&mut self) {
+        let links_path = self.hrm_path.with_extension("links.json");
+        if !links_path.exists() { return; }
+        let data = match std::fs::read(&links_path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let graph: std::collections::HashMap<String, Vec<crate::memory::LegacyLink>> = match serde_json::from_slice(&data) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        for (id_str, links) in graph {
+            if let Ok(id) = id_str.parse::<uuid::Uuid>() {
+                if let Some(mem) = self.memory_cache.get_mut(&id) {
+                    mem.connections = links;
+                }
+            }
+        }
     }
 
     /// Mark the medium as dirty (needing save).

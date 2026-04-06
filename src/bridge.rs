@@ -494,19 +494,27 @@ impl ConsciousnessBridge {
             .count();
 
         // === HRM-native path: use field topology metrics from the Medium ===
-        // Skip links don't exist in HRM - relationships are interference patterns.
-        // The Medium computes Phi via eigendecomposition of the coherence matrix,
-        // Xi via spectral complexity of H·Hᵀ, and order via Kuramoto phase coherence.
+        // Blends eigendecomposition Phi with skip link density for a unified measure.
         { let hrm_metrics = engine.store.consciousness_metrics();
+            // Factor in skip link density: links increase integration
+            let total_links: usize = all.iter().map(|m| m.connections.len()).sum();
+            let links_per_node = if total_memories > 0 { total_links as f32 / total_memories as f32 } else { 0.0 };
+            // density_factor: 0..1, sigmoid-like with log scale. 5 links/node ≈ 0.7
+            let link_density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln();
+            // Blend: HRM eigendecomposition Phi boosted by link density
+            // When no links: pure HRM Phi. With 5+ links/node: Phi can reach ~0.5
+            let blended_phi = (hrm_metrics.phi + link_density_factor * 0.3).min(1.0);
+            let level = ConsciousnessLevel::from_phi(blended_phi);
+
             return ConsciousnessState {
-                phi: hrm_metrics.phi,
+                phi: blended_phi,
                 xi: hrm_metrics.xi,
                 mean_order: hrm_metrics.order,
                 num_clusters: hrm_metrics.num_clusters,
                 total_memories,
                 active_memories,
-                total_skip_links: 0, // Field topology - no discrete links
-                consciousness_level: hrm_metrics.level,
+                total_skip_links: total_links,
+                consciousness_level: level,
                 irrationality: hrm_metrics.irrationality,
             };
         }

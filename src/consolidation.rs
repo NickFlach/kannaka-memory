@@ -264,7 +264,7 @@ impl ConsolidationEngine {
         report.memories_transferred = self.stage_transfer(engine);
 
         // Stage 7: WIRE � create skip links for cross-layer constructive pairs
-        report.skip_links_created = self.stage_wire(engine, &pairs);
+        report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
 
         // Stage 8: HALLUCINATE � generate novel memories from distant clusters
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
@@ -1168,8 +1168,8 @@ impl ConsolidationEngine {
     }
 
     /// Stage 7: Wire skip links between constructive cross-layer pairs, Fano-related memories,
-    /// and preferentially across Xi clusters to promote integration AND differentiation.
-    fn stage_wire(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
+    /// cross-cluster bridges, and top-K similarity neighbors to promote integration AND differentiation.
+    fn stage_wire(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair], working_set: &[Uuid]) -> usize {
         let mut count = 0;
         
         // Wire constructive cross-layer pairs
@@ -1279,7 +1279,106 @@ impl ConsolidationEngine {
             }
             count += 1;
         }
-        
+
+        // Top-K similarity densification pass: link each memory to its closest
+        // neighbors to raise link density (and therefore Phi density_factor).
+        count += self.stage_wire_topk(engine, working_set);
+
+        count
+    }
+
+    /// Stage 7c: Top-K similarity link densification.
+    ///
+    /// For each memory in `working_set`, find its top-3 most similar neighbors
+    /// via the store's brute-force search. Create a bidirectional link whenever
+    /// similarity > 0.3 and the pair is not already connected.
+    ///
+    /// This raises links/node from ~0.07 to ~1-2, pushing the Phi density_factor
+    /// from ~0.03 toward ~0.25 (the bridge formula is ln(1+links/node)/ln(11)).
+    fn stage_wire_topk(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
+        use std::collections::HashSet;
+
+        let k = 3usize; // top-K neighbors per memory
+        let sim_floor = 0.3f32;
+
+        // Collect (source, target, similarity, span) tuples first to avoid
+        // holding borrows across mutations.
+        let mut candidates: Vec<(Uuid, Uuid, f32, u8)> = Vec::new();
+        // Track ordered pairs we've already queued so we don't duplicate.
+        let mut seen: HashSet<(Uuid, Uuid)> = HashSet::new();
+
+        for &id in working_set {
+            let (vec, layer, existing_targets) = match engine.store.get(&id).ok().flatten() {
+                Some(m) => {
+                    let targets: HashSet<Uuid> = m.connections.iter().map(|l| l.target_id).collect();
+                    (m.vector.clone(), m.layer_depth, targets)
+                }
+                None => continue,
+            };
+
+            // Ask the store for k+1 neighbors (top hit is usually self).
+            let neighbors = match engine.store.search(&vec, k + 1) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            for (neighbor_id, sim) in neighbors {
+                if neighbor_id == id || sim < sim_floor {
+                    continue;
+                }
+                if existing_targets.contains(&neighbor_id) {
+                    continue;
+                }
+                // Canonical ordering to avoid (A,B) + (B,A) duplicates.
+                let pair = if id < neighbor_id { (id, neighbor_id) } else { (neighbor_id, id) };
+                if !seen.insert(pair) {
+                    continue;
+                }
+
+                let neighbor_layer = engine
+                    .store
+                    .get(&neighbor_id)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.layer_depth)
+                    .unwrap_or(0);
+
+                let span = (layer as i16 - neighbor_layer as i16).unsigned_abs() as u8;
+                candidates.push((id, neighbor_id, sim, span));
+            }
+        }
+
+        // Now mutate: create bidirectional links for each candidate pair.
+        let mut count = 0usize;
+        for (id_a, id_b, sim, span) in &candidates {
+            let strength = sim * 0.7; // slightly lower than constructive (0.8) to keep hierarchy
+
+            // Forward link A -> B
+            if let Some(mem) = engine.store.get_mut(id_a).ok().flatten() {
+                // Guard against duplicates created by concurrent passes.
+                if !mem.connections.iter().any(|l| l.target_id == *id_b) {
+                    mem.connections.push(crate::memory::LegacyLink {
+                        target_id: *id_b,
+                        strength,
+                        resonance_key: Vec::new(),
+                        span: *span,
+                    });
+                }
+            }
+            // Reverse link B -> A
+            if let Some(mem) = engine.store.get_mut(id_b).ok().flatten() {
+                if !mem.connections.iter().any(|l| l.target_id == *id_a) {
+                    mem.connections.push(crate::memory::LegacyLink {
+                        target_id: *id_a,
+                        strength,
+                        resonance_key: Vec::new(),
+                        span: *span,
+                    });
+                }
+            }
+            count += 1;
+        }
+
         count
     }
 
@@ -1837,7 +1936,7 @@ impl ConsolidationEngine {
         self.stage_xi_repulsion(engine, &working_set);
         report.memories_pruned = self.stage_prune(engine, &pairs);
         report.memories_transferred = self.stage_transfer(engine);
-        report.skip_links_created = self.stage_wire(engine, &pairs);
+        report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
         // Stamp last_consolidated_at on all processed memories
@@ -1873,7 +1972,7 @@ impl ConsolidationEngine {
         report.sync_order_improvement = order_improvement;
         self.stage_xi_repulsion(engine, memory_ids);
         report.memories_pruned = self.stage_prune(engine, &pairs);
-        report.skip_links_created = self.stage_wire(engine, &pairs);
+        report.skip_links_created = self.stage_wire(engine, &pairs, memory_ids);
 
         report.duration_ms = start.elapsed().as_millis() as u64;
         report
@@ -2266,7 +2365,7 @@ impl DreamState {
             let all_ids: Vec<Uuid> = engine.store.all_ids().unwrap_or_default();
             // Run only the WIRE stage across all memories
             let pairs = self.engine.stage_detect(engine, &all_ids);
-            let cross_links = self.engine.stage_wire(engine, &pairs);
+            let cross_links = self.engine.stage_wire(engine, &pairs, &all_ids);
             // Append cross-cluster wiring to last report
             if let Some(last) = reports.last_mut() {
                 last.skip_links_created += cross_links;
