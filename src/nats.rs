@@ -1219,23 +1219,22 @@ impl SwarmTransport {
             stream.try_clone()?
         };
 
-        let sid = "phase_listen";
         {
             let mut stream = self.stream.lock().map_err(|e| {
                 NatsError::Protocol(format!("lock poisoned: {}", e))
             })?;
-            write!(stream, "SUB QUEEN.phase.* {}\r\n", sid)?;
-            write!(stream, "SUB QUEEN.announce {}\r\n", sid)?;
+            write!(stream, "SUB QUEEN.phase.* 1\r\n")?;
+            write!(stream, "SUB QUEEN.announce 2\r\n")?;
             if include_memories {
-                write!(stream, "SUB KANNAKA.memory.new {}\r\n", sid)?;
-                write!(stream, "SUB KANNAKA.dreams {}\r\n", sid)?;
+                write!(stream, "SUB KANNAKA.memory.new 3\r\n")?;
+                write!(stream, "SUB KANNAKA.dreams 4\r\n")?;
             }
             stream.flush()?;
         }
 
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
-            sid: sid.to_string(),
+            sid: "1".to_string(), // sid unused in next_message parsing
         })
     }
 
