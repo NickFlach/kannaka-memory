@@ -258,6 +258,21 @@ fn main() {
                         hrm.set_modality(&id, modality);
                     }
                     println!("{id}");
+
+                    // Best-effort: publish new memory to NATS for swarm sync
+                    let nats_url = env::var("KANNAKA_NATS_URL")
+                        .unwrap_or_else(|_| kannaka_memory::nats::DEFAULT_NATS_URL.to_string());
+                    if let Some(transport) = try_nats_connect(&nats_url) {
+                        if let Ok(Some(mem)) = sys.engine.store.get(&id) {
+                            let agent_id = env::var("KANNAKA_AGENT_ID")
+                                .unwrap_or_else(|_| "local".to_string());
+                            if let Err(e) = transport.publish_memory_new(mem, &agent_id) {
+                                eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
+                            } else {
+                                eprintln!("[nats] Published memory {} to swarm", id);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -882,13 +897,16 @@ fn main() {
                         eprintln!("[nats] Auto-sync enabled -- will run Kuramoto step on each update");
                     }
 
-                    let mut sub = match transport.subscribe_phases() {
+                    let mut sub = match transport.subscribe_phases_and_memories(auto_sync) {
                         Ok(s) => s,
                         Err(e) => {
                             eprintln!("Failed to subscribe: {}", e);
                             process::exit(1);
                         }
                     };
+                    if auto_sync {
+                        eprintln!("[nats] Subscribed to KANNAKA.memory.new and KANNAKA.dreams for sync");
+                    }
 
                     let _ = sub.set_timeout(None);
 
@@ -917,6 +935,50 @@ fn main() {
                                 let event = json["event"].as_str().unwrap_or("unknown");
                                 let agent = json["agent_id"].as_str().unwrap_or("?");
                                 println!("[announce] {} {}", agent, event);
+                            }
+                        } else if msg.subject == "KANNAKA.memory.new" && auto_sync {
+                            if let Some(json) = msg.as_json() {
+                                let source_agent = json["agent_id"].as_str().unwrap_or("?");
+                                // Skip our own messages
+                                if source_agent != agent_id {
+                                    if let Some(mem_json) = json.get("memory") {
+                                        match serde_json::from_value::<kannaka_memory::HyperMemory>(mem_json.clone()) {
+                                            Ok(mem) => {
+                                                let mem_id = mem.id;
+                                                // Check if memory already exists
+                                                match sys.engine.store.get(&mem_id) {
+                                                    Ok(Some(_)) => {
+                                                        eprintln!("[sync] Memory {} already exists, skipping", mem_id);
+                                                    }
+                                                    _ => {
+                                                        match sys.engine.store.insert(mem) {
+                                                            Ok(_) => {
+                                                                println!("[sync] Imported memory {} from {}", mem_id, source_agent);
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, source_agent, e);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[sync] Failed to deserialize memory from {}: {}", source_agent, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if msg.subject == "KANNAKA.dreams" && auto_sync {
+                            if let Some(json) = msg.as_json() {
+                                let source_agent = json["agent_id"].as_str().unwrap_or("?");
+                                if source_agent != agent_id {
+                                    let cycles = json["cycles"].as_u64().unwrap_or(0);
+                                    let strengthened = json["memories_strengthened"].as_u64().unwrap_or(0);
+                                    let pruned = json["memories_pruned"].as_u64().unwrap_or(0);
+                                    println!("[dream] {} completed dream: {} cycles, {} strengthened, {} pruned",
+                                        source_agent, cycles, strengthened, pruned);
+                                }
                             }
                         }
                     }

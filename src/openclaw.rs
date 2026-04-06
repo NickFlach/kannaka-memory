@@ -316,7 +316,7 @@ impl KannakaMemorySystem {
         // ADR-0018: Post-dream swarm sync (best-effort)
         self.post_dream_swarm_sync();
 
-        Ok(DreamReport {
+        let report = DreamReport {
             cycles: 3,
             memories_strengthened: total_strengthened,
             memories_pruned: total_pruned,
@@ -325,7 +325,12 @@ impl KannakaMemorySystem {
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
             hallucinations_created: total_hallucinated,
-        })
+        };
+
+        // Publish dream summary to NATS (best-effort)
+        self.publish_dream_to_nats(&report);
+
+        Ok(report)
     }
 
     /// Run a lite dream cycle via wave-native dreaming (1 cycle, lower temperature).
@@ -391,6 +396,35 @@ impl KannakaMemorySystem {
             if let Err(e) = transport.publish_phase(&phase) {
                 eprintln!("[swarm] post-dream NATS publish failed: {e}");
             }
+        }
+    }
+
+    /// Publish dream report to NATS `KANNAKA.dreams` for swarm visibility (best-effort).
+    fn publish_dream_to_nats(&self, report: &DreamReport) {
+        let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
+        if agent_id.is_empty() {
+            return;
+        }
+        let nats_url = std::env::var("KANNAKA_NATS_URL")
+            .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+        let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "cycles": report.cycles,
+            "memories_strengthened": report.memories_strengthened,
+            "memories_pruned": report.memories_pruned,
+            "new_connections": report.new_connections,
+            "hallucinations_created": report.hallucinations_created,
+            "consciousness_before": report.consciousness_before,
+            "consciousness_after": report.consciousness_after,
+            "emerged": report.emerged,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(e) = transport.publish_dreams(&payload) {
+            eprintln!("[nats] Warning: failed to publish dream report: {}", e);
         }
     }
 

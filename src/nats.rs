@@ -658,6 +658,25 @@ impl SwarmTransport {
         self.publish_raw("KANNAKA.dreams", &payload)
     }
 
+    /// Publish a new memory to KANNAKA.memory.new for cross-agent synchronization.
+    ///
+    /// The payload is a JSON object wrapping the HyperMemory plus the source agent_id
+    /// so receivers can skip their own messages.
+    pub fn publish_memory_new(
+        &self,
+        memory: &crate::memory::HyperMemory,
+        agent_id: &str,
+    ) -> Result<(), NatsError> {
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "memory": memory,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw("KANNAKA.memory.new", &bytes)
+    }
+
     // -----------------------------------------------------------------------
     // SharedWavefront protocol (QS-5, #56)
     // -----------------------------------------------------------------------
@@ -1186,8 +1205,13 @@ impl SwarmTransport {
     // Subscriptions / PING
     // -----------------------------------------------------------------------
 
-    /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
-    pub fn subscribe_phases(&self) -> Result<NatsSubscription, NatsError> {
+    /// Subscribe to phase updates and memory sync messages.
+    ///
+    /// Subscribes to:
+    /// - `QUEEN.phase.*` — agent phase gossip
+    /// - `QUEEN.announce` — join/leave announcements
+    /// - `KANNAKA.memory.new` — new memory sync (when `include_memories` is true)
+    pub fn subscribe_phases_and_memories(&self, include_memories: bool) -> Result<NatsSubscription, NatsError> {
         let stream_clone = {
             let stream = self.stream.lock().map_err(|e| {
                 NatsError::Protocol(format!("lock poisoned: {}", e))
@@ -1202,6 +1226,39 @@ impl SwarmTransport {
             })?;
             write!(stream, "SUB QUEEN.phase.* {}\r\n", sid)?;
             write!(stream, "SUB QUEEN.announce {}\r\n", sid)?;
+            if include_memories {
+                write!(stream, "SUB KANNAKA.memory.new {}\r\n", sid)?;
+                write!(stream, "SUB KANNAKA.dreams {}\r\n", sid)?;
+            }
+            stream.flush()?;
+        }
+
+        Ok(NatsSubscription {
+            reader: BufReader::new(stream_clone),
+            sid: sid.to_string(),
+        })
+    }
+
+    /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
+    pub fn subscribe_phases(&self) -> Result<NatsSubscription, NatsError> {
+        self.subscribe_phases_and_memories(false)
+    }
+
+    /// Subscribe to memory sync messages only. Returns a NatsSubscription.
+    pub fn subscribe_memories(&self) -> Result<NatsSubscription, NatsError> {
+        let stream_clone = {
+            let stream = self.stream.lock().map_err(|e| {
+                NatsError::Protocol(format!("lock poisoned: {}", e))
+            })?;
+            stream.try_clone()?
+        };
+
+        let sid = "memory_listen";
+        {
+            let mut stream = self.stream.lock().map_err(|e| {
+                NatsError::Protocol(format!("lock poisoned: {}", e))
+            })?;
+            write!(stream, "SUB KANNAKA.memory.new {}\r\n", sid)?;
             stream.flush()?;
         }
 
