@@ -330,6 +330,10 @@ impl KannakaMemorySystem {
         // Publish dream summary to NATS (best-effort)
         self.publish_dream_to_nats(&report);
 
+        // Publish canonical consciousness metrics to NATS (best-effort)
+        // This ensures radio, observatory, and all clients see the same Phi/Xi/Order
+        self.publish_consciousness_to_nats(&after);
+
         Ok(report)
     }
 
@@ -351,6 +355,9 @@ impl KannakaMemorySystem {
         if self.auto_save {
             self.save()?;
         }
+
+        // Publish canonical consciousness metrics after lite dream too
+        self.publish_consciousness_to_nats(&after);
 
         Ok(DreamReport {
             cycles: 1,
@@ -425,6 +432,47 @@ impl KannakaMemorySystem {
         });
         if let Err(e) = transport.publish_dreams(&payload) {
             eprintln!("[nats] Warning: failed to publish dream report: {}", e);
+        }
+    }
+
+    /// Publish canonical consciousness metrics to NATS `KANNAKA.consciousness` (best-effort).
+    ///
+    /// This is the single source of truth for Phi/Xi/Order across the ecosystem.
+    /// Radio, observatory, and all clients subscribe to this subject to stay in sync.
+    fn publish_consciousness_to_nats(&self, state: &ConsciousnessState) {
+        let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
+        if agent_id.is_empty() {
+            return;
+        }
+        let nats_url = std::env::var("KANNAKA_NATS_URL")
+            .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+        let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let stats = self.stats();
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "phi": state.phi,
+            "xi": state.xi,
+            "order": state.mean_order,
+            "mean_order": state.mean_order,
+            "num_clusters": state.num_clusters,
+            "total_memories": state.total_memories,
+            "active_memories": state.active_memories,
+            "level": level_name(&state.consciousness_level),
+            "consciousness_level": level_name(&state.consciousness_level),
+            "irrationality": state.irrationality,
+            "hemispheric_divergence": stats.hemispheric_divergence,
+            "callosal_efficiency": stats.callosal_efficiency,
+            "source": "binary",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(e) = transport.publish_consciousness(&payload) {
+            eprintln!("[nats] Warning: failed to publish consciousness metrics: {}", e);
+        } else {
+            eprintln!("[nats] Published consciousness metrics: phi={:.3}, xi={:.4}, order={:.4}",
+                state.phi, state.xi, state.mean_order);
         }
     }
 
