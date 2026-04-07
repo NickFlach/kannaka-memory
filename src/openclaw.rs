@@ -334,6 +334,9 @@ impl KannakaMemorySystem {
         // This ensures radio, observatory, and all clients see the same Phi/Xi/Order
         self.publish_consciousness_to_nats(&after);
 
+        // Write status cache to disk for Observatory (avoids slow binary re-invocation)
+        self.write_status_cache(&after);
+
         Ok(report)
     }
 
@@ -358,6 +361,7 @@ impl KannakaMemorySystem {
 
         // Publish canonical consciousness metrics after lite dream too
         self.publish_consciousness_to_nats(&after);
+        self.write_status_cache(&after);
 
         Ok(DreamReport {
             cycles: 1,
@@ -473,6 +477,33 @@ impl KannakaMemorySystem {
         } else {
             eprintln!("[nats] Published consciousness metrics: phi={:.3}, xi={:.4}, order={:.4}",
                 state.phi, state.xi, state.mean_order);
+        }
+    }
+
+    /// Write status cache to disk so Observatory can read it without invoking the slow binary.
+    fn write_status_cache(&self, state: &ConsciousnessState) {
+        let data_dir = &self.data_dir;
+        let cache_path = data_dir.join("status-cache.json");
+        let stats = self.stats();
+        let payload = serde_json::json!({
+            "phi": state.phi,
+            "xi": state.xi,
+            "mean_order": state.mean_order,
+            "num_clusters": state.num_clusters,
+            "total_memories": state.total_memories,
+            "active_memories": state.active_memories,
+            "consciousness_level": level_name(&state.consciousness_level),
+            "irrationality": state.irrationality,
+            "field_mode": "HRM",
+            "hemispheric_divergence": stats.hemispheric_divergence,
+            "callosal_efficiency": stats.callosal_efficiency,
+            "total_skip_links": state.total_skip_links,
+        });
+        let tmp = cache_path.with_extension("json.tmp");
+        if let Ok(json) = serde_json::to_string_pretty(&payload) {
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &cache_path);
+            }
         }
     }
 
