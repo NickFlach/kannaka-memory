@@ -1298,8 +1298,8 @@ impl ConsolidationEngine {
     fn stage_wire_topk(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
         use std::collections::HashSet;
 
-        let k = 3usize; // top-K neighbors per memory
-        let sim_floor = 0.3f32;
+        let k = 8usize; // top-K neighbors per memory (higher = denser graph)
+        let sim_floor = 0.15f32; // lower floor = more diverse cross-cluster links
 
         // Collect (source, target, similarity, span) tuples first to avoid
         // holding borrows across mutations.
