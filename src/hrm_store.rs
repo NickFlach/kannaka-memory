@@ -106,7 +106,15 @@ impl HrmStore {
     }
 
     /// Rebuild the memory cache from the medium data.
+    /// Preserves existing connections (skip links) from the previous cache state.
     fn rebuild_cache(&mut self) -> Result<(), StoreError> {
+        // Snapshot existing connections before clearing
+        let saved_connections: std::collections::HashMap<uuid::Uuid, Vec<crate::memory::LegacyLink>> =
+            self.memory_cache.iter()
+                .filter(|(_, m)| !m.connections.is_empty())
+                .map(|(id, m)| (*id, m.connections.clone()))
+                .collect();
+
         self.memory_cache.clear();
 
         if let Some(ref chiral) = self.chiral {
@@ -170,7 +178,14 @@ impl HrmStore {
                 self.memory_cache.insert(meta.id, memory);
             }
         }
-        
+
+        // Restore saved connections from previous cache state
+        for (id, conns) in saved_connections {
+            if let Some(mem) = self.memory_cache.get_mut(&id) {
+                mem.connections = conns;
+            }
+        }
+
         Ok(())
     }
 
@@ -241,7 +256,12 @@ impl HrmStore {
         for (id_str, links) in graph {
             if let Ok(id) = id_str.parse::<uuid::Uuid>() {
                 if let Some(mem) = self.memory_cache.get_mut(&id) {
-                    mem.connections = links;
+                    // Merge: add sidecar links that don't already exist
+                    for link in links {
+                        if !mem.connections.iter().any(|l| l.target_id == link.target_id) {
+                            mem.connections.push(link);
+                        }
+                    }
                 }
             }
         }
