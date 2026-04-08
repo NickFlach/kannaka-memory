@@ -1297,52 +1297,70 @@ impl ConsolidationEngine {
     /// from ~0.03 toward ~0.25 (the bridge formula is ln(1+links/node)/ln(11)).
     fn stage_wire_topk(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
         use std::collections::HashSet;
+        use std::collections::HashMap;
 
-        let k = 8usize; // top-K neighbors per memory (higher = denser graph)
-        let sim_floor = 0.15f32; // lower floor = more diverse cross-cluster links
+        let k_local = 4usize;  // nearest neighbors (within-cluster cohesion)
+        let k_bridge = 4usize; // cross-cluster neighbors (integration)
+        let sim_floor = 0.15f32;
 
-        // Collect (source, target, similarity, span) tuples first to avoid
-        // holding borrows across mutations.
+        // Build cluster membership map for cross-cluster detection
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
+        for (ci, cluster) in clusters.iter().enumerate() {
+            for &mem_id in &cluster.memory_ids {
+                id_to_cluster.insert(mem_id, ci);
+            }
+        }
+
         let mut candidates: Vec<(Uuid, Uuid, f32, u8)> = Vec::new();
-        // Track ordered pairs we've already queued so we don't duplicate.
         let mut seen: HashSet<(Uuid, Uuid)> = HashSet::new();
 
         for &id in working_set {
-            let (vec, layer, existing_targets) = match engine.store.get(&id).ok().flatten() {
+            let (vec, layer, existing_targets, src_cluster) = match engine.store.get(&id).ok().flatten() {
                 Some(m) => {
                     let targets: HashSet<Uuid> = m.connections.iter().map(|l| l.target_id).collect();
-                    (m.vector.clone(), m.layer_depth, targets)
+                    let cluster = id_to_cluster.get(&m.id).copied();
+                    (m.vector.clone(), m.layer_depth, targets, cluster)
                 }
                 None => continue,
             };
 
-            // Ask the store for k+1 neighbors (top hit is usually self).
-            let neighbors = match engine.store.search(&vec, k + 1) {
+            // Search wider to find both local and cross-cluster neighbors
+            let neighbors = match engine.store.search(&vec, (k_local + k_bridge) * 2 + 1) {
                 Ok(n) => n,
                 Err(_) => continue,
             };
 
+            let mut local_count = 0usize;
+            let mut bridge_count = 0usize;
+
             for (neighbor_id, sim) in neighbors {
-                if neighbor_id == id || sim < sim_floor {
-                    continue;
-                }
-                if existing_targets.contains(&neighbor_id) {
-                    continue;
-                }
-                // Canonical ordering to avoid (A,B) + (B,A) duplicates.
+                if neighbor_id == id || sim < sim_floor { continue; }
+                if existing_targets.contains(&neighbor_id) { continue; }
+
                 let pair = if id < neighbor_id { (id, neighbor_id) } else { (neighbor_id, id) };
-                if !seen.insert(pair) {
-                    continue;
+                if !seen.insert(pair) { continue; }
+
+                let dst_cluster = id_to_cluster.get(&neighbor_id).copied();
+                let is_cross_cluster = match (src_cluster, dst_cluster) {
+                    (Some(s), Some(d)) => s != d,
+                    _ => true, // unclustered = treat as cross
+                };
+
+                // Budget: prioritize cross-cluster links, then fill with local
+                if is_cross_cluster && bridge_count < k_bridge {
+                    bridge_count += 1;
+                } else if !is_cross_cluster && local_count < k_local {
+                    local_count += 1;
+                } else if is_cross_cluster && local_count + bridge_count < k_local + k_bridge {
+                    bridge_count += 1; // overflow cross-cluster into remaining budget
+                } else {
+                    continue; // budget exhausted
                 }
 
-                let neighbor_layer = engine
-                    .store
-                    .get(&neighbor_id)
-                    .ok()
-                    .flatten()
-                    .map(|m| m.layer_depth)
-                    .unwrap_or(0);
-
+                let neighbor_layer = engine.store.get(&neighbor_id).ok().flatten()
+                    .map(|m| m.layer_depth).unwrap_or(0);
                 let span = (layer as i16 - neighbor_layer as i16).unsigned_abs() as u8;
                 candidates.push((id, neighbor_id, sim, span));
             }
