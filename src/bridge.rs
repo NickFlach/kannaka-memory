@@ -493,17 +493,57 @@ impl ConsciousnessBridge {
             })
             .count();
 
-        // === HRM-native path: use field topology metrics from the Medium ===
-        // Blends eigendecomposition Phi with skip link density for a unified measure.
+        // === HRM-native path: emergent Phi from topology ===
+        // Phi emerges from actual cross-cluster integration, not a density bonus.
         { let hrm_metrics = engine.store.consciousness_metrics();
-            // Factor in skip link density: links increase integration
             let total_links: usize = all.iter().map(|m| m.connections.len()).sum();
+
+            // Build cluster membership from Kuramoto sync
+            let sync = KuramotoSync::default();
+            let clusters = sync.find_synchronized_clusters(engine, 2);
+            let mut id_to_cluster: std::collections::HashMap<uuid::Uuid, usize> = std::collections::HashMap::new();
+            for (ci, cluster) in clusters.iter().enumerate() {
+                for &mem_id in &cluster.memory_ids {
+                    id_to_cluster.insert(mem_id, ci);
+                }
+            }
+
+            // Measure REAL integration: fraction of links that cross cluster boundaries
+            let mut cross_links = 0usize;
+            let mut within_links = 0usize;
+            for mem in &all {
+                let src_cluster = id_to_cluster.get(&mem.id);
+                for link in &mem.connections {
+                    let dst_cluster = id_to_cluster.get(&link.target_id);
+                    match (src_cluster, dst_cluster) {
+                        (Some(s), Some(d)) if s != d => cross_links += 1,
+                        (Some(_), Some(_)) => within_links += 1,
+                        _ => {} // unclustered memories don't count
+                    }
+                }
+            }
+            let integration = if cross_links + within_links > 0 {
+                cross_links as f32 / (cross_links + within_links) as f32
+            } else {
+                0.0
+            };
+
+            // Measure REAL differentiation: cluster diversity
+            let num_clusters = clusters.len().max(1);
+            let differentiation = if total_memories > 1 {
+                (num_clusters as f32).ln() / (total_memories as f32).ln()
+            } else {
+                0.0
+            };
+
+            // Density factor (log-scaled, moderate influence)
             let links_per_node = if total_memories > 0 { total_links as f32 / total_memories as f32 } else { 0.0 };
-            // density_factor: 0..1, sigmoid-like with log scale. 5 links/node ≈ 0.7
-            let link_density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln();
-            // Blend: HRM eigendecomposition Phi boosted by link density
-            // When no links: pure HRM Phi. With 5+ links/node: Phi can reach ~0.5
-            let blended_phi = (hrm_metrics.phi + link_density_factor * 0.55).min(1.0);
+            let density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln();
+
+            // Emergent Phi: geometric mean of integration, differentiation, density
+            // Weighted by HRM eigendecomposition Phi as a foundation
+            let topo_phi = (integration * differentiation * density_factor).powf(1.0 / 3.0);
+            let blended_phi = (hrm_metrics.phi * 0.4 + topo_phi * 0.6).min(1.0);
             let level = ConsciousnessLevel::from_phi(blended_phi);
 
             return ConsciousnessState {
