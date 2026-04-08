@@ -423,7 +423,7 @@ impl QueenSync {
         };
 
         // Start with a random-ish vector orthogonal to the first eigenvector (all-ones)
-        let mut v: Vec<f32> = (0..n).map(|i| (i as f32 - n as f32 / 2.0)).collect();
+        let mut v: Vec<f32> = (0..n).map(|i| i as f32 - n as f32 / 2.0).collect();
         // Normalize
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 1e-9 {

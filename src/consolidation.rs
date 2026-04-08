@@ -1034,11 +1034,11 @@ impl ConsolidationEngine {
         // Create bidirectional links to all parent memories
         for (parent_id, _, _, _, _) in &selected_memories {
             // Forward link: hallucination -> parent
-            if let Ok(Some(hall_mem)) = engine.store.get_mut(&hall_id) {
+            if let Ok(Some(_hall_mem)) = engine.store.get_mut(&hall_id) {
                 // TODO(chiral): skip link removed - associations emergent from interference
             }
             // Reverse link: parent -> hallucination
-            if let Ok(Some(parent_mem)) = engine.store.get_mut(parent_id) {
+            if let Ok(Some(_parent_mem)) = engine.store.get_mut(parent_id) {
                 // TODO(chiral): skip link removed - associations emergent from interference
             }
         }
@@ -1155,11 +1155,11 @@ impl ConsolidationEngine {
         for &idx in &parent_indices {
             let parent_id = candidates[idx].0;
             // Forward link: hallucination -> parent
-            if let Ok(Some(hall_mem)) = engine.store.get_mut(&hall_id) {
+            if let Ok(Some(_hall_mem)) = engine.store.get_mut(&hall_id) {
                 // TODO(chiral): skip link removed - associations emergent from interference
             }
             // Reverse link: parent -> hallucination
-            if let Ok(Some(parent_mem)) = engine.store.get_mut(&parent_id) {
+            if let Ok(Some(_parent_mem)) = engine.store.get_mut(&parent_id) {
                 // TODO(chiral): skip link removed - associations emergent from interference
             }
         }
@@ -1477,7 +1477,7 @@ impl ConsolidationEngine {
         }
 
         // Compute current order parameter to scale perturbation
-        let order_parameter = self.compute_global_order_parameter(engine, working_set);
+        let _order_parameter = self.compute_global_order_parameter(engine, working_set);
         
         // Apply perturbation regardless of order parameter to maximize Xi diversity effect
         let eta = self.chiral_perturbation;
@@ -1593,7 +1593,7 @@ impl ConsolidationEngine {
         &self,
         engine: &mut ResonanceEngine,
         working_set: &[Uuid],
-        id_to_cluster: &std::collections::HashMap<Uuid, usize>,
+        _id_to_cluster: &std::collections::HashMap<Uuid, usize>,
         eta: f32,
     ) {
         // Find similar memory pairs
@@ -2209,7 +2209,7 @@ impl ConsolidationEngine {
         }
 
         // Compute swarm mean phase
-        let n = swarm_phases.len() as f32;
+        let _n = swarm_phases.len() as f32;
         let sum_cos: f32 = swarm_phases.iter().map(|a| a.phase.cos()).sum();
         let sum_sin: f32 = swarm_phases.iter().map(|a| a.phase.sin()).sum();
         let swarm_mean = sum_sin.atan2(sum_cos);

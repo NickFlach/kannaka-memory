@@ -245,6 +245,7 @@ impl Medium {
     }
 
     /// Apply dynamics with temperature modulation for exploration
+    #[allow(dead_code)]
     fn apply_dynamics_with_temperature(&mut self, dt: f32, temperature: f32) {
         if self.wavefront_count() < 2 {
             return;

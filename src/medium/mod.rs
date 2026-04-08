@@ -7,9 +7,6 @@
 //! - Dreaming is annealing (energy minimization)
 //! - The storage topology IS the computation
 
-use std::collections::HashMap;
-
-use ndarray::{Array1, Array2};
 use uuid::Uuid;
 
 use crate::codebook::Codebook;

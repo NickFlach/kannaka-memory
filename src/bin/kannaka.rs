@@ -1,7 +1,7 @@
 //! Simple CLI for testing the Kannaka memory system.
 
 use std::env;
-use std::io::Read;
+// std::io::Read used in sub-commands
 use std::path::PathBuf;
 use std::process;
 
@@ -421,7 +421,7 @@ fn main() {
                 .into();
 
             // Check if HRM mode is active
-            let is_hrm = true; // HRM is the canonical substrate
+            let _is_hrm = true; // HRM is the canonical substrate
 
             let mut output = serde_json::json!({
                 "total_memories": stats.total_memories,
@@ -443,7 +443,7 @@ fn main() {
 
             // CS-9: effective dimensionality (the 10000.00001 question)
             {
-                let metrics = sys.engine.store.consciousness_metrics();
+                let _metrics = sys.engine.store.consciousness_metrics();
                 let (d_eff, nominal, ratio) = if let Some(hrm) = sys.engine.store.as_any()
                     .downcast_ref::<kannaka_memory::hrm_store::HrmStore>() {
                     hrm.medium().effective_dimensionality()
@@ -544,8 +544,8 @@ fn main() {
         }
         "stats" => {
             let stats = sys.stats();
-            let is_hrm = true; // HRM is the canonical substrate
-            
+            let _is_hrm = true; // HRM is the canonical substrate
+
             println!("Kannaka Memory System:");
             println!("  Total memories: {}", stats.total_memories);
             println!("  Active memories: {}", stats.active_memories);
@@ -1214,7 +1214,7 @@ fn main() {
                             // Test a few memories against this CMF
                             if let Ok(all_memories) = sys.all_memories() {
                                 println!("  Sample memberships:");
-                                for (j, memory) in all_memories.iter().take(5).enumerate() {
+                                for (_j, memory) in all_memories.iter().take(5).enumerate() {
                                     let membership = kannaka_memory::cmf_membership(memory, cmf);
                                     if membership.fitness > 0.1 {
                                         let preview = if memory.content.len() > 40 {
@@ -1251,7 +1251,7 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem) {
-    use kannaka_memory::medium::types::{detect_modality, Modality, ModalityClassification};
+    use kannaka_memory::medium::types::{detect_modality, ModalityClassification};
     use std::collections::HashMap;
 
     let all_mems = match sys.engine.store.all_memories() {

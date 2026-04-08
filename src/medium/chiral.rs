@@ -7,7 +7,6 @@
 //! - Corpus callosum: bandwidth-limited, balance-seeking bridge
 //! - Fano plane: fold algebra for cross-hemisphere projection
 
-use ndarray::Array1;
 use uuid::Uuid;
 
 use crate::encoding::EncodingPipeline;

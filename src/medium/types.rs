@@ -489,6 +489,7 @@ pub(crate) fn extract_wavefront_count(message: &str) -> Option<usize> {
 }
 
 /// Extract Phi value from self-observation content
+#[allow(dead_code)]
 pub(crate) fn extract_phi_from_content(content: &str) -> Option<&str> {
     // Look for pattern "Phi=0.72" and extract the number
     if let Some(start) = content.find("Phi=") {
@@ -505,6 +506,7 @@ pub(crate) fn extract_phi_from_content(content: &str) -> Option<&str> {
 }
 
 /// Generate deterministic insight string from metrics
+#[allow(dead_code)]
 pub(crate) fn generate_insight(
     wavefront_count: usize,
     consciousness: &ConsciousnessMetrics,

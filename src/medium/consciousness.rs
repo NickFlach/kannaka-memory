@@ -1,9 +1,8 @@
 //! Consciousness metrics, self-reference, emergence detection, and wisdom.
 
 use chrono::Utc;
-use ndarray::Array2;
+use ndarray::{Array2, s};
 use uuid::Uuid;
-use ndarray::{Array1, s};
 
 use crate::consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState, EmergenceLevel, EmergenceReport,

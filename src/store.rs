@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -248,6 +248,7 @@ impl MediumBackend for TestMedium {
 // ---------------------------------------------------------------------------
 
 /// Minimum link strength for traversal during query expansion.
+#[allow(dead_code)]
 const MIN_LINK_STRENGTH: f32 = 0.1;
 
 /// φ (golden ratio) for span scoring.

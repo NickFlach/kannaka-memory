@@ -250,7 +250,7 @@ impl ChiralMedium {
     }
 
     /// Read a hemisphere from the input stream.
-    fn read_hemisphere<R: Read>(r: &mut R, expected_hand: Hand) -> Result<Hemisphere, MediumError> {
+    fn read_hemisphere<R: Read>(r: &mut R, _expected_hand: Hand) -> Result<Hemisphere, MediumError> {
         // Hand
         let mut hand_byte = [0u8; 1];
         r.read_exact(&mut hand_byte)?;

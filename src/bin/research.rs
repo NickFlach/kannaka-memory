@@ -485,15 +485,15 @@ fn run_experiment(params: &Params) {
     let mut total_pruned = 0usize;
     let mut total_links = 0usize;
     let mut total_hallucinations = 0usize;
-    let mut last_report = None;
+    let mut _last_report = None;
 
-    for cycle in 0..params.dream_cycles {
+    for _cycle in 0..params.dream_cycles {
         let report = consolidator.consolidate(&mut engine, 0, 2);
         total_strengthened += report.memories_strengthened;
         total_pruned += report.memories_pruned;
         total_links += report.skip_links_created;
         total_hallucinations += report.hallucinations_created;
-        last_report = Some(report);
+        _last_report = Some(report);
     }
     let consolidation_ms = start.elapsed().as_millis() as u64;
 

@@ -259,6 +259,7 @@ impl FanoPlane {
     }
     
     /// Inverse of mediated rotation
+    #[allow(dead_code)]
     fn mediated_unrotate(rotated: &[f32], mediator: &[f32]) -> Vec<f32> {
         let len = rotated.len().min(mediator.len());
         let mut result = vec![0.0f32; len];

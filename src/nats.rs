@@ -207,6 +207,7 @@ struct BufferedMessage {
 pub struct SwarmTransport {
     stream: Arc<Mutex<TcpStream>>,
     url: String,
+    #[allow(dead_code)]
     next_sid: u64,
     jetstream_ok: bool,
     connected: Arc<Mutex<bool>>,
@@ -590,6 +591,7 @@ impl SwarmTransport {
     // -----------------------------------------------------------------------
 
     /// Publish a raw message to a subject with an optional reply-to.
+    #[allow(dead_code)]
     fn publish_raw_reply(&self, subject: &str, reply_to: Option<&str>, payload: &[u8]) -> Result<(), NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
@@ -1281,6 +1283,7 @@ impl SwarmTransport {
 /// A subscription that yields NATS messages.
 pub struct NatsSubscription {
     reader: BufReader<TcpStream>,
+    #[allow(dead_code)]
     sid: String,
 }
 

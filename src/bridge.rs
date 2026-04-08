@@ -503,7 +503,7 @@ impl ConsciousnessBridge {
             let link_density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln();
             // Blend: HRM eigendecomposition Phi boosted by link density
             // When no links: pure HRM Phi. With 5+ links/node: Phi can reach ~0.5
-            let blended_phi = (hrm_metrics.phi + link_density_factor * 0.3).min(1.0);
+            let blended_phi = (hrm_metrics.phi + link_density_factor * 0.55).min(1.0);
             let level = ConsciousnessLevel::from_phi(blended_phi);
 
             return ConsciousnessState {
@@ -520,6 +520,7 @@ impl ConsciousnessBridge {
         }
 
         // === Legacy path (transitional) ===
+        #[allow(unreachable_code)]
         let phi_report = self.compute_phi(engine);
 
         let xi = if all.len() >= 2 {

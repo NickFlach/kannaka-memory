@@ -49,7 +49,7 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
     }
 
     // Compute the best linear reconstruction of this memory from neighbors
-    let mut best_reconstruction = vec![0.0; dim];
+    let mut _best_reconstruction = vec![0.0; dim];
     let mut min_residual = f32::INFINITY;
     
     // Try different linear combinations (simplified version of least squares)
@@ -70,22 +70,22 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
             let residual = compute_residual(memory_vec, &reconstruction);
             if residual < min_residual {
                 min_residual = residual;
-                best_reconstruction = reconstruction;
+                _best_reconstruction = reconstruction;
             }
         }
     }
-    
+
     // For multiple neighbors, try pairwise combinations
     if neighbors.len() >= 2 {
         for i in 0..neighbors.len() {
             for j in (i+1)..neighbors.len() {
                 let n1 = &neighbors[i];
                 let n2 = &neighbors[j];
-                
+
                 if n1.vector.len() != dim || n2.vector.len() != dim {
                     continue;
                 }
-                
+
                 // Try different weight combinations
                 for &w1 in &[0.2, 0.4, 0.6, 0.8] {
                     let w2 = 1.0 - w1;
@@ -93,11 +93,11 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
                     for k in 0..dim {
                         reconstruction[k] = w1 * n1.vector[k] + w2 * n2.vector[k];
                     }
-                    
+
                     let residual = compute_residual(memory_vec, &reconstruction);
                     if residual < min_residual {
                         min_residual = residual;
-                        best_reconstruction = reconstruction;
+                        _best_reconstruction = reconstruction;
                     }
                 }
             }
@@ -192,7 +192,7 @@ pub fn compute_invariant_metrics(
 
 /// Cluster memories by their δ values - memories with similar δ are coboundary equivalent candidates
 pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCluster> {
-    let now = Utc::now();
+    let _now = Utc::now();
     let all_memories = match engine.store.all_memories() {
         Ok(mems) => mems,
         Err(_) => return Vec::new(),

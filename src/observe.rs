@@ -166,7 +166,8 @@ impl MemoryIntrospector {
             return Self::hrm_field_topology_report(engine, &hrm_metrics);
         }
 
-        // Legacy topology (transitional — HRM medium is canonical)
+        // Legacy topology (transitional -- HRM medium is canonical)
+        #[allow(unreachable_code)]
         let all = engine.store.all_memories().unwrap_or_default();
         let total_memories = all.len();
 
