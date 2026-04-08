@@ -216,7 +216,7 @@ impl Default for ConsolidationEngine {
             adaptive: AdaptiveParams::default(),
             chiral_perturbation: 0.0,
             noise_floor: 0.0,
-            hallucination_amplitude: 0.3,
+            hallucination_amplitude: 0.5,
             protect_established: false,
         }
     }
@@ -257,7 +257,12 @@ impl ConsolidationEngine {
         // Stage 4.6: XI_REPULSION � Apply Xi-based memory separation
         self.stage_xi_repulsion(engine, &working_set);
 
-        // Stage 5: PRUNE � weaken destructive pairs
+        // Stage 5: HALLUCINATE -- generate cross-cluster bridges BEFORE pruning.
+        // Hallucination needs access to all living memories across clusters;
+        // pruning ghosts low-amplitude memories that still carry topological info.
+        report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
+
+        // Stage 6: PRUNE � weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
 
         // Stage 6: TRANSFER � promote old memories to deeper layers
@@ -265,9 +270,6 @@ impl ConsolidationEngine {
 
         // Stage 7: WIRE � create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
-
-        // Stage 8: HALLUCINATE � generate novel memories from distant clusters
-        report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
         // Stage 9: CHIRAL_PERTURBATION � break lock-step synchronization with asymmetric phase offsets
         if self.chiral_perturbation > 0.0 {
@@ -827,6 +829,12 @@ impl ConsolidationEngine {
         for pair in pairs.iter().filter(|p| p.kind == Interference::Destructive) {
             for id in &[pair.id_a, pair.id_b] {
                 if let Some(mem) = engine.store.get_mut(id).ok().flatten() {
+                    // Bridge protection: hallucinated memories serve as cross-cluster
+                    // integration bridges. Protect them from destructive dampening so
+                    // they survive long enough to raise Phi through genuine topology.
+                    if mem.hallucinated {
+                        continue;
+                    }
                     // Signal protection: skip destructive dampening for established memories
                     // (amplitude > 0.5) when protect_established is enabled. This prevents
                     // multi-cycle dreams from killing signal memories on repeated passes.
@@ -901,42 +909,45 @@ impl ConsolidationEngine {
     ///
     /// Preferentially selects memories from DIFFERENT Xi clusters to create naturally
     /// cross-domain synthetic memories that enhance both integration and differentiation.
+    /// Tries both cross-cluster and distance-based methods to maximize bridge creation.
     fn stage_hallucinate(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
         if working_set.len() < 3 {
             return 0;
         }
 
-        // Get Xi clusters for cluster-aware hallucination
+        let mut total = 0;
+
+        // Primary method: cross-cluster hallucinations (multiple attempts)
         let sync = crate::kuramoto::KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(engine, 2);
-        
-        if clusters.len() < 2 {
-            // Fallback to original distance-based hallucination if no clusters
-            return self.stage_hallucinate_distance_based(engine, working_set);
+
+        if clusters.len() >= 2 {
+            total += self.stage_hallucinate_cross_cluster(engine, &clusters);
         }
-        
-        return self.stage_hallucinate_cross_cluster(engine, &clusters);
+
+        // Supplementary: distance-based hallucination adds one more bridge
+        // from maximally distant memories regardless of cluster structure
+        total += self.stage_hallucinate_distance_based(engine, working_set);
+
+        total
     }
 
-    /// Generate hallucinations by preferentially combining memories from different clusters.
+    /// Generate hallucinations by preferentially combining memories from different cluster pairs.
+    ///
+    /// Attempts up to `max_attempts` hallucinations across distinct cluster pairs to build
+    /// integration bridges. Each successful hallucination connects two or three clusters
+    /// that were previously isolated.
     fn stage_hallucinate_cross_cluster(&self, engine: &mut ResonanceEngine, clusters: &[crate::kuramoto::MemoryCluster]) -> usize {
-        use std::collections::HashMap;
-        
-        // Build cluster membership map
-        let mut id_to_cluster: HashMap<Uuid, usize> = HashMap::new();
-        for (cluster_idx, cluster) in clusters.iter().enumerate() {
-            for &mem_id in &cluster.memory_ids {
-                id_to_cluster.insert(mem_id, cluster_idx);
-            }
-        }
-        
         // Collect candidate memories from each cluster
         let mut cluster_candidates: Vec<Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)>> = vec![Vec::new(); clusters.len()];
-        
+
         for (cluster_idx, cluster) in clusters.iter().enumerate() {
             for &mem_id in &cluster.memory_ids {
                 if let Some(mem) = engine.store.get(&mem_id).ok().flatten() {
-                    if mem.amplitude > self.prune_threshold && !mem.content.starts_with("__consolidation") {
+                    // Use a minimal amplitude floor (> 0.0) rather than prune_threshold.
+                    // Any non-ghosted memory is a valid hallucination parent — the prune
+                    // threshold is for pruning weak memories, not for gating bridge creation.
+                    if mem.amplitude > 0.0 && !mem.content.starts_with("__consolidation") {
                         let tags: Vec<String> = mem.content
                             .split_whitespace()
                             .take(5)
@@ -947,112 +958,114 @@ impl ConsolidationEngine {
                 }
             }
         }
-        
+
         // Find clusters with sufficient candidates
         let viable_clusters: Vec<usize> = cluster_candidates.iter()
             .enumerate()
             .filter(|(_, candidates)| !candidates.is_empty())
             .map(|(idx, _)| idx)
             .collect();
-            
+
         if viable_clusters.len() < 2 {
             return 0;
         }
-        
-        // Select one representative memory from each of 2-3 different clusters
-        let mut selected_memories = Vec::new();
-        let num_clusters_to_use = viable_clusters.len().min(3);
-        
-        for &cluster_idx in viable_clusters.iter().take(num_clusters_to_use) {
-            let candidates = &cluster_candidates[cluster_idx];
-            // Select the highest amplitude memory from this cluster
-            if let Some(best_candidate) = candidates.iter()
-                .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)) {
-                selected_memories.push(best_candidate.clone());
+
+        // Attempt multiple hallucinations across different cluster pairs.
+        // Scale attempts with the number of viable clusters (more diversity = more bridges).
+        let max_attempts = (viable_clusters.len() / 2).max(2).min(8);
+        let mut total_created = 0usize;
+        let mut used_pairs: Vec<(usize, usize)> = Vec::new();
+
+        for attempt in 0..max_attempts {
+            // Select a pair of clusters not yet used
+            let (ci, cj) = if attempt < viable_clusters.len() / 2 {
+                // Pair up clusters sequentially: (0,1), (2,3), (4,5), ...
+                let a = viable_clusters[attempt * 2];
+                let b = viable_clusters[attempt * 2 + 1];
+                (a, b)
+            } else {
+                // Wrap-around: pair first cluster with later ones
+                let a = viable_clusters[attempt % viable_clusters.len()];
+                let b = viable_clusters[(attempt * 3 + 1) % viable_clusters.len()];
+                if a == b { continue; }
+                (a.min(b), a.max(b))
+            };
+
+            if used_pairs.contains(&(ci, cj)) {
+                continue;
             }
-        }
-        
-        if selected_memories.len() < 2 {
-            return 0;
-        }
-        
-        // Bundle the cross-cluster vectors (use max dimension for safety)
-        let dim = selected_memories.iter().map(|(_, v, _, _, _)| v.len()).max().unwrap_or(384);
-        let mut combined = vec![0.0f32; dim];
-        for (_, ref vector, _, _, _) in &selected_memories {
-            for (i, &v) in vector.iter().enumerate() {
-                if i < combined.len() {
-                    combined[i] += v;
+            used_pairs.push((ci, cj));
+
+            // Select one representative memory from each cluster (highest amplitude)
+            let mem_a = cluster_candidates[ci].iter()
+                .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+            let mem_b = cluster_candidates[cj].iter()
+                .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+
+            let (mem_a, mem_b) = match (mem_a, mem_b) {
+                (Some(a), Some(b)) => (a.clone(), b.clone()),
+                _ => continue,
+            };
+
+            let selected_memories = vec![mem_a, mem_b];
+
+            // Bundle the cross-cluster vectors
+            let dim = selected_memories.iter().map(|(_, v, _, _, _)| v.len()).max().unwrap_or(384);
+            let mut combined = vec![0.0f32; dim];
+            for (_, ref vector, _, _, _) in &selected_memories {
+                for (i, &v) in vector.iter().enumerate() {
+                    if i < combined.len() {
+                        combined[i] += v;
+                    }
                 }
             }
-        }
-        normalize(&mut combined);
-        
-        // Build content highlighting cross-cluster synthesis
-        let parent_ids: Vec<String> = selected_memories.iter().map(|(id, _, _, _, _)| id.to_string()).collect();
-        let parent_phrases: Vec<String> = selected_memories.iter()
-            .map(|(_, _, content, _, _)| {
-                // Safe truncation: find nearest char boundary at or before byte 60
-                if content.len() > 60 {
-                    let end = content.floor_char_boundary(60);
-                    &content[..end]
-                } else {
-                    content.as_str()
-                }
-            })
-            .map(|s| s.to_string())
-            .collect();
-        let content = format!("[cross-cluster hallucination] Synthesis across {} domains: {}", 
-                              selected_memories.len(), parent_phrases.join(" | "));
-        
-        // Merge tags from all clusters
-        let mut merged_tags: Vec<String> = Vec::new();
-        for (_, _, _, _, ref tags) in &selected_memories {
-            for tag in tags {
-                if !merged_tags.contains(tag) {
-                    merged_tags.push(tag.clone());
-                }
+            normalize(&mut combined);
+
+            // Build content highlighting cross-cluster synthesis
+            let parent_ids: Vec<String> = selected_memories.iter().map(|(id, _, _, _, _)| id.to_string()).collect();
+            let parent_phrases: Vec<String> = selected_memories.iter()
+                .map(|(_, _, content, _, _)| {
+                    if content.len() > 60 {
+                        let end = content.floor_char_boundary(60);
+                        &content[..end]
+                    } else {
+                        content.as_str()
+                    }
+                })
+                .map(|s| s.to_string())
+                .collect();
+            let content = format!("[cross-cluster hallucination] Synthesis across {} domains: {}",
+                                  selected_memories.len(), parent_phrases.join(" | "));
+
+            // Create the hallucinated memory
+            let mut hallucination = crate::memory::HyperMemory::new(combined, content);
+            hallucination.amplitude = self.hallucination_amplitude;
+            hallucination.hallucinated = true;
+            hallucination.parents = parent_ids;
+
+            let hall_id = match engine.store.insert(hallucination) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            // Apply coboundary validation (uses relaxed threshold internally for cross-cluster)
+            if !self.validate_and_filter_hallucination(engine, hall_id) {
+                continue; // Hallucination was rejected; try next pair
             }
+
+            total_created += 1;
         }
-        
-        // Create the hallucinated memory
-        let mut hallucination = crate::memory::HyperMemory::new(combined, content);
-        hallucination.amplitude = self.hallucination_amplitude; // Configured starting amplitude
-        hallucination.hallucinated = true;
-        hallucination.parents = parent_ids.clone();
-        
-        let hall_id = match engine.store.insert(hallucination) {
-            Ok(id) => id,
-            Err(_) => return 0,
-        };
-        
-        // Apply coboundary validation to the hallucination
-        if !self.validate_and_filter_hallucination(engine, hall_id) {
-            return 0; // Hallucination was rejected and deleted
-        }
-        
-        // Create bidirectional links to all parent memories
-        for (parent_id, _, _, _, _) in &selected_memories {
-            // Forward link: hallucination -> parent
-            if let Ok(Some(_hall_mem)) = engine.store.get_mut(&hall_id) {
-                // TODO(chiral): skip link removed - associations emergent from interference
-            }
-            // Reverse link: parent -> hallucination
-            if let Ok(Some(_parent_mem)) = engine.store.get_mut(parent_id) {
-                // TODO(chiral): skip link removed - associations emergent from interference
-            }
-        }
-        
-        1 // Created 1 cross-cluster hallucination
+
+        total_created
     }
 
     /// Fallback: Generate hallucinations using the original distance-based method.
     fn stage_hallucinate_distance_based(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) -> usize {
-        // Collect (id, vector, content, amplitude) for high-amplitude memories
+        // Collect (id, vector, content, amplitude) for non-ghosted memories
         let mut candidates: Vec<(Uuid, Vec<f32>, String, f32, Vec<String>)> = Vec::new();
         for id in working_set {
             if let Some(mem) = engine.store.get(id).ok().flatten() {
-                if mem.amplitude > self.prune_threshold && !mem.content.starts_with("__consolidation") {
+                if mem.amplitude > 0.0 && !mem.content.starts_with("__consolidation") {
                     // Collect tags-like info from content words
                     let tags: Vec<String> = mem.content
                         .split_whitespace()
@@ -1815,15 +1828,20 @@ impl ConsolidationEngine {
         let avg_complexity = total_complexity / total_transformations as f32;
         let avg_residual = total_residual / total_transformations as f32;
         
-        // Overall validity combines fit quality and penalizes excessive complexity
+        // Overall validity combines fit quality and penalizes excessive complexity.
+        // Note: cross-cluster hallucinations (from very different domains) naturally have
+        // lower fit_quality since the diagonal scaling approximation cannot capture the
+        // complex transformation between distant vector spaces. We use a relaxed threshold
+        // of 0.15 (down from 0.3) to allow genuine integration bridges while still
+        // filtering pure noise.
         let complexity_penalty = (avg_complexity - 1.0).max(0.0) * 0.3;
         let validity = (avg_fit_quality - complexity_penalty).max(0.0);
-        
+
         CoboundaryScore {
             validity,
             residual_error: avg_residual,
             transformation_complexity: avg_complexity,
-            is_valid: validity >= 0.3,
+            is_valid: validity >= 0.15,
         }
     }
     
@@ -1852,7 +1870,7 @@ impl ConsolidationEngine {
         
         let parent_refs: Vec<&crate::memory::HyperMemory> = parents.iter().collect();
         let score = self.validate_hallucination(&hallucination, &parent_refs);
-        
+
         // Apply validation decisions
         if !score.is_valid {
             // Remove invalid hallucinations
@@ -1952,10 +1970,10 @@ impl ConsolidationEngine {
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
         self.stage_xi_repulsion(engine, &working_set);
+        report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
         report.memories_pruned = self.stage_prune(engine, &pairs);
         report.memories_transferred = self.stage_transfer(engine);
         report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
-        report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
         // Stamp last_consolidated_at on all processed memories
         let now = Utc::now();
