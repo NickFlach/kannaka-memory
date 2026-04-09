@@ -293,6 +293,14 @@ impl KannakaMemorySystem {
             consol_report.memories_strengthened, consol_report.memories_pruned,
             consol_report.skip_links_created, consol_report.hallucinations_created);
 
+        // Phase 3: Callosal coupling — sync insights between hemispheres post-consolidation
+        self.engine.store.callosal_kuramoto(0.3);
+        eprintln!("[dream] Callosal Kuramoto coupling complete (dt=0.3)");
+
+        // Phase 4: Lite chiral dream — transfer strong analytical memories to holistic side
+        self.engine.store.chiral_dream(false, 1);
+        eprintln!("[dream] Lite chiral dream pass complete");
+
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
 

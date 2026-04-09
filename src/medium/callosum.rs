@@ -57,12 +57,12 @@ impl CorpusCallosum {
     /// Create a new callosum with default parameters
     pub fn new() -> Self {
         Self {
-            bandwidth: 10.0,
+            bandwidth: 20.0,
             gate_threshold: 0.3,
-            asymmetry: 2.0, // intuition 2x faster than consolidation
+            asymmetry: 3.0, // intuition 3x faster than consolidation
             recall_noise: 0.05,
             coherence_gate: 0.1,
-            remaining_budget: 10.0,
+            remaining_budget: 20.0,
             transfer_log: Vec::new(),
             max_log_size: 100,
         }
@@ -158,7 +158,7 @@ impl CorpusCallosum {
         // asymmetry controls holistic→analytical rate relative to analytical→holistic
         // If balance > 0 (left-heavy), we want LESS asymmetry (more consolidation)
         // If balance < 0 (right-heavy), we want MORE asymmetry (more intuition)
-        self.asymmetry = (2.0 / adjustment).clamp(1.0, 4.0);
+        self.asymmetry = (3.0 / adjustment).clamp(1.0, 5.0);
     }
 
     /// Route sensory input through the optic chiasm.
@@ -208,10 +208,10 @@ impl CorpusCallosum {
         let total_energy: f32 = self.transfer_log.iter().map(|t| t.energy).sum();
 
         let total = self.transfer_log.len();
-        // Efficiency (κ): approximate from energy retention — high-energy transfers
-        // are more likely to persist. Count transfers where energy > 2x gate threshold.
+        // Efficiency (κ): ratio of transfers that crossed the gate to total transfers.
+        // Any transfer with energy >= gate_threshold is a successful cross-callosal resonance.
         let successful = self.transfer_log.iter()
-            .filter(|t| t.energy >= self.gate_threshold * 2.0)
+            .filter(|t| t.energy >= self.gate_threshold)
             .count();
         let efficiency = if total > 0 { successful as f32 / total as f32 } else { 0.0 };
 

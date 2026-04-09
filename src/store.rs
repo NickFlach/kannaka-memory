@@ -158,6 +158,14 @@ pub trait MediumBackend: Send + Sync {
         Err(StoreError::Other("dream_native not supported by this backend".into()))
     }
 
+    /// Run callosal Kuramoto coupling step to sync hemispheres.
+    /// Only meaningful for HrmStore with a chiral medium. Default is a no-op.
+    fn callosal_kuramoto(&mut self, _dt: f32) {}
+
+    /// Perform a chiral dream pass (right hemisphere only for deep=true).
+    /// Only meaningful for HrmStore with a chiral medium. Default is a no-op.
+    fn chiral_dream(&mut self, _deep: bool, _cycles: usize) {}
+
     /// Downcasting support.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;

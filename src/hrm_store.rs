@@ -677,6 +677,14 @@ impl MediumBackend for HrmStore {
         Ok(Self::dream_native(self, cycles, temperature, chiral_eta))
     }
 
+    fn callosal_kuramoto(&mut self, dt: f32) {
+        Self::callosal_kuramoto(self, dt);
+    }
+
+    fn chiral_dream(&mut self, deep: bool, cycles: usize) {
+        Self::chiral_dream(self, deep, cycles);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
