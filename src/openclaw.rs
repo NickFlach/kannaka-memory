@@ -289,9 +289,10 @@ impl KannakaMemorySystem {
         let total_hallucinated = wave_report.wavefronts_hallucinated + consol_report.hallucinations_created;
         let total_links = consol_report.skip_links_created;
 
-        eprintln!("[dream] Consolidation: {} strengthened, {} pruned, {} links, {} hallucinated",
+        eprintln!("[dream] Consolidation: {} strengthened, {} pruned, {} links, {} hallucinated, {} kannaktopus actions (targets: {:?})",
             consol_report.memories_strengthened, consol_report.memories_pruned,
-            consol_report.skip_links_created, consol_report.hallucinations_created);
+            consol_report.skip_links_created, consol_report.hallucinations_created,
+            consol_report.kannaktopus_actions, consol_report.kannaktopus_targets);
 
         // Phase 3: Callosal coupling — sync insights between hemispheres post-consolidation
         self.engine.store.callosal_kuramoto(0.3);

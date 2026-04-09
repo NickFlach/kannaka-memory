@@ -97,6 +97,8 @@ pub struct ConsolidationReport {
     pub final_order_parameter: f32,
     /// Actions taken by the Kannaktopus executive oscillator (Stage 10)
     pub kannaktopus_actions: usize,
+    /// Cluster indices targeted by Kannaktopus (weakest, strongest, isolated)
+    pub kannaktopus_targets: Vec<usize>,
 }
 
 /// Report from modality-aware dream consolidation (NCS Phase 3.2, #48).
@@ -280,8 +282,9 @@ impl ConsolidationEngine {
         }
 
         // Stage 10: KANNAKTOPUS — executive oscillator that focuses attention on weak topology
-        let kannaktopus_actions = self.stage_kannaktopus(engine, &working_set, &report);
+        let (kannaktopus_actions, kannaktopus_targets) = self.stage_kannaktopus(engine, &working_set, &report);
         report.kannaktopus_actions = kannaktopus_actions;
+        report.kannaktopus_targets = kannaktopus_targets;
 
         // EXP-003: Compute final order parameter and record it
         let final_r = self.compute_global_order_parameter(engine, &working_set);
@@ -1522,14 +1525,15 @@ impl ConsolidationEngine {
         engine: &mut ResonanceEngine,
         working_set: &[Uuid],
         _report: &ConsolidationReport,
-    ) -> usize {
+    ) -> (usize, Vec<usize>) {
         let sync = crate::kuramoto::KuramotoSync::default();
         let clusters = sync.find_synchronized_clusters(engine, 2);
         if clusters.len() < 2 {
-            return 0;
+            return (0, vec![]);
         }
 
         let mut actions = 0usize;
+        let mut targets = Vec::new();
 
         // Find the weakest cluster (lowest order parameter)
         let weakest_idx = clusters.iter().enumerate()
@@ -1544,8 +1548,10 @@ impl ConsolidationEngine {
             .unwrap_or(0);
 
         if weakest_idx == strongest_idx {
-            return 0;
+            return (0, vec![]);
         }
+        targets.push(weakest_idx);
+        targets.push(strongest_idx);
 
         // ACTION 1: Bridge weak cluster to strong cluster
         // Create connections from weakest cluster memories to strongest cluster memories.
@@ -1653,7 +1659,7 @@ impl ConsolidationEngine {
             }
         }
 
-        actions
+        (actions, targets)
     }
 
     /// Stage 9: Apply chiral perturbation to break over-synchronization.
