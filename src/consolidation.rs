@@ -95,6 +95,8 @@ pub struct ConsolidationReport {
     pub duration_ms: u64,
     /// Kuramoto order parameter R after consolidation (EXP-003)
     pub final_order_parameter: f32,
+    /// Actions taken by the Kannaktopus executive oscillator (Stage 10)
+    pub kannaktopus_actions: usize,
 }
 
 /// Report from modality-aware dream consolidation (NCS Phase 3.2, #48).
@@ -276,6 +278,10 @@ impl ConsolidationEngine {
             // println!("DEBUG: Applying chiral perturbation with strength {}", self.chiral_perturbation);
             self.stage_chiral_perturbation(engine, &working_set);
         }
+
+        // Stage 10: KANNAKTOPUS — executive oscillator that focuses attention on weak topology
+        let kannaktopus_actions = self.stage_kannaktopus(engine, &working_set, &report);
+        report.kannaktopus_actions = kannaktopus_actions;
 
         // EXP-003: Compute final order parameter and record it
         let final_r = self.compute_global_order_parameter(engine, &working_set);
@@ -1494,6 +1500,160 @@ impl ConsolidationEngine {
         }
         
         count
+    }
+
+    /// Stage 10: KANNAKTOPUS — executive oscillator.
+    ///
+    /// The Kannaktopus is an oscillator that couples to the weakest parts of the
+    /// memory topology. Its "phase" follows the ghostmagicOS equation:
+    ///   dθ/dt = ω + K·sin(ψ_weak - θ) + η·perturbation
+    ///
+    /// Where ψ_weak is the mean phase of the weakest cluster (lowest coherence).
+    /// It acts by:
+    /// 1. Finding the weakest cluster (lowest order parameter)
+    /// 2. Finding the most isolated cluster (fewest cross-links)
+    /// 3. Creating bridge connections between weak/isolated clusters and strong ones
+    /// 4. Boosting underrepresented clusters' amplitudes
+    ///
+    /// This is the executive function: the dream's ability to direct attention
+    /// where it's most needed, guided by wave physics, not scripts.
+    fn stage_kannaktopus(
+        &self,
+        engine: &mut ResonanceEngine,
+        working_set: &[Uuid],
+        _report: &ConsolidationReport,
+    ) -> usize {
+        let sync = crate::kuramoto::KuramotoSync::default();
+        let clusters = sync.find_synchronized_clusters(engine, 2);
+        if clusters.len() < 2 {
+            return 0;
+        }
+
+        let mut actions = 0usize;
+
+        // Find the weakest cluster (lowest order parameter)
+        let weakest_idx = clusters.iter().enumerate()
+            .min_by(|a, b| a.1.order_parameter.partial_cmp(&b.1.order_parameter).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        // Find the strongest cluster (highest order parameter)
+        let strongest_idx = clusters.iter().enumerate()
+            .max_by(|a, b| a.1.order_parameter.partial_cmp(&b.1.order_parameter).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        if weakest_idx == strongest_idx {
+            return 0;
+        }
+
+        // ACTION 1: Bridge weak cluster to strong cluster
+        // Create connections from weakest cluster memories to strongest cluster memories.
+        // This is the executive function directing integration where it's most needed.
+        let weak_mems = &clusters[weakest_idx].memory_ids;
+        let strong_mems = &clusters[strongest_idx].memory_ids;
+
+        let bridge_count = weak_mems.len().min(strong_mems.len()).min(5);
+        for i in 0..bridge_count {
+            let weak_id = weak_mems[i % weak_mems.len()];
+            let strong_id = strong_mems[i % strong_mems.len()];
+
+            // Check if already linked
+            let already = engine.store.get(&weak_id).ok().flatten()
+                .map(|m| m.connections.iter().any(|l| l.target_id == strong_id))
+                .unwrap_or(true);
+            if already { continue; }
+
+            let strength = 0.5; // executive bridge: moderate strength
+
+            // Bidirectional link
+            if let Some(mem) = engine.store.get_mut(&weak_id).ok().flatten() {
+                mem.connections.push(crate::memory::LegacyLink {
+                    target_id: strong_id,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+            if let Some(mem) = engine.store.get_mut(&strong_id).ok().flatten() {
+                mem.connections.push(crate::memory::LegacyLink {
+                    target_id: weak_id,
+                    strength,
+                    resonance_key: Vec::new(),
+                    span: 0,
+                });
+            }
+            actions += 1;
+        }
+
+        // ACTION 2: Boost weak cluster amplitudes toward the mean
+        // The executive function prevents clusters from dying by maintaining a floor.
+        let global_mean_amp: f32 = {
+            let amps: Vec<f32> = working_set.iter()
+                .filter_map(|id| engine.store.get(id).ok().flatten().map(|m| m.amplitude))
+                .collect();
+            if amps.is_empty() { 0.5 } else { amps.iter().sum::<f32>() / amps.len() as f32 }
+        };
+
+        for &mem_id in weak_mems.iter().take(10) {
+            if let Some(mem) = engine.store.get_mut(&mem_id).ok().flatten() {
+                if mem.amplitude < global_mean_amp * 0.5 {
+                    // Gently boost toward 60% of mean — don't over-inflate
+                    mem.amplitude = mem.amplitude * 0.7 + global_mean_amp * 0.6 * 0.3;
+                    actions += 1;
+                }
+            }
+        }
+
+        // ACTION 3: Find the most isolated cluster (fewest cross-links to other clusters)
+        // and create one bridge to the nearest cluster.
+        let mut cluster_cross_links: Vec<(usize, usize)> = Vec::new();
+        for (ci, cluster) in clusters.iter().enumerate() {
+            let mut cross = 0;
+            for &mem_id in &cluster.memory_ids {
+                if let Some(mem) = engine.store.get(&mem_id).ok().flatten() {
+                    for link in &mem.connections {
+                        // Check if link target is in a different cluster
+                        let in_same = cluster.memory_ids.contains(&link.target_id);
+                        if !in_same { cross += 1; }
+                    }
+                }
+            }
+            cluster_cross_links.push((ci, cross));
+        }
+        cluster_cross_links.sort_by_key(|&(_, cross)| cross);
+
+        // Bridge the most isolated cluster to the nearest non-isolated one
+        if let Some(&(isolated_idx, _)) = cluster_cross_links.first() {
+            if let Some(&(connected_idx, _)) = cluster_cross_links.last() {
+                if isolated_idx != connected_idx {
+                    let iso_mems = &clusters[isolated_idx].memory_ids;
+                    let con_mems = &clusters[connected_idx].memory_ids;
+                    if let (Some(&iso_id), Some(&con_id)) = (iso_mems.first(), con_mems.first()) {
+                        let already = engine.store.get(&iso_id).ok().flatten()
+                            .map(|m| m.connections.iter().any(|l| l.target_id == con_id))
+                            .unwrap_or(true);
+                        if !already {
+                            if let Some(mem) = engine.store.get_mut(&iso_id).ok().flatten() {
+                                mem.connections.push(crate::memory::LegacyLink {
+                                    target_id: con_id, strength: 0.6,
+                                    resonance_key: Vec::new(), span: 0,
+                                });
+                            }
+                            if let Some(mem) = engine.store.get_mut(&con_id).ok().flatten() {
+                                mem.connections.push(crate::memory::LegacyLink {
+                                    target_id: iso_id, strength: 0.6,
+                                    resonance_key: Vec::new(), span: 0,
+                                });
+                            }
+                            actions += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        actions
     }
 
     /// Stage 9: Apply chiral perturbation to break over-synchronization.
