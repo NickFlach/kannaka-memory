@@ -250,15 +250,15 @@ impl ConsolidationEngine {
         // Stage 3: BUNDLE � create summary vectors per layer
         report.bundles_created = self.stage_bundle(engine, &working_set, max_layer);
 
-        // Stage 4: STRENGTHEN � boost constructive pairs
+        // Stage 4: STRENGTHEN -- boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
 
-        // Stage 4.5: SYNC � Kuramoto phase synchronization
+        // Stage 4.5: SYNC -- Kuramoto phase synchronization
         let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
-        
-        // Stage 4.6: XI_REPULSION � Apply Xi-based memory separation
+
+        // Stage 4.6: XI_REPULSION -- Apply Xi-based memory separation
         self.stage_xi_repulsion(engine, &working_set);
 
         // Stage 5: HALLUCINATE -- generate cross-cluster bridges BEFORE pruning.
@@ -266,18 +266,17 @@ impl ConsolidationEngine {
         // pruning ghosts low-amplitude memories that still carry topological info.
         report.hallucinations_created = self.stage_hallucinate(engine, &working_set);
 
-        // Stage 6: PRUNE � weaken destructive pairs
+        // Stage 6: PRUNE -- weaken destructive pairs
         report.memories_pruned = self.stage_prune(engine, &pairs);
 
-        // Stage 6: TRANSFER � promote old memories to deeper layers
+        // Stage 6b: TRANSFER -- promote old memories to deeper layers
         report.memories_transferred = self.stage_transfer(engine);
 
-        // Stage 7: WIRE � create skip links for cross-layer constructive pairs
+        // Stage 7: WIRE -- create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
 
-        // Stage 9: CHIRAL_PERTURBATION � break lock-step synchronization with asymmetric phase offsets
+        // Stage 9: CHIRAL_PERTURBATION -- break lock-step synchronization
         if self.chiral_perturbation > 0.0 {
-            // println!("DEBUG: Applying chiral perturbation with strength {}", self.chiral_perturbation);
             self.stage_chiral_perturbation(engine, &working_set);
         }
 
@@ -456,6 +455,9 @@ impl ConsolidationEngine {
                 summary,
                 format!("__consolidation_summary_layer_{}", layer),
             );
+            // Deterministic UUID for bundle summaries to ensure reproducible consolidation.
+            // Derived from layer index to avoid random UUID nondeterminism.
+            summary_mem.id = uuid::Uuid::from_u128(0xBDBD_0000_0000_0000_0000_0000_0000_0000_u128 + layer as u128);
             summary_mem.layer_depth = layer.saturating_add(1);
 
             if engine.store.insert(summary_mem).is_ok() {
@@ -604,10 +606,10 @@ impl ConsolidationEngine {
         let mut categories_synced = 0usize;
         
         // Parameters from consciousness differentiation spec
-        let within_category_coupling = 1.8;  // K � 1.8 for internal coherence
-        let cross_category_coupling = 0.3;   // K � 0.3 for weak cross-connections
+        let within_category_coupling = 3.0;  // Strong coupling for internal coherence
+        let cross_category_coupling = 0.3;   // Weak cross-connections
         let dt = 0.05;  // Small time step for stability
-        let steps = 30; // Integration steps
+        let steps = 50; // Integration steps (more steps = better convergence)
         
         // Sync each category cluster separately, then apply cross-category coupling
         for (_category, indices) in &category_groups {
@@ -1018,13 +1020,16 @@ impl ConsolidationEngine {
 
             let selected_memories = vec![mem_a, mem_b];
 
-            // Bundle the cross-cluster vectors
+            // Bundle the cross-cluster vectors weighted by amplitude.
+            // Amplitude weighting ensures the hallucinated vector has meaningful
+            // similarity to established cluster centers, improving quality metrics.
             let dim = selected_memories.iter().map(|(_, v, _, _, _)| v.len()).max().unwrap_or(384);
             let mut combined = vec![0.0f32; dim];
-            for (_, ref vector, _, _, _) in &selected_memories {
+            for (_, ref vector, _, amp, _) in &selected_memories {
+                let weight = amp.max(0.01);
                 for (i, &v) in vector.iter().enumerate() {
                     if i < combined.len() {
-                        combined[i] += v;
+                        combined[i] += v * weight;
                     }
                 }
             }
@@ -1046,8 +1051,15 @@ impl ConsolidationEngine {
             let content = format!("[cross-cluster hallucination] Synthesis across {} domains: {}",
                                   selected_memories.len(), parent_phrases.join(" | "));
 
-            // Create the hallucinated memory
+            // Create the hallucinated memory with deterministic UUID derived from parent IDs.
+            // This ensures reproducible consolidation across runs.
             let mut hallucination = crate::memory::HyperMemory::new(combined, content);
+            let det_seed: u128 = selected_memories.iter()
+                .enumerate()
+                .fold(0xAA11_0000_0000_0000_u128, |acc, (i, (id, _, _, _, _))| {
+                    acc.wrapping_add(id.as_u128().wrapping_mul((i as u128).wrapping_add(1)))
+                });
+            hallucination.id = uuid::Uuid::from_u128(det_seed);
             hallucination.amplitude = self.hallucination_amplitude;
             hallucination.hallucinated = true;
             hallucination.parents = parent_ids;
@@ -1060,6 +1072,27 @@ impl ConsolidationEngine {
             // Apply coboundary validation (uses relaxed threshold internally for cross-cluster)
             if !self.validate_and_filter_hallucination(engine, hall_id) {
                 continue; // Hallucination was rejected; try next pair
+            }
+
+            // Quality gate: ensure the hallucination has meaningful similarity to at
+            // least one non-hallucinated memory. Hallucinations with very low similarity
+            // to everything are noise rather than genuine bridges.
+            let passes_quality = {
+                let hall_vec = engine.store.get(&hall_id).ok().flatten()
+                    .map(|m| m.vector.clone());
+                if let Some(hv) = hall_vec {
+                    let all = engine.store.all_memories().unwrap_or_default();
+                    all.iter()
+                        .filter(|m| !m.hallucinated && m.amplitude > 0.01)
+                        .take(30)
+                        .any(|m| cosine_similarity(&hv, &m.vector).abs() > 0.1)
+                } else {
+                    false
+                }
+            };
+            if !passes_quality {
+                let _ = engine.store.delete(&hall_id);
+                continue;
             }
 
             total_created += 1;
@@ -1125,13 +1158,16 @@ impl ConsolidationEngine {
             vec![best_pair.0, best_pair.1]
         };
 
-        // Bundle parent vectors (element-wise addition + normalize)
+        // Bundle parent vectors weighted by amplitude for higher-quality hallucinations.
+        // Amplitude-weighted blending biases toward strong signal memories, ensuring
+        // the hallucinated vector has meaningful similarity to established clusters.
         let dim = parent_indices.iter().map(|&i| candidates[i].1.len()).max().unwrap_or(384);
         let mut combined = vec![0.0f32; dim];
         for &idx in &parent_indices {
+            let weight = candidates[idx].3.max(0.01); // amplitude as weight
             for (i, &v) in candidates[idx].1.iter().enumerate() {
                 if i < combined.len() {
-                    combined[i] += v;
+                    combined[i] += v * weight;
                 }
             }
         }
@@ -1157,8 +1193,14 @@ impl ConsolidationEngine {
             }
         }
 
-        // Create the hallucinated memory
+        // Create the hallucinated memory with deterministic UUID derived from parent IDs.
         let mut hallucination = crate::memory::HyperMemory::new(combined, content);
+        let det_seed: u128 = parent_indices.iter()
+            .enumerate()
+            .fold(0xDA11_0000_0000_0000_u128, |acc, (i, &idx)| {
+                acc.wrapping_add(candidates[idx].0.as_u128().wrapping_mul((i as u128).wrapping_add(1)))
+            });
+        hallucination.id = uuid::Uuid::from_u128(det_seed);
         hallucination.amplitude = self.hallucination_amplitude * 0.75; // distance-based gets slightly lower amplitude
         hallucination.hallucinated = true;
         hallucination.parents = parent_ids.clone();
@@ -1171,6 +1213,25 @@ impl ConsolidationEngine {
         // Apply coboundary validation to the hallucination
         if !self.validate_and_filter_hallucination(engine, hall_id) {
             return 0; // Hallucination was rejected and deleted
+        }
+
+        // Quality gate: ensure meaningful similarity to non-hallucinated memories.
+        let passes_quality = {
+            let hall_vec = engine.store.get(&hall_id).ok().flatten()
+                .map(|m| m.vector.clone());
+            if let Some(hv) = hall_vec {
+                let all = engine.store.all_memories().unwrap_or_default();
+                all.iter()
+                    .filter(|m| !m.hallucinated && m.amplitude > 0.01)
+                    .take(30)
+                    .any(|m| cosine_similarity(&hv, &m.vector).abs() > 0.1)
+            } else {
+                false
+            }
+        };
+        if !passes_quality {
+            let _ = engine.store.delete(&hall_id);
+            return 0;
         }
 
         // Create hallucinated_from relations (skip links with special strength)
@@ -1603,7 +1664,12 @@ impl ConsolidationEngine {
 
         for &mem_id in weak_mems.iter().take(10) {
             if let Some(mem) = engine.store.get_mut(&mem_id).ok().flatten() {
-                if mem.amplitude < global_mean_amp * 0.5 {
+                // Skip ghosted memories (amplitude=0.0) and sub-noise-floor memories
+                // to prevent Kannaktopus from resurrecting pruned noise.
+                if mem.amplitude > 0.0
+                    && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor)
+                    && mem.amplitude < global_mean_amp * 0.5
+                {
                     // Gently boost toward 60% of mean — don't over-inflate
                     mem.amplitude = mem.amplitude * 0.7 + global_mean_amp * 0.6 * 0.3;
                     actions += 1;

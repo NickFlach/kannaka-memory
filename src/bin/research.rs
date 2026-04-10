@@ -43,14 +43,14 @@ fn experiment_params() -> Params {
         kuramoto_coupling: 0.8,
         kuramoto_dt: 0.15,
         kuramoto_steps: 20,
-        kuramoto_threshold: 0.55,
+        kuramoto_threshold: 0.35,
 
         // Multi-cycle
-        dream_cycles: 2,
+        dream_cycles: 1,
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
-        consciousness_phi_target: 0.0001,
+        consciousness_phi_target: 0.317,
         hallucination_amplitude: 0.7,
         phase_spread: 0.2,
         chiral_perturbation: 0.9,
