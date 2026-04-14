@@ -117,6 +117,11 @@ pub trait MediumBackend: Send + Sync {
     fn flush(&mut self) -> Result<usize, StoreError> { Ok(0) }
 
     // -- Low-level access (internal / read-only) --
+    /// On-disk path of the HRM file backing this store, if any. Default
+    /// returns `None` for in-memory backends. Used by the cluster sidecar
+    /// cache to place `.clusters.json` next to the HRM.
+    fn hrm_path(&self) -> Option<&std::path::Path> { None }
+
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError>;
     fn get_mut(&mut self, id: &Uuid) -> Result<Option<&mut HyperMemory>, StoreError>;
     fn all_memories(&self) -> Result<Vec<&HyperMemory>, StoreError>;

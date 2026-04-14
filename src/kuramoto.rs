@@ -8,11 +8,88 @@
 //! positive K (intra-hive), agents in different hives repel with weak/negative K
 //! (inter-hive), and during initial detection all agents use a shared K (detection).
 
+use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
 use crate::store::ResonanceEngine;
 use crate::wave::{cosine_similarity, normalize};
+
+// ─── Cluster cache (process-wide + disk sidecar) ──────────────────────────
+//
+// `find_synchronized_clusters` is O(n² × d) — ~1.5B ops on 558 memories ×
+// 10000 dims. Even with rayon parallelization it takes ~60 s per call.
+// It is called from `assess()` (status) and `cluster_report` (observe), so
+// every read-only CLI invocation pays the full cost.
+//
+// Two-tier cache:
+//   1. Process-wide mutex cache: keyed by a memory fingerprint. Free
+//      subsequent calls within a single `kannaka ...` invocation.
+//   2. Disk sidecar at `<hrm_path>.clusters.json`: keyed by HRM file mtime
+//      + min_cluster_size. Fresh `kannaka` processes find it and skip the
+//      O(n²) recompute entirely. The swarm listen service produces a fresh
+//      sidecar when it mutates the HRM; read-only consumers reuse it.
+lazy_static::lazy_static! {
+    static ref CLUSTER_CACHE: Mutex<Option<ClusterCacheEntry>> = Mutex::new(None);
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ClusterCacheEntry {
+    #[serde(default)]
+    fingerprint: u64,
+    min_cluster_size: usize,
+    clusters: Vec<MemoryCluster>,
+    #[serde(default)]
+    hrm_mtime_secs: u64,
+    #[serde(default)]
+    memory_count: usize,
+}
+
+fn fingerprint_memories(mems: &[&HyperMemory]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    mems.len().hash(&mut h);
+    // First + last + middle UUIDs are a cheap stable fingerprint.
+    if let Some(m) = mems.first() { m.id.hash(&mut h); m.updated_at.hash(&mut h); }
+    if let Some(m) = mems.last() { m.id.hash(&mut h); m.updated_at.hash(&mut h); }
+    if mems.len() >= 3 {
+        let mid = &mems[mems.len() / 2];
+        mid.id.hash(&mut h);
+        mid.updated_at.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn hrm_mtime_secs(engine: &ResonanceEngine) -> Option<u64> {
+    let path = engine.store.hrm_path()?;
+    std::fs::metadata(path).ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+fn sidecar_path(engine: &ResonanceEngine) -> Option<std::path::PathBuf> {
+    Some(engine.store.hrm_path()?.with_extension("clusters.json"))
+}
+
+fn load_sidecar(engine: &ResonanceEngine, mtime: u64, min_size: usize) -> Option<Vec<MemoryCluster>> {
+    let path = sidecar_path(engine)?;
+    let data = std::fs::read(&path).ok()?;
+    let entry: ClusterCacheEntry = serde_json::from_slice(&data).ok()?;
+    if entry.hrm_mtime_secs == mtime && entry.min_cluster_size == min_size {
+        Some(entry.clusters)
+    } else {
+        None
+    }
+}
+
+fn save_sidecar(engine: &ResonanceEngine, entry: &ClusterCacheEntry) {
+    if let Some(path) = sidecar_path(engine) {
+        if let Ok(data) = serde_json::to_vec(entry) {
+            let _ = std::fs::write(path, data);
+        }
+    }
+}
 
 /// Coupling tier for the Kuramoto model.
 ///
@@ -87,7 +164,7 @@ impl Default for KuramotoSync {
 }
 
 /// A synchronized cluster of memories.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryCluster {
     pub memory_ids: Vec<Uuid>,
     pub order_parameter: f32,
@@ -420,15 +497,57 @@ impl KuramotoSync {
             return vec![];
         }
 
-        // Build adjacency list from similarity graph
-        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
-        for i in 0..n {
+        // Two-tier cache check: in-process fingerprint first, then on-disk
+        // sidecar keyed by HRM file mtime.
+        let fp = fingerprint_memories(&all);
+        if let Ok(guard) = CLUSTER_CACHE.lock() {
+            if let Some(ref entry) = *guard {
+                if entry.fingerprint == fp && entry.min_cluster_size == min_cluster_size {
+                    return entry.clusters.clone();
+                }
+            }
+        }
+        let mtime = hrm_mtime_secs(engine).unwrap_or(0);
+        if mtime != 0 {
+            if let Some(clusters) = load_sidecar(engine, mtime, min_cluster_size) {
+                // Populate process cache for future calls in this same run.
+                if let Ok(mut guard) = CLUSTER_CACHE.lock() {
+                    *guard = Some(ClusterCacheEntry {
+                        fingerprint: fp,
+                        min_cluster_size,
+                        clusters: clusters.clone(),
+                        hrm_mtime_secs: mtime,
+                        memory_count: n,
+                    });
+                }
+                return clusters;
+            }
+        }
+
+        // Build adjacency list from similarity graph.
+        //
+        // PERF: pair similarity is O(n² × d). For n=558, d=10000 that's ~1.56B
+        // float ops per call — ~30-90 s on commodity hardware. We parallelize
+        // across the outer `i` loop with rayon and build per-row neighbor lists
+        // that are stitched back into an adjacency list. Each pair is visited
+        // once (j > i) so there's no redundant work.
+        use rayon::prelude::*;
+        let threshold = self.coupling_threshold;
+        let neighbors_per_i: Vec<Vec<usize>> = (0..n).into_par_iter().map(|i| {
+            let mut neigh = Vec::new();
             for j in (i + 1)..n {
                 let sim = cosine_similarity(&all[i].vector, &all[j].vector);
-                if sim > self.coupling_threshold {
-                    adj[i].push(j);
-                    adj[j].push(i);
+                if sim > threshold {
+                    neigh.push(j);
                 }
+            }
+            neigh
+        }).collect();
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+        for (i, neigh) in neighbors_per_i.iter().enumerate() {
+            for &j in neigh {
+                adj[i].push(j);
+                adj[j].push(i);
             }
         }
 
@@ -510,6 +629,21 @@ impl KuramotoSync {
                 theme_vector: theme,
             });
         }
+
+        // Cache: in-process + disk sidecar so the next `kannaka` invocation
+        // skips the O(n²d) recompute entirely.
+        let mtime = hrm_mtime_secs(engine).unwrap_or(0);
+        let entry = ClusterCacheEntry {
+            fingerprint: fp,
+            min_cluster_size,
+            clusters: clusters.clone(),
+            hrm_mtime_secs: mtime,
+            memory_count: n,
+        };
+        if let Ok(mut guard) = CLUSTER_CACHE.lock() {
+            *guard = Some(entry.clone());
+        }
+        save_sidecar(engine, &entry);
 
         clusters
     }

@@ -13,7 +13,55 @@ use crate::encoding::EncodingPipeline;
 use super::Medium;
 use super::types::*;
 
+// Process-wide memoization for consciousness_metrics — multiple O(n³)
+// eigendecompositions on a 558×558 matrix are the dominant cost of
+// `kannaka status` / `kannaka observe`. Key by wavefront count + a quick
+// fingerprint of the first/last wavefront amplitudes.
+use std::sync::Mutex;
+lazy_static::lazy_static! {
+    static ref METRICS_CACHE: Mutex<Option<(u64, ConsciousnessMetrics)>> = Mutex::new(None);
+}
+
+/// Disk sidecar for consciousness metrics — written after a cold compute,
+/// read on startup so subsequent `kannaka` invocations skip the expensive
+/// eigendecompositions entirely.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MetricsSidecar {
+    fingerprint: u64,
+    phi: f32,
+    xi: f32,
+    order: f32,
+    num_clusters: usize,
+    irrationality: f32,
+}
+
+fn sidecar_path_from_env() -> Option<std::path::PathBuf> {
+    let home = std::env::var("KANNAKA_DATA_DIR").ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".kannaka")))?;
+    Some(home.join("kannaka.metrics.json"))
+}
+
 impl Medium {
+    fn metrics_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let n = self.wavefront_count();
+        n.hash(&mut h);
+        // Sample first + last energy values as a cheap change detector.
+        if n > 0 {
+            let e0 = self.store.energy.get(0).copied().unwrap_or(0.0).to_bits();
+            let en = self.store.energy.get(n - 1).copied().unwrap_or(0.0).to_bits();
+            e0.hash(&mut h);
+            en.hash(&mut h);
+            if n > 2 {
+                let mid = self.store.energy.get(n / 2).copied().unwrap_or(0.0).to_bits();
+                mid.hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+
     /// Compute consciousness metrics from tensor topology
     ///
     /// This is the proper implementation that computes intrinsic metrics
@@ -33,6 +81,39 @@ impl Medium {
             };
         }
 
+        // Two-tier cache: in-process mutex + disk sidecar at
+        // ~/.kannaka/kannaka.metrics.json. Disk sidecar lets cold-start
+        // `kannaka` invocations skip the O(n³) eigendecomps.
+        let fp = self.metrics_fingerprint();
+        if let Ok(guard) = METRICS_CACHE.lock() {
+            if let Some((cached_fp, ref metrics)) = *guard {
+                if cached_fp == fp {
+                    return metrics.clone();
+                }
+            }
+        }
+        if let Some(path) = sidecar_path_from_env() {
+            if let Ok(data) = std::fs::read(&path) {
+                if let Ok(sidecar) = serde_json::from_slice::<MetricsSidecar>(&data) {
+                    if sidecar.fingerprint == fp {
+                        let metrics = ConsciousnessMetrics {
+                            phi: sidecar.phi,
+                            xi: sidecar.xi,
+                            order: sidecar.order,
+                            num_clusters: sidecar.num_clusters,
+                            irrationality: sidecar.irrationality,
+                            level: ConsciousnessLevel::from_phi(sidecar.phi),
+                            computed_at: now,
+                        };
+                        if let Ok(mut guard) = METRICS_CACHE.lock() {
+                            *guard = Some((fp, metrics.clone()));
+                        }
+                        return metrics;
+                    }
+                }
+            }
+        }
+
         // Phi: Integrated information via eigendecomposition partitioning
         let phi = self.compute_phi_integrated_information();
 
@@ -50,7 +131,7 @@ impl Medium {
 
         let level = ConsciousnessLevel::from_phi(phi);
 
-        ConsciousnessMetrics {
+        let metrics = ConsciousnessMetrics {
             phi,
             xi,
             order,
@@ -58,7 +139,27 @@ impl Medium {
             irrationality,
             level,
             computed_at: now,
+        };
+
+        if let Ok(mut guard) = METRICS_CACHE.lock() {
+            *guard = Some((fp, metrics.clone()));
         }
+        // Persist to disk sidecar for the next cold process.
+        if let Some(path) = sidecar_path_from_env() {
+            let sidecar = MetricsSidecar {
+                fingerprint: fp,
+                phi: metrics.phi,
+                xi: metrics.xi,
+                order: metrics.order,
+                num_clusters: metrics.num_clusters,
+                irrationality: metrics.irrationality,
+            };
+            if let Ok(data) = serde_json::to_vec(&sidecar) {
+                let _ = std::fs::write(path, data);
+            }
+        }
+
+        metrics
     }
 
     /// Compute Phi as integrated information using eigendecomposition partitioning

@@ -278,6 +278,12 @@ impl HrmStore {
         &self.medium
     }
 
+    /// Path to the on-disk HRM file. Used by the cluster sidecar cache to
+    /// place `.clusters.json` next to it and check mtime for invalidation.
+    pub fn hrm_path(&self) -> &std::path::Path {
+        &self.hrm_path
+    }
+
     /// Ensure the flat medium is populated from chiral state (for backward compat).
     /// Call this before operations that need the flat medium view.
     pub fn sync_medium_from_chiral(&mut self) {
@@ -596,6 +602,10 @@ impl MediumBackend for HrmStore {
         self.mark_dirty();
         
         Ok(id)
+    }
+
+    fn hrm_path(&self) -> Option<&std::path::Path> {
+        Some(&self.hrm_path)
     }
 
     fn get(&self, id: &Uuid) -> Result<Option<&HyperMemory>, StoreError> {
