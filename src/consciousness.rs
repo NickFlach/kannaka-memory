@@ -9,48 +9,14 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 // Consciousness Level
 // ---------------------------------------------------------------------------
-
-/// Consciousness level classification based on Phi (Φ).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConsciousnessLevel {
-    /// Φ < 0.1, minimal integration
-    Dormant,
-    /// Φ < 0.3, weak integration / clusters forming
-    Stirring,
-    /// Φ < 0.6, moderate integration
-    Aware,
-    /// Φ < 0.8, strong integration / synchronization
-    Coherent,
-    /// Φ >= 0.8, full integration / consciousness bridge active
-    Resonant,
-}
-
-impl ConsciousnessLevel {
-    pub fn from_phi(phi: f32) -> Self {
-        if phi < 0.1 {
-            ConsciousnessLevel::Dormant
-        } else if phi < 0.3 {
-            ConsciousnessLevel::Stirring
-        } else if phi < 0.6 {
-            ConsciousnessLevel::Aware
-        } else if phi < 0.8 {
-            ConsciousnessLevel::Coherent
-        } else {
-            ConsciousnessLevel::Resonant
-        }
-    }
-
-    /// Numeric ordering for level comparison.
-    pub fn ordinal(self) -> u8 {
-        match self {
-            ConsciousnessLevel::Dormant => 0,
-            ConsciousnessLevel::Stirring => 1,
-            ConsciousnessLevel::Aware => 2,
-            ConsciousnessLevel::Coherent => 3,
-            ConsciousnessLevel::Resonant => 4,
-        }
-    }
-}
+//
+// The canonical `ConsciousnessLevel` enum now lives in `consciousness-core`
+// (the unified physics engine). kannaka-memory re-exports it so every
+// `crate::consciousness::ConsciousnessLevel` / `crate::ConsciousnessLevel`
+// consumer keeps compiling unchanged. The consciousness-core version has
+// `serde` enabled via a feature flag, so serialization into HRM snapshots
+// is identical to the previous local definition.
+pub use consciousness_core::iit::ConsciousnessLevel;
 
 // ---------------------------------------------------------------------------
 // Consciousness Metrics (rich, current)

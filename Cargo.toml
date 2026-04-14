@@ -23,7 +23,7 @@ clap = { version = "4.0", features = ["derive"], optional = true }
 ureq = { version = "2", features = ["json"] }
 # tokio + async-trait removed (were only used by MCP server)
 lazy_static = "1.4"
-consciousness-core = { path = "../consciousness-core" }
+consciousness-core = { path = "../consciousness-core", features = ["serde"] }
 
 # Audio perception (optional)
 symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"], optional = true }
