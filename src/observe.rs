@@ -62,12 +62,57 @@ pub struct WaveReport {
 }
 
 /// Information about a single Kuramoto cluster.
+///
+/// The original four fields stay as-is for backwards compatibility.
+/// All new "deeper information" fields use `#[serde(default)]` so older
+/// consumers (and old serialized snapshots) still parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterInfo {
     pub size: usize,
     pub order_parameter: f32,
     pub theme: String,
     pub mean_amplitude: f32,
+
+    // ── Enriched cluster metadata (v2) ────────────────────────
+    /// Stable cluster index within this report.
+    #[serde(default)]
+    pub cluster_id: u32,
+    /// Member memory UUIDs (truncated to the first 50 for wire size).
+    #[serde(default)]
+    pub member_ids: Vec<String>,
+    /// Mean phase across members (radians).
+    #[serde(default)]
+    pub mean_phase: f32,
+    /// Mean frequency across members.
+    #[serde(default)]
+    pub mean_frequency: f32,
+    /// Kuramoto cluster coherence score.
+    #[serde(default)]
+    pub coherence: f32,
+    /// Dominant modality across members (text/audio/image/video/unknown).
+    #[serde(default)]
+    pub dominant_modality: String,
+    /// Temporal span between the earliest and latest member, in hours.
+    #[serde(default)]
+    pub temporal_span_hours: f32,
+    /// Earliest member created_at (ISO 8601).
+    #[serde(default)]
+    pub earliest_created_at: Option<String>,
+    /// Latest member created_at (ISO 8601).
+    #[serde(default)]
+    pub latest_created_at: Option<String>,
+    /// The exemplar memory (highest amplitude) — its UUID.
+    #[serde(default)]
+    pub exemplar_id: Option<String>,
+    /// The exemplar's full content.
+    #[serde(default)]
+    pub exemplar_content: Option<String>,
+    /// Semantic summary — top-N content snippets joined.
+    #[serde(default)]
+    pub semantic_summary: String,
+    /// Xi diversity score — std-dev of xi signature magnitudes across members.
+    #[serde(default)]
+    pub xi_diversity: f32,
 }
 
 /// Kuramoto cluster synchronization status.
@@ -411,26 +456,97 @@ impl MemoryIntrospector {
 
         let cluster_infos: Vec<ClusterInfo> = clusters
             .iter()
-            .map(|c| {
-                // Get theme from the first memory's content
-                let theme = c.memory_ids.first()
-                    .and_then(|id| engine.store.get(id).ok().flatten())
-                    .map(|m| {
-                        let words: Vec<&str> = m.content.split_whitespace().take(5).collect();
-                        words.join(" ")
-                    })
+            .enumerate()
+            .map(|(ci, c)| {
+                // Fetch all members we can access
+                let members: Vec<_> = c.memory_ids.iter()
+                    .filter_map(|id| engine.store.get(id).ok().flatten().map(|m| (*id, m)))
+                    .collect();
+
+                let n = members.len().max(1) as f32;
+
+                // Theme — first 5 words of first content (preserved behaviour)
+                let theme = members.first()
+                    .map(|(_, m)| m.content.split_whitespace().take(5).collect::<Vec<_>>().join(" "))
                     .unwrap_or_else(|| "unknown".to_string());
 
-                let mean_amplitude = c.memory_ids.iter()
-                    .filter_map(|id| engine.store.get(id).ok().flatten())
-                    .map(|m| m.amplitude)
-                    .sum::<f32>() / c.memory_ids.len().max(1) as f32;
+                let mean_amplitude = members.iter().map(|(_, m)| m.amplitude).sum::<f32>() / n;
+                let mean_phase = members.iter().map(|(_, m)| m.phase).sum::<f32>() / n;
+                let mean_frequency = members.iter().map(|(_, m)| m.frequency).sum::<f32>() / n;
+
+                // Member IDs (truncate to 50 for wire size)
+                let member_ids: Vec<String> = members.iter()
+                    .take(50)
+                    .map(|(id, _)| id.to_string())
+                    .collect();
+
+                // Dominant modality
+                let mut mod_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                for (_, m) in &members {
+                    let k = format!("{:?}", m.modality).to_lowercase();
+                    *mod_counts.entry(k).or_insert(0) += 1;
+                }
+                let dominant_modality = mod_counts.into_iter()
+                    .max_by_key(|(_, c)| *c)
+                    .map(|(k, _)| k)
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Temporal span
+                let times: Vec<_> = members.iter().map(|(_, m)| m.created_at).collect();
+                let (earliest, latest) = times.iter().fold((None, None), |(mn, mx): (Option<DateTime<Utc>>, Option<DateTime<Utc>>), t| {
+                    (
+                        Some(mn.map_or(*t, |x| x.min(*t))),
+                        Some(mx.map_or(*t, |x| x.max(*t))),
+                    )
+                });
+                let temporal_span_hours = match (earliest, latest) {
+                    (Some(a), Some(b)) => (b - a).num_seconds() as f32 / 3600.0,
+                    _ => 0.0,
+                };
+
+                // Exemplar — highest amplitude
+                let exemplar = members.iter().max_by(|a, b| a.1.amplitude.partial_cmp(&b.1.amplitude).unwrap_or(std::cmp::Ordering::Equal));
+                let (exemplar_id, exemplar_content) = exemplar
+                    .map(|(id, m)| (Some(id.to_string()), Some(m.content.clone())))
+                    .unwrap_or((None, None));
+
+                // Semantic summary — top-5 content snippets (first 60 chars each)
+                let mut semantic_members = members.clone();
+                semantic_members.sort_by(|a, b| b.1.amplitude.partial_cmp(&a.1.amplitude).unwrap_or(std::cmp::Ordering::Equal));
+                let semantic_summary = semantic_members.iter().take(5)
+                    .map(|(_, m)| m.content.chars().take(60).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+
+                // Xi diversity — std dev of xi signature magnitudes
+                let xi_mags: Vec<f32> = members.iter()
+                    .filter(|(_, m)| !m.xi_signature.is_empty())
+                    .map(|(_, m)| m.xi_signature.iter().map(|v: &f32| v * v).sum::<f32>().sqrt())
+                    .collect();
+                let xi_diversity = if xi_mags.len() >= 2 {
+                    let mean = xi_mags.iter().sum::<f32>() / xi_mags.len() as f32;
+                    let var = xi_mags.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / xi_mags.len() as f32;
+                    var.sqrt()
+                } else { 0.0 };
 
                 ClusterInfo {
                     size: c.memory_ids.len(),
                     order_parameter: c.order_parameter,
                     theme,
                     mean_amplitude,
+                    cluster_id: ci as u32,
+                    member_ids,
+                    mean_phase,
+                    mean_frequency,
+                    coherence: c.coherence,
+                    dominant_modality,
+                    temporal_span_hours,
+                    earliest_created_at: earliest.map(|t| t.to_rfc3339()),
+                    latest_created_at: latest.map(|t| t.to_rfc3339()),
+                    exemplar_id,
+                    exemplar_content,
+                    semantic_summary,
+                    xi_diversity,
                 }
             })
             .collect();
