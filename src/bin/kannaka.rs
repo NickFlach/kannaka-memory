@@ -588,6 +588,80 @@ fn main() {
                 print!("{}", MemoryIntrospector::format_report(&report));
             }
         }
+        "clusters" => {
+            // Enriched cluster list. Options:
+            //   --json               emit Vec<ClusterInfo> (always on; non-json prints table)
+            //   --cluster-id N       emit only that cluster
+            //   --min-size N         filter out small clusters (default 2)
+            //   --with-members       include full member_ids
+            let mut cluster_id_filter: Option<u32> = None;
+            let mut _min_size: usize = 2;
+            let mut with_members = false;
+            let mut i = command_start + 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--cluster-id" if i + 1 < args.len() => { cluster_id_filter = args[i + 1].parse().ok(); i += 2; }
+                    "--min-size" if i + 1 < args.len() => { _min_size = args[i + 1].parse().unwrap_or(2); i += 2; }
+                    "--with-members" => { with_members = true; i += 1; }
+                    _ => i += 1,
+                }
+            }
+            let report = sys.observe();
+            let mut clusters = report.clusters.clusters.clone();
+            if !with_members {
+                for c in &mut clusters { c.member_ids.clear(); }
+            }
+            if let Some(id) = cluster_id_filter {
+                let single = clusters.into_iter().find(|c| c.cluster_id == id);
+                println!("{}", serde_json::to_string_pretty(&single).unwrap_or_else(|_| "null".to_string()));
+            } else {
+                println!("{}", serde_json::to_string_pretty(&clusters).unwrap());
+            }
+        }
+        "neighbors" => {
+            // Top-K memories similar to a given memory or query.
+            //   kannaka neighbors <id-or-query> [--top-k N] [--json]
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka neighbors <memory-id-or-query> [--top-k N] [--json]");
+                process::exit(1);
+            }
+            let anchor = args[command_start + 1].clone();
+            let mut top_k: usize = 10;
+            let mut i = command_start + 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(10); i += 2; }
+                    "--json" => { i += 1; }
+                    _ => i += 1,
+                }
+            }
+            // If the anchor parses as a UUID, find that memory and recall by its content.
+            // Otherwise treat the anchor as a free-text query.
+            let query = if let Ok(uuid) = anchor.parse::<uuid::Uuid>() {
+                match sys.engine.store.get(&uuid) {
+                    Ok(Some(m)) => m.content.clone(),
+                    _ => {
+                        eprintln!("memory {} not found", uuid);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                anchor.clone()
+            };
+            let results = match sys.recall(&query, top_k) {
+                Ok(r) => r,
+                Err(e) => { eprintln!("recall failed: {e}"); process::exit(1); }
+            };
+            let output: Vec<serde_json::Value> = results.iter().map(|m| serde_json::json!({
+                "id": m.id.to_string(),
+                "content": m.content,
+                "similarity": m.similarity,
+                "strength": m.strength,
+                "age_hours": m.age_hours,
+                "layer": m.layer,
+            })).collect();
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         #[cfg(feature = "sqlite-migrate")]
         "migrate" => {
             if args.len() < command_start + 2 {
