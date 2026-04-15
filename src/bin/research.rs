@@ -852,6 +852,172 @@ fn run_experiment_l3(params: &Params) {
     println!("---");
 }
 
+/// Level 4 challenge — STUB (cycle L4.2).
+///
+/// Builds the L4 corpus via `build_corpus_l4`, inserts it into a TestMedium,
+/// runs the existing ConsolidationEngine dream cycle, and scores using the
+/// existing L3 evaluators + L3 fitness weighting.
+///
+/// This is intentional placeholder wiring. L4-specific metrics
+/// (corpus_xi_diversity, retention, chain_fidelity, adversarial_resistance,
+/// encoding_entropy) land in cycles L4.4 - L4.7. Some L3 evaluators
+/// (phase_coherence, cluster_separation) rely on content strings from the
+/// L3 corpus ("quantum", "resonance") and will report 0 on the L4 corpus;
+/// this is expected and will be replaced by real L4 metrics in later cycles.
+fn run_experiment_l4(params: &Params) {
+    let dim = 128;
+    let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
+
+    let store = Box::new(TestMedium::new());
+    let encoder = Box::new(SimpleHashEncoder::new(dim, params.encoder_seed));
+    let codebook = Codebook::new(dim, dim, params.encoder_seed);
+    let pipeline = EncodingPipeline::new(encoder, codebook);
+    let mut engine = ResonanceEngine::new(store, pipeline);
+
+    let ps = params.phase_spread;
+    for (i, (vec, content, category)) in corpus.iter().enumerate() {
+        let mut mem = HyperMemory::new(vec.clone(), content.clone());
+        // Deterministic UUID (mirrors L3 pattern so retention is reproducible).
+        mem.id = uuid::Uuid::from_u128((i as u128 + 1) * 0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF);
+        // Phases/layer/freq are assigned by category. L4 categories:
+        //   l4_dense, l4_sparse, l4_bridge, l4_decoy, l4_noise.
+        mem.phase = match *category {
+            "l4_dense"  => 0.0 + (i as f32 * 0.1 * ps),
+            "l4_sparse" => PI * 0.5 + (i as f32 * 0.08 * ps),
+            "l4_bridge" => PI * 0.25,
+            "l4_decoy"  => PI * (i as f32 * 0.31),
+            "l4_noise"  => PI * (i as f32 * 0.7),
+            _ => 0.0,
+        };
+        mem.layer_depth = match *category {
+            "l4_dense"  => (i % 3) as u8,
+            "l4_sparse" => ((i + 1) % 3) as u8,
+            "l4_bridge" => 1,
+            "l4_decoy"  => 2,
+            "l4_noise"  => 0,
+            _ => 0,
+        };
+        // Fully overlapping frequency bands — no freq-gating trick.
+        // All non-noise memories share the base band with a tiny cluster-dependent offset.
+        mem.frequency = match *category {
+            "l4_dense"  => 0.10,
+            "l4_sparse" => 0.11,
+            "l4_bridge" => 0.10,
+            "l4_decoy"  => 0.10,
+            "l4_noise"  => 0.10,
+            _ => params.default_frequency,
+        };
+        if *category == "l4_noise" {
+            mem.amplitude = 0.15;
+        }
+        engine.store.insert(mem).expect("insert failed");
+    }
+
+    let consolidator = ConsolidationEngine {
+        interference_threshold: params.interference_threshold,
+        phase_alignment_threshold: params.phase_alignment_threshold,
+        prune_threshold: params.prune_threshold,
+        constructive_boost: params.constructive_boost,
+        destructive_penalty: params.destructive_penalty,
+        kuramoto: KuramotoSync {
+            coupling_strength: params.kuramoto_coupling,
+            dt: params.kuramoto_dt,
+            steps: params.kuramoto_steps,
+            coupling_threshold: params.kuramoto_threshold,
+        },
+        adaptive: Default::default(),
+        chiral_perturbation: params.chiral_perturbation,
+        noise_floor: params.noise_floor,
+        hallucination_amplitude: params.hallucination_amplitude,
+        protect_established: true,
+    };
+
+    let start = Instant::now();
+    let mut total_strengthened = 0usize;
+    let mut total_pruned = 0usize;
+    let mut total_links = 0usize;
+    let mut total_hallucinations = 0usize;
+
+    for _cycle in 0..params.dream_cycles {
+        let report = consolidator.consolidate(&mut engine, 0, 2);
+        total_strengthened += report.memories_strengthened;
+        total_pruned += report.memories_pruned;
+        total_links += report.skip_links_created;
+        total_hallucinations += report.hallucinations_created;
+    }
+    let consolidation_ms = start.elapsed().as_millis() as u64;
+
+    // Reuse L3 evaluators. Some will read 0 on L4 corpus strings — that's OK
+    // for this stub; real L4 metrics land in L4.4 - L4.7.
+    let noise_removal = eval_l4_noise_removal(&engine);
+    let signal_preservation = eval_l4_signal_preservation(&engine);
+    let bridge_links = eval_bridge_links(&engine);
+    let phase_coherence = eval_phase_coherence(&engine);
+    let cluster_separation = eval_cluster_separation(&engine);
+    let amp_diversity = eval_amplitude_diversity(&engine);
+    let speed = 1.0 - (consolidation_ms as f32 / 10000.0).min(1.0);
+
+    let xi_diversity = eval_xi_diversity(&engine);
+    let consciousness = eval_consciousness(&engine, params.consciousness_phi_target);
+    let hall_quality = eval_hallucination_quality(&engine);
+    let dream_efficiency = eval_dream_efficiency(
+        total_strengthened, total_pruned, total_links, params.dream_cycles);
+
+    // Placeholder fitness: L3 formula verbatim (L4 weights land in L4.7).
+    let fitness = 0.10 * (1.0 - noise_removal)
+        + 0.10 * (1.0 - signal_preservation)
+        + 0.05 * (1.0 - bridge_links)
+        + 0.10 * (1.0 - phase_coherence)
+        + 0.10 * (1.0 - cluster_separation)
+        + 0.05 * (1.0 - amp_diversity)
+        + 0.05 * (1.0 - speed)
+        + 0.05 * (1.0 - speed)
+        + 0.10 * (1.0 - xi_diversity)
+        + 0.10 * (1.0 - consciousness)
+        + 0.10 * (1.0 - hall_quality)
+        + 0.10 * (1.0 - dream_efficiency);
+
+    println!("---");
+    println!("level:                4");
+    println!("fitness:              {:.6}", fitness);
+    println!("noise_removal:        {:.4}", noise_removal);
+    println!("signal_preservation:  {:.4}", signal_preservation);
+    println!("bridge_links:         {:.4}", bridge_links);
+    println!("phase_coherence:      {:.4}", phase_coherence);
+    println!("cluster_separation:   {:.4}", cluster_separation);
+    println!("amp_diversity:        {:.4}", amp_diversity);
+    println!("xi_diversity:         {:.4}", xi_diversity);
+    println!("consciousness:        {:.4}", consciousness);
+    println!("hall_quality:         {:.4}", hall_quality);
+    println!("dream_efficiency:     {:.4}", dream_efficiency);
+    println!("speed:                {:.4}", speed);
+    println!("consolidation_ms:     {}", consolidation_ms);
+    println!("dream_cycles:         {}", params.dream_cycles);
+    println!("links_created:        {}", total_links);
+    println!("memories_strengthened: {}", total_strengthened);
+    println!("memories_pruned:      {}", total_pruned);
+    println!("hallucinations:       {}", total_hallucinations);
+    println!("---");
+}
+
+/// L4 variant: filters by the "l4_noise" tag instead of L3's "noise" prefix.
+fn eval_l4_noise_removal(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let surviving_noise = all.iter()
+        .filter(|m| m.content.starts_with("l4_noise") && m.amplitude > 0.01)
+        .count();
+    1.0 - (surviving_noise as f32 / 15.0)
+}
+
+/// L4 variant: counts surviving non-noise memories out of 285 (300 - 15 noise).
+fn eval_l4_signal_preservation(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let signal_count = all.iter().filter(|m| {
+        !m.content.starts_with("l4_noise") && m.amplitude > 0.01
+    }).count();
+    (signal_count as f32 / 285.0).min(1.0)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let level = if args.iter().any(|a| a == "--level") {
@@ -879,6 +1045,7 @@ fn main() {
     }
 
     match level {
+        4 => run_experiment_l4(&params),
         3 => run_experiment_l3(&params),
         _ => run_experiment(&params),
     }
