@@ -1449,6 +1449,15 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // Probe of last untested encoder-layer param. Target: corpus_xi_diversity
     // (0.6018) and possibly encoding_entropy (0.0213).
     l4_params.chiral_perturbation = 0.7;
+    // L4.S4: chain_depth 2 -> 3, chain_top_n 10 -> 7 (L4-local override).
+    // Escape the trivial 2-point monotonicity cap on chain_fidelity. With
+    // chain_depth=2 the base_score is a single cosine distance and the
+    // monotonicity bonus is a binary {0, 0.1}; chain_fidelity pegs at ~0.75.
+    // A 3-point chain re-enables the averaged cosine refinement the metric
+    // was designed to measure, and top_n=7 tightens seed selection without
+    // collapsing the xi pool the way top_n=5 did (L4.12 crash).
+    l4_params.chain_depth = 3;
+    l4_params.chain_top_n = 7;
     let params = &l4_params;
 
     // Compute (and stash) the canonical corpus hash. This is the value that
