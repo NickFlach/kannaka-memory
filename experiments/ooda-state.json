@@ -1,8 +1,8 @@
 {
-  "cycle": 31,
+  "cycle": 37,
   "phase": "observe",
   "level": 4,
-  "last_action": "L4.11: H-L4-003 (xi_repulsion_weight 0.3->0.5) REVERTED. 10-run avg fitness 0.216186 -> 0.216707 (delta +0.00052, INSIDE noise band ±0.00122). Target metric corpus_xi_diversity did NOT move (0.6207 -> 0.6207, byte-identical). All deterministic metrics identical to L4.9 — confirms xi_repulsion_weight is NOT wired into the L4 corpus_xi_diversity evaluator either; upstream xi_diversity_boost shadow dominates on both L3 and L4. Decision rule: fitness inside noise + target did not move in expected direction -> REVERT. xi_repulsion_weight confirmed dead on L4 as well. Git checkout -- used. chain_depth=2 from L4.9 preserved. L3 spot-check: 0.006884 (unchanged).",
+  "last_action": "L4.17: H-L4-007 (kuramoto_steps 20->12 L4-local) REVERTED. 10-run avg fitness 0.192512 -> 0.193472 (delta +0.00096, INSIDE noise band 1x std 0.001221). All deterministic metrics byte-identical to L4.16 — kuramoto_steps is dead on L4 path as well (same as L3 OODA-18). Mark dead on both levels. L3 spot-check: 0.006934 unchanged. Preceding kept experiments this session: L4.15 chain_carry_strength 0.5->0.7 (fitness -0.00194, target chain_fidelity REFUTED but net improvement kept), L4.16 chiral_perturbation 0.9->0.7 (fitness -0.00235, target corpus_xi_diversity refuted opposite direction but phase_coherence +0.036 collateral win kept). New L4 best: 0.192512 (L4.16).",
   "last_harvest": "2026-04-14T00:00:00Z",
   "l3": {
     "status": "SOLVED_ARCHIVED",
@@ -50,38 +50,39 @@
     "archived_reason": "L3 saturated at ~0.00646. Further L3 tuning yields <0.00005 per cycle. Session graduated to L4 at cycle 28."
   },
   "l4": {
-    "baseline_cycle": "L4.9 (new best after L4.9-L4.11)",
-    "baseline_fitness": 0.216186,
+    "baseline_cycle": "L4.16 (new best after L4.13-L4.16 session; L4.17 reverted)",
+    "baseline_fitness": 0.192512,
     "baseline_cycle_original": "L4.8",
     "baseline_fitness_original": 0.224308,
-    "baseline_fitness_min": 0.22264,
-    "baseline_fitness_max": 0.22724,
-    "baseline_fitness_std": 0.001221,
-    "baseline_fitness_range": 0.00460,
+    "baseline_fitness_min": 0.190068,
+    "baseline_fitness_max": 0.194415,
+    "baseline_fitness_std": 0.001335,
+    "baseline_fitness_std_pre_session": 0.001221,
+    "baseline_fitness_range": 0.004347,
     "runs_averaged": 10,
     "baseline_metrics": {
       "noise_removal": 1.0000,
       "signal_preservation": 1.0000,
       "bridge_links": 1.0000,
-      "phase_coherence": 0.8723,
-      "cluster_separation": 0.9763,
+      "phase_coherence": 0.9017,
+      "cluster_separation": 0.9690,
       "amp_diversity": 1.0000,
       "xi_diversity": 1.0000,
-      "consciousness": 0.7513,
-      "hall_quality": 0.9791,
-      "dream_efficiency": 0.9834,
-      "speed": 0.16892,
+      "consciousness": 0.9381,
+      "hall_quality": 1.0000,
+      "dream_efficiency": 0.9812,
+      "speed": 0.4090,
       "retention_score": 1.0000,
       "retention_plasticity": 1.0000,
-      "chain_fidelity": 0.9399,
-      "corpus_xi_diversity": 0.6712,
-      "encoding_entropy": 0.0214,
-      "adversarial_resistance": 0.79891,
-      "consolidation_ms": 8311,
-      "links_created": 5578,
-      "memories_strengthened": 24695,
-      "memories_pruned": 508,
-      "hallucinations": 12
+      "chain_fidelity": 0.7551,
+      "corpus_xi_diversity": 0.5890,
+      "encoding_entropy": 0.0213,
+      "adversarial_resistance": 0.9418,
+      "consolidation_ms": 5900,
+      "links_created": 5004,
+      "memories_strengthened": 16135,
+      "memories_pruned": 397,
+      "hallucinations": 5
     },
     "fitness_weights": {
       "noise_removal": 0.05,
@@ -99,9 +100,10 @@
       "encoding_entropy": 0.05
     },
     "dominant_losses": [
-      {"rank": 1, "metric": "speed", "weight": 0.10, "score": 0.16892, "contribution": 0.083108, "notes": "consolidation_ms ~8311 of 10000ms budget. 3-cycle chain is expensive. Levers: chain_depth, chain_top_n, chain_carry_strength (cheaper pair selection), kuramoto_steps, or a coarser interference_threshold."},
-      {"rank": 2, "metric": "encoding_entropy", "weight": 0.05, "score": 0.0214, "contribution": 0.048930, "notes": "Shannon entropy of quantized xi bins is almost zero — representations collapse to ~1 bin. Structural: only reachable via encoder_seed, dim enlargement, or corpus re-shaping. First real encoder-layer probe for L4."},
-      {"rank": 3, "metric": "corpus_xi_diversity", "weight": 0.10, "score": 0.6712, "contribution": 0.032880, "notes": "Post L4.7.5 renormalization (avg_boost / 0.12). Discriminating now. Levers: xi_repulsion_weight (dream-layer), encoder_seed (encoder-layer)."}
+      {"rank": 1, "metric": "encoding_entropy", "weight": 0.05, "score": 0.0213, "contribution": 0.048935, "notes": "Shannon entropy of quantized xi bins is still ~0. Only reachable via dim enlargement or bin-count change (STRUCTURAL). encoder_seed refuted (L4.10), chiral_perturbation doesn't touch it (L4.16)."},
+      {"rank": 2, "metric": "corpus_xi_diversity", "weight": 0.10, "score": 0.5890, "contribution": 0.041100, "notes": "Post-L4.16 regression — chiral_perturbation 0.9->0.7 reduced it. xi_repulsion_weight dead, encoder_seed dead. No known working lever. Reopening direction: chiral_perturbation>0.9 or another encoder-layer param if any exist."},
+      {"rank": 3, "metric": "speed", "weight": 0.10, "score": 0.4090, "contribution": 0.059100, "notes": "consolidation_ms ~5900 of 10000ms. chain_depth=2 already. chain_top_n crashes below 5. kuramoto_steps dead on L4 (L4.17). Speed contribution still ranks #1 in raw size — further reductions require chain cycle short-circuits or interference-threshold work."},
+      {"rank": 4, "metric": "chain_fidelity", "weight": 0.10, "score": 0.7551, "contribution": 0.024490, "notes": "Collateral victim of phase_alignment_threshold widening (L4.13). chain_carry_strength 0.5->0.7 did not recover it (L4.15). Likely structural: 2-point chain makes monotonicity trivial and the centroid-distance term dominates."}
     ],
     "stable_metrics_byte_identical": [
       "fitness_adv_sub", "corpus_xi_diversity", "encoding_entropy", "retention_score",
@@ -121,6 +123,7 @@
         "expected_delta": "+0.3 to +0.6 absolute (score 0.02 -> 0.3-0.6) -> fitness -0.015 to -0.029",
         "risk": "May perturb corpus_xi_diversity and phase_coherence since encoder changes xi-signature distribution. RUN as paired probe with full 10-run confirm.",
         "status": "REFUTED (L4.10, reverted). Tried 0xDEAD_BEEF. Target metric did NOT move (0.0214 -> 0.0214) and fitness regressed +0.00938. Encoding_entropy is NOT encoder-seed-reachable on this corpus — the 16-bin quantization collapses the same way regardless of encoder randomization. Real lever is dim enlargement, finer bin count, or corpus re-shaping. See notes."
+      },
       {
         "id": "H-L4-002",
         "title": "speed regainable by lowering chain_depth 3->2 or chain_top_n 10->5",
@@ -140,6 +143,36 @@
         "expected_delta": "corpus_xi_diversity 0.671 -> ~0.85 -> fitness -0.018",
         "risk": "Known L3 dead-param. On L4 with the renormalized /0.12 it may have new headroom. xi_diversity shadow upstream in ConsolidationEngine is orthogonal so a research-binary-local param change should be safe.",
         "status": "REFUTED (L4.11, reverted). Tried 0.3->0.5. corpus_xi_diversity 0.6207 -> 0.6207 byte-identical. xi_repulsion_weight is dead on L4 too — the eval reads from the upstream xi_diversity_boost path, not the research-local param. Dead on both levels."
+      },
+      {
+        "id": "H-L4-005-carry",
+        "title": "chain_carry_strength 0.5 -> 0.7 should tighten chain monotonicity and recover chain_fidelity",
+        "lever": "chain_carry_strength (L4-local)",
+        "direction": "increase",
+        "target_metric": "chain_fidelity",
+        "expected_delta": "chain_fidelity 0.7487 -> ~0.85, fitness -0.010",
+        "risk": "Over-constraint could drop dream_efficiency. Watch >0.02 drop.",
+        "status": "KEPT but target REFUTED (L4.15). chain_fidelity byte-identical 0.7487. Fitness -0.00194 via speed/adv jitter only. chain_carry_strength IS wired (links_created 5019->5028) but has near-zero effect on deterministic scores for this corpus — top_n=10 amp ordering dominates chain seed selection."
+      },
+      {
+        "id": "H-L4-006-chiral",
+        "title": "chiral_perturbation 0.9 -> 0.7 probe of last untested encoder-layer param",
+        "lever": "chiral_perturbation (L4-local)",
+        "direction": "decrease",
+        "target_metric": "corpus_xi_diversity",
+        "expected_delta": "corpus_xi_diversity 0.6018 -> 0.70-0.85, fitness -0.01 to -0.02",
+        "risk": "Unknown; L3 had it saturated at 0.9. Watch xi_diversity and phase_coherence.",
+        "status": "KEPT but target REFUTED opposite direction (L4.16). corpus_xi_diversity 0.6018 -> 0.5890. Fitness -0.00235. MAJOR COLLATERAL WIN: phase_coherence 0.8659 -> 0.9017 (+0.036). chiral_perturbation is a valid L4 phase-dynamics knob despite L3 saturation — another crack in L3-frozen-params-transfer-to-L4 assumption."
+      },
+      {
+        "id": "H-L4-007-kuramoto",
+        "title": "kuramoto_steps 20 -> 12 L4-local retry (L3 said dead, L4 phase is different per L4.13)",
+        "lever": "kuramoto_steps (L4-local)",
+        "direction": "decrease",
+        "target_metric": "speed",
+        "expected_delta": "speed 0.4153 -> ~0.55, fitness -0.010",
+        "risk": "phase_coherence regression below 0.80 -> revert.",
+        "status": "REFUTED (L4.17, reverted). Fitness 0.19251 -> 0.19347 (+0.00096, inside noise). All deterministic metrics byte-identical to L4.16 — kuramoto_steps is dead on L4 path as well. The consolidation time is dominated by non-Kuramoto work (xi pairwise comparisons). Mark dead on both levels. Confirmed: cutting kuramoto_steps produces no speed or phase change on L4 corpus at current settings."
       }
     ],
     "notes": "adversarial_resistance jitters because its denominator is fitness_clean_sub and fitness_clean_sub moves only with speed (speed feeds the clean-pass subtotal). Once speed is stabilized (H-L4-002), adversarial_resistance should also become byte-identical. retention_score + retention_plasticity = 1.0000 because this baseline is a single-session invocation (no --chain-sessions). Cross-session retention testing is gated on the first tuning pass that actually exercises --chain-sessions 2 in the OODA loop."
@@ -148,7 +181,7 @@
     "decay_rate": 1e-4,
     "default_frequency": 0.1,
     "interference_threshold": 0.10,
-    "phase_alignment_threshold": "PI / 3.0",
+    "phase_alignment_threshold": "PI / 3.0 (L3); L4-local override PI / 2.5 (L4.13)",
     "prune_threshold": 0.095,
     "constructive_boost": 0.45,
     "destructive_penalty": 0.35,
@@ -158,20 +191,20 @@
     "kuramoto_threshold": 0.35,
     "dream_cycles": 1,
     "xi_repulsion_weight": 0.3,
-    "consciousness_phi_target": 0.326,
+    "consciousness_phi_target": "0.326 (L3); L4-local override 0.26645 (L4.14)",
     "hallucination_amplitude": 0.7,
     "phase_spread": 0.25,
-    "chiral_perturbation": 0.9,
+    "chiral_perturbation": "0.9 (L3); L4-local override 0.7 (L4.16)",
     "noise_floor": 0.18,
     "chain_depth": 2,
-    "chain_carry_strength": 0.5,
+    "chain_carry_strength": "0.5 (L3 default); L4-local override 0.7 (L4.15)",
     "chain_top_n": 10,
     "corpus_hardness": 1,
     "adversarial_ratio": 1.0,
     "encoder_seed": "default (see Params)"
   },
-  "params_changed_this_cycle": {"chain_depth": "3->2 (L4.9, kept)"},
-  "params_tested_and_reverted_this_cycle": {},
-  "dead_params": ["xi_repulsion_weight", "xi_repulsion_weight_L4_confirmed", "encoder_seed_for_encoding_entropy", "decay_rate", "default_frequency", "kuramoto_steps", "interference_threshold_down", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation"],
-  "next_experiment": "Cycle 32 (L4.12): L4.9-L4.11 complete. New best fitness 0.216186 (L4.9, chain_depth=2). L4.10 (encoder_seed) and L4.11 (xi_repulsion_weight) both refuted. NEW DOMINANT LOSSES (approx, from L4.9 metrics): (1) encoding_entropy score 0.0214 weight 0.05 -> contribution 0.04893 (STILL #1, but encoder_seed is refuted — needs dim enlargement or bin-count change); (2) speed 0.4188 weight 0.10 -> contribution 0.05812 (still large! budget ~5.8s, further reducible via chain_top_n 10->5 or kuramoto_steps decrease); (3) corpus_xi_diversity 0.6207 weight 0.10 -> contribution 0.03793 (still discriminating); (4) adv_resistance 0.6617 weight 0.10 -> contribution 0.03383 (denominator-jitter artifact from speed change). RECOMMEND L4.12: try chain_top_n 10->5 (speed secondary lever, cheap, orthogonal to already-reduced chain_depth). Alternative: kuramoto_steps 20->10 for faster chain cycles. Avoid encoder_seed and xi_repulsion_weight (both dead). Avoid encoding_entropy metric tuning until dim/bin-count strategy is scoped at design level."
+  "params_changed_this_cycle": {"chain_carry_strength": "0.5->0.7 L4-local (L4.15 kept)", "chiral_perturbation": "0.9->0.7 L4-local (L4.16 kept)"},
+  "params_tested_and_reverted_this_cycle": {"kuramoto_steps": "20->12 L4-local (L4.17 reverted, dead)"},
+  "dead_params": ["xi_repulsion_weight", "xi_repulsion_weight_L4_confirmed", "encoder_seed_for_encoding_entropy", "decay_rate", "default_frequency", "kuramoto_steps", "kuramoto_steps_L4_confirmed", "interference_threshold_down", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation", "chain_top_n_down"],
+  "next_experiment": "Cycle 38 (L4.18): New L4 best 0.192512 (L4.16). L4.15-L4.16 kept, L4.17 reverted. Dominant losses now: (1) speed contribution 0.059 — chain_depth=2, chain_top_n floor-locked at 10, kuramoto_steps dead; remaining lever is interference_threshold up or a chain cycle short-circuit (skip cycle 2 if centroid delta < eps). (2) encoding_entropy contribution 0.049 — STRUCTURAL only (dim enlargement or bin-count). (3) corpus_xi_diversity 0.589 (regressed in L4.16) contribution 0.041 — no known working lever. (4) chain_fidelity 0.7551 contribution 0.024 — structural 2-point chain. RECOMMEND L4.18: probe interference_threshold 0.10->0.12 (L4-local) for speed via fewer pairwise comparisons; collateral risk on phase_coherence/cluster_separation must be watched. ALTERNATIVE: pivot to structural — re-open encoding_entropy binning design (change bin count from 16 to 64 or finer quantizer). Easy param levers are largely exhausted on L4 post this session: only interference_threshold, hallucination_amplitude, noise_floor, phase_spread, and the already-dead kuramoto_coupling/dt remain untested on L4."
 }
