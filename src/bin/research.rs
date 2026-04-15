@@ -64,6 +64,11 @@ fn experiment_params() -> Params {
 
         // Level 4: encoder/corpus controls
         encoder_seed: 0xCAFE_BABE,
+
+        // Level 4: dream chain (cycle L4.5)
+        chain_depth: 3,
+        chain_carry_strength: 0.5,
+        chain_top_n: 10,
     }
 }
 
@@ -95,6 +100,10 @@ struct Params {
     noise_floor: f32,
     // Level 4
     encoder_seed: u64,
+    // Level 4: dream chain
+    chain_depth: usize,
+    chain_carry_strength: f32,
+    chain_top_n: usize,
 }
 
 // ============================================================================
@@ -1088,45 +1097,26 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         _ => (build_fresh_l4_engine(params, dim), None),
     };
 
-    let consolidator = ConsolidationEngine {
-        interference_threshold: params.interference_threshold,
-        phase_alignment_threshold: params.phase_alignment_threshold,
-        prune_threshold: params.prune_threshold,
-        constructive_boost: params.constructive_boost,
-        destructive_penalty: params.destructive_penalty,
-        kuramoto: KuramotoSync {
-            coupling_strength: params.kuramoto_coupling,
-            dt: params.kuramoto_dt,
-            steps: params.kuramoto_steps,
-            coupling_threshold: params.kuramoto_threshold,
-        },
-        adaptive: Default::default(),
-        chiral_perturbation: params.chiral_perturbation,
-        noise_floor: params.noise_floor,
-        hallucination_amplitude: params.hallucination_amplitude,
-        protect_established: true,
-    };
-
-    // Snapshot engine state BEFORE the dream cycle. Used by
+    // Snapshot engine state BEFORE the dream chain. Used by
     // eval_retention_plasticity so we can measure amplitude drift on the
     // golden set specifically attributable to dreaming (and any time-advance
     // that already happened during rehydrate).
     let engine_before_dream = snapshot_engine_for_plasticity(&engine);
 
+    // Run the full chain_depth-cycle dream chain (cycle L4.5). Each cycle's
+    // output biases the next cycle's interference_threshold via
+    // chain_carry_strength. params.dream_cycles is IGNORED on the L4 path —
+    // chain_depth supersedes it per design doc §5.2.
     let start = Instant::now();
-    let mut total_strengthened = 0usize;
-    let mut total_pruned = 0usize;
-    let mut total_links = 0usize;
-    let mut total_hallucinations = 0usize;
-
-    for _cycle in 0..params.dream_cycles {
-        let report = consolidator.consolidate(&mut engine, 0, 2);
-        total_strengthened += report.memories_strengthened;
-        total_pruned += report.memories_pruned;
-        total_links += report.skip_links_created;
-        total_hallucinations += report.hallucinations_created;
-    }
+    let (chain_seeds, phi_history, chain_totals) = run_dream_chain(params, &mut engine);
     let consolidation_ms = start.elapsed().as_millis() as u64;
+
+    let total_strengthened = chain_totals.strengthened;
+    let total_pruned = chain_totals.pruned;
+    let total_links = chain_totals.links;
+    let total_hallucinations = chain_totals.hallucinations;
+
+    let chain_fidelity = eval_chain_fidelity(&chain_seeds, &phi_history);
 
     // Retention metrics (L4.4). Single-session runs return 1.0 by design:
     // the `session_count < 2` fallback in eval_retention_score fires, and
@@ -1162,7 +1152,7 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     let consciousness = eval_consciousness(&engine, params.consciousness_phi_target);
     let hall_quality = eval_hallucination_quality(&engine);
     let dream_efficiency = eval_dream_efficiency(
-        total_strengthened, total_pruned, total_links, params.dream_cycles);
+        total_strengthened, total_pruned, total_links, params.chain_depth);
 
     // Placeholder fitness: L3 formula verbatim (L4 weights land in L4.7).
     let fitness = 0.10 * (1.0 - noise_removal)
@@ -1212,6 +1202,9 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     println!("fitness:              {:.6}", fitness);
     println!("retention_score:      {:.4}", retention_score);
     println!("retention_plasticity: {:.4}", retention_plasticity);
+    println!("chain_fidelity:       {:.4}", chain_fidelity);
+    println!("chain_depth:          {}", params.chain_depth);
+    println!("phi_history:          {:?}", phi_history);
     println!("noise_removal:        {:.4}", noise_removal);
     println!("signal_preservation:  {:.4}", signal_preservation);
     println!("bridge_links:         {:.4}", bridge_links);
@@ -1315,6 +1308,207 @@ fn snapshot_engine_for_plasticity(engine: &ResonanceEngine) -> ResonanceEngine {
         let _ = clone.store.insert((*m).clone());
     }
     clone
+}
+
+// ============================================================================
+// LEVEL 4 DREAM CHAIN (cycle L4.5)
+// ============================================================================
+//
+// A ChainSeed is the handoff between successive dream cycles: it captures the
+// top-N memories (by amplitude) from cycle K along with their xi-signature
+// centroid, so cycle K+1 can bias pair selection toward "what K was working
+// on". This is implemented as a harness-level wrapper around the existing
+// ConsolidationEngine — we build a NEW engine per cycle with a lowered
+// interference_threshold, rather than reaching into the library. No core
+// library changes.
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ChainSeed {
+    carry_ids: Vec<uuid::Uuid>,
+    carry_xi_centroid: Vec<f32>,
+    round: u32,
+}
+
+/// Compute the xi-signature centroid over the top-N memories by amplitude,
+/// excluding noise. Falls back to an empty vector if the engine is empty.
+fn compute_chain_seed(engine: &ResonanceEngine, top_n: usize, round: u32) -> ChainSeed {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let mut non_noise: Vec<&HyperMemory> = all
+        .iter()
+        .filter(|m| !m.content.starts_with("l4_noise") && m.amplitude > 0.01)
+        .copied()
+        .collect();
+    non_noise.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
+    let survivors: Vec<&HyperMemory> = non_noise.into_iter().take(top_n.max(1)).collect();
+
+    if survivors.is_empty() {
+        return ChainSeed {
+            carry_ids: Vec::new(),
+            carry_xi_centroid: Vec::new(),
+            round,
+        };
+    }
+
+    // Compute xi-signature for each survivor, then average into a centroid.
+    let sig_len = {
+        let s = compute_xi_signature(&survivors[0].vector);
+        s.len()
+    };
+    let mut centroid = vec![0.0f32; sig_len];
+    let mut count = 0usize;
+    for m in &survivors {
+        let sig = compute_xi_signature(&m.vector);
+        if sig.len() == sig_len {
+            for (c, s) in centroid.iter_mut().zip(sig.iter()) {
+                *c += *s;
+            }
+            count += 1;
+        }
+    }
+    if count > 0 {
+        let inv = 1.0 / count as f32;
+        for c in centroid.iter_mut() {
+            *c *= inv;
+        }
+    }
+    ChainSeed {
+        carry_ids: survivors.iter().map(|m| m.id).collect(),
+        carry_xi_centroid: centroid,
+        round,
+    }
+}
+
+/// Cosine similarity on two equal-length real vectors. Falls back to 0 on
+/// length mismatch or zero norm.
+fn vec_cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na < 1e-8 || nb < 1e-8 {
+        return 0.0;
+    }
+    (dot / (na * nb)).clamp(-1.0, 1.0)
+}
+
+/// chain_fidelity: how coherently the xi-centroid refines across the chain,
+/// plus a small monotonicity bonus for non-decreasing Φ.
+///
+///   base_score = 1 - mean(cosine_distance(centroid_K, centroid_{K+1}))
+///   monotonicity_bonus = 0.1 * (phi_increases / (chain_depth - 1))
+///   return (base_score + bonus).clamp(0, 1)
+///
+/// With a single-cycle chain, returns 1.0 (no transitions to measure).
+fn eval_chain_fidelity(chain_seeds: &[ChainSeed], phi_history: &[f32]) -> f32 {
+    if chain_seeds.len() < 2 {
+        return 1.0;
+    }
+    let mut dist_sum = 0.0f32;
+    let mut pairs = 0usize;
+    for w in chain_seeds.windows(2) {
+        let sim = vec_cosine(&w[0].carry_xi_centroid, &w[1].carry_xi_centroid);
+        // cosine_distance = 1 - sim (signs can go negative; clamp to [0, 2])
+        dist_sum += (1.0 - sim).clamp(0.0, 2.0);
+        pairs += 1;
+    }
+    let mean_dist = if pairs > 0 { dist_sum / pairs as f32 } else { 0.0 };
+    let base_score = (1.0 - mean_dist).clamp(0.0, 1.0);
+
+    // Monotonicity: count the number of transitions where phi did not decrease.
+    let mut increases = 0usize;
+    let mut denom = 0usize;
+    if phi_history.len() >= 2 {
+        for w in phi_history.windows(2) {
+            if w[1] >= w[0] {
+                increases += 1;
+            }
+            denom += 1;
+        }
+    }
+    let bonus = if denom > 0 {
+        0.1 * (increases as f32 / denom as f32)
+    } else {
+        0.0
+    };
+
+    (base_score + bonus).clamp(0.0, 1.0)
+}
+
+/// Aggregate totals reported by a dream chain execution. Mirrors the per-cycle
+/// counters run_experiment_l4_session previously accumulated in a plain loop.
+#[derive(Debug, Default, Clone, Copy)]
+struct ChainTotals {
+    strengthened: usize,
+    pruned: usize,
+    links: usize,
+    hallucinations: usize,
+}
+
+/// Run a `chain_depth`-cycle dream chain on `engine`, biasing each cycle's
+/// pair selection toward the previous cycle's xi centroid by lowering the
+/// effective interference_threshold by `chain_carry_strength * threshold`.
+///
+/// Returns the per-cycle xi centroids (as `ChainSeed` entries) and the
+/// per-cycle Φ history, plus aggregated dream counters.
+fn run_dream_chain(
+    params: &Params,
+    engine: &mut ResonanceEngine,
+) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals) {
+    let depth = params.chain_depth.max(1);
+    let mut chain_seeds: Vec<ChainSeed> = Vec::with_capacity(depth);
+    let mut phi_history: Vec<f32> = Vec::with_capacity(depth);
+    let mut totals = ChainTotals::default();
+    let bridge = ConsciousnessBridge::new(0.3, 0.5);
+
+    for cycle_idx in 0..depth {
+        // Cycle 1 uses the nominal threshold; later cycles lower it by the
+        // carry_strength fraction so the consolidator is biased toward more
+        // aggressive pair selection on the "carried" memories. We drop the
+        // threshold globally because the ConsolidationEngine library doesn't
+        // expose a per-memory threshold hook, and modifying core just to
+        // shave a few points of fidelity isn't worth the surface area.
+        let threshold_scale = if cycle_idx == 0 {
+            1.0
+        } else {
+            (1.0 - params.chain_carry_strength).max(0.0)
+        };
+        let effective_threshold = params.interference_threshold * threshold_scale;
+
+        let consolidator = ConsolidationEngine {
+            interference_threshold: effective_threshold,
+            phase_alignment_threshold: params.phase_alignment_threshold,
+            prune_threshold: params.prune_threshold,
+            constructive_boost: params.constructive_boost,
+            destructive_penalty: params.destructive_penalty,
+            kuramoto: KuramotoSync {
+                coupling_strength: params.kuramoto_coupling,
+                dt: params.kuramoto_dt,
+                steps: params.kuramoto_steps,
+                coupling_threshold: params.kuramoto_threshold,
+            },
+            adaptive: Default::default(),
+            chiral_perturbation: params.chiral_perturbation,
+            noise_floor: params.noise_floor,
+            hallucination_amplitude: params.hallucination_amplitude,
+            protect_established: true,
+        };
+
+        let report = consolidator.consolidate(engine, 0, 2);
+        totals.strengthened += report.memories_strengthened;
+        totals.pruned += report.memories_pruned;
+        totals.links += report.skip_links_created;
+        totals.hallucinations += report.hallucinations_created;
+
+        let seed = compute_chain_seed(engine, params.chain_top_n, (cycle_idx + 1) as u32);
+        chain_seeds.push(seed);
+        let phi = bridge.assess(engine).phi as f32;
+        phi_history.push(phi);
+    }
+
+    (chain_seeds, phi_history, totals)
 }
 
 /// L4 variant: filters by the "l4_noise" tag instead of L3's "noise" prefix.
