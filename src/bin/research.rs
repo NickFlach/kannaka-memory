@@ -10,7 +10,10 @@
 //!   hallucination quality, emergence detection
 
 use std::f32::consts::PI;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
 
 use kannaka_memory::codebook::Codebook;
 use kannaka_memory::consolidation::ConsolidationEngine;
@@ -852,6 +855,139 @@ fn run_experiment_l3(params: &Params) {
     println!("---");
 }
 
+// ============================================================================
+// LEVEL 4 PERSISTENCE (cycle L4.3)
+// ============================================================================
+//
+// Session state is serialized to a bincode sidecar file. Format:
+//   struct StateFile { header: StateHeader, memories: Vec<HyperMemory> }
+// bincode 1.x is already a dep; HyperMemory derives Serialize/Deserialize.
+//
+// The "simulated time advance" applied on load mutates each memory's
+// amplitude by exp(-decay_rate * dt_days) with dt_days = 1.0. This is the
+// only way to make cross-session decay matter inside a sub-second release
+// run, per research/program-l4.md §4.3.
+//
+// Golden ids are captured at the first save: the 20 highest-amplitude
+// non-noise memories right before save. Later sessions track retention
+// against this stable set (used by eval_retention in cycle L4.4).
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StateHeader {
+    /// Incremented on every save. First save writes 1.
+    session_count: u64,
+    /// Frozen on first save: ids of the 20 canonical "important" memories.
+    golden_ids: Vec<uuid::Uuid>,
+    /// Hex digest of the corpus used to seed the very first session.
+    /// Pinned so later loads can detect corpus drift.
+    corpus_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StateFile {
+    header: StateHeader,
+    memories: Vec<HyperMemory>,
+}
+
+/// Serialize the current medium state to a bincode sidecar.
+/// `prev_golden` lets a load→save chain reuse the original golden set.
+/// `prev_corpus_hash` likewise pins the hash to the first session.
+fn save_state(
+    engine: &ResonanceEngine,
+    path: &Path,
+    session_count: u64,
+    prev_golden: Option<&[uuid::Uuid]>,
+    prev_corpus_hash: Option<&str>,
+    fresh_corpus_hash: &str,
+) -> Result<(), String> {
+    let mems_ref = engine
+        .store
+        .all_memories()
+        .map_err(|e| format!("all_memories failed: {:?}", e))?;
+    let memories: Vec<HyperMemory> = mems_ref.iter().map(|m| (*m).clone()).collect();
+
+    // Golden set: 20 highest-amplitude non-noise memories on first save;
+    // otherwise inherit prev_golden verbatim so the series is stable.
+    let golden_ids = if let Some(g) = prev_golden {
+        g.to_vec()
+    } else {
+        let mut candidates: Vec<&HyperMemory> = memories
+            .iter()
+            .filter(|m| !m.content.starts_with("l4_noise"))
+            .collect();
+        candidates.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
+        candidates
+            .into_iter()
+            .take(20)
+            .map(|m| m.id)
+            .collect()
+    };
+
+    let header = StateHeader {
+        session_count,
+        golden_ids,
+        corpus_hash: prev_corpus_hash.map(String::from).unwrap_or_else(|| fresh_corpus_hash.to_string()),
+    };
+    let state = StateFile { header, memories };
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create_dir_all({}): {}", parent.display(), e))?;
+        }
+    }
+    let bytes = bincode::serialize(&state)
+        .map_err(|e| format!("bincode serialize: {}", e))?;
+    std::fs::write(path, bytes)
+        .map_err(|e| format!("write {}: {}", path.display(), e))?;
+    Ok(())
+}
+
+/// Load a prior state file. Returns the deserialized state; callers are
+/// responsible for rehydrating a ResonanceEngine and running the time
+/// advance on the returned memories.
+fn load_state(path: &Path) -> Result<StateFile, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let state: StateFile = bincode::deserialize(&bytes)
+        .map_err(|e| format!("bincode deserialize: {}", e))?;
+    Ok(state)
+}
+
+/// Rebuild a ResonanceEngine from persisted memories, applying the
+/// simulated 1-day decay pass described in research/program-l4.md §4.3.
+fn rehydrate_engine_from_state(
+    state: &StateFile,
+    encoder_seed: u64,
+    dim: usize,
+    dt_days: f32,
+) -> ResonanceEngine {
+    let store = Box::new(TestMedium::new());
+    let encoder = Box::new(SimpleHashEncoder::new(dim, encoder_seed));
+    let codebook = Codebook::new(dim, dim, encoder_seed);
+    let pipeline = EncodingPipeline::new(encoder, codebook);
+    let mut engine = ResonanceEngine::new(store, pipeline);
+
+    for m in &state.memories {
+        let mut mem = m.clone();
+        // Simulated time advance: amplitude *= exp(-decay_rate * dt_days)
+        let factor = (-mem.decay_rate * dt_days).exp();
+        mem.amplitude *= factor;
+        // We ignore the insert error for duplicates — memories came from
+        // a single prior run so ids are unique by construction.
+        let _ = engine.store.insert(mem);
+    }
+    engine
+}
+
+/// CLI flags parsed in main() but relevant only to L4 sessions.
+#[derive(Debug, Default, Clone)]
+struct L4Cli {
+    load_path: Option<PathBuf>,
+    save_path: Option<PathBuf>,
+    chain_sessions: usize,
+}
+
 /// Level 4 challenge — STUB (cycle L4.2).
 ///
 /// Builds the L4 corpus via `build_corpus_l4`, inserts it into a TestMedium,
@@ -864,8 +1000,7 @@ fn run_experiment_l3(params: &Params) {
 /// (phase_coherence, cluster_separation) rely on content strings from the
 /// L3 corpus ("quantum", "resonance") and will report 0 on the L4 corpus;
 /// this is expected and will be replaced by real L4 metrics in later cycles.
-fn run_experiment_l4(params: &Params) {
-    let dim = 128;
+fn build_fresh_l4_engine(params: &Params, dim: usize) -> ResonanceEngine {
     let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
 
     let store = Box::new(TestMedium::new());
@@ -879,8 +1014,7 @@ fn run_experiment_l4(params: &Params) {
         let mut mem = HyperMemory::new(vec.clone(), content.clone());
         // Deterministic UUID (mirrors L3 pattern so retention is reproducible).
         mem.id = uuid::Uuid::from_u128((i as u128 + 1) * 0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF);
-        // Phases/layer/freq are assigned by category. L4 categories:
-        //   l4_dense, l4_sparse, l4_bridge, l4_decoy, l4_noise.
+        mem.decay_rate = params.decay_rate;
         mem.phase = match *category {
             "l4_dense"  => 0.0 + (i as f32 * 0.1 * ps),
             "l4_sparse" => PI * 0.5 + (i as f32 * 0.08 * ps),
@@ -898,7 +1032,6 @@ fn run_experiment_l4(params: &Params) {
             _ => 0,
         };
         // Fully overlapping frequency bands — no freq-gating trick.
-        // All non-noise memories share the base band with a tiny cluster-dependent offset.
         mem.frequency = match *category {
             "l4_dense"  => 0.10,
             "l4_sparse" => 0.11,
@@ -912,6 +1045,48 @@ fn run_experiment_l4(params: &Params) {
         }
         engine.store.insert(mem).expect("insert failed");
     }
+
+    engine
+}
+
+/// One L4 session. Honors --load/--save/--chain-sessions CLI flags.
+///
+/// Flow per session:
+///   1. Either rehydrate engine from `--load` (with 1-day time advance)
+///      or build a fresh L4 corpus engine.
+///   2. Run the dream cycles via ConsolidationEngine.
+///   3. Score with existing L3 evaluators (placeholder until L4.4).
+///   4. If `--save` is set, serialize the post-dream state.
+///
+/// When `--chain-sessions N` is passed, the whole flow is iterated N times
+/// inside a single cargo run: the save path written by session K is loaded
+/// by session K+1. Session 1 starts from a fresh corpus.
+fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
+    let dim = 128;
+
+    // Compute (and stash) the canonical corpus hash. This is the value that
+    // gets pinned into the state header on first save.
+    let fresh_corpus_hash = {
+        let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
+        corpus_l4_hash(&corpus)
+    };
+
+    // Either load prior state or build fresh.
+    let (mut engine, prev_header): (ResonanceEngine, Option<StateHeader>) = match &cli.load_path {
+        Some(p) if p.exists() => {
+            match load_state(p) {
+                Ok(state) => {
+                    let engine = rehydrate_engine_from_state(&state, params.encoder_seed, dim, 1.0);
+                    (engine, Some(state.header))
+                }
+                Err(e) => {
+                    eprintln!("load_state({}) failed: {} — starting fresh", p.display(), e);
+                    (build_fresh_l4_engine(params, dim), None)
+                }
+            }
+        }
+        _ => (build_fresh_l4_engine(params, dim), None),
+    };
 
     let consolidator = ConsolidationEngine {
         interference_threshold: params.interference_threshold,
@@ -977,8 +1152,37 @@ fn run_experiment_l4(params: &Params) {
         + 0.10 * (1.0 - hall_quality)
         + 0.10 * (1.0 - dream_efficiency);
 
+    // Save state if --save was requested.
+    let save_session_count = if let Some(save_path) = &cli.save_path {
+        let next_session = prev_header.as_ref().map(|h| h.session_count + 1).unwrap_or(1);
+        let prev_golden = prev_header.as_ref().map(|h| h.golden_ids.as_slice());
+        let prev_corpus_hash = prev_header.as_ref().map(|h| h.corpus_hash.as_str());
+        match save_state(
+            &engine,
+            save_path,
+            next_session,
+            prev_golden,
+            prev_corpus_hash,
+            &fresh_corpus_hash,
+        ) {
+            Ok(()) => Some(next_session),
+            Err(e) => {
+                eprintln!("save_state({}) failed: {}", save_path.display(), e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     println!("---");
     println!("level:                4");
+    if let Some(prev) = prev_header.as_ref() {
+        println!("loaded_session:       {}", prev.session_count);
+    }
+    if let Some(n) = save_session_count {
+        println!("saved_session:        {}", n);
+    }
     println!("fitness:              {:.6}", fitness);
     println!("noise_removal:        {:.4}", noise_removal);
     println!("signal_preservation:  {:.4}", signal_preservation);
@@ -1018,16 +1222,20 @@ fn eval_l4_signal_preservation(engine: &ResonanceEngine) -> f32 {
     (signal_count as f32 / 285.0).min(1.0)
 }
 
+fn parse_string_flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn parse_usize_flag(args: &[String], name: &str) -> Option<usize> {
+    parse_string_flag(args, name).and_then(|s| s.parse::<usize>().ok())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let level = if args.iter().any(|a| a == "--level") {
-        args.iter().position(|a| a == "--level")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(2)
-    } else {
-        2
-    };
+    let level = parse_usize_flag(&args, "--level").unwrap_or(2);
 
     let params = experiment_params();
 
@@ -1044,8 +1252,42 @@ fn main() {
         return;
     }
 
+    let cli = L4Cli {
+        load_path: parse_string_flag(&args, "--load").map(PathBuf::from),
+        save_path: parse_string_flag(&args, "--save").map(PathBuf::from),
+        chain_sessions: parse_usize_flag(&args, "--chain-sessions").unwrap_or(0),
+    };
+
     match level {
-        4 => run_experiment_l4(&params),
+        4 => {
+            if cli.chain_sessions > 0 {
+                // Internal loop: N sessions in one cargo run. Session 1 loads
+                // from `--load` if it exists, otherwise starts fresh. Each
+                // session writes its state to `--save` so the next one can
+                // pick it back up. `--save` is required for chaining.
+                if cli.save_path.is_none() {
+                    eprintln!("--chain-sessions requires --save <path>");
+                    std::process::exit(2);
+                }
+                for session_idx in 0..cli.chain_sessions {
+                    println!("=== L4 chain session {}/{} ===", session_idx + 1, cli.chain_sessions);
+                    // After session 1, load from the file we just wrote.
+                    let load_path = if session_idx == 0 {
+                        cli.load_path.clone()
+                    } else {
+                        cli.save_path.clone()
+                    };
+                    let session_cli = L4Cli {
+                        load_path,
+                        save_path: cli.save_path.clone(),
+                        chain_sessions: 0,
+                    };
+                    run_experiment_l4_session(&params, &session_cli);
+                }
+            } else {
+                run_experiment_l4_session(&params, &cli);
+            }
+        }
         3 => run_experiment_l3(&params),
         _ => run_experiment(&params),
     }
