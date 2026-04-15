@@ -1,0 +1,27 @@
+{
+  "depth": 4,
+  "phase_a": {
+    "best_soft_mse": 6.952506649949152e-05,
+    "best_snap_mse": 0.13700131301311028,
+    "n_restarts": 10,
+    "n_successful": 10,
+    "best_snap_seed": 2,
+    "best_snapped_formula_readable": "0.6485 * (exp(s) - ln(1)) + -0.2173",
+    "best_snapped_formula_rust": "0.6485_f64 * (((sim).clamp(-8.0, 8.0).exp() - (1.0_f32).clamp(1e-6, 1e8).ln())) + -0.2173_f64"
+  },
+  "phase_b": {
+    "best_soft_variance": 0.2332924551490793,
+    "best_snap_variance": 0.017784238042603425,
+    "current_formula_variance": 0.11525438195201117,
+    "best_soft_ratio_vs_current": 2.02415258489882,
+    "best_snap_ratio_vs_current": 0.15430422463250296,
+    "n_restarts": 10,
+    "n_successful": 10,
+    "restarts_that_beat_current": 0,
+    "best_snap_seed": 9,
+    "best_snap_mean": 0.5293310556786253,
+    "best_snap_monotonic": true,
+    "best_snapped_formula_readable": "clamp01(1.3770 * (exp((exp(s) - ln((exp((exp(s) - ln(r))) - ln((exp(s) - ln(s))))))) - ln(1)) + 0.1146)",
+    "best_snapped_formula_rust": "(1.3770_f64 * (((((sim).clamp(-8.0, 8.0).exp() - (((((sim).clamp(-8.0, 8.0).exp() - (rep).clamp(1e-6, 1e8).ln())).clamp(-8.0, 8.0).exp() - (((sim).clamp(-8.0, 8.0).exp() - (sim).clamp(1e-6, 1e8).ln())).clamp(1e-6, 1e8).ln())).clamp(1e-6, 1e8).ln())).clamp(-8.0, 8.0).exp() - (1.0_f32).clamp(1e-6, 1e8).ln())) + 0.1146_f64).clamp(0.0_f64, 1.0_f64)"
+  }
+}
