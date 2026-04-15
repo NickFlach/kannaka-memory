@@ -58,6 +58,9 @@ fn experiment_params() -> Params {
         // Noise floor: absolute minimum amplitude to survive
         // Noise memories start at 0.15, signal at 1.0
         noise_floor: 0.18,
+
+        // Level 4: encoder/corpus controls
+        encoder_seed: 0xCAFE_BABE,
     }
 }
 
@@ -87,6 +90,8 @@ struct Params {
     chiral_perturbation: f32,
     // Noise floor
     noise_floor: f32,
+    // Level 4
+    encoder_seed: u64,
 }
 
 // ============================================================================
@@ -163,6 +168,173 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
 
     corpus
 }
+
+// ============================================================================
+// LEVEL 4 CORPUS — DO NOT MODIFY ONCE LANDED (see research/program-l4.md §3)
+// ============================================================================
+//
+// L4 corpus layout (300 memories, dim=128, seed-driven PCG):
+//   - 4 dense clusters × 50 = 200 memories (inter-cluster cos margin ~0.15)
+//   - 2 sparse clusters × 20 = 40 memories
+//   - 20 bridge memories (4 each across 5 cluster pairs)
+//   - 25 high-amplitude decoys
+//   - 15 low-amplitude noise
+// Frequency bands are fully overlapping — no freq-gating trick available.
+// Every value is a deterministic function of (cluster_id, item_id, dim_id, seed)
+// via a PCG mix. A given `encoder_seed` always produces identical bytes.
+
+/// Deterministic PCG-style mix: maps (seed, stream) to a pseudorandom u64.
+/// Used to generate all L4 corpus values so the corpus is reproducible.
+fn pcg_mix(seed: u64, stream: u64) -> u64 {
+    let mut x = seed.wrapping_add(stream.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    x
+}
+
+/// Draw a deterministic f32 in [-1, 1] from (cluster, item, dim, seed).
+fn pcg_f32(seed: u64, cluster: u32, item: u32, dim_id: u32) -> f32 {
+    let stream = ((cluster as u64) << 40) | ((item as u64) << 20) | (dim_id as u64);
+    let bits = pcg_mix(seed, stream);
+    // Map top 24 bits to [-1, 1]
+    let norm = ((bits >> 40) as f32) / ((1u64 << 24) as f32);
+    norm * 2.0 - 1.0
+}
+
+/// Draw a deterministic f32 in [0, 1).
+fn pcg_u01(seed: u64, cluster: u32, item: u32, dim_id: u32) -> f32 {
+    (pcg_f32(seed, cluster, item, dim_id) + 1.0) * 0.5
+}
+
+/// L4 corpus entry: (vector, content, category).
+/// Category tags are STABLE strings used by L4 evaluators.
+fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<f32>, String, &'static str)> {
+    let mut corpus: Vec<(Vec<f32>, String, &'static str)> = Vec::with_capacity(300);
+
+    // -- Dense clusters (4 × 50 = 200). Cluster ids 0..=3.
+    // Centroids are sparse +/-1 patterns drawn from seed, scaled by 0.8.
+    // Within-cluster variance 0.35 makes Kuramoto sync harder.
+    let dense_labels = ["dense_a", "dense_b", "dense_c", "dense_d"];
+    for (cluster_idx, label) in dense_labels.iter().enumerate() {
+        let cid = cluster_idx as u32;
+        // centroid uses item=0 as the "template" stream
+        let centroid: Vec<f32> = (0..dim)
+            .map(|d| 0.8 * pcg_f32(encoder_seed, cid, 0, d as u32).signum())
+            .collect();
+        for i in 0..50 {
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let base = centroid[d];
+                    let jitter = pcg_f32(encoder_seed, cid, item, d as u32) * 0.35;
+                    base + jitter
+                })
+                .collect();
+            corpus.push((v, format!("{} {}", label, i), "l4_dense"));
+        }
+    }
+
+    // -- Sparse clusters (2 × 20 = 40). Cluster ids 4..=5.
+    // Wider within-cluster spread and smoother centroids to keep them identifiable.
+    let sparse_labels = ["sparse_e", "sparse_f"];
+    for (cluster_idx, label) in sparse_labels.iter().enumerate() {
+        let cid = 4 + cluster_idx as u32;
+        let centroid: Vec<f32> = (0..dim)
+            .map(|d| {
+                let r = pcg_f32(encoder_seed, cid, 0, d as u32);
+                0.6 * (r * PI).sin()
+            })
+            .collect();
+        for i in 0..20 {
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let base = centroid[d];
+                    let jitter = pcg_f32(encoder_seed, cid, item, d as u32) * 0.45;
+                    base + jitter
+                })
+                .collect();
+            corpus.push((v, format!("{} {}", label, i), "l4_sparse"));
+        }
+    }
+
+    // -- Bridges (20 memories, 4 each across 5 cluster pairs).
+    // Cluster pair list kept small & deterministic.
+    let pairs: [(u32, u32); 5] = [(0, 1), (0, 2), (1, 3), (2, 4), (3, 5)];
+    for (pair_idx, (a, b)) in pairs.iter().enumerate() {
+        let centroid_a: Vec<f32> = (0..dim)
+            .map(|d| 0.8 * pcg_f32(encoder_seed, *a, 0, d as u32).signum())
+            .collect();
+        let centroid_b: Vec<f32> = (0..dim)
+            .map(|d| 0.8 * pcg_f32(encoder_seed, *b, 0, d as u32).signum())
+            .collect();
+        for i in 0..4 {
+            // Use stream id 1_000 + pair_idx to keep jitter orthogonal to clusters
+            let stream_cid = 1000 + pair_idx as u32;
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let mix = 0.5 * (centroid_a[d] + centroid_b[d]);
+                    let jitter = pcg_f32(encoder_seed, stream_cid, item, d as u32) * 0.12;
+                    mix + jitter
+                })
+                .collect();
+            corpus.push((v, format!("l4_bridge p{} {}", pair_idx, i), "l4_bridge"));
+        }
+    }
+
+    // -- Decoys (25 high-amplitude random vectors, should not naively boost metrics).
+    for i in 0..25 {
+        let item = (i + 1) as u32;
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(encoder_seed, 2000, item, d as u32) * 0.9)
+            .collect();
+        corpus.push((v, format!("l4_decoy {}", i), "l4_decoy"));
+    }
+
+    // -- Noise (15 low-amplitude random vectors).
+    for i in 0..15 {
+        let item = (i + 1) as u32;
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(encoder_seed, 3000, item, d as u32) * 0.12)
+            .collect();
+        corpus.push((v, format!("l4_noise {}", i), "l4_noise"));
+    }
+
+    debug_assert_eq!(corpus.len(), 300, "L4 corpus must be exactly 300 memories");
+    corpus
+}
+
+/// Deterministic hex hash of the serialized L4 corpus. Used by `--corpus-hash`
+/// to verify that two invocations of the same binary produce bit-identical corpora.
+fn corpus_l4_hash(corpus: &[(Vec<f32>, String, &'static str)]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for (vec, content, category) in corpus {
+        hasher.update(content.as_bytes());
+        hasher.update(&[0u8]);
+        hasher.update(category.as_bytes());
+        hasher.update(&[0u8]);
+        for v in vec {
+            hasher.update(&v.to_le_bytes());
+        }
+        hasher.update(&[0xFFu8]);
+    }
+    // Truncate to 32 bytes / 64 hex chars (same width as sha256 for readability).
+    let digest = hasher.finalize();
+    let bytes = digest.as_bytes();
+    let mut s = String::with_capacity(64);
+    for b in &bytes[..32] {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+// Referenced by pcg helpers used in later L4 cycles; silence dead_code during L4.1.
+#[allow(dead_code)]
+fn _l4_pcg_unused(s: u64, c: u32, i: u32, d: u32) -> f32 { pcg_u01(s, c, i, d) }
 
 /// Evaluate noise removal (only actual noise, not decoys)
 fn eval_noise_removal(engine: &ResonanceEngine) -> f32 {
@@ -692,6 +864,20 @@ fn main() {
     };
 
     let params = experiment_params();
+
+    // --corpus-hash: print the hex digest of the L4 corpus and exit.
+    // Reproducibility check — any L4 cycle can run this to confirm the
+    // corpus bytes are identical to a previous run.
+    if args.iter().any(|a| a == "--corpus-hash") {
+        let corpus = build_corpus_l4(128, 1, params.encoder_seed);
+        let hash = corpus_l4_hash(&corpus);
+        println!("l4_corpus_hash: {}", hash);
+        println!("l4_corpus_dim:  128");
+        println!("l4_corpus_size: {}", corpus.len());
+        println!("l4_encoder_seed: 0x{:016x}", params.encoder_seed);
+        return;
+    }
+
     match level {
         3 => run_experiment_l3(&params),
         _ => run_experiment(&params),
