@@ -77,6 +77,7 @@ fn experiment_params() -> Params {
 // ============================================================================
 
 #[allow(dead_code)]
+#[derive(Clone)]
 struct Params {
     decay_rate: f32,
     default_frequency: f32,
@@ -1424,6 +1425,16 @@ fn run_l4_pass(
 ///      the adversarial one — state must never include adversaries per §6.2).
 fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     let dim = 128;
+
+    // L4.13: L4-local overrides. These parameters diverge from the L3 frozen
+    // archive and must not leak back into run_experiment_l3. Clone params
+    // and patch the L4-specific fields here.
+    //   - phase_alignment_threshold: PI/3.0 -> PI/2.5 (L4.13, kept)
+    //     Lifts phase_coherence 0.828->0.866 and adv_resistance dramatically;
+    //     mild chain_fidelity collateral. L3 path stays at PI/3.0.
+    let mut l4_params = params.clone();
+    l4_params.phase_alignment_threshold = PI / 2.5;
+    let params = &l4_params;
 
     // Compute (and stash) the canonical corpus hash. This is the value that
     // gets pinned into the state header on first save.
