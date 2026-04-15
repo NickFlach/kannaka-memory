@@ -1,8 +1,8 @@
 {
-  "cycle": 30,
-  "phase": "act",
+  "cycle": 31,
+  "phase": "observe",
   "level": 4,
-  "last_action": "L4.10: H-L4-001 (encoder_seed 0xCAFE_BABE->0xDEAD_BEEF) REVERTED. 10-run avg fitness 0.216186 -> 0.225567 (delta +0.00938, regression). Target metric encoding_entropy did NOT move (0.0214 -> 0.0214) — the Shannon-over-16-bins quantization is saturated/collapsed independent of encoder seed. Across-corpus collateral: chain_fid 0.9022->0.7104 (big drop), consciousness 0.8326->0.6492 (big drop), corpus_xi_div 0.6207->0.5678, cluster_sep 0.9728->1.0000 (up), adv_resist 0.6617->0.9697 (noisy denominator). Git checkout -- used to revert. chain_depth=2 from L4.9 preserved. L3 spot-check: 0.006874 (unchanged).",
+  "last_action": "L4.11: H-L4-003 (xi_repulsion_weight 0.3->0.5) REVERTED. 10-run avg fitness 0.216186 -> 0.216707 (delta +0.00052, INSIDE noise band ±0.00122). Target metric corpus_xi_diversity did NOT move (0.6207 -> 0.6207, byte-identical). All deterministic metrics identical to L4.9 — confirms xi_repulsion_weight is NOT wired into the L4 corpus_xi_diversity evaluator either; upstream xi_diversity_boost shadow dominates on both L3 and L4. Decision rule: fitness inside noise + target did not move in expected direction -> REVERT. xi_repulsion_weight confirmed dead on L4 as well. Git checkout -- used. chain_depth=2 from L4.9 preserved. L3 spot-check: 0.006884 (unchanged).",
   "last_harvest": "2026-04-14T00:00:00Z",
   "l3": {
     "status": "SOLVED_ARCHIVED",
@@ -50,8 +50,10 @@
     "archived_reason": "L3 saturated at ~0.00646. Further L3 tuning yields <0.00005 per cycle. Session graduated to L4 at cycle 28."
   },
   "l4": {
-    "baseline_cycle": "L4.8",
-    "baseline_fitness": 0.224308,
+    "baseline_cycle": "L4.9 (new best after L4.9-L4.11)",
+    "baseline_fitness": 0.216186,
+    "baseline_cycle_original": "L4.8",
+    "baseline_fitness_original": 0.224308,
     "baseline_fitness_min": 0.22264,
     "baseline_fitness_max": 0.22724,
     "baseline_fitness_std": 0.001221,
@@ -137,7 +139,7 @@
         "target_metric": "corpus_xi_diversity",
         "expected_delta": "corpus_xi_diversity 0.671 -> ~0.85 -> fitness -0.018",
         "risk": "Known L3 dead-param. On L4 with the renormalized /0.12 it may have new headroom. xi_diversity shadow upstream in ConsolidationEngine is orthogonal so a research-binary-local param change should be safe.",
-        "status": "proposed"
+        "status": "REFUTED (L4.11, reverted). Tried 0.3->0.5. corpus_xi_diversity 0.6207 -> 0.6207 byte-identical. xi_repulsion_weight is dead on L4 too — the eval reads from the upstream xi_diversity_boost path, not the research-local param. Dead on both levels."
       }
     ],
     "notes": "adversarial_resistance jitters because its denominator is fitness_clean_sub and fitness_clean_sub moves only with speed (speed feeds the clean-pass subtotal). Once speed is stabilized (H-L4-002), adversarial_resistance should also become byte-identical. retention_score + retention_plasticity = 1.0000 because this baseline is a single-session invocation (no --chain-sessions). Cross-session retention testing is gated on the first tuning pass that actually exercises --chain-sessions 2 in the OODA loop."
@@ -170,6 +172,6 @@
   },
   "params_changed_this_cycle": {"chain_depth": "3->2 (L4.9, kept)"},
   "params_tested_and_reverted_this_cycle": {},
-  "dead_params": ["xi_repulsion_weight", "decay_rate", "default_frequency", "kuramoto_steps", "interference_threshold_down", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation"],
-  "next_experiment": "Cycle 29 (L4.9): Begin OODA autonomous tuning on L4. PRIORITY ORDER per L4.8 dominant losses: (1) H-L4-002 chain_depth 3->2 to reclaim speed (largest contribution: 0.083); (2) H-L4-001 encoder_seed perturbation to move encoding_entropy off 0.02 (contribution: 0.049); (3) H-L4-003 xi_repulsion_weight 0.3->0.5 for corpus_xi_diversity headroom (contribution: 0.033). Run 10 times each before committing. L4 is READY for autonomous OODA: all metrics are real numbers in (0,1), byte-identical across runs except speed/adv_resist timing jitter, no phantom floors remain."
+  "dead_params": ["xi_repulsion_weight", "xi_repulsion_weight_L4_confirmed", "encoder_seed_for_encoding_entropy", "decay_rate", "default_frequency", "kuramoto_steps", "interference_threshold_down", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation"],
+  "next_experiment": "Cycle 32 (L4.12): L4.9-L4.11 complete. New best fitness 0.216186 (L4.9, chain_depth=2). L4.10 (encoder_seed) and L4.11 (xi_repulsion_weight) both refuted. NEW DOMINANT LOSSES (approx, from L4.9 metrics): (1) encoding_entropy score 0.0214 weight 0.05 -> contribution 0.04893 (STILL #1, but encoder_seed is refuted — needs dim enlargement or bin-count change); (2) speed 0.4188 weight 0.10 -> contribution 0.05812 (still large! budget ~5.8s, further reducible via chain_top_n 10->5 or kuramoto_steps decrease); (3) corpus_xi_diversity 0.6207 weight 0.10 -> contribution 0.03793 (still discriminating); (4) adv_resistance 0.6617 weight 0.10 -> contribution 0.03383 (denominator-jitter artifact from speed change). RECOMMEND L4.12: try chain_top_n 10->5 (speed secondary lever, cheap, orthogonal to already-reduced chain_depth). Alternative: kuramoto_steps 20->10 for faster chain cycles. Avoid encoder_seed and xi_repulsion_weight (both dead). Avoid encoding_entropy metric tuning until dim/bin-count strategy is scoped at design level."
 }
