@@ -1,0 +1,20 @@
+{
+  "phase_a": {
+    "soft_final_mse": 0.0019105838681284567,
+    "soft_best_mse": 0.0007418909334580015,
+    "final_mse": 0.5181106535233253,
+    "can_represent_current_formula_soft": true,
+    "can_represent_current_formula_snapped": false
+  },
+  "phase_b": {
+    "trained_variance": 0.0,
+    "soft_best_variance": 0.06037706545408006,
+    "current_variance": 0.11525438195201117,
+    "variance_ratio": 0.0,
+    "soft_variance_ratio": 0.5238591750829868,
+    "mean_output": 0.0,
+    "monotonic_increasing_in_repulsion": true,
+    "snapped_formula_readable": "clamp01(0.9900 * (exp(s) - ln((exp((exp(1) - ln(s))) - ln(s)))) + -0.0100)",
+    "snapped_formula_rust": "(0.9900_f32 * (((sim).clamp(-8.0, 8.0).exp() - (((((1.0_f32).clamp(-8.0, 8.0).exp() - (sim).clamp(1e-6, 1e8).ln())).clamp(-8.0, 8.0).exp() - (sim).clamp(1e-6, 1e8).ln())).clamp(1e-6, 1e8).ln())) + -0.0100_f32).clamp(0.0_f32, 1.0_f32)"
+  }
+}

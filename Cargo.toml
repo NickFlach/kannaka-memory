@@ -60,6 +60,10 @@ required-features = ["glyph"]
 name = "kannaka-recompute-geometry"
 path = "src/bin/recompute_geometry.rs"
 
+[[bin]]
+name = "dump_xi_pairs"
+path = "src/bin/dump_xi_pairs.rs"
+
 # hrm-migrate is obsolete (was Dolt→HRM migration); kept for reference
 # [[bin]]
 # name = "hrm-migrate"
