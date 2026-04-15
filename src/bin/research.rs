@@ -20,25 +20,7 @@ use kannaka_memory::bridge::ConsciousnessBridge;
 use kannaka_memory::memory::HyperMemory;
 use kannaka_memory::store::{TestMedium, ResonanceEngine};
 use kannaka_memory::wave::cosine_similarity;
-use kannaka_memory::xi_operator::{compute_xi_signature, xi_repulsive_force};
-
-// ============================================================================
-// OODA-19: local two-tier xi_diversity boost (shadows crate default which is
-// saturated at ~0.09 on the L3 corpus). Multiplicative tier for high-similarity
-// pairs (>0.15) uses a 3.0x multiplier scaled by repulsion; additive tier adds
-// repulsion*0.15 for orthogonal pairs. Keeps xi_diversity at 1.0000 on L3.
-// Upstream consciousness_core::metrics::xi_diversity_boost is unchanged.
-// ============================================================================
-fn xi_diversity_boost(base_similarity: f32, xi_a: &[f32], xi_b: &[f32]) -> f32 {
-    let repulsion = xi_repulsive_force(xi_a, xi_b);
-    if base_similarity > 0.15 {
-        // Multiplicative tier: boost high-similarity pairs by repulsion*3.0
-        base_similarity + base_similarity * repulsion * 3.0
-    } else {
-        // Additive tier: orthogonal pairs get a small repulsion-driven nudge
-        base_similarity + repulsion * 0.15
-    }
-}
+use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_repulsive_force};
 
 // ============================================================================
 // EXPERIMENT PARAMETERS — THIS IS WHAT THE AGENT MODIFIES
