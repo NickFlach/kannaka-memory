@@ -2005,10 +2005,18 @@ fn eval_phase_coherence_l4(engine: &ResonanceEngine) -> f32 {
     let mut total_coherence = 0.0f32;
     let mut cluster_count = 0;
     for prefix in &cluster_prefixes {
+        // L4.S8a: filter out NaN phases. Under interference_threshold=0.12
+        // the adversarial consolidation path can occasionally leave a
+        // memory's phase field as NaN (upstream ConsolidationEngine bug on
+        // degenerate near-duplicate pairs). NaN was propagating through
+        // sum_cos/sum_sin and producing fitness_adv_sub=NaN. We drop NaN
+        // phases from the order-parameter computation; non-degenerate runs
+        // contain zero NaNs and are unaffected.
         let phases: Vec<f32> = all
             .iter()
             .filter(|m| m.content.starts_with(prefix) && m.amplitude > 0.01)
             .map(|m| m.phase)
+            .filter(|p| p.is_finite())
             .collect();
         if phases.len() < 2 {
             continue;
