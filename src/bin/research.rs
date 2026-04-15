@@ -1464,6 +1464,16 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // collapsing the xi pool the way top_n=5 did (L4.12 crash).
     l4_params.chain_depth = 3;
     l4_params.chain_top_n = 7;
+    // L4.S8 REVERTED: interference_threshold 0.10 -> 0.12 retry unblocked by
+    // the S8a NaN-phase guard, but 15-run fitness regressed 0.096517 ->
+    // 0.117416 (+0.0209). Clean-pass gains were real (fitness_clean_sub
+    // 0.0918 -> 0.0676, chain_fidelity +0.069, corpus_xi_diversity +0.195)
+    // but adv_resistance crashed 0.9584 -> 0.5017 (-0.457) because the
+    // higher threshold widens the clean-vs-adv fitness divergence past what
+    // the S3 padded denominator can absorb. The 0.10 weight on adv_resist
+    // turns the collapse into +0.046 fitness and eats the clean-pass win.
+    // Mark interference_threshold UP dead on L4 (second confirmation after
+    // L4.18/L4.S6). Down direction (0.10->0.08) remains untested.
     let params = &l4_params;
 
     // Compute (and stash) the canonical corpus hash. This is the value that
