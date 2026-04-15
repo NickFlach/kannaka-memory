@@ -2,3 +2,4 @@ cycle	fitness	noise	signal	bridge	phase	cluster	amp_div	xi_div	consciousness	hal
 L4.2-stub	0.289058	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.4822	0.9372	0.9854	-	-	-	4202	stub	L4 corpus + L3 evaluators; phase/cluster read 0 by design until L4.4-L4.7
 L4.4-stub	0.290018	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.4822	0.9372	0.9854	1.0000	1.0000	-	4202	stub	retention+plasticity wired; single-run neutral (no prior session)
 L4.5-stub	0.307207	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.7513	0.9791	0.9877	1.0000	1.0000	0.9399	-	stub	ChainSeed + chain_fidelity + 3-cycle dream chain (chain supersedes dream_cycles)
+L4.6-stub	0.309907	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.7513	0.9791	0.9877	1.0000	1.0000	0.9399	-	stub	adv injector + dual-pass eval; fitness_clean=0.3099 fitness_adv=0.3280 resistance=0.9416

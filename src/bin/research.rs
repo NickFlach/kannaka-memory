@@ -348,6 +348,152 @@ fn corpus_l4_hash(corpus: &[(Vec<f32>, String, &'static str)]) -> String {
 #[allow(dead_code)]
 fn _l4_pcg_unused(s: u64, c: u32, i: u32, d: u32) -> f32 { pcg_u01(s, c, i, d) }
 
+// ============================================================================
+// LEVEL 4 ADVERSARIAL INJECTOR (cycle L4.6)
+// ============================================================================
+//
+// 40 adversarial memories total, 10 per type:
+//   A1 xi-twin decoys            : negated cluster centroids, phase flipped π
+//   A2 phase-aligned noise       : cluster-mean phase, amplitude 0.9
+//   A3 hallucination-impostors   : midpoint vectors between cluster pairs,
+//                                  hallucinated=false (structurally hallucinations)
+//   A4 near-duplicate clones     : real memories + 0.5% Gaussian-ish noise
+//
+// Seed is INDEPENDENT of encoder_seed per Nick's locked decision in §10.4:
+// the adversarial population must stay invariant even if we tune encoders or
+// corpus_hardness, so resistance series remain comparable across experiments.
+const ADVERSARIAL_SEED: u64 = 0xA5A5_DEAD_BEEF_F00D;
+
+/// Build the 40-memory adversarial set. `corpus` is the clean L4 corpus
+/// (HyperMemory vectors are reconstructed from (vec, content, category)
+/// triples, so we only need vector slices + string labels here).
+fn build_adversarial_set(
+    corpus: &[(Vec<f32>, String, &'static str)],
+    seed: u64,
+) -> Vec<HyperMemory> {
+    let mut out: Vec<HyperMemory> = Vec::with_capacity(40);
+    if corpus.is_empty() {
+        return out;
+    }
+    let dim = corpus[0].0.len();
+
+    // Gather dense/sparse cluster centroids by averaging real vectors per
+    // category prefix. The L4 corpus uses content prefixes like "dense_a N".
+    let cluster_prefixes = [
+        "dense_a", "dense_b", "dense_c", "dense_d", "sparse_e", "sparse_f",
+    ];
+    let mut centroids: Vec<(String, Vec<f32>)> = Vec::new();
+    for prefix in &cluster_prefixes {
+        let mut sum = vec![0.0f32; dim];
+        let mut count = 0usize;
+        for (v, content, _cat) in corpus {
+            if content.starts_with(prefix) {
+                for (s, x) in sum.iter_mut().zip(v.iter()) {
+                    *s += *x;
+                }
+                count += 1;
+            }
+        }
+        if count > 0 {
+            let inv = 1.0 / count as f32;
+            for s in sum.iter_mut() {
+                *s *= inv;
+            }
+            centroids.push((prefix.to_string(), sum));
+        }
+    }
+
+    // ---- A1: xi-twin decoys (10). Negated centroid, phase flipped by π ----
+    for i in 0..10 {
+        let (_, centroid) = &centroids[i % centroids.len().max(1)];
+        let v: Vec<f32> = centroid.iter().map(|x| -*x).collect();
+        let mut mem = HyperMemory::new(v, format!("adv_a1_xi_twin {}", i));
+        mem.amplitude = 0.95;
+        mem.phase = PI;
+        mem.frequency = 0.10;
+        mem.layer_depth = 1;
+        mem.decay_rate = 1e-4;
+        out.push(mem);
+    }
+
+    // ---- A2: phase-aligned noise (10). Seeded noise, amp 0.9 ----
+    for i in 0..10 {
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(seed, 4000, (i + 1) as u32, d as u32) * 0.3)
+            .collect();
+        let (_, cluster_centroid) = &centroids[i % centroids.len().max(1)];
+        // Phase = cluster mean phase approximated as atan2-free constant.
+        // We use cluster index scaled to [0, 2π) so A2 always aligns onto
+        // one specific cluster's notional phase band.
+        let cluster_phase = (i as f32 / centroids.len().max(1) as f32) * 2.0 * PI;
+        let mut mem = HyperMemory::new(v, format!("adv_a2_phase_noise {}", i));
+        mem.amplitude = 0.9;
+        mem.phase = cluster_phase;
+        mem.frequency = 0.10;
+        mem.layer_depth = 1;
+        mem.decay_rate = 1e-4;
+        // Bias slightly toward the cluster centroid so its phase truly
+        // "aligns" — without any bias, phase-coherence wouldn't care.
+        for (x, c) in mem.vector.iter_mut().zip(cluster_centroid.iter()) {
+            *x += 0.1 * *c;
+        }
+        out.push(mem);
+    }
+
+    // ---- A3: hallucination-impostors (10). Midpoint vectors ----
+    // Use 5 cluster pairs × 2 items = 10.
+    let pair_indices: [(usize, usize); 5] = [(0, 1), (0, 2), (1, 3), (2, 4), (3, 5)];
+    for (k, (a, b)) in pair_indices.iter().enumerate() {
+        for j in 0..2 {
+            if centroids.is_empty() { break; }
+            let ca = &centroids[*a % centroids.len()].1;
+            let cb = &centroids[*b % centroids.len()].1;
+            let v: Vec<f32> = ca.iter().zip(cb.iter()).map(|(x, y)| 0.5 * (*x + *y)).collect();
+            let mut mem = HyperMemory::new(v, format!("adv_a3_impostor p{} {}", k, j));
+            mem.amplitude = 0.85;
+            mem.phase = PI * 0.5;
+            mem.frequency = 0.10;
+            mem.layer_depth = 1;
+            mem.decay_rate = 1e-4;
+            mem.hallucinated = false; // the whole point of A3 — looks like a
+                                       // hallucination but isn't flagged
+            out.push(mem);
+        }
+    }
+
+    // ---- A4: near-duplicate clones (10) ----
+    // Deterministically pick 10 real memories (skip noise) and add 0.5%
+    // Gaussian-ish perturbation via pcg_f32.
+    let real_idxs: Vec<usize> = corpus
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, cat))| *cat != "l4_noise")
+        .map(|(i, _)| i)
+        .take(10)
+        .collect();
+    for (k, idx) in real_idxs.iter().enumerate() {
+        let (v, _content, _cat) = &corpus[*idx];
+        let perturbed: Vec<f32> = v
+            .iter()
+            .enumerate()
+            .map(|(d, x)| {
+                let g = pcg_f32(seed, 5000, (k + 1) as u32, d as u32);
+                x + 0.005 * g
+            })
+            .collect();
+        let mut mem = HyperMemory::new(perturbed, format!("adv_a4_clone {}", k));
+        mem.amplitude = 1.0;
+        mem.phase = 0.0;
+        mem.frequency = 0.10;
+        mem.layer_depth = 1;
+        mem.decay_rate = 1e-4;
+        out.push(mem);
+    }
+
+    debug_assert_eq!(out.len(), 40, "adversarial set must be exactly 40 memories");
+    out
+}
+
 /// Evaluate noise removal (only actual noise, not decoys)
 fn eval_noise_removal(engine: &ResonanceEngine) -> f32 {
     let all = engine.store.all_memories().unwrap_or_default();
@@ -1058,29 +1204,44 @@ fn build_fresh_l4_engine(params: &Params, dim: usize) -> ResonanceEngine {
     engine
 }
 
-/// One L4 session. Honors --load/--save/--chain-sessions CLI flags.
-///
-/// Flow per session:
-///   1. Either rehydrate engine from `--load` (with 1-day time advance)
-///      or build a fresh L4 corpus engine.
-///   2. Run the dream cycles via ConsolidationEngine.
-///   3. Score with existing L3 evaluators (placeholder until L4.4).
-///   4. If `--save` is set, serialize the post-dream state.
-///
-/// When `--chain-sessions N` is passed, the whole flow is iterated N times
-/// inside a single cargo run: the save path written by session K is loaded
-/// by session K+1. Session 1 starts from a fresh corpus.
-fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
-    let dim = 128;
+/// Per-pass metrics bundle. Used so the clean pass and adversarial pass can
+/// share evaluation code. Not derive(Clone/Debug) because `post_engine`
+/// carries the live engine (no Clone) so the caller can save it.
+struct L4PassMetrics {
+    fitness: f32,
+    noise_removal: f32,
+    signal_preservation: f32,
+    bridge_links: f32,
+    phase_coherence: f32,
+    cluster_separation: f32,
+    amp_diversity: f32,
+    xi_diversity: f32,
+    consciousness: f32,
+    hall_quality: f32,
+    dream_efficiency: f32,
+    speed: f32,
+    retention_score: f32,
+    retention_plasticity: f32,
+    chain_fidelity: f32,
+    phi_history: Vec<f32>,
+    consolidation_ms: u64,
+    strengthened: usize,
+    pruned: usize,
+    links: usize,
+    hallucinations: usize,
+    post_engine: ResonanceEngine,
+}
 
-    // Compute (and stash) the canonical corpus hash. This is the value that
-    // gets pinned into the state header on first save.
-    let fresh_corpus_hash = {
-        let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
-        corpus_l4_hash(&corpus)
-    };
-
-    // Either load prior state or build fresh.
+/// Run one L4 pass: snapshot → chain → metrics → fitness. `inject_adv`
+/// controls whether the adversarial set is folded in (cycle L4.6).
+fn run_l4_pass(
+    params: &Params,
+    cli: &L4Cli,
+    dim: usize,
+    inject_adv: bool,
+) -> (L4PassMetrics, Option<StateHeader>) {
+    // Either load prior state or build fresh. Rebuilt from scratch on every
+    // pass per Nick's locked decision in §10 — no caching between passes.
     let (mut engine, prev_header): (ResonanceEngine, Option<StateHeader>) = match &cli.load_path {
         Some(p) if p.exists() => {
             match load_state(p) {
@@ -1097,6 +1258,23 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         _ => (build_fresh_l4_engine(params, dim), None),
     };
 
+    if inject_adv {
+        // Build the adversarial set using a fixed seed INDEPENDENT of the
+        // encoder seed (Nick's locked decision). The L3 reference corpus is
+        // re-used as the "real memory" source for A4 (near-duplicate clones).
+        let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
+        let adversaries = build_adversarial_set(&corpus, ADVERSARIAL_SEED);
+        for (i, m) in adversaries.into_iter().enumerate() {
+            // Adversaries use their own UUID namespace (high bit set) so
+            // they cannot collide with the deterministic corpus ids.
+            let mut mem = m;
+            mem.id = uuid::Uuid::from_u128(
+                0xDEAD_BEEF_0000_0000_0000_0000_0000_0000u128 + i as u128,
+            );
+            let _ = engine.store.insert(mem);
+        }
+    }
+
     // Snapshot engine state BEFORE the dream chain. Used by
     // eval_retention_plasticity so we can measure amplitude drift on the
     // golden set specifically attributable to dreaming (and any time-advance
@@ -1110,11 +1288,6 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     let start = Instant::now();
     let (chain_seeds, phi_history, chain_totals) = run_dream_chain(params, &mut engine);
     let consolidation_ms = start.elapsed().as_millis() as u64;
-
-    let total_strengthened = chain_totals.strengthened;
-    let total_pruned = chain_totals.pruned;
-    let total_links = chain_totals.links;
-    let total_hallucinations = chain_totals.hallucinations;
 
     let chain_fidelity = eval_chain_fidelity(&chain_seeds, &phi_history);
 
@@ -1138,8 +1311,6 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         plasticity_golden,
     );
 
-    // Reuse L3 evaluators. Some will read 0 on L4 corpus strings — that's OK
-    // for this stub; real L4 metrics land in L4.4 - L4.7.
     let noise_removal = eval_l4_noise_removal(&engine);
     let signal_preservation = eval_l4_signal_preservation(&engine);
     let bridge_links = eval_bridge_links(&engine);
@@ -1152,7 +1323,7 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     let consciousness = eval_consciousness(&engine, params.consciousness_phi_target);
     let hall_quality = eval_hallucination_quality(&engine);
     let dream_efficiency = eval_dream_efficiency(
-        total_strengthened, total_pruned, total_links, params.chain_depth);
+        chain_totals.strengthened, chain_totals.pruned, chain_totals.links, params.chain_depth);
 
     // Placeholder fitness: L3 formula verbatim (L4 weights land in L4.7).
     let fitness = 0.10 * (1.0 - noise_removal)
@@ -1168,13 +1339,79 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         + 0.10 * (1.0 - hall_quality)
         + 0.10 * (1.0 - dream_efficiency);
 
-    // Save state if --save was requested.
+    let metrics = L4PassMetrics {
+        fitness,
+        noise_removal,
+        signal_preservation,
+        bridge_links,
+        phase_coherence,
+        cluster_separation,
+        amp_diversity,
+        xi_diversity,
+        consciousness,
+        hall_quality,
+        dream_efficiency,
+        speed,
+        retention_score,
+        retention_plasticity,
+        chain_fidelity,
+        phi_history,
+        consolidation_ms,
+        strengthened: chain_totals.strengthened,
+        pruned: chain_totals.pruned,
+        links: chain_totals.links,
+        hallucinations: chain_totals.hallucinations,
+        post_engine: engine,
+    };
+    (metrics, prev_header)
+}
+
+/// One L4 session. Honors --load/--save/--chain-sessions CLI flags.
+///
+/// Flow per session (cycle L4.6):
+///   1. Clean pass:      fresh corpus → chain → all metrics → fitness_clean
+///   2. Adversarial pass: fresh corpus + 40 adversarial memories → chain →
+///                        all metrics → fitness_adv
+///   3. adversarial_resistance = 1 - |f_clean - f_adv| / max(f_clean, 1e-3)
+///   4. Reported fitness = fitness_clean (adversarial pass is only used to
+///      compute the resistance metric; design §2 M4)
+///   5. If `--save` is set, serialize the CLEAN post-dream state (never
+///      the adversarial one — state must never include adversaries per §6.2).
+fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
+    let dim = 128;
+
+    // Compute (and stash) the canonical corpus hash. This is the value that
+    // gets pinned into the state header on first save.
+    let fresh_corpus_hash = {
+        let corpus = build_corpus_l4(dim, 1, params.encoder_seed);
+        corpus_l4_hash(&corpus)
+    };
+
+    // ---- Clean pass (scored) ----
+    let (clean, prev_header) = run_l4_pass(params, cli, dim, false);
+
+    // ---- Adversarial pass (used ONLY to compute resistance) ----
+    // Build fully from scratch — no state caching from the clean pass.
+    let (adv, _prev_header_adv) = run_l4_pass(params, cli, dim, true);
+
+    // adversarial_resistance: 1 - |Δfitness| / max(f_clean, 1e-3)
+    let resistance = {
+        let denom = clean.fitness.max(1e-3);
+        (1.0 - (clean.fitness - adv.fitness).abs() / denom).clamp(0.0, 1.0)
+    };
+
+    // Reported fitness = clean pass fitness (adversarial pass does not
+    // directly poison the scored metric; it only contributes via resistance).
+    let fitness = clean.fitness;
+
+    // Save state if --save was requested. ALWAYS save the clean engine;
+    // the adversarial pass's engine must never be serialized (§6.2).
     let save_session_count = if let Some(save_path) = &cli.save_path {
         let next_session = prev_header.as_ref().map(|h| h.session_count + 1).unwrap_or(1);
         let prev_golden = prev_header.as_ref().map(|h| h.golden_ids.as_slice());
         let prev_corpus_hash = prev_header.as_ref().map(|h| h.corpus_hash.as_str());
         match save_state(
-            &engine,
+            &clean.post_engine,
             save_path,
             next_session,
             prev_golden,
@@ -1200,28 +1437,32 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         println!("saved_session:        {}", n);
     }
     println!("fitness:              {:.6}", fitness);
-    println!("retention_score:      {:.4}", retention_score);
-    println!("retention_plasticity: {:.4}", retention_plasticity);
-    println!("chain_fidelity:       {:.4}", chain_fidelity);
+    println!("fitness_clean:        {:.6}", clean.fitness);
+    println!("fitness_adv:          {:.6}", adv.fitness);
+    println!("adv_resistance:       {:.4}", resistance);
+    println!("retention_score:      {:.4}", clean.retention_score);
+    println!("retention_plasticity: {:.4}", clean.retention_plasticity);
+    println!("chain_fidelity:       {:.4}", clean.chain_fidelity);
     println!("chain_depth:          {}", params.chain_depth);
-    println!("phi_history:          {:?}", phi_history);
-    println!("noise_removal:        {:.4}", noise_removal);
-    println!("signal_preservation:  {:.4}", signal_preservation);
-    println!("bridge_links:         {:.4}", bridge_links);
-    println!("phase_coherence:      {:.4}", phase_coherence);
-    println!("cluster_separation:   {:.4}", cluster_separation);
-    println!("amp_diversity:        {:.4}", amp_diversity);
-    println!("xi_diversity:         {:.4}", xi_diversity);
-    println!("consciousness:        {:.4}", consciousness);
-    println!("hall_quality:         {:.4}", hall_quality);
-    println!("dream_efficiency:     {:.4}", dream_efficiency);
-    println!("speed:                {:.4}", speed);
-    println!("consolidation_ms:     {}", consolidation_ms);
+    println!("phi_history_clean:    {:?}", clean.phi_history);
+    println!("phi_history_adv:      {:?}", adv.phi_history);
+    println!("noise_removal:        {:.4}", clean.noise_removal);
+    println!("signal_preservation:  {:.4}", clean.signal_preservation);
+    println!("bridge_links:         {:.4}", clean.bridge_links);
+    println!("phase_coherence:      {:.4}", clean.phase_coherence);
+    println!("cluster_separation:   {:.4}", clean.cluster_separation);
+    println!("amp_diversity:        {:.4}", clean.amp_diversity);
+    println!("xi_diversity:         {:.4}", clean.xi_diversity);
+    println!("consciousness:        {:.4}", clean.consciousness);
+    println!("hall_quality:         {:.4}", clean.hall_quality);
+    println!("dream_efficiency:     {:.4}", clean.dream_efficiency);
+    println!("speed:                {:.4}", clean.speed);
+    println!("consolidation_ms:     {}", clean.consolidation_ms);
     println!("dream_cycles:         {}", params.dream_cycles);
-    println!("links_created:        {}", total_links);
-    println!("memories_strengthened: {}", total_strengthened);
-    println!("memories_pruned:      {}", total_pruned);
-    println!("hallucinations:       {}", total_hallucinations);
+    println!("links_created:        {}", clean.links);
+    println!("memories_strengthened: {}", clean.strengthened);
+    println!("memories_pruned:      {}", clean.pruned);
+    println!("hallucinations:       {}", clean.hallucinations);
     println!("---");
 }
 
