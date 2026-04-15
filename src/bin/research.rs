@@ -1919,9 +1919,19 @@ fn eval_encoding_entropy(corpus: &[HyperMemory], bins: usize) -> f32 {
         }
     }
 
-    // Normalize by the theoretical maximum on the joint distribution of
-    // bin-tuples across `dim` dimensions: log2(bins^dim).
-    let max_h = (bins as f32).log2() * (dim as f32);
+    // L4.S1b: normalize by the *achievable* maximum entropy given the
+    // sample count, not by the full joint bin-tuple space. The raw Shannon
+    // entropy of `n_samples` items can never exceed `log2(n_samples)` (each
+    // sample in its own unique bin-tuple), so dividing by `log2(bins^dim)`
+    // under-counts the metric whenever `bins^dim > n_samples` — which is
+    // always true on this corpus (128-dim xi × 8 bins ≫ ~300 samples).
+    // Use `min(log2(bins^dim), log2(n_samples))` so the score reflects
+    // structural diversity rather than the sparsity of a gigantic empty
+    // hypergrid.
+    let n_samples = total; // counts are over scored xi signatures
+    let joint_log = (bins as f32).log2() * (dim as f32);
+    let sample_log = n_samples.log2();
+    let max_h = joint_log.min(sample_log);
     if max_h <= 0.0 {
         return 0.0;
     }
