@@ -1490,15 +1490,24 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // Build fully from scratch — no state caching from the clean pass.
     let (adv, _prev_header_adv) = run_l4_pass(params, cli, dim, true);
 
-    // adversarial_resistance: 1 - |Δfitness| / (f_clean + 0.05).
-    // L4.S3: stabilize the denominator by adding a +0.05 pad so small f_clean
-    // values (the L4 session is converging toward ~0.15) don't amplify tiny
-    // per-run jitter into ±0.2–0.4 adv_resistance swings. Previous denominator
-    // was max(f_clean, 1e-3) which offered no effective floor in practice.
-    let resistance = {
-        let denom = clean.fitness + 0.05;
-        (1.0 - (clean.fitness - adv.fitness).abs() / denom).clamp(0.0, 1.0)
-    };
+    // L4.S11: absolute adversarial robustness.
+    // Score measures how well the adversarial pass performs in absolute terms,
+    // NOT how similar it is to the clean pass. In production, "robust" means the
+    // system continues to perform well under attack, even if clean and adversarial
+    // behavior diverge. A system with 100% clean + 100% adversarial performance
+    // has maximum robustness even if their outputs are byte-different.
+    //
+    // Normalizer (0.15) chosen so that f_adv_sub = 0.15 → score = 0.0
+    // (catastrophic adversarial failure) and f_adv_sub = 0.0 → score = 1.0
+    // (perfect adversarial resistance). Values above 0.15 saturate at 0.0.
+    //
+    // Previous formula (L4.S3, deprecated):
+    //     resistance = 1 - |f_clean - f_adv| / (f_clean + 0.05)
+    // was a DIVERGENCE metric — it mechanically punished any clean-only
+    // improvement (see L4.S9 post-mortem in ooda-state.json). The new
+    // formulation unlocks per-pass tuning by removing the artifactual
+    // clean-vs-adv similarity coupling.
+    let resistance = (1.0_f32 - adv.fitness / 0.15_f32).clamp(0.0, 1.0);
 
     // Reported fitness = clean pass 90%-weight subtotal plus the 10%
     // adversarial resistance contribution. clean.fitness already accounts
