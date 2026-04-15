@@ -1107,6 +1107,12 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         protect_established: true,
     };
 
+    // Snapshot engine state BEFORE the dream cycle. Used by
+    // eval_retention_plasticity so we can measure amplitude drift on the
+    // golden set specifically attributable to dreaming (and any time-advance
+    // that already happened during rehydrate).
+    let engine_before_dream = snapshot_engine_for_plasticity(&engine);
+
     let start = Instant::now();
     let mut total_strengthened = 0usize;
     let mut total_pruned = 0usize;
@@ -1121,6 +1127,26 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         total_hallucinations += report.hallucinations_created;
     }
     let consolidation_ms = start.elapsed().as_millis() as u64;
+
+    // Retention metrics (L4.4). Single-session runs return 1.0 by design:
+    // the `session_count < 2` fallback in eval_retention_score fires, and
+    // plasticity with an empty golden set likewise returns 1.0. This keeps
+    // fitness uncontaminated on smoke-test invocations.
+    let retention_header_for_score = prev_header.clone().unwrap_or_else(|| StateHeader {
+        session_count: 1,
+        golden_ids: Vec::new(),
+        corpus_hash: String::new(),
+    });
+    let retention_score = eval_retention_score(&engine, &retention_header_for_score);
+    let plasticity_golden = prev_header
+        .as_ref()
+        .map(|h| h.golden_ids.as_slice())
+        .unwrap_or(&[]);
+    let retention_plasticity = eval_retention_plasticity(
+        &engine_before_dream,
+        &engine,
+        plasticity_golden,
+    );
 
     // Reuse L3 evaluators. Some will read 0 on L4 corpus strings — that's OK
     // for this stub; real L4 metrics land in L4.4 - L4.7.
@@ -1184,6 +1210,8 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         println!("saved_session:        {}", n);
     }
     println!("fitness:              {:.6}", fitness);
+    println!("retention_score:      {:.4}", retention_score);
+    println!("retention_plasticity: {:.4}", retention_plasticity);
     println!("noise_removal:        {:.4}", noise_removal);
     println!("signal_preservation:  {:.4}", signal_preservation);
     println!("bridge_links:         {:.4}", bridge_links);
@@ -1202,6 +1230,91 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     println!("memories_pruned:      {}", total_pruned);
     println!("hallucinations:       {}", total_hallucinations);
     println!("---");
+}
+
+// ============================================================================
+// LEVEL 4 RETENTION METRICS (cycle L4.4)
+// ============================================================================
+//
+// retention_score and retention_plasticity are a guardrail pair:
+//   - retention_score rewards keeping "golden" memories alive and vivid across
+//     save→load→dream cycles.
+//   - retention_plasticity rewards the surviving memories actually CHANGING
+//     during the post-load dream cycle. This exists specifically to block the
+//     decay_rate=0 / prune_threshold=0 cheese where the trivial way to win
+//     retention is to freeze the whole system.
+//
+// Both metrics are only meaningful once we have a loaded prior session.
+// First-session runs return 1.0 for both (neutral — no baseline to compare).
+
+/// Fraction of golden memories still present AND with amplitude >= 0.5.
+/// Returns 1.0 when `session_count < 2` — there is no prior state to retain.
+fn eval_retention_score(engine: &ResonanceEngine, header: &StateHeader) -> f32 {
+    if header.session_count < 2 {
+        return 1.0;
+    }
+    if header.golden_ids.is_empty() {
+        return 1.0;
+    }
+    let all = engine.store.all_memories().unwrap_or_default();
+    let mut survived = 0usize;
+    for gid in &header.golden_ids {
+        if let Some(m) = all.iter().find(|m| &m.id == gid) {
+            if m.amplitude >= 0.5 {
+                survived += 1;
+            }
+        }
+    }
+    (survived as f32 / header.golden_ids.len() as f32).clamp(0.0, 1.0)
+}
+
+/// Measures post-load plasticity on the golden set. Compares amplitudes
+/// before and after the dream cycle. Higher drift = more plastic.
+/// Returns `(mean_drift * 5.0).min(1.0)`; design-doc rationale: this is a
+/// guardrail against decay=0 / prune=0 cheese (see §2 M2b).
+fn eval_retention_plasticity(
+    engine_before: &ResonanceEngine,
+    engine_after: &ResonanceEngine,
+    golden_ids: &[uuid::Uuid],
+) -> f32 {
+    if golden_ids.is_empty() {
+        return 1.0;
+    }
+    let before_all = engine_before.store.all_memories().unwrap_or_default();
+    let after_all = engine_after.store.all_memories().unwrap_or_default();
+    let mut drift_sum = 0.0f32;
+    let mut count = 0usize;
+    for gid in golden_ids {
+        let a = before_all.iter().find(|m| &m.id == gid);
+        let b = after_all.iter().find(|m| &m.id == gid);
+        if let (Some(ma), Some(mb)) = (a, b) {
+            drift_sum += (mb.amplitude - ma.amplitude).abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return 1.0;
+    }
+    let mean_drift = drift_sum / count as f32;
+    (mean_drift * 5.0).min(1.0)
+}
+
+/// Snapshot just the memories needed to compute retention_plasticity.
+/// The chain pass may mutate `engine` in place; this copy gives us a stable
+/// "before" baseline without serializing through bincode.
+fn snapshot_engine_for_plasticity(engine: &ResonanceEngine) -> ResonanceEngine {
+    let mems = engine.store.all_memories().unwrap_or_default();
+    let store = Box::new(TestMedium::new());
+    // Encoder/codebook are only needed for inserts via pipeline; the harness
+    // never re-encodes on a snapshot, so zeros and dim=1 are fine.
+    let encoder = Box::new(SimpleHashEncoder::new(1, 0));
+    let codebook = Codebook::new(1, 1, 0);
+    let pipeline = EncodingPipeline::new(encoder, codebook);
+    let mut clone = ResonanceEngine::new(store, pipeline);
+    for m in &mems {
+        let _ = clone.store.insert((*m).clone());
+    }
+    clone
 }
 
 /// L4 variant: filters by the "l4_noise" tag instead of L3's "noise" prefix.
