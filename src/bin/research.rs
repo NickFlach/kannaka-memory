@@ -1434,6 +1434,12 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     //     mild chain_fidelity collateral. L3 path stays at PI/3.0.
     let mut l4_params = params.clone();
     l4_params.phase_alignment_threshold = PI / 2.5;
+    // L4.14: retune consciousness_phi_target to L4's measured phi.
+    // On L3, post-chain phi ~0.326 = target. On L4 after L4.13 the measured
+    // phi is 0.25156 (byte-identical across runs, read from phi_history_clean).
+    // Gap = 0.0744. Nudging 80% toward the measured value leaves 20% slack
+    // against future jitter: 0.326 - 0.8 * 0.07444 = 0.26645.
+    l4_params.consciousness_phi_target = 0.26645;
     let params = &l4_params;
 
     // Compute (and stash) the canonical corpus hash. This is the value that
