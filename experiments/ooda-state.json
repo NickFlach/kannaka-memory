@@ -1,8 +1,8 @@
 {
-  "cycle": 29,
+  "cycle": 30,
   "phase": "act",
   "level": 4,
-  "last_action": "L4.9: H-L4-002 (chain_depth 3->2) KEPT. 10-run avg fitness 0.224308 -> 0.216186 (delta -0.00812, 6.7x baseline std). Speed 0.1689 -> 0.4188 (+0.250, target hit). Chain_fidelity 0.9399 -> 0.9022 (small drop, within <0.10 tolerance). Consciousness 0.7513 -> 0.8326 bonus from faster chain leaving more room for phi ramp. Collateral: phase_coherence 0.8723->0.8278, cluster_sep 0.9763->0.9728, corpus_xi_div 0.6712->0.6207, hall_q 0.9791->0.9641 all small negative drifts; adv_resist 0.7989->0.6617 (denominator-shift artifact since clean-pass subtotal is lower). L3 spot-check: 0.006864 (unchanged).",
+  "last_action": "L4.10: H-L4-001 (encoder_seed 0xCAFE_BABE->0xDEAD_BEEF) REVERTED. 10-run avg fitness 0.216186 -> 0.225567 (delta +0.00938, regression). Target metric encoding_entropy did NOT move (0.0214 -> 0.0214) — the Shannon-over-16-bins quantization is saturated/collapsed independent of encoder seed. Across-corpus collateral: chain_fid 0.9022->0.7104 (big drop), consciousness 0.8326->0.6492 (big drop), corpus_xi_div 0.6207->0.5678, cluster_sep 0.9728->1.0000 (up), adv_resist 0.6617->0.9697 (noisy denominator). Git checkout -- used to revert. chain_depth=2 from L4.9 preserved. L3 spot-check: 0.006874 (unchanged).",
   "last_harvest": "2026-04-14T00:00:00Z",
   "l3": {
     "status": "SOLVED_ARCHIVED",
@@ -118,8 +118,7 @@
         "target_metric": "encoding_entropy",
         "expected_delta": "+0.3 to +0.6 absolute (score 0.02 -> 0.3-0.6) -> fitness -0.015 to -0.029",
         "risk": "May perturb corpus_xi_diversity and phase_coherence since encoder changes xi-signature distribution. RUN as paired probe with full 10-run confirm.",
-        "status": "proposed"
-      },
+        "status": "REFUTED (L4.10, reverted). Tried 0xDEAD_BEEF. Target metric did NOT move (0.0214 -> 0.0214) and fitness regressed +0.00938. Encoding_entropy is NOT encoder-seed-reachable on this corpus — the 16-bin quantization collapses the same way regardless of encoder randomization. Real lever is dim enlargement, finer bin count, or corpus re-shaping. See notes."
       {
         "id": "H-L4-002",
         "title": "speed regainable by lowering chain_depth 3->2 or chain_top_n 10->5",
