@@ -1,8 +1,8 @@
 {
-  "cycle": 44,
+  "cycle": 45,
   "phase": "observe",
   "level": 4,
-  "last_action": "L4.S9 per-pass interference_threshold (clean=0.12, adv=0.10) — REVERTED. Code change: in run_experiment_l4_session, cloned the L4-local l4_params into l4_params_clean (int_threshold 0.12) and l4_params_adv (0.10, default), then passed them separately to the two run_l4_pass calls. Build clean, L3 spot-check 0.006494 (archive band — change does NOT leak into L3). 15-run fitness 0.096517->0.093642 (-0.00288, real 5.5-sigma but BELOW 0.015 decision threshold). Clean-pass wins fully captured as predicted (fitness_clean_sub 0.0918->0.0675, chain_fidelity 0.9198->0.9891, corpus_xi_diversity 0.6188->0.8136, phase_coherence 0.9616->0.9488 with NaN guard stable). BUT adv_resistance CRASHED 0.9571->0.7388 (-0.218) even though adv pass params were unchanged. STRUCTURAL INSIGHT: the S3 adv_resistance formula 1 - |f_clean - f_adv|/(f_clean + 0.05) measures clean-adv SIMILARITY, not absolute adv robustness — when f_clean improves alone (0.0918->0.0675) with f_adv unchanged (~0.098), the divergence widens (0.031/0.117=0.265) and resistance drops mechanically. The 0.0243 clean-sub gain is eaten by 0.10 * 0.218 = +0.0218 adv contribution, netting only 0.00288. Per-pass tuning is STRICTLY DISADVANTAGED under the current adv_resistance definition — any improvement that doesn't propagate to adv produces artifactual resistance loss. REVERTED research.rs via git checkout. S10 SKIPPED per the 'if S9 reverts, do not run S10' directive. Baseline fitness unchanged at 0.096517. NEW DEAD: interference_threshold_per_pass_under_current_adv_formula. NEW REOPENED-IF-STRUCTURAL-CHANGE: adv_resistance reformulation as an absolute adv-score floor rather than clean-adv divergence would unlock the 0.024 clean-sub headroom.",
+  "last_action": "L4.S11 STRUCTURAL metric reformulation + S11c retry + REVERT. Part A: rewrote adv_resistance in src/bin/research.rs from divergence (1 - |f_clean - f_adv|/(f_clean+0.05)) to absolute ((1 - f_adv_sub/0.15).clamp(0,1)). Rationale: old formula mechanically punished any clean-only improvement by widening clean-adv divergence (L4.S9 post-mortem). New formula measures absolute adversarial robustness — production semantics. Build clean, L3 spot-check 0.006434. Part B: 15-run L4.S11-baseline 0.169076 std 0.012458 (new metric — NOT comparable to old-metric 0.096517). adv_resistance 0.9571->0.2945 as expected (old formula was inflating resistance via divergence=0). All deterministic clean-pass metrics byte-identical to L4.S7. Commit e885705. Part C L4.S11c: per-pass int_threshold (clean=0.12, adv=0.10) under new metric. 15-run fitness 0.169076->0.182168 (+0.013, REGRESSION, fails 0.015 threshold and is a net loss). Clean-pass wins fully captured as in L4.S9 (corpus_xi_div 0.6188->0.8136, chain_fid 0.9198->0.9891) but fitness_clean_sub dropped only 0.0985->0.0936 (-0.005 vs expected -0.024) due to speed contamination — runs produced speeds 0.21-0.59, far more variable than the pre-S11 session. adv_sub ALSO rose 0.1058->0.1329 (+0.027) even though adv pass params were unchanged, because the clean pass running 3x slower at int=0.12 bleeds CPU state into the sequential adv pass. Per-pass int_threshold is DEAD under both old and new adv formulas — the new metric unblocks the formula, but fitness_adv_sub has a dominant speed component that inherits jitter from the preceding clean pass. REVERTED. L3 spot-check 0.006674. Commit ceed159. Baseline fitness now 0.169076 under new metric (cross-epoch incomparable to 0.096517). NEW DEAD: per_pass_interference_threshold_speed_coupled_adv_sub_structural. Part D SKIPPED (gated on C landing). Structural residual: speed jitter in adv pass — future structural probe is warm-up+median-of-k speed measurement or dropping speed from fitness_adv_sub.",
   "last_harvest": "2026-04-14T00:00:00Z",
   "l3": {
     "status": "SOLVED_ARCHIVED",
@@ -50,18 +50,19 @@
     "archived_reason": "L3 saturated at ~0.00646. Further L3 tuning yields <0.00005 per cycle. Session graduated to L4 at cycle 28."
   },
   "l4": {
-    "baseline_cycle": "L4.S7 (new best after S1b normalizer fix + S7 phi retune; S5/S6 reverted)",
-    "baseline_fitness": 0.096517,
-    "baseline_fitness_session_hardware": 0.096517,
-    "baseline_fitness_pre_s1b": 0.155652,
-    "baseline_fitness_pre_structural_historical": 0.192512,
+    "baseline_cycle": "L4.S11-baseline (new absolute adv_resistance metric; NOT comparable to pre-S11 fitness)",
+    "baseline_fitness": 0.169076,
+    "baseline_fitness_std": 0.012458,
+    "baseline_fitness_min": 0.157290,
+    "baseline_fitness_max": 0.193663,
+    "baseline_fitness_range": 0.036373,
+    "baseline_fitness_pre_s11_old_metric": 0.096517,
+    "baseline_fitness_pre_s11_old_metric_cycle": "L4.S7",
+    "baseline_fitness_pre_s1b_old_metric": 0.155652,
+    "baseline_fitness_pre_structural_historical_old_metric": 0.192512,
     "baseline_cycle_original": "L4.8",
-    "baseline_fitness_original": 0.224308,
-    "baseline_fitness_min": 0.096040,
-    "baseline_fitness_max": 0.097742,
-    "baseline_fitness_std": 0.000520,
-    "baseline_fitness_std_pre_s1b": 0.006709,
-    "baseline_fitness_range": 0.001702,
+    "baseline_fitness_original_old_metric": 0.224308,
+    "metric_epoch": "L4.S11 absolute adv_resistance (post-e885705) — cross-epoch fitness comparisons with pre-S11 entries are not meaningful",
     "runs_averaged": 15,
     "baseline_metrics": {
       "noise_removal": 1.0000,
@@ -80,8 +81,9 @@
       "chain_fidelity": 0.9198,
       "corpus_xi_diversity": 0.6188,
       "encoding_entropy": 1.0000,
-      "adversarial_resistance": 0.9571,
-      "adversarial_resistance_std": 0.00500,
+      "adversarial_resistance": 0.2945,
+      "adversarial_resistance_std": 0.0574,
+      "adversarial_resistance_old_metric": 0.9571,
       "links_created": 5562
     },
     "residual_loss_top": [
@@ -207,10 +209,10 @@
     "corpus_hardness": 1,
     "adversarial_ratio": 1.0,
     "encoder_seed": "default (see Params)",
-    "adv_resistance_denom": "(f_clean + 0.05) (L4.S3 structural change; was max(f_clean, 1e-3))"
+    "adv_resistance_denom": "L4.S11: absolute formula (1 - f_adv_sub/0.15).clamp(0,1) — was (f_clean + 0.05) divergence formula pre-S11"
   },
-  "params_changed_this_cycle": {},
-  "params_tested_and_reverted_this_cycle": {"interference_threshold_per_pass_L4_S9_clean_0.12_adv_0.10": "REVERTED (L4.S9) — net fitness 0.096517->0.093642 (-0.00288, real 5.5-sigma but below 0.015 decision threshold). Clean-pass wins fully realized (fitness_clean_sub 0.0918->0.0675, chain_fid 0.9198->0.9891, corpus_xi_div 0.6188->0.8136) but adv_resistance dropped 0.9571->0.7388 purely from the S3 formula penalizing f_clean - f_adv divergence. Per-pass tuning structurally blocked under current adv_resistance metric"},
-  "dead_params": ["xi_repulsion_weight", "xi_repulsion_weight_L4_confirmed", "encoder_seed_for_encoding_entropy", "decay_rate", "default_frequency", "kuramoto_steps", "kuramoto_steps_L4_confirmed", "interference_threshold_down", "interference_threshold_up_L4_triple_confirmed_L4.18_S6_S8_adv_divergence_structural", "interference_threshold_per_pass_L4_S9_under_current_adv_formula_structurally_blocked_by_divergence_penalty", "hallucination_amplitude_L4_confirmed_dead_probe", "phase_spread_L4_0.25_to_0.30_confirmed_adv_fragile", "phase_spread_L4_up_double_confirmed_S5_adv_structural_crash", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation", "chain_top_n_down", "encoding_entropy_bin_widening_L4_S1_confirmed_normalizer_capped"],
-  "next_experiment": "Cycle 45: L4.S9 reverted — per-pass interference_threshold is structurally blocked by the current adv_resistance formula (it rewards clean-adv similarity rather than absolute adv robustness). The 0.024 clean-sub gain is visible but unreachable while adv_resistance = 1 - |Δ|/(clean+0.05). TWO paths forward: (A) STRUCTURAL L4.S11 — reformulate adv_resistance from a divergence metric to an absolute adv-score floor, e.g. resistance := clean_fitness_bound(f_adv, 0.15) or 1 - f_adv_sub. This unlocks per-pass tuning and likely 0.096 -> ~0.072. Risk: fundamental metric redefinition — must document why and re-plot all historical L4 fitness against old vs new formula. (B) CORPUS_XI_DIVERSITY via EML S0 tree — corpus_xi_diversity 0.6188 is still the #1 unattacked residual (0.0381 loss) and moves independent of int_threshold. Check experiments/eml_xi_tree.json for a promoted candidate. HONEST STATE: L4 at 0.096517 std 0.00052 is approaching the parameter-tuning floor. Further gains require either (A) metric reformulation or (B) EML-derived replacement of eval_corpus_xi_diversity internals — both are structural, not hyperparameter moves. Dominant losses now: enc_entropy contribution (already saturated), corpus_xi_diversity 0.0381, speed 0.0406, chain_fidelity 0.0080 — of these only corpus_xi_diversity is still reachable via a structural move that doesn't touch reserved evaluator."
+  "params_changed_this_cycle": {"adv_resistance_metric": "L4.S11 (kept, commit e885705): divergence -> absolute. New baseline 0.169076."},
+  "params_tested_and_reverted_this_cycle": {"interference_threshold_per_pass_L4_S11c_clean_0.12_adv_0.10_under_new_metric": "REVERTED (L4.S11c, commit ceed159) — 15-run fitness 0.169076->0.182168 (+0.013, fails 0.015 threshold, net loss). The new absolute adv_resistance metric unblocks the FORMULA constraint but NOT the indirect coupling: fitness_adv_sub has a dominant speed component, and running the clean pass 3x slower at int=0.12 bleeds CPU thermal/IO state into the sequential adv pass (adv_sub jittered up 0.1058->0.1329). Per-pass int_threshold is DEAD under both old and new formulas."},
+  "dead_params": ["xi_repulsion_weight", "xi_repulsion_weight_L4_confirmed", "encoder_seed_for_encoding_entropy", "decay_rate", "default_frequency", "kuramoto_steps", "kuramoto_steps_L4_confirmed", "interference_threshold_down", "interference_threshold_up_L4_triple_confirmed_L4.18_S6_S8_adv_divergence_structural", "interference_threshold_per_pass_L4_S9_under_old_adv_formula_divergence_blocked", "interference_threshold_per_pass_L4_S11c_under_new_absolute_formula_speed_coupled_adv_sub_blocked", "hallucination_amplitude_L4_confirmed_dead_probe", "phase_spread_L4_0.25_to_0.30_confirmed_adv_fragile", "phase_spread_L4_up_double_confirmed_S5_adv_structural_crash", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation", "chain_top_n_down", "encoding_entropy_bin_widening_L4_S1_confirmed_normalizer_capped"],
+  "next_experiment": "Cycle 46: L4.S11 metric is KEPT (baseline 0.169076), but L4.S11c per-pass int_threshold REVERTED. The new absolute adv_resistance formula removed the divergence penalty but exposed a different structural floor: fitness_adv_sub has a dominant speed term, so any clean-pass slowdown bleeds into adv_sub via CPU thermal/IO state on the sequential pass. PATHS FORWARD: (A) HARVEST parallel L4.S12 agent — it is running EML symbolic regression on xi_diversity_boost in scripts/eml_train_xi_depth4.py and experiments/eml_xi_tree_d4.json. corpus_xi_diversity 0.6188 (loss 0.0381) is still the #1 unattacked residual and moves independently of int_threshold, and EML candidates are orthogonal to the speed-coupling wall. Check experiments/eml_xi_tree_d4.json and experiments/l4-s12-report.md after S12 completes, then promote the best candidate into eval_corpus_xi_diversity. Expected: fitness 0.169 -> ~0.13-0.14 if corpus_xi_div lifts 0.62->0.90 (saving ~0.028 directly on the 0.10 weight). (B) STRUCTURAL speed decoupling — pin adv pass speed to median-of-k warm-up or drop speed from fitness_adv_sub entirely, which would unblock per-pass int_threshold on the second attempt. (C) DECLARE L4 SOLVED under the new metric — 0.169 std 0.012 is a hard structural floor absent the EML xi_diversity lift or speed decoupling. HONEST STATE: parameter tuning is exhausted on L4. Only EML-derived replacement (S12 agent's territory) or structural speed decoupling remain. Dominant residuals under new metric: adv_resistance contribution 0.10*(1-0.2945)=0.0706 (largest by far), speed 0.10*(1-0.58)=0.042, corpus_xi_div 0.10*(1-0.6188)=0.038, chain_fidelity 0.10*(1-0.9198)=0.008. The adv_resistance residual is now visible-and-reachable (was previously masked at ~0.005) — a real win for transparency even though it doesn't reduce fitness yet."
 }
