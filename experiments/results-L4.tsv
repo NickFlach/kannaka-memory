@@ -4,3 +4,4 @@ L4.4-stub	0.290018	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.4822	0.937
 L4.5-stub	0.307207	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.7513	0.9791	0.9877	1.0000	1.0000	0.9399	-	-	-	-	stub	ChainSeed + chain_fidelity + 3-cycle dream chain (chain supersedes dream_cycles)
 L4.6-stub	0.309907	1.0000	1.0000	1.0000	0.0000	0.0000	1.0000	1.0000	0.7513	0.9791	0.9877	1.0000	1.0000	0.9399	-	-	0.9416	-	stub	adv injector + dual-pass eval; fitness_clean=0.3099 fitness_adv=0.3280 resistance=0.9416
 L4.7-stub	0.277989	1.0000	1.0000	-	0.0000	0.0000	1.0000	1.0000	0.7513	0.9791	0.9834	1.0000	1.0000	0.9399	1.0000	0.0214	0.8473	-	stub	L4 weight normalization; full L4 single-run baseline estimate
+L4.7.5-stub	0.228080	1.0000	1.0000	1.0000	0.8723	0.9763	1.0000	1.0000	0.7513	0.9791	0.9834	1.0000	1.0000	0.9399	0.6712	0.0214	0.8482	5578	stub	L4-aware phase_coherence + cluster_separation + corpus_xi renorm; phantom 0.10 floor lifted (fitness 0.278->0.228)

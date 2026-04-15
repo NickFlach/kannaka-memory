@@ -1316,8 +1316,12 @@ fn run_l4_pass(
     let noise_removal = eval_l4_noise_removal(&engine);
     let signal_preservation = eval_l4_signal_preservation(&engine);
     let bridge_links = eval_bridge_links(&engine);
-    let phase_coherence = eval_phase_coherence(&engine);
-    let cluster_separation = eval_cluster_separation(&engine);
+    // Cycle L4.7.5: switch to L4-aware partitioning. The L3 versions filter
+    // by hardcoded "quantum"/"resonance" content substrings that no L4
+    // memory matches, returning 0 and creating a 0.10 phantom fitness floor
+    // that no parameter tuning could reach.
+    let phase_coherence = eval_phase_coherence_l4(&engine);
+    let cluster_separation = eval_cluster_separation_l4(&engine);
     let amp_diversity = eval_amplitude_diversity(&engine);
     let speed = 1.0 - (consolidation_ms as f32 / 10000.0).min(1.0);
 
@@ -1901,16 +1905,23 @@ fn eval_corpus_xi_diversity(corpus: &[HyperMemory]) -> f32 {
         return 0.0;
     }
 
-    // Use a capped sample — full 285x285 is ~40k pairs, which is fine in
-    // release mode but noisy. 30 gives ~435 pairs, matching the L3 shape.
-    let sample_size = active.len().min(30);
+    // Cycle L4.7.5: sample EVENLY across the sorted active set so the
+    // ~300 pairs span all clusters, not just the alphabetically-first one
+    // (the previous min(30) head-slice grabbed only "dense_a *" items, which
+    // share a centroid and produce an inflated avg_boost).
+    let target_n = 25usize; // 25 → 300 pairs, well above the 100 floor.
+    let sample_size = active.len().min(target_n);
+    let stride = (active.len() / sample_size).max(1);
+    let sampled: Vec<&HyperMemory> = (0..sample_size)
+        .map(|k| active[(k * stride).min(active.len() - 1)])
+        .collect();
     let mut total_boost = 0.0f32;
     let mut count = 0usize;
-    for i in 0..sample_size {
-        for j in (i + 1)..sample_size {
-            let xi_a = compute_xi_signature(&active[i].vector);
-            let xi_b = compute_xi_signature(&active[j].vector);
-            let base_sim = cosine_similarity(&active[i].vector, &active[j].vector);
+    for i in 0..sampled.len() {
+        for j in (i + 1)..sampled.len() {
+            let xi_a = compute_xi_signature(&sampled[i].vector);
+            let xi_b = compute_xi_signature(&sampled[j].vector);
+            let base_sim = cosine_similarity(&sampled[i].vector, &sampled[j].vector);
             let boosted = xi_diversity_boost(base_sim, &xi_a, &xi_b);
             total_boost += (boosted - base_sim).abs();
             count += 1;
@@ -1920,7 +1931,102 @@ fn eval_corpus_xi_diversity(corpus: &[HyperMemory]) -> f32 {
         return 0.0;
     }
     let avg_boost = total_boost / count as f32;
-    (avg_boost / 0.08).clamp(0.0, 1.0)
+    // Cycle L4.7.5: renormalize from 0.08 to 0.12 (combined with the
+    // even-stride sampling above). The previous target+head-slice combo made
+    // L4 saturate at 1.0; with stride sampling the raw avg_boost on a fresh
+    // L4 corpus is ~0.080, so dividing by 0.12 lands the baseline around 0.67
+    // — discriminating without being trivially saturated.
+    (avg_boost / 0.12).clamp(0.0, 1.0)
+}
+
+/// L4-aware intra-cluster phase coherence. Partitions surviving memories by
+/// their L4 cluster prefix (dense_a..dense_d, sparse_e, sparse_f), computes
+/// the Kuramoto order parameter R = |1/N · Σ e^{iφ}| within each cluster, and
+/// averages across clusters. Bridges, decoys, noise, and adversaries are not
+/// part of any cluster and are excluded from the partition.
+fn eval_phase_coherence_l4(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let cluster_prefixes = [
+        "dense_a", "dense_b", "dense_c", "dense_d", "sparse_e", "sparse_f",
+    ];
+    let mut total_coherence = 0.0f32;
+    let mut cluster_count = 0;
+    for prefix in &cluster_prefixes {
+        let phases: Vec<f32> = all
+            .iter()
+            .filter(|m| m.content.starts_with(prefix) && m.amplitude > 0.01)
+            .map(|m| m.phase)
+            .collect();
+        if phases.len() < 2 {
+            continue;
+        }
+        let n = phases.len() as f32;
+        let sum_cos: f32 = phases.iter().map(|p| p.cos()).sum();
+        let sum_sin: f32 = phases.iter().map(|p| p.sin()).sum();
+        let r = ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt();
+        total_coherence += r;
+        cluster_count += 1;
+    }
+    if cluster_count == 0 {
+        return 0.0;
+    }
+    total_coherence / cluster_count as f32
+}
+
+/// L4-aware cluster separation. For each pair of L4 clusters, computes the
+/// cosine distance (1 - cos_sim) between their centroids, then returns the
+/// mean cosine distance clamped to [0, 1]. Higher = clusters more separated.
+/// Bridges, decoys, noise, and adversaries are excluded from the partition.
+fn eval_cluster_separation_l4(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    let cluster_prefixes = [
+        "dense_a", "dense_b", "dense_c", "dense_d", "sparse_e", "sparse_f",
+    ];
+
+    // Compute centroid per cluster.
+    let mut centroids: Vec<Vec<f32>> = Vec::new();
+    for prefix in &cluster_prefixes {
+        let members: Vec<&Vec<f32>> = all
+            .iter()
+            .filter(|m| m.content.starts_with(prefix) && m.amplitude > 0.01)
+            .map(|m| &m.vector)
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        let dim = members[0].len();
+        let mut c = vec![0.0f32; dim];
+        for v in &members {
+            for (s, x) in c.iter_mut().zip(v.iter()) {
+                *s += *x;
+            }
+        }
+        let inv = 1.0 / members.len() as f32;
+        for s in c.iter_mut() {
+            *s *= inv;
+        }
+        centroids.push(c);
+    }
+
+    if centroids.len() < 2 {
+        return 0.0;
+    }
+
+    // Mean pairwise cosine distance (1 - cos_sim) across centroids.
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let sim = cosine_similarity(&centroids[i], &centroids[j]);
+            let dist = 1.0 - sim;
+            sum += dist;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    (sum / count as f32).clamp(0.0, 1.0)
 }
 
 /// L4 variant: filters by the "l4_noise" tag instead of L3's "noise" prefix.
