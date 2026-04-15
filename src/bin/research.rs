@@ -66,7 +66,7 @@ fn experiment_params() -> Params {
         encoder_seed: 0xCAFE_BABE,
 
         // Level 4: dream chain (cycle L4.5)
-        chain_depth: 3,
+        chain_depth: 2,
         chain_carry_strength: 0.5,
         chain_top_n: 10,
     }

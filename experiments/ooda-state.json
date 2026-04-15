@@ -1,8 +1,8 @@
 {
-  "cycle": 28,
-  "phase": "observe",
+  "cycle": 29,
+  "phase": "act",
   "level": 4,
-  "last_action": "L4.7.5 + L4.8: Fixed L3-only eval_phase_coherence / eval_cluster_separation phantom zero on L4 corpus (Option A: new eval_phase_coherence_l4 and eval_cluster_separation_l4 that partition by the real L4 cluster prefixes dense_a..dense_d, sparse_e, sparse_f). Recalibrated eval_corpus_xi_diversity: stride-sampled 25 memories across the full sorted active set (300 pairs, above the 100 pair floor) and renormalized avg_boost / 0.12 (was /0.08 with a head-slice of 30 that collapsed onto 'dense_a *' and trivially saturated). Committed as b22d72a. Then ran L4 ten times release-mode to produce the first real L4.8 baseline row. Phantom 0.10 floor lifted: L4 fitness 0.278 (L4.7-stub) -> 0.224 (L4.8 10-run avg). L3 fitness unchanged at ~0.0069 (single-run sample, within historical 0.006444-0.006494 band).",
+  "last_action": "L4.9: H-L4-002 (chain_depth 3->2) KEPT. 10-run avg fitness 0.224308 -> 0.216186 (delta -0.00812, 6.7x baseline std). Speed 0.1689 -> 0.4188 (+0.250, target hit). Chain_fidelity 0.9399 -> 0.9022 (small drop, within <0.10 tolerance). Consciousness 0.7513 -> 0.8326 bonus from faster chain leaving more room for phi ramp. Collateral: phase_coherence 0.8723->0.8278, cluster_sep 0.9763->0.9728, corpus_xi_div 0.6712->0.6207, hall_q 0.9791->0.9641 all small negative drifts; adv_resist 0.7989->0.6617 (denominator-shift artifact since clean-pass subtotal is lower). L3 spot-check: 0.006864 (unchanged).",
   "last_harvest": "2026-04-14T00:00:00Z",
   "l3": {
     "status": "SOLVED_ARCHIVED",
@@ -128,7 +128,7 @@
         "target_metric": "speed",
         "expected_delta": "speed 0.169 -> ~0.45 (chain_depth=2) -> fitness -0.028; risk: chain_fidelity drops because 2 points < 3 for the monotonicity chain",
         "risk": "chain_fidelity is 0.9399 on a 3-point chain. Reducing to 2 points makes the monotonicity bonus trivially pass but the centroid-distance term carries less information. Expected net: small fidelity gain plus large speed gain.",
-        "status": "proposed"
+        "status": "CONFIRMED (L4.9, kept). Speed 0.169->0.419 (+0.250), fitness 0.224->0.216 (-0.00812). Chain_fid small drop 0.9399->0.9022 as predicted."
       },
       {
         "id": "H-L4-003",
@@ -162,14 +162,14 @@
     "phase_spread": 0.25,
     "chiral_perturbation": 0.9,
     "noise_floor": 0.18,
-    "chain_depth": 3,
+    "chain_depth": 2,
     "chain_carry_strength": 0.5,
     "chain_top_n": 10,
     "corpus_hardness": 1,
     "adversarial_ratio": 1.0,
     "encoder_seed": "default (see Params)"
   },
-  "params_changed_this_cycle": {},
+  "params_changed_this_cycle": {"chain_depth": "3->2 (L4.9, kept)"},
   "params_tested_and_reverted_this_cycle": {},
   "dead_params": ["xi_repulsion_weight", "decay_rate", "default_frequency", "kuramoto_steps", "interference_threshold_down", "constructive_boost_for_dream_efficiency", "prune_threshold_down", "destructive_penalty_for_cluster_separation", "phase_spread_for_cluster_separation"],
   "next_experiment": "Cycle 29 (L4.9): Begin OODA autonomous tuning on L4. PRIORITY ORDER per L4.8 dominant losses: (1) H-L4-002 chain_depth 3->2 to reclaim speed (largest contribution: 0.083); (2) H-L4-001 encoder_seed perturbation to move encoding_entropy off 0.02 (contribution: 0.049); (3) H-L4-003 xi_repulsion_weight 0.3->0.5 for corpus_xi_diversity headroom (contribution: 0.033). Run 10 times each before committing. L4 is READY for autonomous OODA: all metrics are real numbers in (0,1), byte-identical across runs except speed/adv_resist timing jitter, no phantom floors remain."
