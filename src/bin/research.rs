@@ -1223,6 +1223,8 @@ struct L4PassMetrics {
     retention_score: f32,
     retention_plasticity: f32,
     chain_fidelity: f32,
+    corpus_xi_diversity: f32,
+    encoding_entropy: f32,
     phi_history: Vec<f32>,
     consolidation_ms: u64,
     strengthened: usize,
@@ -1325,19 +1327,56 @@ fn run_l4_pass(
     let dream_efficiency = eval_dream_efficiency(
         chain_totals.strengthened, chain_totals.pruned, chain_totals.links, params.chain_depth);
 
-    // Placeholder fitness: L3 formula verbatim (L4 weights land in L4.7).
-    let fitness = 0.10 * (1.0 - noise_removal)
-        + 0.10 * (1.0 - signal_preservation)
-        + 0.05 * (1.0 - bridge_links)
-        + 0.10 * (1.0 - phase_coherence)
-        + 0.10 * (1.0 - cluster_separation)
-        + 0.05 * (1.0 - amp_diversity)
-        + 0.05 * (1.0 - speed)
-        + 0.05 * (1.0 - speed)
-        + 0.10 * (1.0 - xi_diversity)
+    // L4.7 new axes.
+    let surviving: Vec<HyperMemory> = engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (*m).clone())
+        .collect();
+    let corpus_xi_diversity = eval_corpus_xi_diversity(&surviving);
+    let encoding_entropy = eval_encoding_entropy(&surviving, 8);
+
+    // L4 final fitness weighting (design doc §3, §8).
+    // Inherited L3 core (45%) + new L4 axes (55%) = 100%.
+    //
+    //   Inherited L3 core      45%
+    //     noise_removal         5
+    //     signal_preservation   5
+    //     phase_coherence       5
+    //     cluster_separation    5
+    //     dream_efficiency      5
+    //     speed                10
+    //     consciousness        10
+    //
+    //   L4 new axes            55%
+    //     corpus_xi_diversity  10
+    //     retention_score      15
+    //     retention_plasticity  5
+    //     chain_fidelity       10
+    //     adversarial_resist.  10   (injected by caller — see note below)
+    //     encoding_entropy      5
+    //
+    // adversarial_resistance is computed across the TWO passes at the outer
+    // layer (run_experiment_l4_session), not inside run_l4_pass. Inside this
+    // function we leave that 10% slot as neutral (treated as 1.0), and the
+    // outer orchestrator overwrites fitness with the resistance-adjusted
+    // total. This keeps run_l4_pass reusable for both clean and adversarial
+    // inner evaluations without double-counting.
+    let fitness = 0.05 * (1.0 - noise_removal)
+        + 0.05 * (1.0 - signal_preservation)
+        + 0.05 * (1.0 - phase_coherence)
+        + 0.05 * (1.0 - cluster_separation)
+        + 0.05 * (1.0 - dream_efficiency)
+        + 0.10 * (1.0 - speed)
         + 0.10 * (1.0 - consciousness)
-        + 0.10 * (1.0 - hall_quality)
-        + 0.10 * (1.0 - dream_efficiency);
+        + 0.10 * (1.0 - corpus_xi_diversity)
+        + 0.15 * (1.0 - retention_score)
+        + 0.05 * (1.0 - retention_plasticity)
+        + 0.10 * (1.0 - chain_fidelity)
+        + 0.10 * (1.0 - 1.0) // adversarial_resistance slot, filled by caller
+        + 0.05 * (1.0 - encoding_entropy);
 
     let metrics = L4PassMetrics {
         fitness,
@@ -1355,6 +1394,8 @@ fn run_l4_pass(
         retention_score,
         retention_plasticity,
         chain_fidelity,
+        corpus_xi_diversity,
+        encoding_entropy,
         phi_history,
         consolidation_ms,
         strengthened: chain_totals.strengthened,
@@ -1394,15 +1435,19 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // Build fully from scratch — no state caching from the clean pass.
     let (adv, _prev_header_adv) = run_l4_pass(params, cli, dim, true);
 
-    // adversarial_resistance: 1 - |Δfitness| / max(f_clean, 1e-3)
+    // adversarial_resistance: 1 - |Δfitness| / max(f_clean, 1e-3).
+    // Compares the RESISTANCE-NEUTRALIZED fitnesses (the 10% adversarial
+    // slot was left at 1.0 inside run_l4_pass) to get the raw perturbation.
     let resistance = {
         let denom = clean.fitness.max(1e-3);
         (1.0 - (clean.fitness - adv.fitness).abs() / denom).clamp(0.0, 1.0)
     };
 
-    // Reported fitness = clean pass fitness (adversarial pass does not
-    // directly poison the scored metric; it only contributes via resistance).
-    let fitness = clean.fitness;
+    // Reported fitness = clean pass 90%-weight subtotal plus the 10%
+    // adversarial resistance contribution. clean.fitness already accounts
+    // for the 90% (retention/chain/encoding/etc.), so we just add the
+    // resistance slot here.
+    let fitness = clean.fitness + 0.10 * (1.0 - resistance);
 
     // Save state if --save was requested. ALWAYS save the clean engine;
     // the adversarial pass's engine must never be serialized (§6.2).
@@ -1437,9 +1482,11 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         println!("saved_session:        {}", n);
     }
     println!("fitness:              {:.6}", fitness);
-    println!("fitness_clean:        {:.6}", clean.fitness);
-    println!("fitness_adv:          {:.6}", adv.fitness);
+    println!("fitness_clean_sub:    {:.6}", clean.fitness);
+    println!("fitness_adv_sub:      {:.6}", adv.fitness);
     println!("adv_resistance:       {:.4}", resistance);
+    println!("corpus_xi_diversity:  {:.4}", clean.corpus_xi_diversity);
+    println!("encoding_entropy:     {:.4}", clean.encoding_entropy);
     println!("retention_score:      {:.4}", clean.retention_score);
     println!("retention_plasticity: {:.4}", clean.retention_plasticity);
     println!("chain_fidelity:       {:.4}", clean.chain_fidelity);
@@ -1750,6 +1797,130 @@ fn run_dream_chain(
     }
 
     (chain_seeds, phi_history, totals)
+}
+
+// ============================================================================
+// LEVEL 4 ENCODING ENTROPY + CORPUS XI DIVERSITY (cycle L4.7)
+// ============================================================================
+//
+// encoding_entropy penalizes representational collapse: Shannon entropy over
+// quantized xi-signature bins. High entropy = diverse representations. Low
+// entropy = the encoder is mapping everything into a handful of manifolds.
+//
+// corpus_xi_diversity is a recalibrated version of L3's eval_xi_diversity
+// that normalizes against 0.08 instead of 0.05, so the L4 corpus doesn't
+// trivially saturate at 1.0.
+
+/// Shannon entropy of quantized xi-signature bin tuples, normalized to [0,1].
+/// Operates on HyperMemory slices so it can score either the surviving store
+/// or any arbitrary corpus snapshot.
+fn eval_encoding_entropy(corpus: &[HyperMemory], bins: usize) -> f32 {
+    if corpus.is_empty() || bins < 2 {
+        return 0.0;
+    }
+
+    // Collect xi signatures (compute any that aren't already populated).
+    let sigs: Vec<Vec<f32>> = corpus
+        .iter()
+        .filter(|m| !m.content.starts_with("l4_noise") && m.amplitude > 0.01)
+        .map(|m| {
+            if m.xi_signature.is_empty() {
+                compute_xi_signature(&m.vector)
+            } else {
+                m.xi_signature.clone()
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if sigs.is_empty() {
+        return 0.0;
+    }
+
+    // Find per-dimension range to normalize quantization. Using a global
+    // [-1, 1] assumption is brittle because xi signatures can go outside that
+    // interval, so we derive (min, max) from the corpus itself.
+    let dim = sigs[0].len();
+    let mut mins = vec![f32::INFINITY; dim];
+    let mut maxs = vec![f32::NEG_INFINITY; dim];
+    for s in &sigs {
+        if s.len() != dim { continue; }
+        for (d, v) in s.iter().enumerate() {
+            if *v < mins[d] { mins[d] = *v; }
+            if *v > maxs[d] { maxs[d] = *v; }
+        }
+    }
+
+    // Quantize each signature into a bin-tuple; count occurrences.
+    use std::collections::HashMap;
+    let mut counts: HashMap<Vec<u16>, u32> = HashMap::new();
+    for s in &sigs {
+        if s.len() != dim { continue; }
+        let mut tuple: Vec<u16> = Vec::with_capacity(dim);
+        for (d, v) in s.iter().enumerate() {
+            let span = (maxs[d] - mins[d]).max(1e-8);
+            let rel = ((*v - mins[d]) / span).clamp(0.0, 1.0);
+            let bin = (rel * (bins as f32 - 1.0)).round() as u16;
+            tuple.push(bin);
+        }
+        *counts.entry(tuple).or_insert(0) += 1;
+    }
+
+    let total: f32 = counts.values().map(|c| *c as f32).sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let mut h = 0.0f32;
+    for c in counts.values() {
+        let p = (*c as f32) / total;
+        if p > 0.0 {
+            h -= p * p.log2();
+        }
+    }
+
+    // Normalize by the theoretical maximum on the joint distribution of
+    // bin-tuples across `dim` dimensions: log2(bins^dim).
+    let max_h = (bins as f32).log2() * (dim as f32);
+    if max_h <= 0.0 {
+        return 0.0;
+    }
+    (h / max_h).clamp(0.0, 1.0)
+}
+
+/// L4 corpus xi-diversity: same pairwise boost-averaging idea as the L3
+/// metric, but normalizes against 0.08 instead of 0.05 (the L3 metric
+/// saturates on the L4 corpus, which defeats its purpose).
+fn eval_corpus_xi_diversity(corpus: &[HyperMemory]) -> f32 {
+    let mut active: Vec<&HyperMemory> = corpus
+        .iter()
+        .filter(|m| !m.content.starts_with("l4_noise") && m.amplitude > 0.01)
+        .collect();
+    active.sort_by(|a, b| a.content.cmp(&b.content));
+
+    if active.len() < 4 {
+        return 0.0;
+    }
+
+    // Use a capped sample — full 285x285 is ~40k pairs, which is fine in
+    // release mode but noisy. 30 gives ~435 pairs, matching the L3 shape.
+    let sample_size = active.len().min(30);
+    let mut total_boost = 0.0f32;
+    let mut count = 0usize;
+    for i in 0..sample_size {
+        for j in (i + 1)..sample_size {
+            let xi_a = compute_xi_signature(&active[i].vector);
+            let xi_b = compute_xi_signature(&active[j].vector);
+            let base_sim = cosine_similarity(&active[i].vector, &active[j].vector);
+            let boosted = xi_diversity_boost(base_sim, &xi_a, &xi_b);
+            total_boost += (boosted - base_sim).abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    let avg_boost = total_boost / count as f32;
+    (avg_boost / 0.08).clamp(0.0, 1.0)
 }
 
 /// L4 variant: filters by the "l4_noise" tag instead of L3's "noise" prefix.
