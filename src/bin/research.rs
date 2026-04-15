@@ -1445,6 +1445,10 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // selection more aggressively toward the previous cycle's xi centroid,
     // tightening monotonicity and lifting chain_fidelity (0.7487) back up.
     l4_params.chain_carry_strength = 0.7;
+    // L4.16: H-L4-006 — chiral_perturbation 0.9 -> 0.7 (L4-local override).
+    // Probe of last untested encoder-layer param. Target: corpus_xi_diversity
+    // (0.6018) and possibly encoding_entropy (0.0213).
+    l4_params.chiral_perturbation = 0.7;
     let params = &l4_params;
 
     // Compute (and stash) the canonical corpus hash. This is the value that
