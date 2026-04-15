@@ -1439,7 +1439,13 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // phi is 0.25156 (byte-identical across runs, read from phi_history_clean).
     // Gap = 0.0744. Nudging 80% toward the measured value leaves 20% slack
     // against future jitter: 0.326 - 0.8 * 0.07444 = 0.26645.
-    l4_params.consciousness_phi_target = 0.26645;
+    // L4.S7: re-tune for the 3-point phi_history introduced by S4
+    // (chain_depth=3). Measured phi_history (byte-identical) =
+    // [0.18426, 0.24996, 0.28454]; final phi = 0.28454. Previous
+    // target 0.26645 was calibrated for the old 2-point chain with
+    // final phi 0.25156. Gap = 0.01809; nudge 80% toward measured:
+    // 0.26645 + 0.8 * 0.01809 = 0.28092.
+    l4_params.consciousness_phi_target = 0.28092;
     // L4.15: H-L4-005 — chain_carry_strength 0.5 -> 0.7 (L4-local override).
     // Theory: stronger cycle-to-cycle carry biases each chain cycle's pair
     // selection more aggressively toward the previous cycle's xi centroid,
