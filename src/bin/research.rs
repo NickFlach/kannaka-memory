@@ -1465,11 +1465,13 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // Build fully from scratch — no state caching from the clean pass.
     let (adv, _prev_header_adv) = run_l4_pass(params, cli, dim, true);
 
-    // adversarial_resistance: 1 - |Δfitness| / max(f_clean, 1e-3).
-    // Compares the RESISTANCE-NEUTRALIZED fitnesses (the 10% adversarial
-    // slot was left at 1.0 inside run_l4_pass) to get the raw perturbation.
+    // adversarial_resistance: 1 - |Δfitness| / (f_clean + 0.05).
+    // L4.S3: stabilize the denominator by adding a +0.05 pad so small f_clean
+    // values (the L4 session is converging toward ~0.15) don't amplify tiny
+    // per-run jitter into ±0.2–0.4 adv_resistance swings. Previous denominator
+    // was max(f_clean, 1e-3) which offered no effective floor in practice.
     let resistance = {
-        let denom = clean.fitness.max(1e-3);
+        let denom = clean.fitness + 0.05;
         (1.0 - (clean.fitness - adv.fitness).abs() / denom).clamp(0.0, 1.0)
     };
 
