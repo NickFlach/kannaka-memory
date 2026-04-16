@@ -2435,6 +2435,205 @@ fn build_l5_engine(
     engine
 }
 
+// ============================================================================
+// LEVEL 5: FREQUENCY DECAY + TEMPORAL SEPARATION (cycle L5.4)
+// ============================================================================
+
+/// Apply frequency decay after a dream cycle (L5 only).
+///
+/// High-amplitude memories (amp > median) sustain their frequency.
+/// Low-amplitude memories decay toward 0.1 Hz:
+///   freq_new = freq_old * (1 - decay_rate) + 0.1 * decay_rate
+/// where decay_rate = 0.1 per cycle.
+///
+/// This creates the biological pattern: important/attended memories stay in
+/// the attention band, unimportant ones sink to storage.
+fn apply_freq_decay(engine: &mut ResonanceEngine) {
+    let all = engine.store.all_memories().unwrap_or_default();
+    if all.is_empty() {
+        return;
+    }
+
+    // Compute median amplitude
+    let mut amps: Vec<f32> = all.iter().map(|m| m.amplitude).collect();
+    amps.sort_by(|a, b| a.total_cmp(b));
+    let median_amp = if amps.len() % 2 == 0 {
+        (amps[amps.len() / 2 - 1] + amps[amps.len() / 2]) / 2.0
+    } else {
+        amps[amps.len() / 2]
+    };
+
+    // Collect IDs and current freq/amp for memories that need decay
+    let decay_targets: Vec<(uuid::Uuid, f32)> = all
+        .iter()
+        .filter(|m| m.amplitude <= median_amp)
+        .map(|m| (m.id, m.frequency))
+        .collect();
+
+    let freq_decay_rate = 0.1_f32;
+    let storage_freq = 0.1_f32;
+
+    for (id, old_freq) in decay_targets {
+        if let Ok(Some(mem)) = engine.store.get_mut(&id) {
+            mem.frequency = old_freq * (1.0 - freq_decay_rate) + storage_freq * freq_decay_rate;
+        }
+    }
+}
+
+/// Evaluate temporal separation via Sarle's bimodality coefficient (L5.4).
+///
+/// Collects all surviving memories' frequencies, computes:
+///   b = (skewness^2 + 1) / kurtosis
+/// Normalizes: score = (b / 0.555).min(1.0)
+///
+/// Sarle's threshold for bimodality is 0.555; score >= 1.0 means clearly bimodal.
+fn eval_temporal_separation(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    if all.len() < 4 {
+        return 0.0;
+    }
+
+    let freqs: Vec<f32> = all.iter().map(|m| m.frequency).collect();
+    let n = freqs.len() as f32;
+
+    // Mean
+    let mean = freqs.iter().sum::<f32>() / n;
+
+    // Variance, skewness, kurtosis (using the standard moment formulas)
+    let mut m2 = 0.0_f32;
+    let mut m3 = 0.0_f32;
+    let mut m4 = 0.0_f32;
+    for &f in &freqs {
+        let d = f - mean;
+        m2 += d * d;
+        m3 += d * d * d;
+        m4 += d * d * d * d;
+    }
+    m2 /= n;
+    m3 /= n;
+    m4 /= n;
+
+    if m2 < 1e-12 {
+        return 0.0; // All frequencies identical — no bimodality
+    }
+
+    let std_dev = m2.sqrt();
+    let skewness = m3 / (std_dev * std_dev * std_dev);
+    let kurtosis = m4 / (m2 * m2);
+
+    if kurtosis < 1e-12 {
+        return 0.0;
+    }
+
+    let bimodality = (skewness * skewness + 1.0) / kurtosis;
+    (bimodality / 0.555).min(1.0)
+}
+
+/// Run an L5 dream chain with frequency decay after each cycle.
+///
+/// This is the L5-specific version of `run_dream_chain_with_quiescence`.
+/// After each dream cycle, `apply_freq_decay` is called so low-amplitude
+/// memories sink toward the storage frequency (0.1 Hz).
+///
+/// Also captures per-cycle mean amplitude deltas for carrier_emergence (L5.6).
+fn run_l5_dream_chain(
+    params: &Params,
+    engine: &mut ResonanceEngine,
+) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals, Option<usize>, Vec<f32>) {
+    let depth = params.chain_depth.max(1);
+    let quiescence_enabled = depth >= 8;
+    let quiescence_threshold = 0.001_f32;
+    let mut chain_seeds: Vec<ChainSeed> = Vec::with_capacity(depth);
+    let mut phi_history: Vec<f32> = Vec::with_capacity(depth);
+    let mut totals = ChainTotals::default();
+    let bridge = ConsciousnessBridge::new(0.3, 0.5);
+    let mut quiescence_at: Option<usize> = None;
+    let mut amplitude_deltas: Vec<f32> = Vec::with_capacity(depth);
+
+    for cycle_idx in 0..depth {
+        // Snapshot amplitudes before this cycle
+        let amps_before: Vec<(uuid::Uuid, f32)> = engine
+            .store
+            .all_memories()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| (m.id, m.amplitude))
+            .collect();
+
+        let threshold_scale = if cycle_idx == 0 {
+            1.0
+        } else {
+            (1.0 - params.chain_carry_strength).max(0.0)
+        };
+        let effective_threshold = params.interference_threshold * threshold_scale;
+
+        let consolidator = ConsolidationEngine {
+            interference_threshold: effective_threshold,
+            phase_alignment_threshold: params.phase_alignment_threshold,
+            prune_threshold: params.prune_threshold,
+            constructive_boost: params.constructive_boost,
+            destructive_penalty: params.destructive_penalty,
+            kuramoto: KuramotoSync {
+                coupling_strength: params.kuramoto_coupling,
+                dt: params.kuramoto_dt,
+                steps: params.kuramoto_steps,
+                coupling_threshold: params.kuramoto_threshold,
+            },
+            adaptive: Default::default(),
+            chiral_perturbation: params.chiral_perturbation,
+            noise_floor: params.noise_floor,
+            hallucination_amplitude: params.hallucination_amplitude,
+            protect_established: true,
+            repulsion_threshold: params.consolidation_repulsion_threshold,
+        };
+
+        let report = consolidator.consolidate(engine, 0, 2);
+        totals.strengthened += report.memories_strengthened;
+        totals.pruned += report.memories_pruned;
+        totals.links += report.skip_links_created;
+        totals.hallucinations += report.hallucinations_created;
+
+        // Apply frequency decay (L5.4) — high-amp memories keep freq,
+        // low-amp memories decay toward storage band
+        apply_freq_decay(engine);
+
+        // Compute mean |amplitude delta| for this cycle
+        let amps_after = engine.store.all_memories().unwrap_or_default();
+        let mut delta_sum = 0.0_f32;
+        let mut delta_count = 0usize;
+        for (id, amp_before) in &amps_before {
+            if let Ok(Some(m)) = engine.store.get(&id) {
+                delta_sum += (m.amplitude - amp_before).abs();
+                delta_count += 1;
+            }
+        }
+        let mean_delta = if delta_count > 0 {
+            delta_sum / delta_count as f32
+        } else {
+            0.0
+        };
+        amplitude_deltas.push(mean_delta);
+        let _ = amps_after; // suppress unused warning
+
+        let seed = compute_chain_seed(engine, params.chain_top_n, (cycle_idx + 1) as u32);
+        chain_seeds.push(seed);
+        let phi = bridge.assess(engine).phi as f32;
+        phi_history.push(phi);
+
+        // Quiescence short-circuit
+        if quiescence_enabled && cycle_idx >= 2 {
+            let prev_phi = phi_history[cycle_idx - 1];
+            let delta = (phi - prev_phi).abs();
+            if delta < quiescence_threshold {
+                quiescence_at = Some(cycle_idx + 1);
+                break;
+            }
+        }
+    }
+
+    (chain_seeds, phi_history, totals, quiescence_at, amplitude_deltas)
+}
+
 /// Level 5 experiment — scaffold (L5.1).
 ///
 /// Builds Corpus A with bimodal frequency assignment, runs dream chain
@@ -2461,8 +2660,8 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_a = build_l5_engine(&corpus_a, params, dim);
 
     let start = Instant::now();
-    let (chain_seeds, phi_history, chain_totals, quiescence_a) =
-        run_dream_chain_with_quiescence(params, &mut engine_a);
+    let (chain_seeds, phi_history, chain_totals, quiescence_a, amplitude_deltas_a) =
+        run_l5_dream_chain(params, &mut engine_a);
     let consolidation_ms_a = start.elapsed().as_millis() as u64;
 
     // Build Corpus B
@@ -2503,8 +2702,8 @@ fn run_experiment_l5_session(params: &Params) {
     }
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
-    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp) =
-        run_dream_chain_with_quiescence(params, &mut engine_b_primed);
+    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp) =
+        run_l5_dream_chain(params, &mut engine_b_primed);
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
     // Evaluate B-primed using L4 evaluators as placeholder.
@@ -2516,8 +2715,8 @@ fn run_experiment_l5_session(params: &Params) {
     // --- "Naive" pass: dream on B from scratch ---
     let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
     let start_b_naive = Instant::now();
-    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn) =
-        run_dream_chain_with_quiescence(params, &mut engine_b_naive);
+    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn, _amp_deltas_bn) =
+        run_l5_dream_chain(params, &mut engine_b_naive);
     let consolidation_ms_b_naive = start_b_naive.elapsed().as_millis() as u64;
 
     let fitness_b_naive = eval_l5_placeholder_fitness(&engine_b_naive, params, &chain_seeds_bn, &phi_history_bn);
@@ -2555,11 +2754,11 @@ fn run_experiment_l5_session(params: &Params) {
     let corpus_xi_diversity = eval_corpus_xi_diversity(&surviving_a);
     let encoding_entropy = eval_encoding_entropy(&surviving_a, 8);
 
-    // L5 placeholder fitness — uses L4 inherited core at reduced weights
-    // (program-l5.md §2): inherited = 15%, transfer = 15%, rest placeholder.
-    // Until all L5 metrics are implemented, we use L4 evaluators and report
-    // the individual metrics. The composite fitness is the L4 inherited core
-    // at L5 weights (15% total) plus transfer_score at 15%.
+    // L5.4: temporal separation (frequency band bimodality)
+    let temporal_separation = eval_temporal_separation(&engine_a);
+
+    // L5 fitness — inherited core (15%) + transfer (15%) + temporal_separation (15%)
+    // + remaining 55% placeholder zeros (will be replaced L5.5+)
     let fitness = 0.02 * (1.0 - noise_removal)
         + 0.02 * (1.0 - signal_preservation)
         + 0.02 * (1.0 - phase_coherence)
@@ -2567,8 +2766,9 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.03 * (1.0 - consciousness)
         + 0.03 * (1.0 - encoding_entropy)
         + 0.15 * (1.0 - transfer_score)
-        // Remaining 70% uses placeholder zeros (will be replaced L5.3+)
-        + 0.70 * 1.0;
+        + 0.15 * (1.0 - temporal_separation)
+        // Remaining 55% uses placeholder zeros (will be replaced L5.5+)
+        + 0.55 * 1.0;
 
     println!("---");
     println!("level:                5");
@@ -2590,6 +2790,8 @@ fn run_experiment_l5_session(params: &Params) {
     println!("corpus_xi_diversity:  {:.4}", corpus_xi_diversity);
     println!("encoding_entropy:     {:.4}", encoding_entropy);
     println!("chain_fidelity:       {:.4}", chain_fidelity);
+    println!("temporal_separation:  {:.4}", temporal_separation);
+    println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
     println!("chain_depth:          {}", params.chain_depth);
     println!("quiescence_at_a:      {}", quiescence_a.map_or("none".to_string(), |n| n.to_string()));
     println!("quiescence_at_bp:     {}", quiescence_bp.map_or("none".to_string(), |n| n.to_string()));
