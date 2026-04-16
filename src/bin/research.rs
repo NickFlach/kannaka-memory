@@ -2529,18 +2529,138 @@ fn eval_temporal_separation(engine: &ResonanceEngine) -> f32 {
     (bimodality / 0.555).min(1.0)
 }
 
-/// Run an L5 dream chain with frequency decay after each cycle.
+// ============================================================================
+// LEVEL 5: ONLINE INJECTION + RETENTION + FORGETTING RESISTANCE (cycle L5.5)
+// ============================================================================
+
+/// Inject online memories mid-chain (L5.5).
+///
+/// Creates 10 new memories per injection event at 2.0 Hz (attention band),
+/// amplitude 0.8 (moderate importance). Returns IDs of injected memories.
+fn inject_online_memories(
+    engine: &mut ResonanceEngine,
+    dim: usize,
+    injection_idx: usize,
+    seed: u64,
+) -> Vec<uuid::Uuid> {
+    let inject_seed = seed.wrapping_add(0x1A3E_C700 + injection_idx as u64);
+    let mut ids = Vec::with_capacity(10);
+    for i in 0..10 {
+        let item = (injection_idx * 10 + i) as u32;
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(inject_seed, 7000 + injection_idx as u32, item, d as u32) * 0.7)
+            .collect();
+        let mut mem = HyperMemory::new(v, format!("online_{}_{}", injection_idx, i));
+        // Distinct UUID namespace for online injections
+        mem.id = uuid::Uuid::from_u128(
+            0xAAAA_0000_0000_0000_0000_0000_0000_0000u128
+                + (injection_idx as u128 * 100)
+                + i as u128,
+        );
+        mem.frequency = 2.0;
+        mem.amplitude = 0.8;
+        mem.phase = PI * (i as f32 * 0.2);
+        mem.layer_depth = 0;
+        ids.push(mem.id);
+        let _ = engine.store.insert(mem);
+    }
+    ids
+}
+
+/// Evaluate online retention across injection events (L5.5).
+///
+/// For each injection event, compute hit_rate = fraction of injected IDs
+/// still present with amp > 0.3. Return geometric mean of hit_rates.
+fn eval_online_retention(
+    engine: &ResonanceEngine,
+    injected_ids_per_event: &[Vec<uuid::Uuid>],
+) -> f32 {
+    if injected_ids_per_event.is_empty() {
+        return 0.0;
+    }
+
+    let mut log_sum = 0.0_f64;
+    let mut count = 0usize;
+
+    for event_ids in injected_ids_per_event {
+        if event_ids.is_empty() {
+            continue;
+        }
+        let hits = event_ids
+            .iter()
+            .filter(|id| {
+                engine
+                    .store
+                    .get(id)
+                    .ok()
+                    .flatten()
+                    .map_or(false, |m| m.amplitude > 0.3)
+            })
+            .count();
+        let hit_rate = hits as f64 / event_ids.len() as f64;
+        // For geometric mean: use log. Clamp to avoid log(0).
+        log_sum += (hit_rate.max(1e-10)).ln();
+        count += 1;
+    }
+
+    if count == 0 {
+        return 0.0;
+    }
+
+    (log_sum / count as f64).exp() as f32
+}
+
+/// Evaluate catastrophic forgetting resistance (L5.5).
+///
+/// Compares mean amplitude of the oldest quartile of original memories
+/// before injections vs after all injections + dream cycles.
+fn eval_catastrophic_forgetting(
+    engine: &ResonanceEngine,
+    original_ids: &[uuid::Uuid],
+    initial_mean_amp: f32,
+) -> f32 {
+    if original_ids.is_empty() || initial_mean_amp < 1e-6 {
+        return 0.0;
+    }
+
+    // Sort original IDs by their position (proxy for creation order — lower UUID = older)
+    // and take the oldest quartile
+    let quartile_size = (original_ids.len() / 4).max(1);
+    let oldest_ids = &original_ids[..quartile_size];
+
+    let mut amp_sum = 0.0_f32;
+    let mut found = 0usize;
+    for id in oldest_ids {
+        if let Ok(Some(m)) = engine.store.get(id) {
+            amp_sum += m.amplitude;
+            found += 1;
+        }
+    }
+
+    if found == 0 {
+        return 0.0;
+    }
+
+    let current_mean = amp_sum / found as f32;
+    (current_mean / initial_mean_amp).min(1.0)
+}
+
+/// Run an L5 dream chain with frequency decay and online injection.
 ///
 /// This is the L5-specific version of `run_dream_chain_with_quiescence`.
 /// After each dream cycle, `apply_freq_decay` is called so low-amplitude
 /// memories sink toward the storage frequency (0.1 Hz).
 ///
-/// Also captures per-cycle mean amplitude deltas for carrier_emergence (L5.6).
+/// Online injection happens after cycles 3, 6, 9, 12, 15 (0-indexed: 2, 5, 8, 11, 14).
+/// Returns per-cycle amplitude deltas, injected IDs per event, and original IDs.
+#[allow(clippy::type_complexity)]
 fn run_l5_dream_chain(
     params: &Params,
     engine: &mut ResonanceEngine,
-) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals, Option<usize>, Vec<f32>) {
+) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals, Option<usize>, Vec<f32>,
+      Vec<Vec<uuid::Uuid>>, Vec<uuid::Uuid>, f32) {
     let depth = params.chain_depth.max(1);
+    let dim = 128; // L5 corpus dimension
     let quiescence_enabled = depth >= 8;
     let quiescence_threshold = 0.001_f32;
     let mut chain_seeds: Vec<ChainSeed> = Vec::with_capacity(depth);
@@ -2549,6 +2669,32 @@ fn run_l5_dream_chain(
     let bridge = ConsciousnessBridge::new(0.3, 0.5);
     let mut quiescence_at: Option<usize> = None;
     let mut amplitude_deltas: Vec<f32> = Vec::with_capacity(depth);
+
+    // L5.5: track original memory IDs and their initial oldest-quartile amplitude
+    let original_ids: Vec<uuid::Uuid> = engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m.id)
+        .collect();
+
+    // Compute initial mean amplitude of oldest quartile
+    let quartile_size = (original_ids.len() / 4).max(1);
+    let initial_oldest_amps: Vec<f32> = original_ids[..quartile_size]
+        .iter()
+        .filter_map(|id| engine.store.get(id).ok().flatten().map(|m| m.amplitude))
+        .collect();
+    let initial_mean_amp = if initial_oldest_amps.is_empty() {
+        0.0
+    } else {
+        initial_oldest_amps.iter().sum::<f32>() / initial_oldest_amps.len() as f32
+    };
+
+    // Injection points: after cycles 3, 6, 9, 12, 15 (0-indexed: 2, 5, 8, 11, 14)
+    let injection_cycles: Vec<usize> = vec![2, 5, 8, 11, 14];
+    let mut injected_ids_per_event: Vec<Vec<uuid::Uuid>> = Vec::new();
+    let mut injection_counter = 0usize;
 
     for cycle_idx in 0..depth {
         // Snapshot amplitudes before this cycle
@@ -2597,12 +2743,18 @@ fn run_l5_dream_chain(
         // low-amp memories decay toward storage band
         apply_freq_decay(engine);
 
+        // L5.5: inject online memories at designated cycle points
+        if injection_cycles.contains(&cycle_idx) {
+            let ids = inject_online_memories(engine, dim, injection_counter, params.encoder_seed);
+            injected_ids_per_event.push(ids);
+            injection_counter += 1;
+        }
+
         // Compute mean |amplitude delta| for this cycle
-        let amps_after = engine.store.all_memories().unwrap_or_default();
         let mut delta_sum = 0.0_f32;
         let mut delta_count = 0usize;
         for (id, amp_before) in &amps_before {
-            if let Ok(Some(m)) = engine.store.get(&id) {
+            if let Ok(Some(m)) = engine.store.get(id) {
                 delta_sum += (m.amplitude - amp_before).abs();
                 delta_count += 1;
             }
@@ -2613,7 +2765,6 @@ fn run_l5_dream_chain(
             0.0
         };
         amplitude_deltas.push(mean_delta);
-        let _ = amps_after; // suppress unused warning
 
         let seed = compute_chain_seed(engine, params.chain_top_n, (cycle_idx + 1) as u32);
         chain_seeds.push(seed);
@@ -2631,7 +2782,8 @@ fn run_l5_dream_chain(
         }
     }
 
-    (chain_seeds, phi_history, totals, quiescence_at, amplitude_deltas)
+    (chain_seeds, phi_history, totals, quiescence_at, amplitude_deltas,
+     injected_ids_per_event, original_ids, initial_mean_amp)
 }
 
 /// Level 5 experiment — scaffold (L5.1).
@@ -2660,7 +2812,8 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_a = build_l5_engine(&corpus_a, params, dim);
 
     let start = Instant::now();
-    let (chain_seeds, phi_history, chain_totals, quiescence_a, amplitude_deltas_a) =
+    let (chain_seeds, phi_history, chain_totals, quiescence_a, amplitude_deltas_a,
+         injected_ids_a, original_ids_a, initial_mean_amp_a) =
         run_l5_dream_chain(params, &mut engine_a);
     let consolidation_ms_a = start.elapsed().as_millis() as u64;
 
@@ -2702,7 +2855,8 @@ fn run_experiment_l5_session(params: &Params) {
     }
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
-    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp) =
+    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
+         _injected_bp, _orig_bp, _init_amp_bp) =
         run_l5_dream_chain(params, &mut engine_b_primed);
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
@@ -2715,7 +2869,8 @@ fn run_experiment_l5_session(params: &Params) {
     // --- "Naive" pass: dream on B from scratch ---
     let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
     let start_b_naive = Instant::now();
-    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn, _amp_deltas_bn) =
+    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn, _amp_deltas_bn,
+         _injected_bn, _orig_bn, _init_amp_bn) =
         run_l5_dream_chain(params, &mut engine_b_naive);
     let consolidation_ms_b_naive = start_b_naive.elapsed().as_millis() as u64;
 
@@ -2757,8 +2912,15 @@ fn run_experiment_l5_session(params: &Params) {
     // L5.4: temporal separation (frequency band bimodality)
     let temporal_separation = eval_temporal_separation(&engine_a);
 
+    // L5.5: online retention + catastrophic forgetting resistance
+    let online_retention = eval_online_retention(&engine_a, &injected_ids_a);
+    let catastrophic_forgetting = eval_catastrophic_forgetting(
+        &engine_a, &original_ids_a, initial_mean_amp_a,
+    );
+
     // L5 fitness — inherited core (15%) + transfer (15%) + temporal_separation (15%)
-    // + remaining 55% placeholder zeros (will be replaced L5.5+)
+    // + online_retention (10%) + catastrophic_forgetting (10%)
+    // + remaining 35% placeholder zeros (will be replaced L5.6+)
     let fitness = 0.02 * (1.0 - noise_removal)
         + 0.02 * (1.0 - signal_preservation)
         + 0.02 * (1.0 - phase_coherence)
@@ -2767,8 +2929,10 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.03 * (1.0 - encoding_entropy)
         + 0.15 * (1.0 - transfer_score)
         + 0.15 * (1.0 - temporal_separation)
-        // Remaining 55% uses placeholder zeros (will be replaced L5.5+)
-        + 0.55 * 1.0;
+        + 0.10 * (1.0 - online_retention)
+        + 0.10 * (1.0 - catastrophic_forgetting)
+        // Remaining 35% uses placeholder zeros (will be replaced L5.6+)
+        + 0.35 * 1.0;
 
     println!("---");
     println!("level:                5");
@@ -2791,6 +2955,10 @@ fn run_experiment_l5_session(params: &Params) {
     println!("encoding_entropy:     {:.4}", encoding_entropy);
     println!("chain_fidelity:       {:.4}", chain_fidelity);
     println!("temporal_separation:  {:.4}", temporal_separation);
+    println!("online_retention:     {:.4}", online_retention);
+    println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
+    println!("injected_events:      {}", injected_ids_a.len());
+    println!("injected_total:       {}", injected_ids_a.iter().map(|v| v.len()).sum::<usize>());
     println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
     println!("chain_depth:          {}", params.chain_depth);
     println!("quiescence_at_a:      {}", quiescence_a.map_or("none".to_string(), |n| n.to_string()));
