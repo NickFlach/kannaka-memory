@@ -1483,9 +1483,21 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // higher threshold widens the clean-vs-adv fitness divergence past what
     // the S3 padded denominator can absorb. The 0.10 weight on adv_resist
     // turns the collapse into +0.046 fitness and eats the clean-pass win.
-    // Mark interference_threshold UP dead on L4 (second confirmation after
-    // L4.18/L4.S6). Down direction (0.10->0.08) remains untested.
-    let params = &l4_params;
+    // L4.S13: per-pass interference_threshold. The clean pass benefits from
+    // 0.12 (fitness_clean_sub -0.024, chain_fidelity +0.069, corpus_xi_div
+    // +0.195 — confirmed in S8, S9, S11c). Previous attempts failed because
+    // speed bleed from the clean pass polluted the adv pass via sequential
+    // timing (S11c) or the old divergence adv_resistance formula punished
+    // clean-only improvement (S9). Both blockers are now fixed: speed is
+    // decoupled from the adv pass (L4.S13) and adv_resistance uses the
+    // absolute formula (L4.S11). The adv pass keeps int_threshold=0.10 to
+    // avoid the NaN-phase edge case at 0.12 (S8a) and because adversarial
+    // robustness should be measured under production defaults.
+    let mut l4_params_clean = l4_params.clone();
+    l4_params_clean.interference_threshold = 0.12;
+    // adv pass stays at l4_params defaults (int_threshold = 0.10)
+    let l4_params_adv = &l4_params;
+    let params = &l4_params; // for non-pass-specific operations below
 
     // Compute (and stash) the canonical corpus hash. This is the value that
     // gets pinned into the state header on first save.
@@ -1495,11 +1507,11 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     };
 
     // ---- Clean pass (scored) ----
-    let (clean, prev_header) = run_l4_pass(params, cli, dim, false);
+    let (clean, prev_header) = run_l4_pass(&l4_params_clean, cli, dim, false);
 
     // ---- Adversarial pass (used ONLY to compute resistance) ----
     // Build fully from scratch — no state caching from the clean pass.
-    let (adv, _prev_header_adv) = run_l4_pass(params, cli, dim, true);
+    let (adv, _prev_header_adv) = run_l4_pass(l4_params_adv, cli, dim, true);
 
     // L4.S11: absolute adversarial robustness.
     // Score measures how well the adversarial pass performs in absolute terms,
