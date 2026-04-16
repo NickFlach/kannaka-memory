@@ -2530,6 +2530,124 @@ fn eval_temporal_separation(engine: &ResonanceEngine) -> f32 {
 }
 
 // ============================================================================
+// LEVEL 5: FREQUENCY TRANSFER (cycle L5.7)
+// ============================================================================
+
+/// Evaluate frequency band transfer between engine A and engine B (L5.7).
+///
+/// For each memory in A, classify as "working" (freq >= 0.5) or "storage" (freq < 0.5).
+/// For each memory in B that shares a dense cluster centroid with A (matched by
+/// cluster label prefix), classify the same way. Compute Pearson r between the
+/// band-membership vectors of matched clusters across A and B.
+///
+/// Score = (r + 1) / 2, clamped to [0, 1]. Higher = frequency structure transferred.
+fn eval_frequency_transfer(engine_a: &ResonanceEngine, engine_b: &ResonanceEngine) -> f32 {
+    let all_a = engine_a.store.all_memories().unwrap_or_default();
+    let all_b = engine_b.store.all_memories().unwrap_or_default();
+
+    if all_a.is_empty() || all_b.is_empty() {
+        return 0.5; // No data — return neutral
+    }
+
+    // Dense cluster labels shared between corpora A and B.
+    // Corpus A uses "dense_a N", Corpus B uses "l5b_dense_a N".
+    let cluster_prefixes = ["dense_a", "dense_b", "dense_c", "dense_d"];
+
+    // For each cluster, compute mean frequency band for A and B.
+    // Band classification: 1.0 = working (freq >= 0.5), 0.0 = storage (freq < 0.5).
+    let mut bands_a: Vec<f32> = Vec::new();
+    let mut bands_b: Vec<f32> = Vec::new();
+
+    for prefix in &cluster_prefixes {
+        // Collect band memberships for this cluster in A
+        let a_bands: Vec<f32> = all_a
+            .iter()
+            .filter(|m| m.content.contains(prefix) && m.amplitude > 0.01)
+            .map(|m| if m.frequency >= 0.5 { 1.0 } else { 0.0 })
+            .collect();
+
+        // Collect band memberships for this cluster in B
+        let b_bands: Vec<f32> = all_b
+            .iter()
+            .filter(|m| m.content.contains(prefix) && m.amplitude > 0.01)
+            .map(|m| if m.frequency >= 0.5 { 1.0 } else { 0.0 })
+            .collect();
+
+        if a_bands.is_empty() || b_bands.is_empty() {
+            continue;
+        }
+
+        // Use per-cluster mean band membership as the comparison unit.
+        // This gives one (a, b) pair per cluster, avoiding length mismatch.
+        let mean_a = a_bands.iter().sum::<f32>() / a_bands.len() as f32;
+        let mean_b = b_bands.iter().sum::<f32>() / b_bands.len() as f32;
+        bands_a.push(mean_a);
+        bands_b.push(mean_b);
+    }
+
+    // Also include sparse clusters for more data points
+    let sparse_prefixes = ["sparse_e", "sparse_f"];
+    for prefix in &sparse_prefixes {
+        let a_bands: Vec<f32> = all_a
+            .iter()
+            .filter(|m| m.content.contains(prefix) && m.amplitude > 0.01)
+            .map(|m| if m.frequency >= 0.5 { 1.0 } else { 0.0 })
+            .collect();
+
+        let b_bands: Vec<f32> = all_b
+            .iter()
+            .filter(|m| m.content.contains(prefix) && m.amplitude > 0.01)
+            .map(|m| if m.frequency >= 0.5 { 1.0 } else { 0.0 })
+            .collect();
+
+        if a_bands.is_empty() || b_bands.is_empty() {
+            continue;
+        }
+
+        let mean_a = a_bands.iter().sum::<f32>() / a_bands.len() as f32;
+        let mean_b = b_bands.iter().sum::<f32>() / b_bands.len() as f32;
+        bands_a.push(mean_a);
+        bands_b.push(mean_b);
+    }
+
+    let n = bands_a.len();
+    if n < 2 {
+        return 0.5; // Not enough matched clusters for correlation
+    }
+
+    // Pearson r
+    let mean_a = bands_a.iter().sum::<f32>() / n as f32;
+    let mean_b = bands_b.iter().sum::<f32>() / n as f32;
+
+    let mut cov = 0.0_f32;
+    let mut var_a = 0.0_f32;
+    let mut var_b = 0.0_f32;
+    for i in 0..n {
+        let da = bands_a[i] - mean_a;
+        let db = bands_b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+
+    let denom = (var_a * var_b).sqrt();
+    let r = if denom < 1e-10 {
+        // All values identical in one or both — check if they match
+        if (var_a < 1e-10) && (var_b < 1e-10) {
+            // Both constant — if same value, perfect correlation; otherwise undefined
+            if (mean_a - mean_b).abs() < 1e-6 { 1.0 } else { 0.0 }
+        } else {
+            0.0 // One constant, one varies — no correlation
+        }
+    } else {
+        cov / denom
+    };
+
+    // Map [-1, 1] -> [0, 1]
+    ((r + 1.0) / 2.0).clamp(0.0, 1.0)
+}
+
+// ============================================================================
 // LEVEL 5: CARRIER EMERGENCE VIA FFT (cycle L5.6)
 // ============================================================================
 
@@ -3032,9 +3150,12 @@ fn run_experiment_l5_session(params: &Params) {
     // carrier_emergence = the FLAT-corpus FFT score (emergence, not passthrough)
     let carrier_emergence = eval_carrier_emergence(&amp_deltas_flat, cycle_period_flat);
 
+    // L5.7: frequency_transfer — does the 2 Hz band structure survive cross-corpus transfer?
+    let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
+
     // L5 fitness — inherited core (15%) + transfer (15%) + temporal_separation (15%)
     // + online_retention (10%) + catastrophic_forgetting (10%) + carrier_emergence (10%)
-    // + remaining 25% placeholder zeros (will be replaced L5.7+)
+    // + frequency_transfer (10%) + remaining 15% placeholder zeros (will be replaced L5.8+)
     let fitness = 0.02 * (1.0 - noise_removal)
         + 0.02 * (1.0 - signal_preservation)
         + 0.02 * (1.0 - phase_coherence)
@@ -3046,8 +3167,9 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.10 * (1.0 - online_retention)
         + 0.10 * (1.0 - catastrophic_forgetting)
         + 0.10 * (1.0 - carrier_emergence)
-        // Remaining 25% uses placeholder zeros (will be replaced L5.7+)
-        + 0.25 * 1.0;
+        + 0.10 * (1.0 - frequency_transfer)
+        // Remaining 15% uses placeholder zeros (will be replaced L5.8+)
+        + 0.15 * 1.0;
 
     println!("---");
     println!("level:                5");
@@ -3074,6 +3196,7 @@ fn run_experiment_l5_session(params: &Params) {
     println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
     println!("carrier_emergence:    {:.4}", carrier_emergence);
     println!("carrier_bimodal:      {:.4}", carrier_bimodal);
+    println!("frequency_transfer:   {:.4}", frequency_transfer);
     println!("injected_events:      {}", injected_ids_a.len());
     println!("injected_total:       {}", injected_ids_a.iter().map(|v| v.len()).sum::<usize>());
     println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
