@@ -1326,6 +1326,17 @@ fn run_l4_pass(
     let amp_diversity = eval_amplitude_diversity(&engine);
     let speed = 1.0 - (consolidation_ms as f32 / 10000.0).min(1.0);
 
+    // L4.S13: decouple speed from the adversarial pass. The adv pass runs
+    // sequentially after the clean pass; CPU thermal/IO state from a slow
+    // clean pass bleeds into the adv timing, producing artifactual speed
+    // regression on the adv subtotal even when adv params are unchanged
+    // (L4.S11c finding). Adversarial robustness measures *correctness*
+    // under attack, not speed under attack. Fix: on the adv pass, treat
+    // speed as 1.0 (neutral, zero loss) so it doesn't contaminate
+    // fitness_adv_sub. The weight table stays at 100%; only the effective
+    // score changes per-pass.
+    let effective_speed = if inject_adv { 1.0 } else { speed };
+
     let xi_diversity = eval_xi_diversity(&engine);
     let consciousness = eval_consciousness(&engine, params.consciousness_phi_target);
     let hall_quality = eval_hallucination_quality(&engine);
@@ -1352,7 +1363,7 @@ fn run_l4_pass(
     //     phase_coherence       5
     //     cluster_separation    5
     //     dream_efficiency      5
-    //     speed                10
+    //     speed                10   (neutralized on adv pass — L4.S13)
     //     consciousness        10
     //
     //   L4 new axes            55%
@@ -1374,7 +1385,7 @@ fn run_l4_pass(
         + 0.05 * (1.0 - phase_coherence)
         + 0.05 * (1.0 - cluster_separation)
         + 0.05 * (1.0 - dream_efficiency)
-        + 0.10 * (1.0 - speed)
+        + 0.10 * (1.0 - effective_speed)
         + 0.10 * (1.0 - consciousness)
         + 0.10 * (1.0 - corpus_xi_diversity)
         + 0.15 * (1.0 - retention_score)
