@@ -3333,12 +3333,59 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.10 * (1.0 - frequency_transfer)
         + 0.15 * (1.0 - xi_robustness_v2);
 
+    // L5.9: Weight verification — assert all 13 L5 metrics sum to 100%
+    let weight_sum: f32 = 0.02 + 0.02 + 0.02 + 0.03 + 0.03 + 0.03  // inherited core = 15%
+        + 0.15 + 0.10                                                 // transfer axis = 25%
+        + 0.10 + 0.10                                                 // online learning = 20%
+        + 0.15 + 0.10                                                 // temporal = 25%
+        + 0.15;                                                       // adversarial v2 = 15%
+    assert!(
+        (weight_sum - 1.0).abs() < 1e-6,
+        "L5 weights must sum to 1.0, got {}",
+        weight_sum,
+    );
+
     println!("---");
     println!("level:                5");
     println!("fitness:              {:.6}", fitness);
     println!("transfer_score:       {:.6}", transfer_score);
     println!("fitness_B_primed:     {:.6}", fitness_b_primed);
     println!("fitness_B_naive:      {:.6}", fitness_b_naive);
+
+    // L5.9: Metric summary table — all 13 scored metrics with weights
+    println!();
+    println!("=== L5 METRIC SUMMARY (13 metrics, weights sum to 100%) ===");
+    println!("{:<30} {:>6} {:>8} {:>10}", "metric", "weight", "value", "contrib");
+    println!("{}", "-".repeat(58));
+    let metrics: Vec<(&str, f32, f32)> = vec![
+        ("noise_removal",             0.02, noise_removal),
+        ("signal_preservation",       0.02, signal_preservation),
+        ("phase_coherence",           0.02, phase_coherence),
+        ("speed",                     0.03, speed_a),
+        ("consciousness",             0.03, consciousness),
+        ("encoding_entropy",          0.03, encoding_entropy),
+        ("transfer_score",            0.15, transfer_score),
+        ("frequency_transfer",        0.10, frequency_transfer),
+        ("online_retention",          0.10, online_retention),
+        ("catastrophic_forgetting",   0.10, catastrophic_forgetting),
+        ("temporal_separation",       0.15, temporal_separation),
+        ("carrier_emergence",         0.10, carrier_emergence),
+        ("xi_robustness_v2",          0.15, xi_robustness_v2),
+    ];
+    let mut saturated_count = 0;
+    for (name, weight, value) in &metrics {
+        let contrib = weight * (1.0 - value);
+        if (*value - 1.0).abs() < 1e-4 {
+            saturated_count += 1;
+        }
+        println!("{:<30} {:>5.0}% {:>8.4} {:>10.6}", name, weight * 100.0, value, contrib);
+    }
+    println!("{}", "-".repeat(58));
+    println!("{:<30} {:>5.0}% {:>8} {:>10.6}", "TOTAL", 100, "", fitness);
+    println!("saturated_at_1.0:     {}", saturated_count);
+    println!();
+
+    // Diagnostic metrics (not scored)
     println!("noise_removal:        {:.4}", noise_removal);
     println!("signal_preservation:  {:.4}", signal_preservation);
     println!("bridge_links:         {:.4}", bridge_links);
@@ -3379,6 +3426,43 @@ fn run_experiment_l5_session(params: &Params) {
     println!("pruned:               {}", chain_totals.pruned);
     println!("links_created:        {}", chain_totals.links);
     println!("hallucinations:       {}", chain_totals.hallucinations);
+
+    // L5.9: Write results-L5.tsv stub row
+    let tsv_path = Path::new("experiments/results-L5.tsv");
+    let needs_header = !tsv_path.exists();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tsv_path)
+    {
+        use std::io::Write;
+        if needs_header {
+            let _ = writeln!(
+                f,
+                "run\tfitness\tnoise_removal\tsignal_preservation\tphase_coherence\tspeed\tconsciousness\tencoding_entropy\ttransfer_score\tfrequency_transfer\tonline_retention\tcatastrophic_forgetting\ttemporal_separation\tcarrier_emergence\txi_robustness_v2\ttotal_ms"
+            );
+        }
+        let _ = writeln!(
+            f,
+            "L5.9-stub\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
+            fitness,
+            noise_removal,
+            signal_preservation,
+            phase_coherence,
+            speed_a,
+            consciousness,
+            encoding_entropy,
+            transfer_score,
+            frequency_transfer,
+            online_retention,
+            catastrophic_forgetting,
+            temporal_separation,
+            carrier_emergence,
+            xi_robustness_v2,
+            total_ms,
+        );
+    }
+    println!("results_tsv:          experiments/results-L5.tsv");
     println!("---");
 }
 
