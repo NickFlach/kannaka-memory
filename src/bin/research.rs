@@ -2530,6 +2530,91 @@ fn eval_temporal_separation(engine: &ResonanceEngine) -> f32 {
 }
 
 // ============================================================================
+// LEVEL 5: CARRIER EMERGENCE VIA FFT (cycle L5.6)
+// ============================================================================
+
+/// Simple textbook DFT for N points (no external crate needed).
+///
+/// Returns complex coefficients as Vec<(re, im)> of length N.
+fn simple_dft(signal: &[f32]) -> Vec<(f32, f32)> {
+    let n = signal.len();
+    let mut result = Vec::with_capacity(n);
+    for k in 0..n {
+        let mut re = 0.0_f32;
+        let mut im = 0.0_f32;
+        for (j, &x) in signal.iter().enumerate() {
+            let angle = -2.0 * PI * (k as f32) * (j as f32) / (n as f32);
+            re += x * angle.cos();
+            im += x * angle.sin();
+        }
+        result.push((re, im));
+    }
+    result
+}
+
+/// Evaluate carrier emergence from per-cycle amplitude deltas (L5.6).
+///
+/// Applies DFT to the amplitude-change signal, finds peak in the [0.5, 4.0] Hz
+/// band (mapped via cycle period), and returns spectral concentration at peak.
+///
+/// `cycle_period_s`: estimated time per dream cycle in seconds. Used to map
+/// DFT bins to physical Hz. If the chain took 10s for 16 cycles, period = 0.625s.
+fn eval_carrier_emergence(amplitude_deltas: &[f32], cycle_period_s: f32) -> f32 {
+    let n = amplitude_deltas.len();
+    if n < 4 {
+        return 0.0;
+    }
+
+    let dft = simple_dft(amplitude_deltas);
+
+    // Sampling rate = 1 / cycle_period_s
+    // DFT bin k corresponds to frequency = k / (N * cycle_period_s) Hz
+    // We want the [0.5, 4.0] Hz band
+    let fs = 1.0 / cycle_period_s.max(0.001);
+
+    let mut total_power = 0.0_f32;
+    let mut peak_power = 0.0_f32;
+    let mut peak_in_band = false;
+
+    // Skip DC component (k=0), only go up to N/2 (Nyquist)
+    let nyquist = n / 2;
+    for k in 1..=nyquist {
+        let freq_hz = (k as f32) * fs / (n as f32);
+        let power = dft[k].0 * dft[k].0 + dft[k].1 * dft[k].1;
+        total_power += power;
+
+        if freq_hz >= 0.5 && freq_hz <= 4.0 && power > peak_power {
+            peak_power = power;
+            peak_in_band = true;
+        }
+    }
+
+    if !peak_in_band || total_power < 1e-12 {
+        return 0.0;
+    }
+
+    (peak_power / total_power).min(1.0)
+}
+
+/// Build a flat-frequency version of the L5 corpus (all memories at 0.1 Hz).
+///
+/// Used for the carrier emergence test: does 2 Hz periodicity emerge from
+/// uniform-frequency input? This is the key emergence vs passthrough distinction.
+fn build_corpus_l5_a_flat(
+    dim: usize,
+    hardness: usize,
+    encoder_seed: u64,
+) -> Vec<(Vec<f32>, String, &'static str, f32)> {
+    let base = build_corpus_l4(dim, hardness, encoder_seed);
+    base.into_iter()
+        .map(|(vec, content, category)| {
+            // ALL memories at 0.1 Hz — uniform frequency
+            (vec, content, category, 0.1_f32)
+        })
+        .collect()
+}
+
+// ============================================================================
 // LEVEL 5: ONLINE INJECTION + RETENTION + FORGETTING RESISTANCE (cycle L5.5)
 // ============================================================================
 
@@ -2918,9 +3003,38 @@ fn run_experiment_l5_session(params: &Params) {
         &engine_a, &original_ids_a, initial_mean_amp_a,
     );
 
+    // L5.6: carrier emergence via FFT on flat-frequency corpus
+    // The bimodal corpus amplitude deltas (for reference):
+    let actual_cycles_a = amplitude_deltas_a.len();
+    let cycle_period_a = if actual_cycles_a > 0 {
+        (consolidation_ms_a as f32 / 1000.0) / actual_cycles_a as f32
+    } else {
+        0.625 // fallback
+    };
+    let carrier_bimodal = eval_carrier_emergence(&amplitude_deltas_a, cycle_period_a);
+
+    // Flat-frequency emergence test: build corpus with ALL memories at 0.1 Hz,
+    // run dream chain, measure whether 2 Hz emerges from uniform input.
+    let corpus_flat = build_corpus_l5_a_flat(dim, 2, params.encoder_seed);
+    let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
+    let start_flat = Instant::now();
+    let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, amp_deltas_flat,
+         _inj_flat, _orig_flat, _init_amp_flat) =
+        run_l5_dream_chain(params, &mut engine_flat);
+    let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
+
+    let actual_cycles_flat = amp_deltas_flat.len();
+    let cycle_period_flat = if actual_cycles_flat > 0 {
+        (consolidation_ms_flat as f32 / 1000.0) / actual_cycles_flat as f32
+    } else {
+        0.625
+    };
+    // carrier_emergence = the FLAT-corpus FFT score (emergence, not passthrough)
+    let carrier_emergence = eval_carrier_emergence(&amp_deltas_flat, cycle_period_flat);
+
     // L5 fitness — inherited core (15%) + transfer (15%) + temporal_separation (15%)
-    // + online_retention (10%) + catastrophic_forgetting (10%)
-    // + remaining 35% placeholder zeros (will be replaced L5.6+)
+    // + online_retention (10%) + catastrophic_forgetting (10%) + carrier_emergence (10%)
+    // + remaining 25% placeholder zeros (will be replaced L5.7+)
     let fitness = 0.02 * (1.0 - noise_removal)
         + 0.02 * (1.0 - signal_preservation)
         + 0.02 * (1.0 - phase_coherence)
@@ -2931,8 +3045,9 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.15 * (1.0 - temporal_separation)
         + 0.10 * (1.0 - online_retention)
         + 0.10 * (1.0 - catastrophic_forgetting)
-        // Remaining 35% uses placeholder zeros (will be replaced L5.6+)
-        + 0.35 * 1.0;
+        + 0.10 * (1.0 - carrier_emergence)
+        // Remaining 25% uses placeholder zeros (will be replaced L5.7+)
+        + 0.25 * 1.0;
 
     println!("---");
     println!("level:                5");
@@ -2957,18 +3072,22 @@ fn run_experiment_l5_session(params: &Params) {
     println!("temporal_separation:  {:.4}", temporal_separation);
     println!("online_retention:     {:.4}", online_retention);
     println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
+    println!("carrier_emergence:    {:.4}", carrier_emergence);
+    println!("carrier_bimodal:      {:.4}", carrier_bimodal);
     println!("injected_events:      {}", injected_ids_a.len());
     println!("injected_total:       {}", injected_ids_a.iter().map(|v| v.len()).sum::<usize>());
     println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
+    println!("amp_deltas_flat:      {:?}", amp_deltas_flat);
     println!("chain_depth:          {}", params.chain_depth);
     println!("quiescence_at_a:      {}", quiescence_a.map_or("none".to_string(), |n| n.to_string()));
     println!("quiescence_at_bp:     {}", quiescence_bp.map_or("none".to_string(), |n| n.to_string()));
     println!("quiescence_at_bn:     {}", quiescence_bn.map_or("none".to_string(), |n| n.to_string()));
     println!("phi_history:          {:?}", phi_history);
-    let total_ms = consolidation_ms_a + consolidation_ms_b_primed + consolidation_ms_b_naive;
+    let total_ms = consolidation_ms_a + consolidation_ms_b_primed + consolidation_ms_b_naive + consolidation_ms_flat;
     println!("consolidation_ms_a:   {}", consolidation_ms_a);
     println!("consolidation_ms_b_p: {}", consolidation_ms_b_primed);
     println!("consolidation_ms_b_n: {}", consolidation_ms_b_naive);
+    println!("consolidation_ms_fl:  {}", consolidation_ms_flat);
     println!("total_ms:             {}", total_ms);
     println!("strengthened:         {}", chain_totals.strengthened);
     println!("pruned:               {}", chain_totals.pruned);
