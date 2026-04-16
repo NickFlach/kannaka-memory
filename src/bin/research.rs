@@ -2471,19 +2471,15 @@ fn run_experiment_l5_session(params: &Params) {
     }
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
-    let (_chain_seeds_bp, _phi_history_bp, _chain_totals_bp) =
+    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp) =
         run_dream_chain(params, &mut engine_b_primed);
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
-    // Evaluate B-primed using L4 evaluators as placeholder
-    let _surviving_b_primed: Vec<HyperMemory> = engine_b_primed
-        .store
-        .all_memories()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| (*m).clone())
-        .collect();
-    let fitness_b_primed = eval_l5_placeholder_fitness(&engine_b_primed, params, &chain_seeds, &phi_history);
+    // Evaluate B-primed using L4 evaluators as placeholder.
+    // The primed pass uses B's own chain seeds for chain_fidelity.
+    let fitness_b_primed = eval_l5_placeholder_fitness(
+        &engine_b_primed, params, &chain_seeds_bp, &phi_history_bp,
+    );
 
     // --- "Naive" pass: dream on B from scratch ---
     let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
@@ -2564,9 +2560,11 @@ fn run_experiment_l5_session(params: &Params) {
     println!("chain_fidelity:       {:.4}", chain_fidelity);
     println!("chain_depth:          {}", params.chain_depth);
     println!("phi_history:          {:?}", phi_history);
+    let total_ms = consolidation_ms_a + consolidation_ms_b_primed + consolidation_ms_b_naive;
     println!("consolidation_ms_a:   {}", consolidation_ms_a);
     println!("consolidation_ms_b_p: {}", consolidation_ms_b_primed);
     println!("consolidation_ms_b_n: {}", consolidation_ms_b_naive);
+    println!("total_ms:             {}", total_ms);
     println!("strengthened:         {}", chain_totals.strengthened);
     println!("pruned:               {}", chain_totals.pruned);
     println!("links_created:        {}", chain_totals.links);
