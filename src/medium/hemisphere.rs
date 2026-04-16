@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use ndarray::{Array1, Array2, s};
 use uuid::Uuid;
 
+use crate::xi_operator::{compute_xi_signature, xi_diversity_boost};
+
 use super::types::*;
 use super::types::DreamReport;
 
@@ -187,40 +189,59 @@ impl Hemisphere {
     }
 
     /// Compute resonance (recall) within this hemisphere.
-    /// Returns top-k matches sorted by resonance strength.
+    /// Returns top-k matches sorted by xi-diversity-boosted resonance strength.
+    ///
+    /// After initial similarity scoring, a re-ranking pass applies
+    /// `xi_diversity_boost` to each candidate's score, promoting results
+    /// that are semantically similar but have distinct Xi signatures.
     pub fn resonate(&self, query: &[f32], top_k: usize) -> Vec<ChiralResonance> {
         if self.count() == 0 { return vec![]; }
 
         let adapted = Self::adapt_vector(query, self.dims);
-        let query_arr = Array1::from_vec(adapted);
+        let query_arr = Array1::from_vec(adapted.clone());
         let query_norm = query_arr.dot(&query_arr).sqrt();
         if query_norm < 1e-8 { return vec![]; }
 
-        let mut results: Vec<(usize, f32)> = (0..self.count())
+        // 1. Score all candidates by raw similarity * energy
+        let mut results: Vec<(usize, f32, f32)> = (0..self.count())
             .map(|i| {
                 let wf = self.wavefronts.row(i);
                 let wf_norm = wf.dot(&wf).sqrt();
-                if wf_norm < 1e-8 { return (i, 0.0); }
+                if wf_norm < 1e-8 { return (i, 0.0, 0.0); }
                 let similarity = wf.dot(&query_arr) / (wf_norm * query_norm);
                 let resonance = similarity * self.energy[i];
-                (i, resonance)
+                (i, resonance, similarity)
             })
             .collect();
 
+        // 2. Take top 2*k candidates for xi re-ranking (avoid computing xi
+        //    signatures for the entire hemisphere when it's large).
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(top_k);
+        let rerank_pool = top_k.saturating_mul(2).max(top_k);
+        results.truncate(rerank_pool);
 
-        results
+        // 3. Xi diversity re-ranking: boost candidates with distinct xi signatures
+        let query_xi = compute_xi_signature(&adapted);
+
+        let mut boosted: Vec<(usize, f32, f32)> = results
             .into_iter()
-            .filter(|(_, r)| *r > 0.0)
-            .map(|(i, resonance)| {
-                let wf = self.wavefronts.row(i);
-                let wf_norm = wf.dot(&wf).sqrt();
-                let sim = if wf_norm > 1e-8 {
-                    wf.dot(&query_arr) / (wf_norm * query_norm)
-                } else {
-                    0.0
-                };
+            .filter(|(_, r, _)| *r > 0.0)
+            .map(|(i, resonance, sim)| {
+                let wf_vec: Vec<f32> = self.wavefronts.row(i).to_vec();
+                let wf_xi = compute_xi_signature(&wf_vec);
+                let boosted_sim = xi_diversity_boost(sim, &query_xi, &wf_xi);
+                let boosted_resonance = boosted_sim * self.energy[i];
+                (i, boosted_resonance, boosted_sim)
+            })
+            .collect();
+
+        // 4. Re-sort by boosted resonance and take top-k
+        boosted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        boosted.truncate(top_k);
+
+        boosted
+            .into_iter()
+            .map(|(i, resonance, sim)| {
                 ChiralResonance {
                     id: self.metadata[i].id,
                     content: self.metadata[i].content.clone(),
