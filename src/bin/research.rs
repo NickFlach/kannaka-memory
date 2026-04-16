@@ -23,7 +23,7 @@ use kannaka_memory::bridge::ConsciousnessBridge;
 use kannaka_memory::memory::HyperMemory;
 use kannaka_memory::store::{TestMedium, ResonanceEngine};
 use kannaka_memory::wave::cosine_similarity;
-use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_repulsive_force};
+use kannaka_memory::xi_operator::{compute_xi_signature, xi_diversity_boost, xi_repulsive_force, EMERGENCE_COEFF};
 
 // ============================================================================
 // EXPERIMENT PARAMETERS — THIS IS WHAT THE AGENT MODIFIES
@@ -2648,6 +2648,161 @@ fn eval_frequency_transfer(engine_a: &ResonanceEngine, engine_b: &ResonanceEngin
 }
 
 // ============================================================================
+// LEVEL 5: XI ROBUSTNESS V2 — ADVERSARIAL (cycle L5.8)
+// ============================================================================
+
+/// Build L5-specific adversarial memory set (30 memories, 3 attack types).
+///
+/// A1 (xi-twin decoys, 10): craft memories whose xi signatures approximate
+///     target memories despite being semantically different. Uses target_xi
+///     scaled by 1/EMERGENCE_COEFF as input vector (approximation due to tanh
+///     nonlinearity in the commutator).
+///
+/// A2 (commutator exploits, 10): large-magnitude inputs (amplitude 10.0) where
+///     tanh saturates to +/-1, collapsing the nonlinear commutator back toward
+///     the linear one. Tests whether saturation enables adversarial shortcuts.
+///
+/// A3 (frequency-band attacks, 10): noise memories injected at 2.0 Hz
+///     (attention band) to test whether the system incorrectly promotes them
+///     due to their frequency.
+fn build_adversarial_set_l5(
+    corpus: &[(Vec<f32>, String, &'static str, f32)],
+    seed: u64,
+) -> Vec<HyperMemory> {
+    let mut out: Vec<HyperMemory> = Vec::with_capacity(30);
+    if corpus.is_empty() {
+        return out;
+    }
+    let dim = corpus[0].0.len();
+
+    // Gather dense cluster centroids for xi-twin construction
+    let cluster_prefixes = ["dense_a", "dense_b", "dense_c", "dense_d"];
+    let mut centroids: Vec<Vec<f32>> = Vec::new();
+    for prefix in &cluster_prefixes {
+        let mut sum = vec![0.0f32; dim];
+        let mut count = 0usize;
+        for (v, content, _cat, _freq) in corpus {
+            if content.starts_with(prefix) {
+                for (s, x) in sum.iter_mut().zip(v.iter()) {
+                    *s += *x;
+                }
+                count += 1;
+            }
+        }
+        if count > 0 {
+            let inv = 1.0 / count as f32;
+            for s in sum.iter_mut() {
+                *s *= inv;
+            }
+            centroids.push(sum);
+        }
+    }
+
+    let adv_seed = seed.wrapping_add(0xADDE_F00D);
+
+    // ---- A1: xi-twin decoys (10) ----
+    // Approximate target xi by using target_xi / EMERGENCE_COEFF as input vector.
+    // The nonlinear commutator `tanh(R(v)) * G(v) - tanh(G(v)) * R(v)` won't
+    // produce exact matches due to tanh, but gets close enough for adversarial probing.
+    for i in 0..10 {
+        let target_centroid = &centroids[i % centroids.len().max(1)];
+        let target_xi = compute_xi_signature(target_centroid);
+        // Scale by 1/EMERGENCE_COEFF to approximate the inverse mapping
+        let inv_coeff = 1.0 / EMERGENCE_COEFF;
+        let v: Vec<f32> = target_xi.iter().enumerate().map(|(d, &xi_val)| {
+            // Add small seeded perturbation to avoid exact degeneracy
+            let jitter = pcg_f32(adv_seed, 8000, i as u32, d as u32) * 0.05;
+            xi_val * inv_coeff + jitter
+        }).collect();
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a1_xi_twin {}", i));
+        mem.amplitude = 0.9;
+        mem.phase = PI * 0.3 * i as f32;
+        mem.frequency = 0.1; // Storage band — shouldn't be promoted
+        mem.layer_depth = 1;
+        mem.decay_rate = 1e-4;
+        out.push(mem);
+    }
+
+    // ---- A2: commutator exploits (10) ----
+    // Large-magnitude inputs where tanh saturates to +/-1.
+    // This collapses the nonlinear commutator toward the linear regime,
+    // potentially enabling adversarial shortcuts through the xi space.
+    for i in 0..10 {
+        let v: Vec<f32> = (0..dim)
+            .map(|d| {
+                let base = pcg_f32(adv_seed, 8100, i as u32, d as u32);
+                base * 10.0 // Amplitude 10.0 — drives tanh to saturation
+            })
+            .collect();
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a2_commutator {}", i));
+        mem.amplitude = 1.0;
+        mem.phase = PI * (i as f32 * 0.47);
+        mem.frequency = 0.1;
+        mem.layer_depth = 2;
+        mem.decay_rate = 1e-4;
+        out.push(mem);
+    }
+
+    // ---- A3: frequency-band attacks (10) ----
+    // Pure noise injected at 2.0 Hz (attention band). Tests whether the system
+    // incorrectly promotes noise just because it's at the attention frequency.
+    for i in 0..10 {
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(adv_seed, 8200, i as u32, d as u32) * 0.2)
+            .collect();
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a3_freq_attack {}", i));
+        mem.amplitude = 0.5;
+        mem.phase = PI * (i as f32 * 0.13);
+        mem.frequency = 2.0; // Attention band — should NOT get promoted
+        mem.layer_depth = 0;
+        mem.decay_rate = 1e-4;
+        out.push(mem);
+    }
+
+    debug_assert_eq!(out.len(), 30, "L5 adversarial set must be exactly 30 memories");
+    out
+}
+
+/// Evaluate xi_robustness_v2 via simplified dual-pass (L5.8).
+///
+/// Builds two L5 engines from the same corpus: one clean, one with 30
+/// adversarial memories injected. Runs dream chain on both, computes
+/// sub-fitness using the L5 placeholder fitness evaluator, and scores:
+///
+///   xi_robustness_v2 = 1 - |fitness_clean_sub - fitness_adv_sub| / max(fitness_clean_sub, 0.05)
+///
+/// Clamped to [0, 1]. Higher = adversarial injection doesn't significantly
+/// change the fitness (the system is robust to xi-aware attacks).
+fn eval_xi_robustness_v2(
+    corpus_a: &[(Vec<f32>, String, &'static str, f32)],
+    params: &Params,
+    dim: usize,
+) -> f32 {
+    // Clean pass
+    let mut engine_clean = build_l5_engine(corpus_a, params, dim);
+    let (cs_clean, phi_clean, _totals_clean, _q_clean, _ad_clean,
+         _inj_clean, _orig_clean, _iamp_clean) =
+        run_l5_dream_chain(params, &mut engine_clean);
+    let fitness_clean = eval_l5_placeholder_fitness(&engine_clean, params, &cs_clean, &phi_clean);
+
+    // Adversarial pass: same corpus + 30 adversarial memories
+    let mut engine_adv = build_l5_engine(corpus_a, params, dim);
+    let adv_set = build_adversarial_set_l5(corpus_a, params.encoder_seed);
+    for mut mem in adv_set {
+        mem.decay_rate = params.decay_rate;
+        let _ = engine_adv.store.insert(mem);
+    }
+    let (cs_adv, phi_adv, _totals_adv, _q_adv, _ad_adv,
+         _inj_adv, _orig_adv, _iamp_adv) =
+        run_l5_dream_chain(params, &mut engine_adv);
+    let fitness_adv = eval_l5_placeholder_fitness(&engine_adv, params, &cs_adv, &phi_adv);
+
+    let divergence = (fitness_clean - fitness_adv).abs();
+    let normalizer = fitness_clean.max(0.05);
+    (1.0 - divergence / normalizer).clamp(0.0, 1.0)
+}
+
+// ============================================================================
 // LEVEL 5: CARRIER EMERGENCE VIA FFT (cycle L5.6)
 // ============================================================================
 
@@ -3153,9 +3308,17 @@ fn run_experiment_l5_session(params: &Params) {
     // L5.7: frequency_transfer — does the 2 Hz band structure survive cross-corpus transfer?
     let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
 
-    // L5 fitness — inherited core (15%) + transfer (15%) + temporal_separation (15%)
-    // + online_retention (10%) + catastrophic_forgetting (10%) + carrier_emergence (10%)
-    // + frequency_transfer (10%) + remaining 15% placeholder zeros (will be replaced L5.8+)
+    // L5.8: xi_robustness_v2 — adversarial robustness of xi re-ranking paths
+    let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, params, dim);
+
+    // L5 fitness — all 13 metrics wired, no placeholders remaining
+    // Inherited core (15%): noise_removal(2%), signal_preservation(2%),
+    //   phase_coherence(2%), speed(3%), consciousness(3%), encoding_entropy(3%)
+    // Cross-corpus transfer (25%): transfer_score(15%), frequency_transfer(10%)
+    // Online learning (20%): online_retention(10%), catastrophic_forgetting(10%)
+    // Multi-scale temporal (25%): temporal_separation(15%), carrier_emergence(10%)
+    // Adversarial v2 (15%): xi_robustness_v2(15%)
+    // Total: 15 + 25 + 20 + 25 + 15 = 100%
     let fitness = 0.02 * (1.0 - noise_removal)
         + 0.02 * (1.0 - signal_preservation)
         + 0.02 * (1.0 - phase_coherence)
@@ -3168,8 +3331,7 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.10 * (1.0 - catastrophic_forgetting)
         + 0.10 * (1.0 - carrier_emergence)
         + 0.10 * (1.0 - frequency_transfer)
-        // Remaining 15% uses placeholder zeros (will be replaced L5.8+)
-        + 0.15 * 1.0;
+        + 0.15 * (1.0 - xi_robustness_v2);
 
     println!("---");
     println!("level:                5");
@@ -3197,6 +3359,7 @@ fn run_experiment_l5_session(params: &Params) {
     println!("carrier_emergence:    {:.4}", carrier_emergence);
     println!("carrier_bimodal:      {:.4}", carrier_bimodal);
     println!("frequency_transfer:   {:.4}", frequency_transfer);
+    println!("xi_robustness_v2:     {:.4}", xi_robustness_v2);
     println!("injected_events:      {}", injected_ids_a.len());
     println!("injected_total:       {}", injected_ids_a.iter().map(|v| v.len()).sum::<usize>());
     println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
