@@ -1,1502 +1,1502 @@
 [
   {
     "sim": -0.07163,
-    "repulsion": 0.27959675,
-    "current_boost": -0.02969049
+    "repulsion": 0.25632176,
+    "current_boost": -0.033181734
   },
   {
     "sim": -0.00049040053,
-    "repulsion": 0.27015698,
-    "current_boost": 0.040033147
+    "repulsion": 0.28518564,
+    "current_boost": 0.042287447
   },
   {
     "sim": 0.16949795,
-    "repulsion": 0.24613877,
-    "current_boost": 0.294658
+    "repulsion": 0.2543985,
+    "current_boost": 0.29885802
   },
   {
     "sim": -0.0485853,
-    "repulsion": 0.2765741,
-    "current_boost": -0.0070991814
+    "repulsion": 0.2852669,
+    "current_boost": -0.0057952628
   },
   {
     "sim": 0.93765247,
-    "repulsion": 0.067440115,
+    "repulsion": 0.2095175,
     "current_boost": 1.0
   },
   {
     "sim": 0.20291553,
-    "repulsion": 0.24113593,
-    "current_boost": 0.3497062
+    "repulsion": 0.28933933,
+    "current_boost": 0.37904987
   },
   {
     "sim": 0.94927293,
-    "repulsion": 0.060831554,
+    "repulsion": 0.19696556,
     "current_boost": 1.0
   },
   {
     "sim": 0.64911276,
-    "repulsion": 0.15999024,
-    "current_boost": 0.96066785
+    "repulsion": 0.23519479,
+    "current_boost": 1.0
   },
   {
     "sim": -0.005167465,
-    "repulsion": 0.2707877,
-    "current_boost": 0.03545069
+    "repulsion": 0.2700452,
+    "current_boost": 0.035339314
   },
   {
     "sim": -0.0235173,
-    "repulsion": 0.27324817,
-    "current_boost": 0.017469928
+    "repulsion": 0.26254508,
+    "current_boost": 0.015864465
   },
   {
     "sim": -0.06640644,
-    "repulsion": 0.27891442,
-    "current_boost": -0.02456928
+    "repulsion": 0.27140146,
+    "current_boost": -0.025696222
   },
   {
     "sim": 0.058343697,
-    "repulsion": 0.26209325,
-    "current_boost": 0.09765768
+    "repulsion": 0.2435917,
+    "current_boost": 0.09488246
   },
   {
     "sim": 0.11087351,
-    "repulsion": 0.25467798,
-    "current_boost": 0.14907521
+    "repulsion": 0.2582189,
+    "current_boost": 0.14960635
   },
   {
     "sim": 0.023884457,
-    "repulsion": 0.26684573,
-    "current_boost": 0.06391132
+    "repulsion": 0.27237287,
+    "current_boost": 0.06474039
   },
   {
     "sim": 0.065279394,
-    "repulsion": 0.2611263,
-    "current_boost": 0.10444834
+    "repulsion": 0.2833239,
+    "current_boost": 0.10777798
   },
   {
     "sim": -0.0310683,
-    "repulsion": 0.2742543,
-    "current_boost": 0.010069845
+    "repulsion": 0.25672162,
+    "current_boost": 0.007439943
   },
   {
     "sim": -0.070640884,
-    "repulsion": 0.2794677,
-    "current_boost": -0.028720729
+    "repulsion": 0.26537862,
+    "current_boost": -0.03083409
   },
   {
     "sim": 0.044735372,
-    "repulsion": 0.26398033,
-    "current_boost": 0.08433242
+    "repulsion": 0.28397286,
+    "current_boost": 0.0873313
   },
   {
     "sim": -0.01958514,
-    "repulsion": 0.27272278,
-    "current_boost": 0.021323279
+    "repulsion": 0.27715492,
+    "current_boost": 0.021988101
   },
   {
     "sim": 0.07083625,
-    "repulsion": 0.26034898,
-    "current_boost": 0.1098886
+    "repulsion": 0.2821763,
+    "current_boost": 0.1131627
   },
   {
     "sim": 0.11463854,
-    "repulsion": 0.25413823,
-    "current_boost": 0.15275927
+    "repulsion": 0.27437457,
+    "current_boost": 0.15579472
   },
   {
     "sim": 0.020015096,
-    "repulsion": 0.26737416,
-    "current_boost": 0.060121223
+    "repulsion": 0.27247685,
+    "current_boost": 0.06088663
   },
   {
     "sim": 0.080764644,
-    "repulsion": 0.25895423,
-    "current_boost": 0.11960778
+    "repulsion": 0.2695575,
+    "current_boost": 0.12119827
   },
   {
     "sim": 0.05749621,
-    "repulsion": 0.26221126,
-    "current_boost": 0.096827894
+    "repulsion": 0.24952954,
+    "current_boost": 0.09492564
   },
   {
     "sim": -0.0030820707,
-    "repulsion": 0.27050665,
-    "current_boost": 0.03749393
+    "repulsion": 0.26139462,
+    "current_boost": 0.036127124
   },
   {
     "sim": -0.08551286,
-    "repulsion": 0.28140196,
-    "current_boost": -0.043302566
+    "repulsion": 0.2765214,
+    "current_boost": -0.04403465
   },
   {
     "sim": -0.06487382,
-    "repulsion": 0.27871403,
-    "current_boost": -0.023066714
+    "repulsion": 0.28055796,
+    "current_boost": -0.022790127
   },
   {
     "sim": 0.15241936,
-    "repulsion": 0.24865673,
-    "current_boost": 0.26611966
+    "repulsion": 0.28527942,
+    "current_boost": 0.28286567
   },
   {
     "sim": -0.06672538,
-    "repulsion": 0.27895623,
-    "current_boost": -0.024881944
+    "repulsion": 0.2686452,
+    "current_boost": -0.026428599
   },
   {
     "sim": -0.071817115,
-    "repulsion": 0.27962115,
-    "current_boost": -0.029873941
+    "repulsion": 0.25886044,
+    "current_boost": -0.03298805
   },
   {
     "sim": 0.03234945,
-    "repulsion": 0.26568618,
-    "current_boost": 0.07220238
+    "repulsion": 0.2877884,
+    "current_boost": 0.075517714
   },
   {
     "sim": 0.04495766,
-    "repulsion": 0.26394963,
-    "current_boost": 0.084550105
+    "repulsion": 0.2585452,
+    "current_boost": 0.083739445
   },
   {
     "sim": 0.21445124,
-    "repulsion": 0.23938464,
-    "current_boost": 0.36846024
+    "repulsion": 0.28831625,
+    "current_boost": 0.39994058
   },
   {
     "sim": -0.021363769,
-    "repulsion": 0.27296057,
-    "current_boost": 0.01958032
+    "repulsion": 0.27483368,
+    "current_boost": 0.019861285
   },
   {
     "sim": 0.94827294,
-    "repulsion": 0.06142817,
+    "repulsion": 0.19612639,
     "current_boost": 1.0
   },
   {
     "sim": 0.02795821,
-    "repulsion": 0.26628837,
-    "current_boost": 0.06790146
+    "repulsion": 0.25735924,
+    "current_boost": 0.0665621
   },
   {
     "sim": 0.06940053,
-    "repulsion": 0.26055005,
-    "current_boost": 0.10848303
+    "repulsion": 0.26547983,
+    "current_boost": 0.1092225
   },
   {
     "sim": -0.028102487,
-    "repulsion": 0.27385953,
-    "current_boost": 0.012976445
+    "repulsion": 0.30156875,
+    "current_boost": 0.017132826
   },
   {
     "sim": 0.042784095,
-    "repulsion": 0.2642498,
-    "current_boost": 0.08242157
+    "repulsion": 0.27172732,
+    "current_boost": 0.0835432
   },
   {
     "sim": 0.22669184,
-    "repulsion": 0.23751225,
-    "current_boost": 0.38821813
+    "repulsion": 0.2745598,
+    "current_boost": 0.41341326
   },
   {
     "sim": 0.085483275,
-    "repulsion": 0.25828877,
-    "current_boost": 0.12422659
+    "repulsion": 0.2586567,
+    "current_boost": 0.12428178
   },
   {
     "sim": 0.009667266,
-    "repulsion": 0.26878205,
-    "current_boost": 0.049984574
+    "repulsion": 0.2532492,
+    "current_boost": 0.047654647
   },
   {
     "sim": 0.028413033,
-    "repulsion": 0.26622605,
-    "current_boost": 0.06834694
+    "repulsion": 0.2654336,
+    "current_boost": 0.06822807
   },
   {
     "sim": 0.05139421,
-    "repulsion": 0.26305863,
-    "current_boost": 0.090853006
+    "repulsion": 0.2606034,
+    "current_boost": 0.09048472
   },
   {
     "sim": -0.03923713,
-    "repulsion": 0.2753385,
-    "current_boost": 0.002063647
+    "repulsion": 0.26491988,
+    "current_boost": 0.0005008541
   },
   {
     "sim": -0.078863464,
-    "repulsion": 0.28053886,
-    "current_boost": -0.036782634
+    "repulsion": 0.25368905,
+    "current_boost": -0.040810104
   },
   {
     "sim": -0.045511484,
-    "repulsion": 0.27616844,
-    "current_boost": -0.004086219
+    "repulsion": 0.2633485,
+    "current_boost": -0.00600921
   },
   {
     "sim": -0.15985198,
-    "repulsion": 0.29087806,
-    "current_boost": -0.11622027
+    "repulsion": 0.27310917,
+    "current_boost": -0.11888561
   },
   {
     "sim": -0.067501836,
-    "repulsion": 0.27905777,
-    "current_boost": -0.02564317
+    "repulsion": 0.27447107,
+    "current_boost": -0.026331171
   },
   {
     "sim": 0.03388611,
-    "repulsion": 0.26547518,
-    "current_boost": 0.07370739
+    "repulsion": 0.2751476,
+    "current_boost": 0.07515825
   },
   {
     "sim": 0.09037697,
-    "repulsion": 0.25759682,
-    "current_boost": 0.12901649
+    "repulsion": 0.27756694,
+    "current_boost": 0.13201201
   },
   {
     "sim": -0.016370818,
-    "repulsion": 0.27229258,
-    "current_boost": 0.024473071
+    "repulsion": 0.28949577,
+    "current_boost": 0.02705355
   },
   {
     "sim": -0.12195634,
-    "repulsion": 0.28608668,
-    "current_boost": -0.079043336
+    "repulsion": 0.2497284,
+    "current_boost": -0.08449708
   },
   {
     "sim": -0.008639547,
-    "repulsion": 0.27125496,
-    "current_boost": 0.0320487
+    "repulsion": 0.26597264,
+    "current_boost": 0.03125635
   },
   {
     "sim": 0.12466428,
-    "repulsion": 0.25269523,
-    "current_boost": 0.16256857
+    "repulsion": 0.2618255,
+    "current_boost": 0.1639381
   },
   {
     "sim": 0.26928055,
-    "repulsion": 0.23087934,
-    "current_boost": 0.4557945
+    "repulsion": 0.27999902,
+    "current_boost": 0.4954754
   },
   {
     "sim": -0.02526026,
-    "repulsion": 0.27348074,
-    "current_boost": 0.015761854
+    "repulsion": 0.27547246,
+    "current_boost": 0.016060611
   },
   {
     "sim": 0.9376389,
-    "repulsion": 0.067447685,
+    "repulsion": 0.19805503,
     "current_boost": 1.0
   },
   {
     "sim": 0.08486018,
-    "repulsion": 0.25837675,
-    "current_boost": 0.123616695
+    "repulsion": 0.25595772,
+    "current_boost": 0.123253845
   },
   {
     "sim": -0.05187007,
-    "repulsion": 0.27700695,
-    "current_boost": -0.010319024
+    "repulsion": 0.27212942,
+    "current_boost": -0.011050656
   },
   {
     "sim": 0.10038146,
-    "repulsion": 0.25617623,
-    "current_boost": 0.1388079
+    "repulsion": 0.2508582,
+    "current_boost": 0.13801019
   },
   {
     "sim": 0.034327634,
-    "repulsion": 0.26541448,
-    "current_boost": 0.0741398
+    "repulsion": 0.26454896,
+    "current_boost": 0.07400998
   },
   {
     "sim": 0.046663765,
-    "repulsion": 0.26371372,
-    "current_boost": 0.08622082
+    "repulsion": 0.26391464,
+    "current_boost": 0.08625096
   },
   {
     "sim": -0.10014925,
-    "repulsion": 0.28329274,
-    "current_boost": -0.05765534
+    "repulsion": 0.25291878,
+    "current_boost": -0.06221143
   },
   {
     "sim": -0.12755674,
-    "repulsion": 0.28679982,
-    "current_boost": -0.08453677
+    "repulsion": 0.28109112,
+    "current_boost": -0.08539307
   },
   {
     "sim": 0.05941532,
-    "repulsion": 0.26194414,
-    "current_boost": 0.098706946
+    "repulsion": 0.26082727,
+    "current_boost": 0.09853941
   },
   {
     "sim": 0.946549,
-    "repulsion": 0.06244348,
+    "repulsion": 0.19162168,
     "current_boost": 1.0
   },
   {
     "sim": 0.9315616,
-    "repulsion": 0.07065781,
+    "repulsion": 0.20430811,
     "current_boost": 1.0
   },
   {
     "sim": 0.93354964,
-    "repulsion": 0.069623955,
+    "repulsion": 0.20493722,
     "current_boost": 1.0
   },
   {
     "sim": 0.060047116,
-    "repulsion": 0.2618561,
-    "current_boost": 0.09932554
+    "repulsion": 0.2753611,
+    "current_boost": 0.101351276
   },
   {
     "sim": 0.2005069,
-    "repulsion": 0.24149996,
-    "current_boost": 0.34577414
+    "repulsion": 0.28768268,
+    "current_boost": 0.373554
   },
   {
     "sim": 0.63832045,
-    "repulsion": 0.16243203,
-    "current_boost": 0.9493715
+    "repulsion": 0.24165696,
+    "current_boost": 1.0
   },
   {
     "sim": -0.049804624,
-    "repulsion": 0.27673492,
-    "current_boost": -0.008294385
+    "repulsion": 0.2876406,
+    "current_boost": -0.0066585317
   },
   {
     "sim": -0.11323327,
-    "repulsion": 0.28497237,
-    "current_boost": -0.07048741
+    "repulsion": 0.2656179,
+    "current_boost": -0.07339058
   },
   {
     "sim": 0.033475358,
-    "repulsion": 0.2655316,
-    "current_boost": 0.0733051
+    "repulsion": 0.2560273,
+    "current_boost": 0.07187946
   },
   {
     "sim": -0.1415554,
-    "repulsion": 0.28857464,
-    "current_boost": -0.0982692
+    "repulsion": 0.26007944,
+    "current_boost": -0.10254348
   },
   {
     "sim": 0.09885802,
-    "repulsion": 0.25639305,
-    "current_boost": 0.13731697
+    "repulsion": 0.26744357,
+    "current_boost": 0.13897456
   },
   {
     "sim": -0.036856964,
-    "repulsion": 0.27502307,
-    "current_boost": 0.004396498
+    "repulsion": 0.27071506,
+    "current_boost": 0.0037502944
   },
   {
     "sim": 0.061580244,
-    "repulsion": 0.2616425,
-    "current_boost": 0.10082662
+    "repulsion": 0.27635986,
+    "current_boost": 0.10303423
   },
   {
     "sim": -0.02797204,
-    "repulsion": 0.27384222,
-    "current_boost": 0.013104292
+    "repulsion": 0.28539863,
+    "current_boost": 0.014837755
   },
   {
     "sim": 0.04594995,
-    "repulsion": 0.26381245,
-    "current_boost": 0.08552182
+    "repulsion": 0.24240263,
+    "current_boost": 0.08231035
   },
   {
     "sim": 0.0820288,
-    "repulsion": 0.25877613,
-    "current_boost": 0.12084522
+    "repulsion": 0.27400994,
+    "current_boost": 0.12313029
   },
   {
     "sim": 0.1441345,
-    "repulsion": 0.24986905,
-    "current_boost": 0.18161486
+    "repulsion": 0.29123187,
+    "current_boost": 0.18781929
   },
   {
     "sim": -0.044841066,
-    "repulsion": 0.2760799,
-    "current_boost": -0.0034290813
+    "repulsion": 0.27941632,
+    "current_boost": -0.0029286146
   },
   {
     "sim": 0.048643764,
-    "repulsion": 0.2634397,
-    "current_boost": 0.08815972
+    "repulsion": 0.25770777,
+    "current_boost": 0.08729993
   },
   {
     "sim": 0.0058795745,
-    "repulsion": 0.26929554,
-    "current_boost": 0.046273906
+    "repulsion": 0.24574152,
+    "current_boost": 0.042740803
   },
   {
     "sim": -0.025334254,
-    "repulsion": 0.27349064,
-    "current_boost": 0.015689343
+    "repulsion": 0.25177738,
+    "current_boost": 0.012432355
   },
   {
     "sim": -0.056585025,
-    "repulsion": 0.2776272,
-    "current_boost": -0.014940944
+    "repulsion": 0.2669448,
+    "current_boost": -0.016543303
   },
   {
     "sim": 0.20072834,
-    "repulsion": 0.24146654,
-    "current_boost": 0.34613585
+    "repulsion": 0.2864382,
+    "current_boost": 0.37321714
   },
   {
     "sim": -0.02577343,
-    "repulsion": 0.27354917,
-    "current_boost": 0.015258947
+    "repulsion": 0.27775368,
+    "current_boost": 0.015889624
   },
   {
     "sim": 0.16199715,
-    "repulsion": 0.24724782,
-    "current_boost": 0.28215748
+    "repulsion": 0.25703612,
+    "current_boost": 0.28691453
   },
   {
     "sim": 0.22618549,
-    "repulsion": 0.23758994,
-    "current_boost": 0.38740367
+    "repulsion": 0.2846951,
+    "current_boost": 0.41936716
   },
   {
     "sim": -0.077080846,
-    "repulsion": 0.28030697,
-    "current_boost": -0.035034798
+    "repulsion": 0.26292226,
+    "current_boost": -0.037642505
   },
   {
     "sim": 0.05562689,
-    "repulsion": 0.2624711,
-    "current_boost": 0.094997555
+    "repulsion": 0.2534443,
+    "current_boost": 0.09364354
   },
   {
     "sim": 0.7403536,
-    "repulsion": 0.13762619,
+    "repulsion": 0.23676232,
     "current_boost": 1.0
   },
   {
     "sim": 0.12729028,
-    "repulsion": 0.25231585,
-    "current_boost": 0.16513765
+    "repulsion": 0.24621592,
+    "current_boost": 0.16422267
   },
   {
     "sim": -0.017542785,
-    "repulsion": 0.27244952,
-    "current_boost": 0.023324644
+    "repulsion": 0.2703454,
+    "current_boost": 0.023009026
   },
   {
     "sim": 0.2102995,
-    "repulsion": 0.2400164,
-    "current_boost": 0.36172548
+    "repulsion": 0.2897859,
+    "current_boost": 0.393125
   },
   {
     "sim": 0.020839829,
-    "repulsion": 0.26726168,
-    "current_boost": 0.060929082
+    "repulsion": 0.26353464,
+    "current_boost": 0.060370024
   },
   {
     "sim": -0.018199507,
-    "repulsion": 0.2725374,
-    "current_boost": 0.022681106
+    "repulsion": 0.2735134,
+    "current_boost": 0.022827506
   },
   {
     "sim": 0.08407523,
-    "repulsion": 0.25848752,
-    "current_boost": 0.12284836
+    "repulsion": 0.25764775,
+    "current_boost": 0.12272239
   },
   {
     "sim": 0.013438653,
-    "repulsion": 0.2682698,
-    "current_boost": 0.053679127
+    "repulsion": 0.24854973,
+    "current_boost": 0.050721113
   },
   {
     "sim": -0.15152597,
-    "repulsion": 0.28983217,
-    "current_boost": -0.10805115
+    "repulsion": 0.253599,
+    "current_boost": -0.113486126
   },
   {
     "sim": 0.28211257,
-    "repulsion": 0.22884311,
-    "current_boost": 0.47579113
+    "repulsion": 0.27748758,
+    "current_boost": 0.5169608
   },
   {
     "sim": 0.22658639,
-    "repulsion": 0.23752843,
-    "current_boost": 0.3880485
+    "repulsion": 0.27991608,
+    "current_boost": 0.41686192
   },
   {
     "sim": -0.07128159,
-    "repulsion": 0.2795513,
-    "current_boost": -0.029348895
+    "repulsion": 0.2605303,
+    "current_boost": -0.032202043
   },
   {
     "sim": 0.017245919,
-    "repulsion": 0.26775163,
-    "current_boost": 0.057408664
+    "repulsion": 0.3024038,
+    "current_boost": 0.06260649
   },
   {
     "sim": 0.050553665,
-    "repulsion": 0.2631752,
-    "current_boost": 0.09002994
+    "repulsion": 0.27734086,
+    "current_boost": 0.09215479
   },
   {
     "sim": 0.16224468,
-    "repulsion": 0.2472113,
-    "current_boost": 0.28257084
+    "repulsion": 0.2882784,
+    "current_boost": 0.30255958
   },
   {
     "sim": -0.14224876,
-    "repulsion": 0.28866234,
-    "current_boost": -0.09894941
+    "repulsion": 0.27447465,
+    "current_boost": -0.101077564
   },
   {
     "sim": -0.056221377,
-    "repulsion": 0.2775794,
-    "current_boost": -0.014584467
+    "repulsion": 0.27640483,
+    "current_boost": -0.014760651
   },
   {
     "sim": 0.6808063,
-    "repulsion": 0.15259376,
-    "current_boost": 0.9924667
+    "repulsion": 0.22513334,
+    "current_boost": 1.0
   },
   {
     "sim": 0.079530075,
-    "repulsion": 0.25912812,
-    "current_boost": 0.11839929
+    "repulsion": 0.27210525,
+    "current_boost": 0.12034586
   },
   {
     "sim": -0.02582409,
-    "repulsion": 0.27355596,
-    "current_boost": 0.015209304
+    "repulsion": 0.27799398,
+    "current_boost": 0.015875006
   },
   {
     "sim": 0.047667596,
-    "repulsion": 0.26357487,
-    "current_boost": 0.08720383
+    "repulsion": 0.26405427,
+    "current_boost": 0.08727574
   },
   {
     "sim": 0.03393387,
-    "repulsion": 0.2654686,
-    "current_boost": 0.07375416
+    "repulsion": 0.27401376,
+    "current_boost": 0.07503594
   },
   {
     "sim": -0.09024431,
-    "repulsion": 0.28201458,
-    "current_boost": -0.04794212
+    "repulsion": 0.28026232,
+    "current_boost": -0.04820496
   },
   {
     "sim": 0.123849005,
-    "repulsion": 0.2528129,
-    "current_boost": 0.16177094
+    "repulsion": 0.25821656,
+    "current_boost": 0.16258149
   },
   {
     "sim": 0.021292023,
-    "repulsion": 0.26719993,
-    "current_boost": 0.061372016
+    "repulsion": 0.27836186,
+    "current_boost": 0.06304631
   },
   {
     "sim": 0.005120564,
-    "repulsion": 0.26939836,
-    "current_boost": 0.04553032
+    "repulsion": 0.25993216,
+    "current_boost": 0.04411039
   },
   {
     "sim": -0.06972677,
-    "repulsion": 0.2793483,
-    "current_boost": -0.027824525
+    "repulsion": 0.28112555,
+    "current_boost": -0.02755794
   },
   {
     "sim": -0.00024954948,
-    "repulsion": 0.27012444,
-    "current_boost": 0.040269118
+    "repulsion": 0.24712804,
+    "current_boost": 0.03681966
   },
   {
     "sim": 0.94000477,
-    "repulsion": 0.066155925,
+    "repulsion": 0.19657624,
     "current_boost": 1.0
   },
   {
     "sim": 0.13653617,
-    "repulsion": 0.25097576,
-    "current_boost": 0.17418253
+    "repulsion": 0.25865924,
+    "current_boost": 0.17533505
   },
   {
     "sim": 0.22333752,
-    "repulsion": 0.23802684,
-    "current_boost": 0.3828185
+    "repulsion": 0.27623996,
+    "current_boost": 0.40842175
   },
   {
     "sim": -0.08794749,
-    "repulsion": 0.2817174,
-    "current_boost": -0.045689877
+    "repulsion": 0.28382665,
+    "current_boost": -0.04537349
   },
   {
     "sim": -0.061326332,
-    "repulsion": 0.27824935,
-    "current_boost": -0.019588929
+    "repulsion": 0.27758652,
+    "current_boost": -0.019688353
   },
   {
     "sim": 0.20302351,
-    "repulsion": 0.24111955,
-    "current_boost": 0.3498823
+    "repulsion": 0.28153467,
+    "current_boost": 0.37449798
   },
   {
     "sim": 0.09455595,
-    "repulsion": 0.25700435,
-    "current_boost": 0.1331066
+    "repulsion": 0.30583102,
+    "current_boost": 0.1404306
   },
   {
     "sim": -0.00036957322,
-    "repulsion": 0.27014065,
-    "current_boost": 0.040151525
+    "repulsion": 0.27302712,
+    "current_boost": 0.040584493
   },
   {
     "sim": -0.094175406,
-    "repulsion": 0.2825226,
-    "current_boost": -0.051797017
+    "repulsion": 0.2814783,
+    "current_boost": -0.051953662
   },
   {
     "sim": 0.07377542,
-    "repulsion": 0.25993684,
-    "current_boost": 0.112765945
+    "repulsion": 0.25740993,
+    "current_boost": 0.11238691
   },
   {
     "sim": 0.5953655,
-    "repulsion": 0.17180713,
-    "current_boost": 0.90222967
+    "repulsion": 0.2526446,
+    "current_boost": 1.0
   },
   {
     "sim": 0.18910567,
-    "repulsion": 0.24321586,
-    "current_boost": 0.32708618
+    "repulsion": 0.2629351,
+    "current_boost": 0.33827323
   },
   {
     "sim": 0.010420546,
-    "repulsion": 0.2686798,
-    "current_boost": 0.050722517
+    "repulsion": 0.28099993,
+    "current_boost": 0.052570537
   },
   {
     "sim": -0.0801851,
-    "repulsion": 0.28071058,
-    "current_boost": -0.038078513
+    "repulsion": 0.29028174,
+    "current_boost": -0.03664284
   },
   {
     "sim": -0.024099115,
-    "repulsion": 0.2733259,
-    "current_boost": 0.016899768
+    "repulsion": 0.27670294,
+    "current_boost": 0.017406326
   },
   {
     "sim": -0.03943237,
-    "repulsion": 0.27536443,
-    "current_boost": 0.0018722974
+    "repulsion": 0.26969734,
+    "current_boost": 0.0010222346
   },
   {
     "sim": 0.022546135,
-    "repulsion": 0.26702866,
-    "current_boost": 0.062600434
+    "repulsion": 0.2690839,
+    "current_boost": 0.062908724
   },
   {
     "sim": 0.6055353,
-    "repulsion": 0.16963436,
-    "current_boost": 0.9136941
+    "repulsion": 0.22571486,
+    "current_boost": 1.0
   },
   {
     "sim": -0.10822673,
-    "repulsion": 0.2843309,
-    "current_boost": -0.06557709
+    "repulsion": 0.27388728,
+    "current_boost": -0.067143634
   },
   {
     "sim": 0.09232466,
-    "repulsion": 0.25732085,
-    "current_boost": 0.1309228
+    "repulsion": 0.27252924,
+    "current_boost": 0.13320404
   },
   {
     "sim": 0.0015462167,
-    "repulsion": 0.26988184,
-    "current_boost": 0.042028494
+    "repulsion": 0.276782,
+    "current_boost": 0.043063518
   },
   {
     "sim": -0.1299563,
-    "repulsion": 0.28710487,
-    "current_boost": -0.08689057
+    "repulsion": 0.2685824,
+    "current_boost": -0.089668944
   },
   {
     "sim": -0.0066352375,
-    "repulsion": 0.27098534,
-    "current_boost": 0.034012564
+    "repulsion": 0.26453692,
+    "current_boost": 0.033045303
   },
   {
     "sim": -0.086359404,
-    "repulsion": 0.28151178,
-    "current_boost": -0.044132635
+    "repulsion": 0.27243462,
+    "current_boost": -0.04549421
   },
   {
     "sim": 0.078848556,
-    "repulsion": 0.25922406,
-    "current_boost": 0.11773217
+    "repulsion": 0.25088105,
+    "current_boost": 0.116480716
   },
   {
     "sim": 0.95476216,
-    "repulsion": 0.05744603,
+    "repulsion": 0.17334001,
     "current_boost": 1.0
   },
   {
     "sim": -0.032525383,
-    "repulsion": 0.274448,
-    "current_boost": 0.00864182
+    "repulsion": 0.28111234,
+    "current_boost": 0.0096414685
   },
   {
     "sim": -0.023574725,
-    "repulsion": 0.27325588,
-    "current_boost": 0.01741366
+    "repulsion": 0.29496485,
+    "current_boost": 0.020670004
   },
   {
     "sim": 0.732553,
-    "repulsion": 0.13967809,
+    "repulsion": 0.22629829,
     "current_boost": 1.0
   },
   {
     "sim": 0.9333265,
-    "repulsion": 0.069740705,
+    "repulsion": 0.21650791,
     "current_boost": 1.0
   },
   {
     "sim": 0.17816858,
-    "repulsion": 0.24485055,
-    "current_boost": 0.3090426
+    "repulsion": 0.28921238,
+    "current_boost": 0.33275425
   },
   {
     "sim": 0.2532266,
-    "repulsion": 0.23340173,
-    "current_boost": 0.4305372
+    "repulsion": 0.28997225,
+    "current_boost": 0.47351265
   },
   {
     "sim": 0.021519845,
-    "repulsion": 0.26716882,
-    "current_boost": 0.06159517
+    "repulsion": 0.27715096,
+    "current_boost": 0.06309249
   },
   {
     "sim": -0.080368534,
-    "repulsion": 0.2807344,
-    "current_boost": -0.038258374
+    "repulsion": 0.26850778,
+    "current_boost": -0.040092364
   },
   {
     "sim": 0.12399772,
-    "repulsion": 0.25279137,
-    "current_boost": 0.16191643
+    "repulsion": 0.270893,
+    "current_boost": 0.16463166
   },
   {
     "sim": -0.12526514,
-    "repulsion": 0.28650826,
-    "current_boost": -0.08228889
+    "repulsion": 0.28033754,
+    "current_boost": -0.08321451
   },
   {
     "sim": -0.024260301,
-    "repulsion": 0.2733474,
-    "current_boost": 0.016741812
+    "repulsion": 0.2949736,
+    "current_boost": 0.019985743
   },
   {
     "sim": 0.1761175,
-    "repulsion": 0.24515595,
-    "current_boost": 0.30564627
+    "repulsion": 0.28923732,
+    "current_boost": 0.32893676
   },
   {
     "sim": -0.017340012,
-    "repulsion": 0.27242234,
-    "current_boost": 0.023523342
+    "repulsion": 0.28235772,
+    "current_boost": 0.025013648
   },
   {
     "sim": 0.9455299,
-    "repulsion": 0.06303602,
+    "repulsion": 0.19118676,
     "current_boost": 1.0
   },
   {
     "sim": -0.030759472,
-    "repulsion": 0.27421322,
-    "current_boost": 0.010372512
+    "repulsion": 0.2934899,
+    "current_boost": 0.013264015
   },
   {
     "sim": 0.07274457,
-    "repulsion": 0.2600815,
-    "current_boost": 0.1117568
+    "repulsion": 0.28127468,
+    "current_boost": 0.11493577
   },
   {
     "sim": -0.01592099,
-    "repulsion": 0.2722323,
-    "current_boost": 0.024913855
+    "repulsion": 0.28207827,
+    "current_boost": 0.026390754
   },
   {
     "sim": 0.032393463,
-    "repulsion": 0.26568007,
-    "current_boost": 0.07224548
+    "repulsion": 0.26168972,
+    "current_boost": 0.07164692
   },
   {
     "sim": 0.024652746,
-    "repulsion": 0.26674074,
-    "current_boost": 0.06466386
+    "repulsion": 0.25964713,
+    "current_boost": 0.06359982
   },
   {
     "sim": 0.15800332,
-    "repulsion": 0.24783628,
-    "current_boost": 0.27548018
+    "repulsion": 0.2606307,
+    "current_boost": 0.28154486
   },
   {
     "sim": 0.2159002,
-    "repulsion": 0.23916377,
-    "current_boost": 0.37080672
+    "repulsion": 0.2821709,
+    "current_boost": 0.39866245
   },
   {
     "sim": -0.009627893,
-    "repulsion": 0.27138785,
-    "current_boost": 0.031080283
+    "repulsion": 0.28743172,
+    "current_boost": 0.033486865
   },
   {
     "sim": -0.015159994,
-    "repulsion": 0.27213028,
-    "current_boost": 0.02565955
+    "repulsion": 0.28799745,
+    "current_boost": 0.028039627
   },
   {
     "sim": -0.015215045,
-    "repulsion": 0.27213773,
-    "current_boost": 0.025605617
+    "repulsion": 0.26163977,
+    "current_boost": 0.024030922
   },
   {
     "sim": -0.019667355,
-    "repulsion": 0.27273384,
-    "current_boost": 0.021242721
+    "repulsion": 0.28087917,
+    "current_boost": 0.022464523
   },
   {
     "sim": -0.049520697,
-    "repulsion": 0.27669743,
-    "current_boost": -0.008016083
+    "repulsion": 0.26436427,
+    "current_boost": -0.009866055
   },
   {
     "sim": -0.046280913,
-    "repulsion": 0.2762701,
-    "current_boost": -0.0048403963
+    "repulsion": 0.276905,
+    "current_boost": -0.004745163
   },
   {
     "sim": 0.9423985,
-    "repulsion": 0.0648225,
+    "repulsion": 0.21950422,
     "current_boost": 1.0
   },
   {
     "sim": -0.1240732,
-    "repulsion": 0.28635648,
-    "current_boost": -0.08111973
+    "repulsion": 0.2975308,
+    "current_boost": -0.079443574
   },
   {
     "sim": 0.16025478,
-    "repulsion": 0.24750468,
-    "current_boost": 0.27924618
+    "repulsion": 0.27611256,
+    "current_boost": 0.29299983
   },
   {
     "sim": -0.069712564,
-    "repulsion": 0.27934653,
-    "current_boost": -0.027810585
+    "repulsion": 0.27346987,
+    "current_boost": -0.028692082
   },
   {
     "sim": 0.24406068,
-    "repulsion": 0.2348298,
-    "current_boost": 0.41599885
+    "repulsion": 0.29193306,
+    "current_boost": 0.45780882
   },
   {
     "sim": 0.0049502607,
-    "repulsion": 0.2694214,
-    "current_boost": 0.04536347
+    "repulsion": 0.2902518,
+    "current_boost": 0.04848803
   },
   {
     "sim": 0.2101266,
-    "repulsion": 0.24004263,
-    "current_boost": 0.3614446
+    "repulsion": 0.2779742,
+    "current_boost": 0.38535592
   },
   {
     "sim": 0.015535646,
-    "repulsion": 0.26798448,
-    "current_boost": 0.05573332
+    "repulsion": 0.27149427,
+    "current_boost": 0.05625979
   },
   {
     "sim": 0.41395488,
-    "repulsion": 0.20676413,
-    "current_boost": 0.67072797
+    "repulsion": 0.25552604,
+    "current_boost": 0.7312836
   },
   {
     "sim": 0.23678243,
-    "repulsion": 0.23595755,
-    "current_boost": 0.40439424
+    "repulsion": 0.2664374,
+    "current_boost": 0.42604554
   },
   {
     "sim": 0.031006798,
-    "repulsion": 0.26587042,
-    "current_boost": 0.070887364
+    "repulsion": 0.25410214,
+    "current_boost": 0.06912212
   },
   {
     "sim": 0.0770797,
-    "repulsion": 0.25947282,
-    "current_boost": 0.11600062
+    "repulsion": 0.2677639,
+    "current_boost": 0.11724429
   },
   {
     "sim": 0.6701627,
-    "repulsion": 0.15511714,
-    "current_boost": 0.9820238
+    "repulsion": 0.22037736,
+    "current_boost": 1.0
   },
   {
     "sim": 0.011855804,
-    "repulsion": 0.26848492,
-    "current_boost": 0.052128542
+    "repulsion": 0.28236896,
+    "current_boost": 0.054211147
   },
   {
     "sim": 0.11825004,
-    "repulsion": 0.25361937,
-    "current_boost": 0.15629295
+    "repulsion": 0.29090497,
+    "current_boost": 0.1618858
   },
   {
     "sim": -0.007635077,
-    "repulsion": 0.2711199,
-    "current_boost": 0.03303291
+    "repulsion": 0.26911858,
+    "current_boost": 0.032732714
   },
   {
     "sim": -0.05128846,
-    "repulsion": 0.2769305,
-    "current_boost": -0.00974888
+    "repulsion": 0.2547507,
+    "current_boost": -0.013075855
   },
   {
     "sim": 0.07585164,
-    "repulsion": 0.25964537,
-    "current_boost": 0.11479845
+    "repulsion": 0.24093115,
+    "current_boost": 0.111991316
   },
   {
     "sim": -0.05747264,
-    "repulsion": 0.27774373,
-    "current_boost": -0.015811078
+    "repulsion": 0.2556729,
+    "current_boost": -0.019121703
   },
   {
     "sim": 0.9437318,
-    "repulsion": 0.06406809,
+    "repulsion": 0.17773944,
     "current_boost": 1.0
   },
   {
     "sim": -0.04036703,
-    "repulsion": 0.27548823,
-    "current_boost": 0.0009562075
+    "repulsion": 0.2825909,
+    "current_boost": 0.002021607
   },
   {
     "sim": -0.03466506,
-    "repulsion": 0.2747322,
-    "current_boost": 0.0065447725
+    "repulsion": 0.27618212,
+    "current_boost": 0.0067622587
   },
   {
     "sim": -0.012182237,
-    "repulsion": 0.2717309,
-    "current_boost": 0.028577402
+    "repulsion": 0.26488128,
+    "current_boost": 0.02754996
   },
   {
     "sim": 0.0071482607,
-    "repulsion": 0.26912367,
-    "current_boost": 0.047516815
+    "repulsion": 0.2852579,
+    "current_boost": 0.04993695
   },
   {
     "sim": 0.6915957,
-    "repulsion": 0.14999263,
+    "repulsion": 0.21646082,
     "current_boost": 1.0
   },
   {
     "sim": 0.9370046,
-    "repulsion": 0.0677897,
+    "repulsion": 0.20574293,
     "current_boost": 1.0
   },
   {
     "sim": 0.01299709,
-    "repulsion": 0.2683298,
-    "current_boost": 0.05324656
+    "repulsion": 0.28144285,
+    "current_boost": 0.05521352
   },
   {
     "sim": -0.0496445,
-    "repulsion": 0.27671382,
-    "current_boost": -0.008137427
+    "repulsion": 0.26059312,
+    "current_boost": -0.010555532
   },
   {
     "sim": -0.07696935,
-    "repulsion": 0.28029245,
-    "current_boost": -0.03492548
+    "repulsion": 0.27381957,
+    "current_boost": -0.035896413
   },
   {
     "sim": -0.03506272,
-    "repulsion": 0.274785,
-    "current_boost": 0.0061550327
+    "repulsion": 0.27222714,
+    "current_boost": 0.005771354
   },
   {
     "sim": -0.018804848,
-    "repulsion": 0.27261844,
-    "current_boost": 0.02208792
+    "repulsion": 0.2851227,
+    "current_boost": 0.023963556
   },
   {
     "sim": 0.6511532,
-    "repulsion": 0.15952438,
-    "current_boost": 0.9627776
+    "repulsion": 0.22481926,
+    "current_boost": 1.0
   },
   {
     "sim": 0.94951063,
-    "repulsion": 0.06068905,
+    "repulsion": 0.19827937,
     "current_boost": 1.0
   },
   {
     "sim": 0.0312989,
-    "repulsion": 0.2658304,
-    "current_boost": 0.07117346
+    "repulsion": 0.2846311,
+    "current_boost": 0.07399356
   },
   {
     "sim": 0.096260704,
-    "repulsion": 0.2567623,
-    "current_boost": 0.13477504
+    "repulsion": 0.25810227,
+    "current_boost": 0.13497604
   },
   {
     "sim": -0.06325093,
-    "repulsion": 0.27850154,
-    "current_boost": -0.021475695
+    "repulsion": 0.2863297,
+    "current_boost": -0.020301476
   },
   {
     "sim": -0.032975804,
-    "repulsion": 0.27450785,
-    "current_boost": 0.0082003735
+    "repulsion": 0.2775509,
+    "current_boost": 0.008656833
   },
   {
     "sim": 0.24164581,
-    "repulsion": 0.23520452,
-    "current_boost": 0.41215438
+    "repulsion": 0.28200847,
+    "current_boost": 0.44608432
   },
   {
     "sim": 0.09035812,
-    "repulsion": 0.25759944,
-    "current_boost": 0.12899804
+    "repulsion": 0.29468697,
+    "current_boost": 0.13456117
   },
   {
     "sim": 0.63811517,
-    "repulsion": 0.1624781,
-    "current_boost": 0.94915444
+    "repulsion": 0.24241121,
+    "current_boost": 1.0
   },
   {
     "sim": 0.058147937,
-    "repulsion": 0.26212054,
-    "current_boost": 0.09746602
+    "repulsion": 0.29030058,
+    "current_boost": 0.10169303
   },
   {
     "sim": 0.0050396975,
-    "repulsion": 0.2694093,
-    "current_boost": 0.045451097
+    "repulsion": 0.27831563,
+    "current_boost": 0.046787046
   },
   {
     "sim": -0.037893258,
-    "repulsion": 0.27516043,
-    "current_boost": 0.003380809
+    "repulsion": 0.24271278,
+    "current_boost": -0.0014863387
   },
   {
     "sim": 0.09868063,
-    "repulsion": 0.25641838,
-    "current_boost": 0.13714339
+    "repulsion": 0.26463258,
+    "current_boost": 0.13837552
   },
   {
     "sim": 0.9233562,
-    "repulsion": 0.07477365,
+    "repulsion": 0.22807942,
     "current_boost": 1.0
   },
   {
     "sim": 0.7154123,
-    "repulsion": 0.1440847,
+    "repulsion": 0.2608578,
     "current_boost": 1.0
   },
   {
     "sim": -0.048813704,
-    "repulsion": 0.2766043,
-    "current_boost": -0.00732306
+    "repulsion": 0.26450828,
+    "current_boost": -0.009137463
   },
   {
     "sim": 0.25065616,
-    "repulsion": 0.23380312,
-    "current_boost": 0.42646873
+    "repulsion": 0.28032893,
+    "current_boost": 0.46145466
   },
   {
     "sim": 0.04314992,
-    "repulsion": 0.26419932,
-    "current_boost": 0.08277982
+    "repulsion": 0.28944197,
+    "current_boost": 0.08656622
   },
   {
     "sim": 0.16984321,
-    "repulsion": 0.24608766,
-    "current_boost": 0.29523215
+    "repulsion": 0.26890635,
+    "current_boost": 0.30685896
   },
   {
     "sim": 0.9269701,
-    "repulsion": 0.07298932,
+    "repulsion": 0.21816166,
     "current_boost": 1.0
   },
   {
     "sim": 0.9383262,
-    "repulsion": 0.06707496,
+    "repulsion": 0.2052122,
     "current_boost": 1.0
   },
   {
     "sim": 0.13942412,
-    "repulsion": 0.25055572,
-    "current_boost": 0.17700747
+    "repulsion": 0.25317302,
+    "current_boost": 0.17740007
   },
   {
     "sim": 0.027195066,
-    "repulsion": 0.26639286,
-    "current_boost": 0.067154
+    "repulsion": 0.2790115,
+    "current_boost": 0.069046795
   },
   {
     "sim": 0.93810624,
-    "repulsion": 0.067194276,
+    "repulsion": 0.21077196,
     "current_boost": 1.0
   },
   {
     "sim": 0.93368894,
-    "repulsion": 0.06955089,
+    "repulsion": 0.20927031,
     "current_boost": 1.0
   },
   {
     "sim": 0.031097416,
-    "repulsion": 0.26585802,
-    "current_boost": 0.07097612
+    "repulsion": 0.27973515,
+    "current_boost": 0.07305769
   },
   {
     "sim": -0.022720495,
-    "repulsion": 0.2731418,
-    "current_boost": 0.018250776
+    "repulsion": 0.28606454,
+    "current_boost": 0.020189187
   },
   {
     "sim": -0.054063044,
-    "repulsion": 0.2772956,
-    "current_boost": -0.012468703
+    "repulsion": 0.27726647,
+    "current_boost": -0.012473073
   },
   {
     "sim": 0.06408508,
-    "repulsion": 0.26129305,
-    "current_boost": 0.10327904
+    "repulsion": 0.26520303,
+    "current_boost": 0.103865534
   },
   {
     "sim": 0.0047583235,
-    "repulsion": 0.26944745,
-    "current_boost": 0.045175444
+    "repulsion": 0.28058636,
+    "current_boost": 0.04684628
   },
   {
     "sim": 0.063396014,
-    "repulsion": 0.26138923,
-    "current_boost": 0.102604404
+    "repulsion": 0.27880988,
+    "current_boost": 0.1052175
   },
   {
     "sim": -0.07098712,
-    "repulsion": 0.27951288,
-    "current_boost": -0.029060185
+    "repulsion": 0.26188445,
+    "current_boost": -0.031704452
   },
   {
     "sim": -0.08649235,
-    "repulsion": 0.28152895,
-    "current_boost": -0.04426301
+    "repulsion": 0.27425337,
+    "current_boost": -0.045354344
   },
   {
     "sim": 0.19649932,
-    "repulsion": 0.24210452,
-    "current_boost": 0.33921945
+    "repulsion": 0.25937822,
+    "current_boost": 0.34940225
   },
   {
     "sim": 0.061042815,
-    "repulsion": 0.2617174,
-    "current_boost": 0.10030043
+    "repulsion": 0.26030785,
+    "current_boost": 0.100089
   },
   {
     "sim": 0.07444037,
-    "repulsion": 0.25984353,
-    "current_boost": 0.113416895
+    "repulsion": 0.26681235,
+    "current_boost": 0.11446223
   },
   {
     "sim": -0.0077527924,
-    "repulsion": 0.2711357,
-    "current_boost": 0.032917563
+    "repulsion": 0.29196337,
+    "current_boost": 0.036041714
   },
   {
     "sim": 0.04115604,
-    "repulsion": 0.26447445,
-    "current_boost": 0.08082721
+    "repulsion": 0.24411917,
+    "current_boost": 0.077773914
   },
   {
     "sim": -0.06125715,
-    "repulsion": 0.27824023,
-    "current_boost": -0.019521113
+    "repulsion": 0.269698,
+    "current_boost": -0.02080245
   },
   {
     "sim": -0.08330318,
-    "repulsion": 0.28111547,
-    "current_boost": -0.041135862
+    "repulsion": 0.26277107,
+    "current_boost": -0.043887522
   },
   {
     "sim": 0.25157094,
-    "repulsion": 0.23366034,
-    "current_boost": 0.4279174
+    "repulsion": 0.2868404,
+    "current_boost": 0.46805307
   },
   {
     "sim": 0.13485967,
-    "repulsion": 0.25121927,
-    "current_boost": 0.17254256
+    "repulsion": 0.25191054,
+    "current_boost": 0.17264625
   },
   {
     "sim": 0.5975709,
-    "repulsion": 0.17133833,
-    "current_boost": 0.9047313
+    "repulsion": 0.24774148,
+    "current_boost": 1.0
   },
   {
     "sim": 0.93855786,
-    "repulsion": 0.066948615,
+    "repulsion": 0.20279247,
     "current_boost": 1.0
   },
   {
     "sim": 0.07350447,
-    "repulsion": 0.2599749,
-    "current_boost": 0.112500705
+    "repulsion": 0.2790155,
+    "current_boost": 0.1153568
   },
   {
     "sim": 0.05498925,
-    "repulsion": 0.26255974,
-    "current_boost": 0.09437321
+    "repulsion": 0.2572802,
+    "current_boost": 0.09358128
   },
   {
     "sim": 0.103564724,
-    "repulsion": 0.25572264,
-    "current_boost": 0.14192313
+    "repulsion": 0.25358334,
+    "current_boost": 0.14160222
   },
   {
     "sim": 0.10421913,
-    "repulsion": 0.25562927,
-    "current_boost": 0.14256352
+    "repulsion": 0.28168675,
+    "current_boost": 0.14647214
   },
   {
     "sim": 0.93796104,
-    "repulsion": 0.067273304,
+    "repulsion": 0.21918476,
     "current_boost": 1.0
   },
   {
     "sim": 0.10163111,
-    "repulsion": 0.25599828,
-    "current_boost": 0.14003086
+    "repulsion": 0.27552447,
+    "current_boost": 0.14295979
   },
   {
     "sim": -0.029725164,
-    "repulsion": 0.27407554,
-    "current_boost": 0.011386167
+    "repulsion": 0.24256751,
+    "current_boost": 0.0066599622
   },
   {
     "sim": -0.048475232,
-    "repulsion": 0.27655965,
-    "current_boost": -0.006991282
+    "repulsion": 0.27572775,
+    "current_boost": -0.007116068
   },
   {
     "sim": 0.0013466696,
-    "repulsion": 0.2699088,
-    "current_boost": 0.04183299
+    "repulsion": 0.23973466,
+    "current_boost": 0.03730687
   },
   {
     "sim": 0.75267357,
-    "repulsion": 0.13432127,
+    "repulsion": 0.23645456,
     "current_boost": 1.0
   },
   {
     "sim": 0.10815205,
-    "repulsion": 0.2550675,
-    "current_boost": 0.14641216
+    "repulsion": 0.24833615,
+    "current_boost": 0.14540248
   },
   {
     "sim": 0.7147002,
-    "repulsion": 0.14426477,
+    "repulsion": 0.24583456,
     "current_boost": 1.0
   },
   {
     "sim": -0.05078238,
-    "repulsion": 0.27686372,
-    "current_boost": -0.00925282
+    "repulsion": 0.28553465,
+    "current_boost": -0.00795218
   },
   {
     "sim": 0.29543597,
-    "repulsion": 0.22670965,
-    "current_boost": 0.49637052
+    "repulsion": 0.26908284,
+    "current_boost": 0.53392625
   },
   {
     "sim": -0.030898778,
-    "repulsion": 0.27423173,
-    "current_boost": 0.010235982
+    "repulsion": 0.27002746,
+    "current_boost": 0.0096053425
   },
   {
     "sim": 0.9463524,
-    "repulsion": 0.06255824,
+    "repulsion": 0.19919376,
     "current_boost": 1.0
   },
   {
     "sim": -0.14205772,
-    "repulsion": 0.28863823,
-    "current_boost": -0.098761976
+    "repulsion": 0.26572964,
+    "current_boost": -0.10219827
   },
   {
     "sim": -0.10535965,
-    "repulsion": 0.28396288,
-    "current_boost": -0.06276522
+    "repulsion": 0.2850981,
+    "current_boost": -0.062594935
   },
   {
     "sim": 0.18344288,
-    "repulsion": 0.24406357,
-    "current_boost": 0.31775805
+    "repulsion": 0.27816692,
+    "current_boost": 0.3365261
   },
   {
     "sim": -0.045861203,
-    "repulsion": 0.2762146,
-    "current_boost": -0.0044290125
+    "repulsion": 0.26478904,
+    "current_boost": -0.0061428435
   },
   {
     "sim": 0.015742535,
-    "repulsion": 0.26795635,
-    "current_boost": 0.055935986
+    "repulsion": 0.2541119,
+    "current_boost": 0.053859316
   },
   {
     "sim": 0.9404125,
-    "repulsion": 0.065930724,
+    "repulsion": 0.20596337,
     "current_boost": 1.0
   },
   {
     "sim": 0.052391384,
-    "repulsion": 0.2629204,
-    "current_boost": 0.09182945
+    "repulsion": 0.26829654,
+    "current_boost": 0.09263587
   },
   {
     "sim": 0.04903843,
-    "repulsion": 0.26338512,
-    "current_boost": 0.0885462
+    "repulsion": 0.2655454,
+    "current_boost": 0.08887024
   },
   {
     "sim": 0.9390378,
-    "repulsion": 0.06668674,
+    "repulsion": 0.21196465,
     "current_boost": 1.0
   },
   {
     "sim": 0.082351014,
-    "repulsion": 0.2587307,
-    "current_boost": 0.12116063
+    "repulsion": 0.25728503,
+    "current_boost": 0.12094377
   },
   {
     "sim": 0.053521603,
-    "repulsion": 0.26276353,
-    "current_boost": 0.092936136
+    "repulsion": 0.2731752,
+    "current_boost": 0.09449789
   },
   {
     "sim": 0.033943795,
-    "repulsion": 0.26546723,
-    "current_boost": 0.07376388
+    "repulsion": 0.27198273,
+    "current_boost": 0.07474121
   },
   {
     "sim": -0.05152754,
-    "repulsion": 0.2769619,
-    "current_boost": -0.009983256
+    "repulsion": 0.26847696,
+    "current_boost": -0.011255994
   },
   {
     "sim": 0.66074073,
-    "repulsion": 0.15731698,
-    "current_boost": 0.972578
+    "repulsion": 0.22958875,
+    "current_boost": 1.0
   },
   {
     "sim": -0.036686964,
-    "repulsion": 0.2750005,
-    "current_boost": 0.0045631155
+    "repulsion": 0.2807242,
+    "current_boost": 0.0054216683
   },
   {
     "sim": 0.010367464,
-    "repulsion": 0.268687,
-    "current_boost": 0.050670516
+    "repulsion": 0.25761417,
+    "current_boost": 0.04900959
   },
   {
     "sim": -0.09203813,
-    "repulsion": 0.2822466,
-    "current_boost": -0.049701143
+    "repulsion": 0.27235174,
+    "current_boost": -0.05118537
   },
   {
     "sim": 0.021997564,
-    "repulsion": 0.26710352,
-    "current_boost": 0.062063094
+    "repulsion": 0.2676795,
+    "current_boost": 0.06214949
   },
   {
     "sim": -0.008064831,
-    "repulsion": 0.2711777,
-    "current_boost": 0.032611825
+    "repulsion": 0.281731,
+    "current_boost": 0.03419482
   },
   {
     "sim": -0.06675429,
-    "repulsion": 0.27895996,
-    "current_boost": -0.024910294
+    "repulsion": 0.2642215,
+    "current_boost": -0.027121063
   },
   {
     "sim": -0.024875086,
-    "repulsion": 0.27342933,
-    "current_boost": 0.016139317
+    "repulsion": 0.29754725,
+    "current_boost": 0.019757003
   },
   {
     "sim": 0.0008145744,
-    "repulsion": 0.26998073,
-    "current_boost": 0.041311685
+    "repulsion": 0.27049223,
+    "current_boost": 0.04138841
   },
   {
     "sim": 0.01576881,
-    "repulsion": 0.2679528,
-    "current_boost": 0.055961728
+    "repulsion": 0.25865576,
+    "current_boost": 0.054567173
   },
   {
     "sim": -0.09866249,
-    "repulsion": 0.2831013,
-    "current_boost": -0.056197293
+    "repulsion": 0.29299194,
+    "current_boost": -0.054713696
   },
   {
     "sim": -0.03940647,
-    "repulsion": 0.275361,
-    "current_boost": 0.0018976815
+    "repulsion": 0.28170758,
+    "current_boost": 0.0028496683
   },
   {
     "sim": 0.7325713,
-    "repulsion": 0.13967334,
+    "repulsion": 0.22635175,
     "current_boost": 1.0
   },
   {
     "sim": -0.05420855,
-    "repulsion": 0.27731475,
-    "current_boost": -0.012611337
+    "repulsion": 0.26904312,
+    "current_boost": -0.013852082
   },
   {
     "sim": 0.100389585,
-    "repulsion": 0.25617516,
-    "current_boost": 0.13881586
+    "repulsion": 0.25567964,
+    "current_boost": 0.13874152
   },
   {
     "sim": 0.12798819,
-    "repulsion": 0.252215,
-    "current_boost": 0.16582045
+    "repulsion": 0.24979366,
+    "current_boost": 0.16545725
   },
   {
     "sim": 0.38908428,
-    "repulsion": 0.21110593,
-    "current_boost": 0.6354982
+    "repulsion": 0.26200426,
+    "current_boost": 0.6949095
   },
   {
     "sim": 0.04445567,
-    "repulsion": 0.26401898,
-    "current_boost": 0.08405852
+    "repulsion": 0.25247467,
+    "current_boost": 0.082326874
   },
   {
     "sim": 0.9365235,
-    "repulsion": 0.06804813,
+    "repulsion": 0.20800684,
     "current_boost": 1.0
   },
   {
     "sim": 0.055644725,
-    "repulsion": 0.26246864,
-    "current_boost": 0.09501502
+    "repulsion": 0.25994754,
+    "current_boost": 0.09463686
   },
   {
     "sim": 0.023115294,
-    "repulsion": 0.26695088,
-    "current_boost": 0.06315792
+    "repulsion": 0.27248135,
+    "current_boost": 0.0639875
   }
 ]
