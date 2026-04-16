@@ -1859,11 +1859,29 @@ fn run_dream_chain(
     params: &Params,
     engine: &mut ResonanceEngine,
 ) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals) {
+    let (seeds, phi, totals, _quiescence) = run_dream_chain_with_quiescence(params, engine);
+    (seeds, phi, totals)
+}
+
+/// Run a dream chain with optional quiescence short-circuit.
+/// Returns (chain_seeds, phi_history, totals, quiescence_at).
+/// Quiescence fires when chain_depth >= 8 and the phi delta between
+/// consecutive cycles drops below 0.001. This implements the shortest-path
+/// approach: stop early when metrics stabilize (program-l5.md §8.4).
+/// For chain_depth < 8 (L3 dream_cycles=1, L4 chain_depth=2-3), quiescence
+/// is disabled — those levels are not affected.
+fn run_dream_chain_with_quiescence(
+    params: &Params,
+    engine: &mut ResonanceEngine,
+) -> (Vec<ChainSeed>, Vec<f32>, ChainTotals, Option<usize>) {
     let depth = params.chain_depth.max(1);
+    let quiescence_enabled = depth >= 8;
+    let quiescence_threshold = 0.001_f32;
     let mut chain_seeds: Vec<ChainSeed> = Vec::with_capacity(depth);
     let mut phi_history: Vec<f32> = Vec::with_capacity(depth);
     let mut totals = ChainTotals::default();
     let bridge = ConsciousnessBridge::new(0.3, 0.5);
+    let mut quiescence_at: Option<usize> = None;
 
     for cycle_idx in 0..depth {
         // Cycle 1 uses the nominal threshold; later cycles lower it by the
@@ -1909,9 +1927,22 @@ fn run_dream_chain(
         chain_seeds.push(seed);
         let phi = bridge.assess(engine).phi as f32;
         phi_history.push(phi);
+
+        // Quiescence short-circuit: stop early when phi stabilizes.
+        // Only active for deep chains (>= 8 cycles). Must run at least 3
+        // cycles before checking to let the system settle past initial
+        // transients.
+        if quiescence_enabled && cycle_idx >= 2 {
+            let prev_phi = phi_history[cycle_idx - 1];
+            let delta = (phi - prev_phi).abs();
+            if delta < quiescence_threshold {
+                quiescence_at = Some(cycle_idx + 1); // 1-indexed
+                break;
+            }
+        }
     }
 
-    (chain_seeds, phi_history, totals)
+    (chain_seeds, phi_history, totals, quiescence_at)
 }
 
 // ============================================================================
@@ -2430,7 +2461,8 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_a = build_l5_engine(&corpus_a, params, dim);
 
     let start = Instant::now();
-    let (chain_seeds, phi_history, chain_totals) = run_dream_chain(params, &mut engine_a);
+    let (chain_seeds, phi_history, chain_totals, quiescence_a) =
+        run_dream_chain_with_quiescence(params, &mut engine_a);
     let consolidation_ms_a = start.elapsed().as_millis() as u64;
 
     // Build Corpus B
@@ -2471,8 +2503,8 @@ fn run_experiment_l5_session(params: &Params) {
     }
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
-    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp) =
-        run_dream_chain(params, &mut engine_b_primed);
+    let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp) =
+        run_dream_chain_with_quiescence(params, &mut engine_b_primed);
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
     // Evaluate B-primed using L4 evaluators as placeholder.
@@ -2484,8 +2516,8 @@ fn run_experiment_l5_session(params: &Params) {
     // --- "Naive" pass: dream on B from scratch ---
     let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
     let start_b_naive = Instant::now();
-    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn) =
-        run_dream_chain(params, &mut engine_b_naive);
+    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn) =
+        run_dream_chain_with_quiescence(params, &mut engine_b_naive);
     let consolidation_ms_b_naive = start_b_naive.elapsed().as_millis() as u64;
 
     let fitness_b_naive = eval_l5_placeholder_fitness(&engine_b_naive, params, &chain_seeds_bn, &phi_history_bn);
@@ -2559,6 +2591,9 @@ fn run_experiment_l5_session(params: &Params) {
     println!("encoding_entropy:     {:.4}", encoding_entropy);
     println!("chain_fidelity:       {:.4}", chain_fidelity);
     println!("chain_depth:          {}", params.chain_depth);
+    println!("quiescence_at_a:      {}", quiescence_a.map_or("none".to_string(), |n| n.to_string()));
+    println!("quiescence_at_bp:     {}", quiescence_bp.map_or("none".to_string(), |n| n.to_string()));
+    println!("quiescence_at_bn:     {}", quiescence_bn.map_or("none".to_string(), |n| n.to_string()));
     println!("phi_history:          {:?}", phi_history);
     let total_ms = consolidation_ms_a + consolidation_ms_b_primed + consolidation_ms_b_naive;
     println!("consolidation_ms_a:   {}", consolidation_ms_a);
