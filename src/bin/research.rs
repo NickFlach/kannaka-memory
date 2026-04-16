@@ -2176,6 +2176,436 @@ fn eval_l4_signal_preservation(engine: &ResonanceEngine) -> f32 {
     (signal_count as f32 / 285.0).min(1.0)
 }
 
+// ============================================================================
+// LEVEL 5 CORPUS GENERATORS (cycle L5.1)
+// ============================================================================
+//
+// L5 introduces dual-corpus testing with bimodal frequency assignment.
+// Corpus A (300 memories, hardness=2): training corpus with attention-band
+// and storage-band frequency assignment per the Universal Clock hypothesis.
+// Corpus B (250 memories): shared dense centroids but different member
+// vectors and rotated sparse clusters for transfer testing.
+//
+// Frequency bands (program-l5.md §5.1):
+//   Working (attention): 0.5-4.0 Hz, center 2.0 Hz
+//   Storage:             0.01-0.5 Hz, center 0.1 Hz
+
+/// L5 Corpus A generator. 300 memories with bimodal frequency assignment.
+/// Uses build_corpus_l4 for the vector structure (hardness=2), then
+/// overrides frequencies per the Universal Clock spectrum design.
+fn build_corpus_l5_a(
+    dim: usize,
+    hardness: usize,
+    encoder_seed: u64,
+) -> Vec<(Vec<f32>, String, &'static str, f32)> {
+    // Generate the base L4-format corpus with hardness=2
+    let base = build_corpus_l4(dim, hardness, encoder_seed);
+
+    // Assign frequencies per category according to L5 frequency band design
+    base.into_iter()
+        .enumerate()
+        .map(|(i, (vec, content, category))| {
+            let freq = match category {
+                // Dense cluster members: attention band N(2.0, 0.3) clamped [0.5, 4.0]
+                "l4_dense" => {
+                    let raw = 2.0 + pcg_f32(encoder_seed, 6000, i as u32, 0) * 0.3;
+                    raw.clamp(0.5, 4.0)
+                }
+                // Sparse cluster members: storage band N(0.1, 0.02) clamped [0.05, 0.5]
+                "l4_sparse" => {
+                    let raw = 0.1 + pcg_f32(encoder_seed, 6001, i as u32, 0) * 0.02;
+                    raw.clamp(0.05, 0.5)
+                }
+                // Bridges: 1.0 Hz (midpoint spanning the gap)
+                "l4_bridge" => 1.0,
+                // Decoys: 2.0 Hz (exploit the attention band)
+                "l4_decoy" => 2.0,
+                // Noise: 0.5 Hz (boundary — hardest to classify)
+                "l4_noise" => 0.5,
+                _ => 0.1,
+            };
+            (vec, content, category, freq)
+        })
+        .collect()
+}
+
+/// L5 Corpus B generator. 250 memories with shared dense centroids but
+/// different member vectors, rotated sparse clusters, and bimodal frequency.
+fn build_corpus_l5_b(
+    dim: usize,
+    _hardness: usize,
+    encoder_seed: u64,
+) -> Vec<(Vec<f32>, String, &'static str, f32)> {
+    let corpus_b_seed = encoder_seed.wrapping_add(0xBEEF_CAFE);
+    let mut corpus: Vec<(Vec<f32>, String, &'static str, f32)> = Vec::with_capacity(250);
+
+    // Dense clusters: same 4 centroids as Corpus A, but different member
+    // vectors (different within-cluster noise seeds). 4 x 40 = 160.
+    let dense_labels = ["dense_a", "dense_b", "dense_c", "dense_d"];
+    for (cluster_idx, label) in dense_labels.iter().enumerate() {
+        let cid = cluster_idx as u32;
+        // Centroid is identical to Corpus A (same encoder_seed, item=0)
+        let centroid: Vec<f32> = (0..dim)
+            .map(|d| 0.8 * pcg_f32(encoder_seed, cid, 0, d as u32).signum())
+            .collect();
+        for i in 0..40 {
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let base = centroid[d];
+                    // Different seed (corpus_b_seed) for different member vectors
+                    let jitter = pcg_f32(corpus_b_seed, cid, item, d as u32) * 0.35;
+                    base + jitter
+                })
+                .collect();
+            let freq = {
+                let raw = 2.0 + pcg_f32(corpus_b_seed, 6000, (cluster_idx * 40 + i) as u32, 0) * 0.3;
+                raw.clamp(0.5, 4.0)
+            };
+            corpus.push((v, format!("l5b_{} {}", label, i), "l4_dense", freq));
+        }
+    }
+
+    // Sparse clusters: rotated 30 degrees from A's sparse centroids. 2 x 15 = 30.
+    let sparse_labels = ["sparse_e", "sparse_f"];
+    for (cluster_idx, label) in sparse_labels.iter().enumerate() {
+        let cid = 4 + cluster_idx as u32;
+        // Original centroid from Corpus A
+        let orig_centroid: Vec<f32> = (0..dim)
+            .map(|d| {
+                let r = pcg_f32(encoder_seed, cid, 0, d as u32);
+                0.6 * (r * PI).sin()
+            })
+            .collect();
+        // Rotate by 30 degrees: apply Givens rotation on pairs of dimensions
+        let mut centroid = orig_centroid.clone();
+        let cos30 = (PI / 6.0).cos();
+        let sin30 = (PI / 6.0).sin();
+        let half = dim / 2;
+        for d in 0..half {
+            let a = centroid[2 * d];
+            let b = centroid[2 * d + 1];
+            centroid[2 * d] = a * cos30 - b * sin30;
+            centroid[2 * d + 1] = a * sin30 + b * cos30;
+        }
+        for i in 0..15 {
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let base = centroid[d];
+                    let jitter = pcg_f32(corpus_b_seed, cid, item, d as u32) * 0.45;
+                    base + jitter
+                })
+                .collect();
+            let freq = {
+                let raw = 0.1 + pcg_f32(corpus_b_seed, 6001, (cluster_idx * 15 + i) as u32, 0) * 0.02;
+                raw.clamp(0.05, 0.5)
+            };
+            corpus.push((v, format!("l5b_{} {}", label, i), "l4_sparse", freq));
+        }
+    }
+
+    // Bridges: 15 (3 each between 5 cluster pairs)
+    let pairs: [(u32, u32); 5] = [(0, 1), (0, 2), (1, 3), (2, 4), (3, 5)];
+    for (pair_idx, (a, b)) in pairs.iter().enumerate() {
+        let centroid_a: Vec<f32> = (0..dim)
+            .map(|d| 0.8 * pcg_f32(encoder_seed, *a, 0, d as u32).signum())
+            .collect();
+        let centroid_b_raw: Vec<f32> = if *b <= 3 {
+            (0..dim)
+                .map(|d| 0.8 * pcg_f32(encoder_seed, *b, 0, d as u32).signum())
+                .collect()
+        } else {
+            // Sparse cluster centroid (same as A for bridges)
+            (0..dim)
+                .map(|d| {
+                    let r = pcg_f32(encoder_seed, *b, 0, d as u32);
+                    0.6 * (r * PI).sin()
+                })
+                .collect()
+        };
+        for i in 0..3 {
+            let stream_cid = 1000 + pair_idx as u32;
+            let item = (i + 1) as u32;
+            let v: Vec<f32> = (0..dim)
+                .map(|d| {
+                    let mix = 0.5 * (centroid_a[d] + centroid_b_raw[d]);
+                    let jitter = pcg_f32(corpus_b_seed, stream_cid, item, d as u32) * 0.12;
+                    mix + jitter
+                })
+                .collect();
+            corpus.push((v, format!("l5b_bridge p{} {}", pair_idx, i), "l4_bridge", 1.0));
+        }
+    }
+
+    // Decoys: 30 high-amplitude random vectors
+    for i in 0..30 {
+        let item = (i + 1) as u32;
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(corpus_b_seed, 2000, item, d as u32) * 0.9)
+            .collect();
+        corpus.push((v, format!("l5b_decoy {}", i), "l4_decoy", 2.0));
+    }
+
+    // Noise: 15 low-amplitude random vectors
+    for i in 0..15 {
+        let item = (i + 1) as u32;
+        let v: Vec<f32> = (0..dim)
+            .map(|d| pcg_f32(corpus_b_seed, 3000, item, d as u32) * 0.12)
+            .collect();
+        corpus.push((v, format!("l5b_noise {}", i), "l4_noise", 0.5));
+    }
+
+    debug_assert_eq!(corpus.len(), 250, "L5 Corpus B must be exactly 250 memories");
+    corpus
+}
+
+/// Build a ResonanceEngine from an L5 corpus (with frequency assignment).
+fn build_l5_engine(
+    corpus: &[(Vec<f32>, String, &'static str, f32)],
+    params: &Params,
+    dim: usize,
+) -> ResonanceEngine {
+    let store = Box::new(TestMedium::new());
+    let encoder = Box::new(SimpleHashEncoder::new(dim, params.encoder_seed));
+    let codebook = Codebook::new(dim, dim, params.encoder_seed);
+    let pipeline = EncodingPipeline::new(encoder, codebook);
+    let mut engine = ResonanceEngine::new(store, pipeline);
+
+    let ps = params.phase_spread;
+    for (i, (vec, content, category, freq)) in corpus.iter().enumerate() {
+        let mut mem = HyperMemory::new(vec.clone(), content.clone());
+        mem.id = uuid::Uuid::from_u128(
+            (i as u128 + 1) * 0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF,
+        );
+        mem.decay_rate = params.decay_rate;
+        mem.phase = match *category {
+            "l4_dense" => 0.0 + (i as f32 * 0.1 * ps),
+            "l4_sparse" => PI * 0.5 + (i as f32 * 0.08 * ps),
+            "l4_bridge" => PI * 0.25,
+            "l4_decoy" => PI * (i as f32 * 0.31),
+            "l4_noise" => PI * (i as f32 * 0.7),
+            _ => 0.0,
+        };
+        mem.layer_depth = match *category {
+            "l4_dense" => (i % 3) as u8,
+            "l4_sparse" => ((i + 1) % 3) as u8,
+            "l4_bridge" => 1,
+            "l4_decoy" => 2,
+            "l4_noise" => 0,
+            _ => 0,
+        };
+        mem.frequency = *freq;
+        if *category == "l4_noise" {
+            mem.amplitude = 0.15;
+        }
+        engine.store.insert(mem).expect("insert failed");
+    }
+    engine
+}
+
+/// Level 5 experiment — scaffold (L5.1).
+///
+/// Builds Corpus A with bimodal frequency assignment, runs dream chain
+/// using L4 evaluators as placeholder, reports L4-format metrics.
+fn run_experiment_l5_session(params: &Params) {
+    let dim = 128;
+
+    // L5-local parameter overrides (same as L4 baseline + L5 chain_depth)
+    let mut l5_params = params.clone();
+    l5_params.phase_alignment_threshold = PI / 2.5;
+    l5_params.consciousness_phi_target = 0.28092;
+    l5_params.chain_carry_strength = 0.7;
+    l5_params.chiral_perturbation = 0.7;
+    l5_params.consolidation_repulsion_threshold = 0.28;
+    l5_params.chain_depth = 16; // L5 default — quiescence may short-circuit
+    l5_params.chain_top_n = 7;
+    let params = &l5_params;
+
+    // Build Corpus A (hardness=2, bimodal frequency assignment)
+    let corpus_a = build_corpus_l5_a(dim, 2, params.encoder_seed);
+    println!("l5_corpus_a_size:     {}", corpus_a.len());
+
+    // --- "Primed" pass: dream on A, then evaluate B ---
+    let mut engine_a = build_l5_engine(&corpus_a, params, dim);
+
+    let start = Instant::now();
+    let (chain_seeds, phi_history, chain_totals) = run_dream_chain(params, &mut engine_a);
+    let consolidation_ms_a = start.elapsed().as_millis() as u64;
+
+    // Build Corpus B
+    let corpus_b = build_corpus_l5_b(dim, 2, params.encoder_seed);
+    println!("l5_corpus_b_size:     {}", corpus_b.len());
+
+    // Primed: load A's post-dream state, insert B on top, dream, evaluate
+    let mut engine_b_primed = snapshot_engine_for_plasticity(&engine_a);
+    // Insert Corpus B memories into the primed engine
+    for (i, (vec, content, category, freq)) in corpus_b.iter().enumerate() {
+        let mut mem = HyperMemory::new(vec.clone(), content.clone());
+        // Use a distinct UUID namespace for B (high bits different from A)
+        mem.id = uuid::Uuid::from_u128(
+            0xBBBB_0000_0000_0000_0000_0000_0000_0000u128 + i as u128,
+        );
+        mem.decay_rate = params.decay_rate;
+        mem.phase = match *category {
+            "l4_dense" => 0.0 + (i as f32 * 0.1 * params.phase_spread),
+            "l4_sparse" => PI * 0.5 + (i as f32 * 0.08 * params.phase_spread),
+            "l4_bridge" => PI * 0.25,
+            "l4_decoy" => PI * (i as f32 * 0.31),
+            "l4_noise" => PI * (i as f32 * 0.7),
+            _ => 0.0,
+        };
+        mem.layer_depth = match *category {
+            "l4_dense" => (i % 3) as u8,
+            "l4_sparse" => ((i + 1) % 3) as u8,
+            "l4_bridge" => 1,
+            "l4_decoy" => 2,
+            "l4_noise" => 0,
+            _ => 0,
+        };
+        mem.frequency = *freq;
+        if *category == "l4_noise" {
+            mem.amplitude = 0.15;
+        }
+        let _ = engine_b_primed.store.insert(mem);
+    }
+    // Dream on the primed engine (A state + B memories)
+    let start_b_primed = Instant::now();
+    let (_chain_seeds_bp, _phi_history_bp, _chain_totals_bp) =
+        run_dream_chain(params, &mut engine_b_primed);
+    let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
+
+    // Evaluate B-primed using L4 evaluators as placeholder
+    let _surviving_b_primed: Vec<HyperMemory> = engine_b_primed
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (*m).clone())
+        .collect();
+    let fitness_b_primed = eval_l5_placeholder_fitness(&engine_b_primed, params, &chain_seeds, &phi_history);
+
+    // --- "Naive" pass: dream on B from scratch ---
+    let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
+    let start_b_naive = Instant::now();
+    let (chain_seeds_bn, phi_history_bn, _chain_totals_bn) =
+        run_dream_chain(params, &mut engine_b_naive);
+    let consolidation_ms_b_naive = start_b_naive.elapsed().as_millis() as u64;
+
+    let fitness_b_naive = eval_l5_placeholder_fitness(&engine_b_naive, params, &chain_seeds_bn, &phi_history_bn);
+
+    // Transfer score: clamp01(1 - fitness_B_primed / fitness_B_naive)
+    let transfer_score = if fitness_b_naive > 1e-6 {
+        (1.0 - fitness_b_primed / fitness_b_naive).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    // Use the Corpus A chain results for primary reporting
+    let chain_fidelity = eval_chain_fidelity(&chain_seeds, &phi_history);
+
+    let noise_removal = eval_l4_noise_removal(&engine_a);
+    let signal_preservation = eval_l4_signal_preservation(&engine_a);
+    let bridge_links = eval_bridge_links(&engine_a);
+    let phase_coherence = eval_phase_coherence_l4(&engine_a);
+    let cluster_separation = eval_cluster_separation_l4(&engine_a);
+    let amp_diversity = eval_amplitude_diversity(&engine_a);
+    let speed_a = 1.0 - (consolidation_ms_a as f32 / 60000.0).min(1.0);
+    let xi_diversity = eval_xi_diversity(&engine_a);
+    let consciousness = eval_consciousness(&engine_a, params.consciousness_phi_target);
+    let hall_quality = eval_hallucination_quality(&engine_a);
+    let dream_efficiency = eval_dream_efficiency(
+        chain_totals.strengthened, chain_totals.pruned, chain_totals.links, params.chain_depth,
+    );
+    let surviving_a: Vec<HyperMemory> = engine_a
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (*m).clone())
+        .collect();
+    let corpus_xi_diversity = eval_corpus_xi_diversity(&surviving_a);
+    let encoding_entropy = eval_encoding_entropy(&surviving_a, 8);
+
+    // L5 placeholder fitness — uses L4 inherited core at reduced weights
+    // (program-l5.md §2): inherited = 15%, transfer = 15%, rest placeholder.
+    // Until all L5 metrics are implemented, we use L4 evaluators and report
+    // the individual metrics. The composite fitness is the L4 inherited core
+    // at L5 weights (15% total) plus transfer_score at 15%.
+    let fitness = 0.02 * (1.0 - noise_removal)
+        + 0.02 * (1.0 - signal_preservation)
+        + 0.02 * (1.0 - phase_coherence)
+        + 0.03 * (1.0 - speed_a)
+        + 0.03 * (1.0 - consciousness)
+        + 0.03 * (1.0 - encoding_entropy)
+        + 0.15 * (1.0 - transfer_score)
+        // Remaining 70% uses placeholder zeros (will be replaced L5.3+)
+        + 0.70 * 1.0;
+
+    println!("---");
+    println!("level:                5");
+    println!("fitness:              {:.6}", fitness);
+    println!("transfer_score:       {:.6}", transfer_score);
+    println!("fitness_B_primed:     {:.6}", fitness_b_primed);
+    println!("fitness_B_naive:      {:.6}", fitness_b_naive);
+    println!("noise_removal:        {:.4}", noise_removal);
+    println!("signal_preservation:  {:.4}", signal_preservation);
+    println!("bridge_links:         {:.4}", bridge_links);
+    println!("phase_coherence:      {:.4}", phase_coherence);
+    println!("cluster_separation:   {:.4}", cluster_separation);
+    println!("amp_diversity:        {:.4}", amp_diversity);
+    println!("xi_diversity:         {:.4}", xi_diversity);
+    println!("consciousness:        {:.4}", consciousness);
+    println!("hall_quality:         {:.4}", hall_quality);
+    println!("dream_efficiency:     {:.4}", dream_efficiency);
+    println!("speed_a:              {:.4}", speed_a);
+    println!("corpus_xi_diversity:  {:.4}", corpus_xi_diversity);
+    println!("encoding_entropy:     {:.4}", encoding_entropy);
+    println!("chain_fidelity:       {:.4}", chain_fidelity);
+    println!("chain_depth:          {}", params.chain_depth);
+    println!("phi_history:          {:?}", phi_history);
+    println!("consolidation_ms_a:   {}", consolidation_ms_a);
+    println!("consolidation_ms_b_p: {}", consolidation_ms_b_primed);
+    println!("consolidation_ms_b_n: {}", consolidation_ms_b_naive);
+    println!("strengthened:         {}", chain_totals.strengthened);
+    println!("pruned:               {}", chain_totals.pruned);
+    println!("links_created:        {}", chain_totals.links);
+    println!("hallucinations:       {}", chain_totals.hallucinations);
+    println!("---");
+}
+
+/// Placeholder L5 fitness using L4 evaluators. Computes a sub-fitness
+/// for transfer comparison purposes. Uses the L4 inherited core at
+/// L5 weights (program-l5.md §2).
+fn eval_l5_placeholder_fitness(
+    engine: &ResonanceEngine,
+    params: &Params,
+    chain_seeds: &[ChainSeed],
+    phi_history: &[f32],
+) -> f32 {
+    let noise_removal = eval_l4_noise_removal(engine);
+    let signal_preservation = eval_l4_signal_preservation(engine);
+    let phase_coherence = eval_phase_coherence_l4(engine);
+    let consciousness = eval_consciousness(engine, params.consciousness_phi_target);
+    let surviving: Vec<HyperMemory> = engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (*m).clone())
+        .collect();
+    let encoding_entropy = eval_encoding_entropy(&surviving, 8);
+    let chain_fidelity = eval_chain_fidelity(chain_seeds, phi_history);
+
+    // Sub-fitness: inherited L4 core metrics only
+    0.05 * (1.0 - noise_removal)
+        + 0.05 * (1.0 - signal_preservation)
+        + 0.05 * (1.0 - phase_coherence)
+        + 0.10 * (1.0 - consciousness)
+        + 0.05 * (1.0 - encoding_entropy)
+        + 0.10 * (1.0 - chain_fidelity)
+}
+
 fn parse_string_flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -2213,6 +2643,7 @@ fn main() {
     };
 
     match level {
+        5 => run_experiment_l5_session(&params),
         4 => {
             if cli.chain_sessions > 0 {
                 // Internal loop: N sessions in one cargo run. Session 1 loads
