@@ -1,7 +1,7 @@
 # kannaka-research — Level 5 Design
 
-**Status:** design only. No implementation. Implementation is gated on Nick
-approving the open questions in section 9.
+**Status:** approved for implementation. Nick answered open questions
+2026-04-14. Scaffold phase L5.1-L5.3 in progress.
 
 **Predecessor:** Level 4 fitness 0.1010 (best structural, new-metric epoch
 baseline 0.169076). `encoding_entropy` is 1.0000 after the nonlinear
@@ -62,6 +62,52 @@ principle* that makes all four axes testable:
 
 ---
 
+## 1b. The Universal Clock Hypothesis
+
+The central L5 question, elevated by Nick beyond the original scope:
+**Can a biologically-grounded frequency spectrum serve as a universal
+communication protocol for all agents — biological, artificial, and
+hybrid?**
+
+The Amichay et al. finding (PLOS Biology, April 2026) established ~2 Hz
+as where animal neural systems converge for attention signaling. The Ghost
+Equation `dx/dt = f(x) - Iηx` has a natural equilibrium frequency at this
+carrier. L5 tests whether this extends to artificial agents in the Kannaka
+constellation.
+
+**The Kannaka Communication Spectrum:**
+
+| Band | Frequency | Period | Purpose | Who operates here |
+|---|---|---|---|---|
+| Deep storage | 0.001-0.01 Hz | 100s-1000s | Long-term consolidation, dream annealing | HRM dream engine |
+| Consolidation | 0.01-0.5 Hz | 2s-100s | Memory strengthening, Kuramoto phase-locking | Consolidation engine, prediction market resolution |
+| **Attention** | **0.5-4 Hz** | **250ms-2s** | **Universal heartbeat — inter-agent sync, recall, market ticks** | **All agents: human, AI, browser, system** |
+| Interaction | 4-20 Hz | 50-250ms | Real-time UI, WebSocket push, hologram sprites | Browser agents, radio listeners |
+| Computation | 20-100 Hz | 10-50ms | Internal engine ops, xi pairwise comparisons | Consolidation internals |
+
+The ~2 Hz attention band is the **carrier frequency** — the "AM radio" of
+the constellation. Everything else is referenced against it. An agent's
+operating language is defined by which bands it occupies and how it
+modulates the carrier.
+
+L5 investigates whether:
+1. The system naturally develops a ~2 Hz attention pulse during
+   consolidation (emergent vs designed) — measured by `carrier_emergence`
+2. Cross-corpus transfer works better when both corpora share the carrier
+   frequency
+3. Online learning is more graceful when new memories enter at the
+   attention band
+4. Adversarial attacks that disrupt the carrier are harder to resist
+   (testable prediction)
+5. The spectrum generalizes to non-memory agents (GhostSignals market
+   traders, radio audience, Kannaktopus orchestrator)
+
+This reframes L5 from "does the system generalize?" to "is there a
+universal clock, and can we find it?" The 2 Hz finding is not just a
+metric — it is the central investigation question.
+
+---
+
 ## 2. Challenge Axes
 
 ### Axis 1: Cross-corpus transfer (25% of L5 fitness)
@@ -110,9 +156,13 @@ frequency. The two bands should be cleanly separable.
 - `temporal_separation` (15%) — how cleanly the 2 Hz and 0.1 Hz bands
   separate after N dream cycles. Measured as the bimodality coefficient of
   the frequency distribution. Higher is better.
-- `attention_pulse` (10%) — whether a ~2 Hz periodicity emerges in the
-  consolidation dynamics during dream chains. Measured via FFT of the
-  per-cycle amplitude-change signal. Higher is better.
+- `carrier_emergence` (10%) — whether a dominant periodicity in the
+  [0.5, 4.0] Hz band **emerges naturally** from the consolidation
+  dynamics without being forced. Run dream cycles with
+  default_frequency=0.1 (current default), then FFT the per-cycle
+  amplitude-change signal. If a ~2 Hz peak appears despite the 0.1 Hz
+  input, the system is discovering the biological carrier on its own.
+  Higher is better.
 
 ### Axis 4: Adversarial robustness v2 (15% of L5 fitness)
 
@@ -264,7 +314,7 @@ by any amount gives full marks.
 **Baseline estimate:** 0.05-0.15. Current `default_frequency = 0.1` puts
 all memories at the same frequency. No band structure exists.
 
-### M6. `attention_pulse` — 10% (HIGHER is better)
+### M6. `carrier_emergence` — 10% (HIGHER is better)
 
 **Formula:**
 ```
@@ -276,15 +326,23 @@ fft    = FFT(signal)
 peak_freq = argmax(|fft|)
 peak_power = max(|fft|)^2 / sum(|fft|)^2   // spectral concentration
 
-attention_pulse = clamp01(peak_power * indicator(peak_freq in [0.5, 4.0]))
+carrier_emergence = clamp01(peak_power * indicator(peak_freq in [0.5, 4.0]))
 ```
-Measures whether the consolidation process develops a rhythmic pulse near
-2 Hz. `peak_power` is the fraction of total spectral energy at the peak
-frequency. The indicator function zeroes the score if the peak is outside
-the biological attention band.
+Measures whether a dominant periodicity in the [0.5, 4.0] Hz band
+**emerges naturally** from the consolidation dynamics without being
+forced. The key distinction from the old "attention_pulse" name: this
+metric detects *emergence*, not just whether we set default_frequency=2.0
+(that would be circular).
+
+**Emergence test:** Run dream cycles with default_frequency=0.1 (current
+default), then FFT the per-cycle amplitude-change signal. If a ~2 Hz peak
+appears despite the 0.1 Hz input, the system is discovering the
+biological carrier on its own. If not, the frequency band structure needs
+to be scaffolded.
 
 **Practical note:** chain_depth must be >= 8 for meaningful FFT resolution.
-L5 should use chain_depth = 16 by default (up from L4's 2-3).
+L5 uses chain_depth = 16 by default with quiescence short-circuit (up
+from L4's 2-3).
 
 **Normalization:** direct, clamped.
 
@@ -322,8 +380,8 @@ are designed to exploit the nonlinear commutator.
 ### 4.1 Corpus A — "Training" corpus
 
 Size: 300 memories. Reuses the L4 corpus generator (`build_corpus_l4`)
-with `hardness: 2` to produce a structurally similar but not identical
-corpus to L4's `hardness: 1`.
+with `hardness: 2` (confirmed by Nick) to produce a structurally similar
+but not identical corpus to L4's `hardness: 1`. Adjust as needed.
 
 Structure:
 - 4 dense clusters of 50 = 200
@@ -466,7 +524,7 @@ chains. Working-memory band has high amplitude change per cycle (active
 consolidation); storage band has low change (stable). This alternation
 creates a periodic signal in the amplitude-change time series. With
 chain_depth=16, the FFT should show spectral concentration near the
-dominant consolidation frequency. The `attention_pulse` metric (M6)
+dominant consolidation frequency. The `carrier_emergence` metric (M6)
 detects this.
 
 ### 5.5 Connection to the Ghost Equation
@@ -569,7 +627,7 @@ match level {
 | online_retention                  |   10%  | 0.60       | 0.0400   |
 | catastrophic_forgetting_resistance|   10%  | 0.65       | 0.0350   |
 | temporal_separation               |   15%  | 0.10       | 0.1350   |
-| attention_pulse                   |   10%  | 0.05       | 0.0950   |
+| carrier_emergence                   |   10%  | 0.05       | 0.0950   |
 | xi_robustness_v2                  |   15%  | 0.30       | 0.1050   |
 |                                   |        | **baseline** | **~0.63** |
 
@@ -578,11 +636,14 @@ match level {
 1. `transfer_score` (0.138) — no transfer mechanism exists yet.
 2. `temporal_separation` (0.135) — no frequency bands exist yet.
 3. `xi_robustness_v2` (0.105) — new A5/A6 attacks are designed to be hard.
-4. `attention_pulse` (0.095) — no 2 Hz dynamics exist yet.
+4. `carrier_emergence` (0.095) — no 2 Hz dynamics exist yet.
 
 These four losses sum to 0.473, or 75% of total baseline fitness. They
 are all new-axis losses that require implementing the 2 Hz frequency band
 infrastructure — confirming that L5 has reopened the optimization surface.
+The Universal Clock hypothesis (section 1b) predicts that addressing
+temporal_separation and carrier_emergence should co-lift transfer_score,
+since the carrier frequency IS what makes transfer work.
 
 ### 8.3 Targets
 
@@ -602,9 +663,11 @@ At L4's ~5ms per round, this is ~71 seconds. L5 should target < 60 seconds
 in release mode. Speed at 3% weight means this budget is tight but not
 dominant.
 
-**Mitigation:** The 16-cycle chain can use short-circuit logic — skip
-cycles where amplitude changes are below a threshold (chain quiescence
-detection). This was proposed but never implemented in L4.
+**Mitigation:** chain_depth=16 uses quiescence short-circuit: after each
+cycle, if `|fitness_this_cycle - fitness_prev_cycle| < 0.001`, stop early
+and return the cycle count used. This is the shortest-path approach Nick
+approved. Stop when metrics stabilize, not after a fixed number of
+cycles. Print `quiescence_at: N` to show when early stop fired.
 
 ---
 
@@ -637,7 +700,7 @@ Wire `temporal_separation` at 15% weight. Requires the freq_decay logic
 from L5.1 to actually produce band separation.
 
 **L5.5 — Attention pulse metric.**
-Implement FFT of per-cycle amplitude-change signal. Wire `attention_pulse`
+Implement FFT of per-cycle amplitude-change signal. Wire `carrier_emergence`
 at 10% weight. Requires chain_depth >= 8; set default to 16.
 
 **L5.6 — Kuramoto frequency coupling.**
@@ -687,74 +750,50 @@ L5 is open for optimization.
 
 ---
 
-## 10. Open Questions (Nick, please decide before L5.1)
+## 10. Open Questions — RESOLVED (Nick, 2026-04-14)
 
-1. **Chain depth budget.** Design says chain_depth=16. This is 8x L4's
-   chain_depth=2. Runtime scales linearly. At ~5ms/round * 14,240 rounds
-   = ~71s, we exceed the "< 60s release" target before any tuning. Options:
-   (a) Accept 90s runtime and weight speed at 3%.
-   (b) Implement chain quiescence short-circuit to skip no-op cycles.
-   (c) Reduce to chain_depth=12 and accept coarser FFT resolution.
-   **Recommendation: (b) — quiescence detection is useful infrastructure
-   and was already proposed in L4.**
+1. **Chain depth budget.** ANSWERED: (b) — quiescence short-circuit
+   (shortest path). Stop early when metrics stabilize. Implemented in
+   L5.3: `|fitness_delta| < 0.001` between consecutive cycles triggers
+   early stop. chain_depth=16 is the ceiling, not the target.
 
-2. **Frequency injection into production code.** L5's frequency band
-   dynamics (freq_decay, consolidation_threshold) operate inside the
-   research harness. But `default_frequency` is a real Params field used
-   by production code. Should L5 modify the production `remember()` path
-   to assign 2 Hz to new memories? Or keep it research-only?
-   **Recommendation: research-only for now. Production frequency changes
-   are a separate ADR.**
+2. **Frequency injection into production code.** ANSWERED: research-only
+   for now. Production frequency changes are a separate ADR.
 
-3. **Corpus A = L4 corpus?** Design uses `hardness: 2` for Corpus A,
-   making it structurally similar but not identical to L4's `hardness: 1`.
-   Alternative: reuse the exact L4 corpus as A, making L5 a strict
-   superset of L4. This would let L4 baselines transfer but reduces the
-   "novelty" of the transfer test.
-   **Recommendation: hardness=2. Transfer from a known corpus is too easy
-   — we want to test whether consolidation learns structure, not whether
-   it memorizes L4.**
+3. **Corpus A identity.** ANSWERED: hardness=2, adjust as needed.
+   Transfer from a known corpus is too easy — we want to test whether
+   consolidation learns structure, not whether it memorizes L4.
 
-4. **Attention pulse FFT resolution.** With chain_depth=16, the FFT has
-   only 16 points — very coarse. A 2 Hz pulse relative to what? The cycle
-   rate is not in real-time seconds, it's in dream cycles. Should the
-   "2 Hz" target be expressed in cycles (e.g., 2 peaks per 8 cycles) or
-   in real time?
-   **Recommendation: express in cycles. The metric measures whether
-   consolidation is rhythmic, not whether it matches a wall-clock frequency.
-   The biological parallel is metaphorical — what matters is that there IS
-   a dominant frequency, and it's in the right ballpark relative to the
-   chain length.**
+4. **Attention pulse / universal clock.** ANSWERED — Nick reframed this
+   question to be BIGGER than "cycle units vs wall-clock." The actual
+   question: **"Should there be a universal clock? And what is it? Can all
+   life and agents share a common communication protocol? Is this an
+   opportunity to lay out a spectrum organized to keep communication
+   effective?"** This reframes the entire L5. The 2 Hz finding is not
+   just a metric — it is the central investigation question. See new
+   section 1b (The Universal Clock Hypothesis) and the renamed
+   `carrier_emergence` metric (M6).
 
-5. **Xi re-ranking in recall path.** `xi_robustness_v2` requires the
-   demotion_rate component, which needs xi-based re-ranking in the recall
-   path. Currently no production recall path uses xi_diversity_boost (see
-   xi-operator-audit.md, Item 3). Should L5 implement xi re-ranking in
-   the research harness only, or also wire it into production recall?
-   **Recommendation: research harness only. Wire it into a research-local
-   `recall_with_xi_reranking()` function. Production wiring is a separate
-   change gated on L5 results.**
+5. **Xi re-ranking in recall path.** ANSWERED: research harness only.
+   Wire it into a research-local `recall_with_xi_reranking()` function.
+   Production wiring is a separate change gated on L5 results.
 
-6. **Adversarial v2 construction cost.** A5 (xi shadows) requires
-   gradient-based search for vectors with matching xi signatures. This is
-   a non-trivial computation. Should the adversarial set be pre-computed
-   and cached, or computed fresh each run?
-   **Recommendation: pre-computed, deterministic, cached alongside the
-   corpus. Same principle as L4's adversarial set — fixed once landed.**
+6. **Adversarial v2 construction cost.** ANSWERED: pre-computed,
+   deterministic, cached alongside the corpus. Same principle as L4's
+   adversarial set — fixed once landed.
 
-7. **Weight distribution.** Transfer_score and temporal_separation are
-   co-dominant at 15% each. Should we bias toward one axis early?
-   **Recommendation: keep equal. They are mechanistically coupled — the
-   2 Hz band structure IS what makes transfer work.**
+7. **Weight distribution.** ANSWERED: keep equal. They are
+   mechanistically coupled — the 2 Hz band structure IS what makes
+   transfer work.
 
 ---
 
 ## 11. Acceptance Criteria
 
 This design is ready to implement when:
-- [ ] Nick answers the seven open questions in section 10.
+- [x] Nick answers the seven open questions in section 10. DONE 2026-04-14.
 - [ ] A new file `research/results-L5.tsv` header is drafted.
-- [ ] The section 2 weight table sums to exactly 100% after any changes.
+- [x] The section 2 weight table sums to exactly 100% after any changes.
 - [ ] The section 9 scaffold cycles each have explicit pre-condition and
       post-condition sentences (added at conversion to implementation).
 
