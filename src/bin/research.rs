@@ -69,6 +69,11 @@ fn experiment_params() -> Params {
         chain_depth: 2,
         chain_carry_strength: 0.5,
         chain_top_n: 10,
+
+        // Xi repulsion threshold for consolidation phase separation (L4.S15).
+        // Default 0.30 keeps L3 at its frozen archive value (0/300 pairs
+        // qualify at 0.30 on the L3 corpus). L4 overrides in the L4-local block.
+        consolidation_repulsion_threshold: 0.30,
     }
 }
 
@@ -105,6 +110,8 @@ struct Params {
     chain_depth: usize,
     chain_carry_strength: f32,
     chain_top_n: usize,
+    // Xi repulsion threshold for consolidation phase separation (L4.S15)
+    consolidation_repulsion_threshold: f32,
 }
 
 // ============================================================================
@@ -808,6 +815,7 @@ fn run_experiment(params: &Params) {
         noise_floor: params.noise_floor,
         hallucination_amplitude: params.hallucination_amplitude,
         protect_established: false,
+        repulsion_threshold: params.consolidation_repulsion_threshold,
     };
 
     // Run multiple consolidation cycles
@@ -940,6 +948,7 @@ fn run_experiment_l3(params: &Params) {
         noise_floor: params.noise_floor,
         hallucination_amplitude: params.hallucination_amplitude,
         protect_established: true,
+        repulsion_threshold: params.consolidation_repulsion_threshold,
     };
 
     let start = Instant::now();
@@ -1466,6 +1475,22 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
     // Probe of last untested encoder-layer param. Target: corpus_xi_diversity
     // (0.6018) and possibly encoding_entropy (0.0213).
     l4_params.chiral_perturbation = 0.7;
+    // L4.S15: consolidation_repulsion_threshold — L4-local override.
+    // Default (0.30) keeps L3 at its frozen value (0/300 pairs qualify).
+    // Post-xi-fix, the nonlinear commutator spreads repulsion up to 0.31.
+    // Sweep results (3-run probes):
+    //   0.30: fitness 0.1019, phase_coh 0.9489, adv_resist 0.6127 (baseline)
+    //   0.29: fitness 0.1031, phase_coh 0.9388, adv_resist 0.6128
+    //   0.28: fitness 0.1010, phase_coh 0.9604, adv_resist 0.6119 (BEST)
+    //   0.27: fitness 0.1209, phase_coh 0.9654, adv_resist 0.4294 (cliff)
+    //   0.25: fitness 0.1474, phase_coh 0.8662, adv_resist 0.4118
+    //   0.22: fitness 0.2750, phase_coh 0.4083, adv_resist 0.3406
+    //   0.15: fitness 0.2064, phase_coh 0.4336, adv_resist 0.???? (pre-fix)
+    // The cliff between 0.28 and 0.27 comes from adv_resistance: the small
+    // number of extra qualifying pairs at 0.27 disrupts the adversarial pass
+    // disproportionately. 0.28 is the lowest threshold where adv_resistance
+    // holds near the 0.30 baseline.
+    l4_params.consolidation_repulsion_threshold = 0.28;
     // L4.S4: chain_depth 2 -> 3, chain_top_n 10 -> 7 (L4-local override).
     // Escape the trivial 2-point monotonicity cap on chain_fidelity. With
     // chain_depth=2 the base_score is a single cosine distance and the
@@ -1871,6 +1896,7 @@ fn run_dream_chain(
             noise_floor: params.noise_floor,
             hallucination_amplitude: params.hallucination_amplitude,
             protect_established: true,
+            repulsion_threshold: params.consolidation_repulsion_threshold,
         };
 
         let report = consolidator.consolidate(engine, 0, 2);

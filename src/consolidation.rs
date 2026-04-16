@@ -206,6 +206,11 @@ pub struct ConsolidationEngine {
     pub hallucination_amplitude: f32,
     /// Skip destructive dampening for memories with amplitude > 0.5 (signal protection)
     pub protect_established: bool,
+    /// Xi repulsion threshold for phase separation during consolidation.
+    /// Pairs with xi_repulsion above this value get their phases pushed apart.
+    /// L4.S15: tuned post-xi-fix. 0.30 was unreachable pre-fix, 0.15 too
+    /// aggressive (300/300 pairs qualify, phase_coherence collapses).
+    pub repulsion_threshold: f32,
 }
 
 impl Default for ConsolidationEngine {
@@ -222,6 +227,7 @@ impl Default for ConsolidationEngine {
             noise_floor: 0.0,
             hallucination_amplitude: 0.5,
             protect_established: false,
+            repulsion_threshold: 0.22,
         }
     }
 }
@@ -779,11 +785,12 @@ impl ConsolidationEngine {
                 let semantic_sim = cosine_similarity(vec_a, vec_b);
                 let xi_repulsion = xi_repulsive_force(xi_a, xi_b);
                 
-                // Target: memories that are semantically similar (>0.6) but have different Xi residues (>0.15)
-                // Threshold lowered from 0.3 to 0.15: the old linear xi_signature capped
-                // max observed repulsion at 0.291, making the 0.3 gate permanently unreachable.
-                // With the nonlinear commutator fix, all pairs exceed 0.15.
-                if semantic_sim > 0.6 && xi_repulsion > 0.15 {
+                // Target: memories that are semantically similar (>0.6) but have different Xi residues.
+                // L4.S15: threshold is now a configurable field (self.repulsion_threshold).
+                // History: 0.30 was unreachable pre-xi-fix (max observed 0.291),
+                // 0.15 was too aggressive (300/300 pairs qualify, phase_coherence collapses).
+                // Tuned to 0.22 by default; L4 overrides via Params.
+                if semantic_sim > 0.6 && xi_repulsion > self.repulsion_threshold {
                     repulsion_pairs.push((id_a, id_b, xi_repulsion));
                 }
             }
