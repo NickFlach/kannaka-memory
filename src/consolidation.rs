@@ -779,8 +779,11 @@ impl ConsolidationEngine {
                 let semantic_sim = cosine_similarity(vec_a, vec_b);
                 let xi_repulsion = xi_repulsive_force(xi_a, xi_b);
                 
-                // Target: memories that are semantically similar (>0.6) but have different Xi residues (>0.3)
-                if semantic_sim > 0.6 && xi_repulsion > 0.3 {
+                // Target: memories that are semantically similar (>0.6) but have different Xi residues (>0.15)
+                // Threshold lowered from 0.3 to 0.15: the old linear xi_signature capped
+                // max observed repulsion at 0.291, making the 0.3 gate permanently unreachable.
+                // With the nonlinear commutator fix, all pairs exceed 0.15.
+                if semantic_sim > 0.6 && xi_repulsion > 0.15 {
                     repulsion_pairs.push((id_a, id_b, xi_repulsion));
                 }
             }
