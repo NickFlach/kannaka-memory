@@ -5,6 +5,7 @@ use ndarray::Array1;
 use uuid::Uuid;
 
 use crate::encoding::EncodingPipeline;
+use crate::xi_operator::{compute_xi_signature, xi_diversity_boost};
 
 use super::Medium;
 use super::types::*;
@@ -241,7 +242,7 @@ impl Medium {
         })?;
 
         // 2. Compute basic resonance pattern — matrix multiplication H @ q
-        let mut resonances = Vec::new();
+        let mut resonances: Vec<(usize, Resonance)> = Vec::new();
         let effective_strengths = self.effective_strength(None);
 
         for i in 0..self.wavefront_count() {
@@ -259,21 +260,42 @@ impl Medium {
             let phase_modulation = self.store.phase[i].cos(); // Phase affects resonance
             let resonance_strength = similarity * effective_strength * phase_modulation;
 
-            resonances.push(Resonance {
+            resonances.push((i, Resonance {
                 id: self.store.metadata[i].id,
                 content: self.store.metadata[i].content.clone(),
                 similarity,
                 resonance_strength,
                 effective_strength,
-            });
+            }));
         }
 
-        // 3. Sort by resonance strength and find top-k initial results
-        resonances.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
-        let initial_results = resonances.into_iter().take(top_k).collect::<Vec<_>>();
+        // 3. Sort by raw resonance strength and take top 2*K for xi re-ranking
+        resonances.sort_by(|a, b| b.1.resonance_strength.total_cmp(&a.1.resonance_strength));
+        let rerank_pool = top_k.saturating_mul(2).max(top_k);
+        resonances.truncate(rerank_pool);
 
-        // 4. Coherence expansion: find high-coherence neighbors of initial results
-        let coherence_expansion_results = self.expand_with_coherence(&initial_results, top_k);
+        // 4. Xi diversity re-ranking: boost candidates with distinct xi signatures
+        let query_xi = compute_xi_signature(&query_vector);
+        let initial_results: Vec<Resonance> = resonances
+            .into_iter()
+            .map(|(i, mut r)| {
+                let wf_vec: Vec<f32> = self.store.wavefronts.row(i).to_vec();
+                let wf_xi = compute_xi_signature(&wf_vec);
+                let boosted_sim = xi_diversity_boost(r.similarity, &query_xi, &wf_xi);
+                r.similarity = boosted_sim;
+                r.resonance_strength = boosted_sim * r.effective_strength
+                    * self.store.phase[i].cos();
+                r
+            })
+            .collect();
+
+        // 5. Re-sort by boosted resonance and take top-k
+        let mut sorted = initial_results;
+        sorted.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
+        sorted.truncate(top_k);
+
+        // 6. Coherence expansion: find high-coherence neighbors of initial results
+        let coherence_expansion_results = self.expand_with_coherence(&sorted, top_k);
 
         Ok(coherence_expansion_results)
     }
