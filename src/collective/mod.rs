@@ -6,12 +6,12 @@
 //! - **NATS** (Transport): real-time phase gossip and swarm coordination
 //!
 //! # Branch Conventions
-//! ```
-//! main                          ← consensus (merged, vetted)
-//! ├── <agent>/working           ← current memories (auto-push)
-//! ├── <agent>/dream/<date>      ← dream cycle results
-//! ├── collective/mars-sim       ← multi-agent speculation space
-//! └── collective/quarantine     ← conflicting memories under review
+//! ```text
+//! main                          -- consensus (merged, vetted)
+//! +-- <agent>/working           -- current memories (auto-push)
+//! +-- <agent>/dream/<date>      -- dream cycle results
+//! +-- collective/mars-sim       -- multi-agent speculation space
+//! +-- collective/quarantine     -- conflicting memories under review
 //! ```
 
 pub mod artifacts;
