@@ -17,7 +17,7 @@ VERSION="${KANNAKA_VERSION:-latest}"
 detect_os() {
     case "$(uname -s)" in
         Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
+        Darwin*) echo "macos" ;;
         CYGWIN*|MINGW*|MSYS*) echo "windows" ;;
         *)
             echo "Error: unsupported operating system: $(uname -s)" >&2
