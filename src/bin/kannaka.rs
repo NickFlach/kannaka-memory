@@ -187,6 +187,13 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // First-run detection: no arguments AND no config exists → self-installing onboarding
+    if args.len() <= 1 && !KannakaConfig::exists() {
+        config::run_first_time_installer();
+        return;
+    }
+
     if args.len() < 2 {
         usage();
     }

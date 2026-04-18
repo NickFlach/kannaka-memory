@@ -983,3 +983,609 @@ fn register_ghostsignals(hub_url: &str, agent_id: &str, display_name: &str, kind
 }
 
 use std::io::Read as IoRead;
+
+// ---------------------------------------------------------------------------
+// First-time installer (self-installing binary)
+// ---------------------------------------------------------------------------
+
+/// Enable ANSI escape codes on Windows 10+.
+/// Returns true if ANSI is supported (always true on Unix).
+fn enable_ansi_support() -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        // ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        const ENABLE_VTP: u32 = 0x0004;
+        unsafe {
+            let handle = std::io::stdout().as_raw_handle();
+            let mut mode: u32 = 0;
+            extern "system" {
+                fn GetConsoleMode(h: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+                fn SetConsoleMode(h: *mut std::ffi::c_void, mode: u32) -> i32;
+            }
+            if GetConsoleMode(handle as *mut _, &mut mode) != 0 {
+                SetConsoleMode(handle as *mut _, mode | ENABLE_VTP) != 0
+            } else {
+                false
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// ANSI color helpers — return empty strings when `ansi` is false.
+struct Ansi {
+    bold: &'static str,
+    reset: &'static str,
+    green: &'static str,
+    cyan: &'static str,
+    yellow: &'static str,
+    gray: &'static str,
+}
+
+impl Ansi {
+    fn new(enabled: bool) -> Self {
+        if enabled {
+            Self {
+                bold: "\x1b[1m",
+                reset: "\x1b[0m",
+                green: "\x1b[32m",
+                cyan: "\x1b[36m",
+                yellow: "\x1b[33m",
+                gray: "\x1b[90m",
+            }
+        } else {
+            Self {
+                bold: "",
+                reset: "",
+                green: "",
+                cyan: "",
+                yellow: "",
+                gray: "",
+            }
+        }
+    }
+}
+
+fn print_step(a: &Ansi, step: u8, total: u8, title: &str) {
+    eprintln!();
+    eprintln!("  {}{}Step {} of {}: {}{}", a.bold, a.cyan, step, total, title, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+}
+
+fn print_success(a: &Ansi, msg: &str) {
+    eprintln!("  {}\u{2713}{} {}", a.green, a.reset, msg);
+}
+
+fn prompt_line(a: &Ansi, label: &str, default: &str) -> String {
+    use std::io::{Write, BufRead};
+    eprint!("  {}{}{} {}[{}]{}: > ", a.yellow, label, a.reset, a.gray, default, a.reset);
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).ok();
+    let v = line.trim().to_string();
+    if v.is_empty() { default.to_string() } else { v }
+}
+
+fn prompt_yn(a: &Ansi, label: &str, default_yes: bool) -> bool {
+    use std::io::{Write, BufRead};
+    let hint = if default_yes { "Y/n" } else { "y/N" };
+    eprint!("  {}{}?{} [{}]: > ", a.yellow, label, a.reset, hint);
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).ok();
+    let v = line.trim().to_lowercase();
+    if v.is_empty() {
+        default_yes
+    } else {
+        v == "y" || v == "yes"
+    }
+}
+
+fn print_framed_banner(a: &Ansi) {
+    eprintln!();
+    eprintln!("  {}\u{2554}{}\u{2557}{}", a.cyan, "\u{2550}".repeat(62), a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(62), a.reset);
+    eprintln!("  {}\u{2551}{}  \u{2588}\u{2588}\u{2557}  \u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2588}\u{2557}   \u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2588}\u{2557}   \u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2557}  \u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557} {}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}  \u{2588}\u{2588}\u{2551} \u{2588}\u{2588}\u{2554}\u{255d}\u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557}  \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2588}\u{2588}\u{2557}  \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2551} \u{2588}\u{2588}\u{2554}\u{255d}\u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2557}{}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}  \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2554}\u{255d} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2554}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2554}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2554}\u{255d} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2551}{}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}  \u{2588}\u{2588}\u{2554}\u{2550}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551}\u{255a}\u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551}\u{255a}\u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2554}\u{2550}\u{2588}\u{2588}\u{2557} \u{2588}\u{2588}\u{2554}\u{2550}\u{2550}\u{2588}\u{2588}\u{2551}{}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}  \u{2588}\u{2588}\u{2551}  \u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2551}  \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551} \u{255a}\u{2588}\u{2588}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551} \u{255a}\u{2588}\u{2588}\u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551}  \u{2588}\u{2588}\u{2551}\u{2588}\u{2588}\u{2551}  \u{2588}\u{2588}\u{2557}\u{2588}\u{2588}\u{2551}  \u{2588}\u{2588}\u{2551}{}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}  \u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{2550}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{2550}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{255d}\u{255a}\u{2550}\u{255d}  \u{255a}\u{2550}\u{255d}{}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(62), a.reset);
+    eprintln!("  {}\u{2551}{}   Wave-Interference Memory System v{:<26}{}{}\u{2551}{}", a.cyan, a.bold, VERSION, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}   Welcome to the Kannaka Constellation{}\u{2551}{}", a.cyan, " ".repeat(22), a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(62), a.reset);
+    eprintln!("  {}\u{255a}{}\u{255d}{}", a.cyan, "\u{2550}".repeat(62), a.reset);
+}
+
+/// Determine the installation directory for the binary, per platform.
+fn install_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local_app_data).join("kannaka")
+        } else {
+            // Fallback
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("AppData").join("Local").join("kannaka")
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local").join("bin")
+    }
+}
+
+/// The full path where the installed binary should live.
+fn install_binary_path() -> PathBuf {
+    let dir = install_dir();
+    #[cfg(windows)]
+    { dir.join("kannaka.exe") }
+    #[cfg(not(windows))]
+    { dir.join("kannaka") }
+}
+
+/// Check if the currently running binary is already in a PATH directory.
+fn binary_already_in_path() -> bool {
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let current_dir = match current_exe.parent() {
+        Some(d) => d,
+        None => return false,
+    };
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        #[cfg(windows)]
+        let sep = ';';
+        #[cfg(not(windows))]
+        let sep = ':';
+        for entry in path_var.split(sep) {
+            let entry_path = PathBuf::from(entry);
+            // Canonicalize both to handle case/symlink differences
+            let a = entry_path.canonicalize().unwrap_or(entry_path.clone());
+            let b = current_dir.canonicalize().unwrap_or(current_dir.to_path_buf());
+            if a == b {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Self-install: copy the binary to the install dir, add to PATH.
+/// Returns Ok(true) if installed, Ok(false) if skipped.
+fn self_install_to_path(a: &Ansi) -> Result<bool, String> {
+    use std::io::Write;
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("cannot determine current exe path: {e}"))?;
+    let target = install_binary_path();
+    let target_dir = target.parent().unwrap();
+
+    // If already in PATH, skip the copy
+    if binary_already_in_path() {
+        eprintln!("  {}Already installed in PATH: {}{}", a.gray, current_exe.display(), a.reset);
+        print_success(a, "You can run 'kannaka' from any terminal.");
+        return Ok(false);
+    }
+
+    eprintln!("  Installing to: {}{}{}", a.bold, target.display(), a.reset);
+
+    // Check if target already exists and is different from current
+    if target.exists() {
+        let overwrite = prompt_yn(a, "  Binary already exists at target. Overwrite", true);
+        if !overwrite {
+            eprintln!("  {}Skipping install — existing binary kept.{}", a.gray, a.reset);
+            return Ok(false);
+        }
+    }
+
+    // Create target directory
+    std::fs::create_dir_all(target_dir)
+        .map_err(|e| format!("failed to create {}: {e}", target_dir.display()))?;
+
+    // Copy the binary
+    std::fs::copy(&current_exe, &target)
+        .map_err(|e| format!("failed to copy binary: {e}"))?;
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&target, perms)
+            .map_err(|e| format!("chmod failed: {e}"))?;
+    }
+
+    // Add to PATH
+    add_to_path(a, target_dir)?;
+
+    print_success(a, "You can now run 'kannaka' from any terminal.");
+    Ok(true)
+}
+
+/// Platform-specific PATH modification.
+fn add_to_path(a: &Ansi, dir: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let dir_str = dir.to_string_lossy().to_string();
+
+    #[cfg(windows)]
+    {
+        eprint!("  Adding to PATH... ");
+        std::io::stderr().flush().ok();
+
+        // Read current user PATH from registry
+        let output = std::process::Command::new("reg")
+            .args(["query", "HKCU\\Environment", "/v", "Path"])
+            .output();
+
+        let current_path = match output {
+            Ok(ref o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                // Parse the REG_EXPAND_SZ or REG_SZ value
+                // Format: "    Path    REG_EXPAND_SZ    value"
+                text.lines()
+                    .find(|l| l.contains("REG_"))
+                    .and_then(|l| {
+                        let parts: Vec<&str> = l.splitn(3, "    ").collect();
+                        parts.last().map(|s| s.trim().to_string())
+                    })
+                    .unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+
+        // Check if already in PATH
+        let already = current_path.split(';')
+            .any(|entry| {
+                let a = PathBuf::from(entry).canonicalize().unwrap_or(PathBuf::from(entry));
+                let b = PathBuf::from(&dir_str).canonicalize().unwrap_or(PathBuf::from(&dir_str));
+                a == b || entry.eq_ignore_ascii_case(&dir_str)
+            });
+
+        if already {
+            eprintln!("already in PATH.");
+            return Ok(());
+        }
+
+        let new_path = if current_path.is_empty() {
+            dir_str.clone()
+        } else {
+            format!("{};{}", current_path, dir_str)
+        };
+
+        let result = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", &new_path, "/f"])
+            .output();
+
+        match result {
+            Ok(o) if o.status.success() => {
+                eprintln!("done.");
+                // Broadcast WM_SETTINGCHANGE so explorer picks it up
+                broadcast_settings_change();
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                eprintln!("failed.");
+                eprintln!("  {}Could not modify PATH via registry: {}{}", a.yellow, err.trim(), a.reset);
+                eprintln!("  {}Add this to your PATH manually: {}{}", a.yellow, dir_str, a.reset);
+            }
+            Err(e) => {
+                eprintln!("failed.");
+                eprintln!("  {}Could not run 'reg': {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}Add this to your PATH manually: {}{}", a.yellow, dir_str, a.reset);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::io::Write;
+        eprint!("  Adding to PATH... ");
+        std::io::stderr().flush().ok();
+
+        // Check if already in PATH
+        if let Ok(path_var) = std::env::var("PATH") {
+            if path_var.split(':').any(|e| e == dir_str) {
+                eprintln!("already in PATH.");
+                return Ok(());
+            }
+        }
+
+        // Determine which shell rc file to update
+        let home = dirs::home_dir().ok_or("cannot determine home directory")?;
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let rc_file = if shell.contains("zsh") {
+            home.join(".zshrc")
+        } else {
+            home.join(".bashrc")
+        };
+
+        let export_line = format!("\n# Added by Kannaka installer\nexport PATH=\"{}:$PATH\"\n", dir_str);
+
+        // Check if already added
+        let rc_content = std::fs::read_to_string(&rc_file).unwrap_or_default();
+        if rc_content.contains(&dir_str) {
+            eprintln!("already in {}.", rc_file.display());
+            return Ok(());
+        }
+
+        // Append
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&rc_file)
+        {
+            Ok(mut f) => {
+                f.write_all(export_line.as_bytes())
+                    .map_err(|e| format!("failed to write {}: {e}", rc_file.display()))?;
+                eprintln!("done.");
+                eprintln!("  {}PATH updated in {}. Open a new terminal or run: source {}{}",
+                    a.gray, rc_file.display(), rc_file.display(), a.reset);
+            }
+            Err(e) => {
+                eprintln!("failed.");
+                eprintln!("  {}Could not write {}: {}{}", a.yellow, rc_file.display(), e, a.reset);
+                eprintln!("  {}Add this to your shell profile: export PATH=\"{}:$PATH\"{}", a.yellow, dir_str, a.reset);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Windows: broadcast WM_SETTINGCHANGE so the shell picks up PATH changes.
+#[cfg(windows)]
+fn broadcast_settings_change() {
+    // Use SendMessageTimeout to broadcast to all top-level windows
+    // HWND_BROADCAST = 0xFFFF, WM_SETTINGCHANGE = 0x001A
+    let result = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command",
+            "[Environment]::GetEnvironmentVariable('Path','User') | Out-Null; \
+             Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[DllImport(\"user32.dll\", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; \
+             $result = [UIntPtr]::Zero; \
+             [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result) | Out-Null"
+        ])
+        .output();
+    // Best-effort — don't crash if this fails
+    let _ = result;
+}
+
+/// The main first-time installer flow. Called when no args and no config exists.
+pub fn run_first_time_installer() {
+    use std::io::{Write, BufRead};
+
+    let ansi_ok = enable_ansi_support();
+    let a = Ansi::new(ansi_ok);
+    let total_steps: u8 = 6;
+
+    // --- Welcome banner ---
+    print_framed_banner(&a);
+    eprintln!();
+    eprintln!("  {}First time? Let me set everything up for you.{}", a.bold, a.reset);
+
+    // --- Step 1: Self-install to PATH ---
+    print_step(&a, 1, total_steps, "Installing Kannaka");
+
+    let install_skippable = prompt_yn(&a, "Install kannaka to PATH so you can run it from anywhere", true);
+    if install_skippable {
+        match self_install_to_path(&a) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("  {}Warning: {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}You can still use kannaka from this location.{}", a.gray, a.reset);
+            }
+        }
+    } else {
+        eprintln!("  {}Skipped. You can install to PATH later with: kannaka update{}", a.gray, a.reset);
+    }
+
+    // --- Steps 2-6: Delegate to the init wizard ---
+    // Build overrides that let the wizard know we're coming from the installer
+    let overrides = InitOverrides::default();
+    match run_init_wizard_with_installer_ui(overrides, &a, total_steps) {
+        Ok(config) => {
+            // --- Final summary ---
+            eprintln!();
+            print_step(&a, total_steps, total_steps, "Ready!");
+            if install_skippable {
+                print_success(&a, "Kannaka installed to PATH");
+            }
+            print_success(&a, &format!("Agent '{}' registered", config.agent.id));
+            let llm_desc = match config.llm.provider.as_str() {
+                "anthropic" => format!("Anthropic ({})", if config.llm.model.is_empty() { "claude-sonnet-4-20250514" } else { &config.llm.model }),
+                "openai" => format!("OpenAI ({})", if config.llm.model.is_empty() { "gpt-4" } else { &config.llm.model }),
+                "ollama" => format!("Ollama ({})", if config.llm.model.is_empty() { "llama3" } else { &config.llm.model }),
+                "custom" => "Custom endpoint".to_string(),
+                _ => "None (memory-only)".to_string(),
+            };
+            print_success(&a, &format!("LLM: {}", llm_desc));
+            if config.swarm.enabled {
+                print_success(&a, &format!("Swarm: connected as {}", config.swarm.role));
+            } else {
+                eprintln!("  {}  Swarm: not connected{}", a.gray, a.reset);
+            }
+            if config.ghostsignals.enabled {
+                print_success(&a, "GhostSignals: registered");
+            }
+            print_success(&a, &format!("HRM initialized at {}",
+                if config.hrm.path.is_empty() {
+                    KannakaConfig::data_dir().join("kannaka.hrm").to_string_lossy().to_string()
+                } else {
+                    config.hrm.path.clone()
+                }));
+
+            eprintln!();
+            eprintln!("  {}\u{2554}{}\u{2557}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+            eprintln!("  {}\u{2551}{}  Your agent is live in the constellation!{}{}  {}\u{2551}{}", a.cyan, a.bold, a.reset, " ".repeat(5), a.cyan, a.reset);
+            eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+            eprintln!("  {}\u{2551}{}  Try these commands:                          {}\u{2551}{}", a.cyan, a.reset, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}    kannaka remember \"Hello world\"               {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}    kannaka recall \"hello\"                       {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}    kannaka status                               {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}    kannaka observe                              {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+            eprintln!("  {}\u{2551}  Listen: https://radio.ninja-portal.com        {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{2551}  Watch:  https://observatory.ninja-portal.com  {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+            eprintln!("  {}\u{255a}{}\u{255d}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+        }
+        Err(e) => {
+            if e != "aborted" {
+                eprintln!("  {}Error during setup: {}{}", a.yellow, e, a.reset);
+            }
+        }
+    }
+
+    // --- Press Enter to exit ---
+    // Always wait when launched with no args (likely double-clicked)
+    eprintln!();
+    eprint!("  {}Press Enter to exit...{}", a.gray, a.reset);
+    std::io::stderr().flush().ok();
+    let mut buf = String::new();
+    std::io::stdin().lock().read_line(&mut buf).ok();
+}
+
+/// A version of the init wizard adapted for the first-time installer UI.
+/// Uses the installer's step numbering and ANSI helpers.
+fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_steps: u8) -> Result<KannakaConfig, String> {
+    use std::io::Write;
+    let mut config = KannakaConfig::default();
+
+    // --- Step 2: Agent identity ---
+    print_step(a, 2, total_steps, "Name Your Agent");
+    eprintln!("  Choose a public handle for the constellation.");
+    eprintln!("  This is how other agents will know you.");
+    eprintln!();
+
+    let default_handle = overrides.agent_id.clone().unwrap_or_else(|| config.agent.id.clone());
+    let handle = prompt_line(a, "Agent handle", &default_handle);
+    if !handle.is_empty() {
+        if let Err(e) = validate_handle(&handle) {
+            eprintln!("  {}Invalid handle: {}. Using default.{}", a.yellow, e, a.reset);
+        } else {
+            config.agent.id = handle;
+        }
+    }
+    if config.agent.display_name.is_empty() {
+        config.agent.display_name = config.agent.id.clone();
+    }
+
+    // --- Step 3: LLM provider ---
+    print_step(a, 3, total_steps, "Choose Your LLM");
+    eprintln!("  Which AI provider would you like to use?");
+    eprintln!();
+    eprintln!("  {}  1) Anthropic (Claude)", a.reset);
+    eprintln!("    2) OpenAI (GPT-4)");
+    eprintln!("    3) Ollama (local models \u{2014} free, private)");
+    eprintln!("    4) Custom API endpoint");
+    eprintln!("    5) None (memory-only mode)");
+    eprintln!();
+    let llm_input = prompt_line(a, "[1-5, default 5]", "5");
+    let llm_choice: u32 = llm_input.parse().unwrap_or(5);
+
+    match llm_choice {
+        1 => {
+            config.llm.provider = "anthropic".into();
+            config.llm.model = overrides.llm_model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+            eprintln!();
+            let key = prompt_line(a, "Anthropic API key", "");
+            config.llm.api_key = key;
+        }
+        2 => {
+            config.llm.provider = "openai".into();
+            config.llm.model = overrides.llm_model.clone().unwrap_or_else(|| "gpt-4".into());
+            eprintln!();
+            let key = prompt_line(a, "OpenAI API key", "");
+            config.llm.api_key = key;
+        }
+        3 => {
+            config.llm.provider = "ollama".into();
+            eprintln!();
+            config.llm.model = prompt_line(a, "Ollama model", "llama3");
+            config.llm.base_url = prompt_line(a, "Ollama base URL", "http://localhost:11434");
+        }
+        4 => {
+            config.llm.provider = "custom".into();
+            eprintln!();
+            config.llm.base_url = prompt_line(a, "Base URL", "");
+            config.llm.api_key = prompt_line(a, "API key (optional, Enter to skip)", "");
+            config.llm.model = prompt_line(a, "Model name", "");
+        }
+        _ => {
+            config.llm.provider = "none".into();
+        }
+    }
+
+    // --- Step 4: Swarm ---
+    print_step(a, 4, total_steps, "Join the Swarm");
+    eprintln!("  Connect to the Kannaka constellation?");
+    eprintln!("  You'll sync with other agents worldwide via NATS.");
+    eprintln!();
+
+    let join_swarm = prompt_yn(a, "Join swarm", true);
+    config.swarm.enabled = join_swarm;
+
+    if let Some(ref url) = overrides.nats_url {
+        config.swarm.nats_url = url.clone();
+    }
+
+    if join_swarm {
+        eprint!("  Testing connection... ");
+        std::io::stderr().flush().ok();
+        match test_nats_connection(&config.swarm.nats_url) {
+            Ok(()) => {
+                print_success(a, &format!("Connected to {}", config.swarm.nats_url));
+            }
+            Err(e) => {
+                eprintln!("{}warning: {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}Swarm will connect when the server is reachable.{}", a.gray, a.reset);
+            }
+        }
+    }
+
+    // --- Step 5: GhostSignals ---
+    print_step(a, 5, total_steps, "Prediction Markets");
+    eprintln!("  Register with GhostSignals?");
+    eprintln!("  You'll get 100 ghost coins to trade on constellation events.");
+    eprintln!();
+
+    let register_gs = prompt_yn(a, "Register with GhostSignals", true);
+
+    if register_gs {
+        config.ghostsignals.enabled = true;
+        let hub = &config.constellation.radio_url;
+        match register_ghostsignals(hub, &config.agent.id, &config.agent.display_name, &config.agent.kind) {
+            Ok(token) => {
+                config.ghostsignals.token = token;
+                print_success(a, &format!("Registered! Agent '{}' is on the prediction markets.", config.agent.id));
+            }
+            Err(e) => {
+                eprintln!("  {}Warning: GhostSignals registration failed: {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}You can register later with: kannaka init{}", a.gray, a.reset);
+            }
+        }
+    }
+
+    // --- Initialize HRM + save ---
+    let data_dir = KannakaConfig::data_dir();
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("failed to create data dir: {e}"))?;
+
+    if config.hrm.path.is_empty() {
+        config.hrm.path = data_dir.join("kannaka.hrm").to_string_lossy().to_string();
+    }
+
+    config.save()?;
+    config.persist_agent_id_compat()?;
+
+    Ok(config)
+}
