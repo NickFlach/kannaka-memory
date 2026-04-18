@@ -767,7 +767,22 @@ pub fn run_init_wizard(overrides: InitOverrides) -> Result<KannakaConfig, String
         }
     }
 
-    // --- Step 6: Initialize HRM + save ---
+    // --- Step 6: Optional Kannaktopus install ---
+    if !non_interactive {
+        eprintln!();
+        eprintln!("  Optional: Install Kannaktopus (multi-agent orchestrator)?");
+        eprintln!("  Requires Node.js 18+. Adds AI-powered task orchestration to your hive.");
+        eprint!("  [y/N] > ");
+        stdout.flush().ok();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line).ok();
+        let answer = line.trim().to_lowercase();
+        if answer == "y" || answer == "yes" {
+            offer_kannaktopus_install();
+        }
+    }
+
+    // --- Step 7: Initialize HRM + save ---
     let data_dir = KannakaConfig::data_dir();
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data dir: {e}"))?;
@@ -869,6 +884,63 @@ fn print_init_help() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Attempt to install Kannaktopus via npm. Best-effort; never crashes init.
+fn offer_kannaktopus_install() {
+    // Check if node is available
+    let node_cmd = if cfg!(windows) { "where" } else { "which" };
+    let node_found = std::process::Command::new(node_cmd)
+        .arg("node")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !node_found {
+        eprintln!("  Node.js not found. Install Node.js 18+ and then run:");
+        eprintln!("    npm install -g kannaktopus");
+        return;
+    }
+
+    // Check Node version >= 18
+    let version_ok = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let major: u32 = v.trim_start_matches('v')
+                .split('.')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            Some(major >= 18)
+        })
+        .unwrap_or(false);
+
+    if !version_ok {
+        eprintln!("  Node.js version is below 18. Upgrade Node.js and then run:");
+        eprintln!("    npm install -g kannaktopus");
+        return;
+    }
+
+    eprintln!("  Installing Kannaktopus...");
+    match std::process::Command::new("npm")
+        .args(["install", "-g", "kannaktopus@latest"])
+        .status()
+    {
+        Ok(status) if status.success() => {
+            eprintln!("  Kannaktopus installed. Run 'kannaktopus' to start.");
+        }
+        Ok(_) => {
+            eprintln!("  npm install failed. You can install manually later:");
+            eprintln!("    npm install -g kannaktopus");
+        }
+        Err(e) => {
+            eprintln!("  Could not run npm: {}", e);
+            eprintln!("  Install manually: npm install -g kannaktopus");
+        }
+    }
+}
 
 /// Test NATS connection with a 3-second TCP timeout.
 fn test_nats_connection(url: &str) -> Result<(), String> {

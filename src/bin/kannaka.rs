@@ -154,10 +154,10 @@ fn usage() {
     process::exit(1);
 }
 
-/// Resolve NATS URL from --nats-url arg, KANNAKA_NATS_URL env, or default.
+/// Resolve NATS URL: CLI flag > KANNAKA_NATS_URL env > config.toml > hardcoded default.
 #[cfg(feature = "nats")]
-fn resolve_nats_url(args: &[String], start: usize) -> String {
-    // Check args for --nats-url
+fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &str) -> String {
+    // Check args for --nats-url (highest priority)
     let mut i = start;
     while i < args.len() {
         if args[i] == "--nats-url" && i + 1 < args.len() {
@@ -165,9 +165,9 @@ fn resolve_nats_url(args: &[String], start: usize) -> String {
         }
         i += 1;
     }
-    // Check env
-    env::var("KANNAKA_NATS_URL")
-        .unwrap_or_else(|_| kannaka_memory::nats::DEFAULT_NATS_URL.to_string())
+    // Env var is already applied via config.load(), so config_nats_url reflects
+    // KANNAKA_NATS_URL > config.toml > built-in default.
+    config_nats_url.to_string()
 }
 
 /// Try connecting to NATS, returning None on failure (with warning printed).
@@ -227,11 +227,12 @@ fn main() {
         _ => {}
     }
 
+    // Load config once: env vars > config.toml > built-in defaults.
+    // All subsequent code uses `cfg` instead of raw env::var lookups.
+    let cfg = KannakaConfig::load();
+
     // Non-blocking update check (background thread)
-    {
-        let cfg = KannakaConfig::load();
-        config::check_for_updates_background(&cfg);
-    }
+    config::check_for_updates_background(&cfg);
 
     // Handle stateless commands before initializing memory system
     #[cfg(feature = "glyph")]
@@ -246,7 +247,13 @@ fn main() {
         return;
     }
 
-    let dir = data_dir();
+    // Resolve data directory: KANNAKA_DATA_DIR env > config.hrm.path parent > ~/.kannaka
+    let dir = if !cfg.hrm.path.is_empty() {
+        let hrm = PathBuf::from(&cfg.hrm.path);
+        hrm.parent().map(|p| p.to_path_buf()).unwrap_or_else(data_dir)
+    } else {
+        data_dir()
+    };
 
     // HRM is the sole backend
     let quiet = std::env::var("KANNAKA_QUIET").is_ok();
@@ -329,13 +336,12 @@ fn main() {
                     println!("{id}");
 
                     // Best-effort: publish new memory to NATS for swarm sync
-                    let nats_url = env::var("KANNAKA_NATS_URL")
-                        .unwrap_or_else(|_| kannaka_memory::nats::DEFAULT_NATS_URL.to_string());
-                    if let Some(transport) = try_nats_connect(&nats_url) {
+                    // Uses config (env > config.toml > default) instead of raw env::var
+                    let nats_url = &cfg.swarm.nats_url;
+                    if let Some(transport) = try_nats_connect(nats_url) {
                         if let Ok(Some(mem)) = sys.engine.store.get(&id) {
-                            let agent_id = env::var("KANNAKA_AGENT_ID")
-                                .unwrap_or_else(|_| "local".to_string());
-                            if let Err(e) = transport.publish_memory_new(mem, &agent_id) {
+                            let agent_id = &cfg.agent.id;
+                            if let Err(e) = transport.publish_memory_new(mem, agent_id) {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
                                 eprintln!("[nats] Published memory {} to swarm", id);
@@ -950,17 +956,8 @@ fn main() {
                 process::exit(1);
             }
 
-            let agent_id = env::var("KANNAKA_AGENT_ID")
-                .unwrap_or_else(|_| {
-                    // Try reading persisted agent_id from data dir
-                    let id_file = data_dir().join("agent_id");
-                    std::fs::read_to_string(&id_file).unwrap_or_else(|_| {
-                        let id = format!("agent-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-                        let _ = std::fs::create_dir_all(id_file.parent().unwrap());
-                        let _ = std::fs::write(&id_file, &id);
-                        id
-                    })
-                });
+            // Agent ID: env var > config.toml > persisted file > generate new
+            let agent_id = cfg.agent.id.clone();
 
             match args[command_start + 1].as_str() {
                 "join" => {
@@ -986,7 +983,7 @@ fn main() {
                         eprintln!("Warning: could not persist agent_id: {e}");
                     }
 
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     match try_nats_connect(&nats_url) {
                         Some(transport) => {
                             if let Err(e) = transport.announce_join(&my_agent_id) {
@@ -1013,7 +1010,7 @@ fn main() {
                     }
                 }
                 "leave" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     if let Some(transport) = try_nats_connect(&nats_url) {
                         if let Err(e) = transport.announce_leave(&agent_id) {
                             eprintln!("[nats] Warning: leave announce failed: {}", e);
@@ -1025,7 +1022,7 @@ fn main() {
                     }
                 }
                 "listen" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     let auto_sync = args[command_start..].iter().any(|a| a == "--auto-sync");
 
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
@@ -1128,7 +1125,7 @@ fn main() {
                     eprintln!("[nats] Connection closed");
                 }
                 "status" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     // Derive local phase from HRM state
                     let mut queen = kannaka_memory::QueenSync::new(
                         kannaka_memory::QueenConfig::default(),
@@ -1178,7 +1175,7 @@ fn main() {
                     println!("{}", serde_json::to_string_pretty(&output).unwrap());
                 }
                 "sync" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
@@ -1210,7 +1207,7 @@ fn main() {
                     println!("{}", serde_json::to_string_pretty(&state).unwrap());
                 }
                 "queen" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
@@ -1235,7 +1232,7 @@ fn main() {
                     println!("{}", serde_json::to_string_pretty(&state).unwrap());
                 }
                 "hives" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
@@ -1261,7 +1258,7 @@ fn main() {
                     eprintln!("{}", serde_json::to_string_pretty(&hive_infos).unwrap());
                 }
                 "publish" => {
-                    let nats_url = resolve_nats_url(&args, command_start);
+                    let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
