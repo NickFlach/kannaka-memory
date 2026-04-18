@@ -509,6 +509,149 @@ fn platform_triple() -> (&'static str, &'static str, &'static str) {
 }
 
 // ---------------------------------------------------------------------------
+// Existing-user update detection
+// ---------------------------------------------------------------------------
+
+pub enum UpdateAction {
+    /// A newer binary is running from a non-PATH location — offer to update the installed version
+    OfferUpdate(std::path::PathBuf),
+    /// The running binary IS the installed one and is current
+    AlreadyCurrent,
+}
+
+/// Check if the running binary is a newer download that should replace an existing install.
+pub fn detect_update_opportunity() -> Option<UpdateAction> {
+    let current_exe = std::env::current_exe().ok()?;
+    let _current_dir = current_exe.parent()?;
+
+    // Find where kannaka is installed in PATH
+    let installed_path = find_in_path("kannaka")?;
+
+    // If the running exe IS the installed one, nothing to do
+    if same_file(&current_exe, &installed_path) {
+        return Some(UpdateAction::AlreadyCurrent);
+    }
+
+    // Running from a different location (e.g., Downloads) — offer to update
+    Some(UpdateAction::OfferUpdate(installed_path))
+}
+
+fn find_in_path(name: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var("PATH").ok()?;
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let target = format!("{}{}", name, ext);
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(&target);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Run the update flow when a downloaded binary detects an existing installation.
+pub fn run_update_from_download(installed_path: &std::path::Path) {
+    let a = Ansi::new(enable_ansi_support());
+
+    println!("{}", BANNER);
+    println!("  {}Kannaka v{}{}", a.bold, VERSION, a.reset);
+    println!();
+    println!("  {}Existing installation detected at:{}", a.cyan, a.reset);
+    println!("  {}{}{}", a.gray, installed_path.display(), a.reset);
+    println!();
+    eprint!("  {}Update to this version? [Y/n]{} > ", a.yellow, a.reset);
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    let input = input.trim().to_lowercase();
+
+    if input == "n" || input == "no" {
+        println!("  {}Skipped.{}", a.gray, a.reset);
+        println!("\n  Press Enter to exit...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+        return;
+    }
+
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("  {}Failed to get current exe path: {}{}", a.red, e, a.reset);
+            return;
+        }
+    };
+
+    // Copy the running binary over the installed one
+    #[cfg(unix)]
+    {
+        match std::fs::copy(&current_exe, installed_path) {
+            Ok(_) => {
+                // Preserve executable permission
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(installed_path,
+                    std::fs::Permissions::from_mode(0o755));
+                println!("  {}✓ Updated {}{}", a.green, installed_path.display(), a.reset);
+            }
+            Err(e) => {
+                eprintln!("  {}Failed to copy: {}. Try: sudo cp {:?} {}{}",
+                    a.red, e, current_exe, installed_path.display(), a.reset);
+                println!("\n  Press Enter to exit...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+                return;
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, can't overwrite a running exe. Rename old → .old, copy new.
+        let old_path = installed_path.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old_path);
+        if let Err(e) = std::fs::rename(installed_path, &old_path) {
+            eprintln!("  {}Failed to rename old binary: {}{}", a.red, e, a.reset);
+            println!("\n  Press Enter to exit...");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            return;
+        }
+        match std::fs::copy(&current_exe, installed_path) {
+            Ok(_) => {
+                println!("  {}✓ Updated {} (old saved as .exe.old){}",
+                    a.green, installed_path.display(), a.reset);
+            }
+            Err(e) => {
+                // Try to restore the old binary
+                let _ = std::fs::rename(&old_path, installed_path);
+                eprintln!("  {}Failed to install: {}{}", a.red, e, a.reset);
+                println!("\n  Press Enter to exit...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+                return;
+            }
+        }
+    }
+
+    // Check if config needs migration (new fields, etc.)
+    let config = KannakaConfig::load();
+    println!("  {}✓ Config loaded ({} agent: {}){}", a.green,
+        if config.agent.id.is_empty() { "no" } else { "existing" },
+        if config.agent.id.is_empty() { "none" } else { &config.agent.id },
+        a.reset);
+
+    println!();
+    println!("  {}Updated successfully!{}", a.bold, a.reset);
+    println!("  Open a new terminal and run: {}kannaka status{}", a.cyan, a.reset);
+    println!();
+    println!("  Press Enter to exit...");
+    let _ = std::io::stdin().read_line(&mut String::new());
+}
+
+// ---------------------------------------------------------------------------
 // Init wizard
 // ---------------------------------------------------------------------------
 
@@ -1021,6 +1164,7 @@ struct Ansi {
     bold: &'static str,
     reset: &'static str,
     green: &'static str,
+    red: &'static str,
     cyan: &'static str,
     yellow: &'static str,
     gray: &'static str,
@@ -1033,6 +1177,7 @@ impl Ansi {
                 bold: "\x1b[1m",
                 reset: "\x1b[0m",
                 green: "\x1b[32m",
+                red: "\x1b[31m",
                 cyan: "\x1b[36m",
                 yellow: "\x1b[33m",
                 gray: "\x1b[90m",
@@ -1042,6 +1187,7 @@ impl Ansi {
                 bold: "",
                 reset: "",
                 green: "",
+                red: "",
                 cyan: "",
                 yellow: "",
                 gray: "",

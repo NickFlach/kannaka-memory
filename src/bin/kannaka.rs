@@ -194,6 +194,24 @@ fn main() {
         return;
     }
 
+    // Existing-user update detection: no arguments, config exists, but the
+    // running binary is NOT in a standard PATH location (e.g., user downloaded
+    // a new version to Downloads and double-clicked it). Offer to update.
+    if args.len() <= 1 && KannakaConfig::exists() {
+        if let Some(update_action) = config::detect_update_opportunity() {
+            match update_action {
+                config::UpdateAction::OfferUpdate(installed_path) => {
+                    config::run_update_from_download(&installed_path);
+                    return;
+                }
+                config::UpdateAction::AlreadyCurrent => {
+                    // Fall through to normal usage
+                }
+            }
+        }
+        usage();
+    }
+
     if args.len() < 2 {
         usage();
     }
