@@ -188,28 +188,34 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // First-run detection: no arguments AND no config exists → self-installing onboarding
-    if args.len() <= 1 && !KannakaConfig::exists() {
-        config::run_first_time_installer();
-        return;
-    }
+    // --- First-run / upgrade detection (holistic) ---
+    if args.len() <= 1 {
+        let config_exists = KannakaConfig::exists();
+        let has_existing_signs = config::has_existing_install_signs();
 
-    // Existing-user update detection: no arguments, config exists, but the
-    // running binary is NOT in a standard PATH location (e.g., user downloaded
-    // a new version to Downloads and double-clicked it). Offer to update.
-    if args.len() <= 1 && KannakaConfig::exists() {
-        if let Some(update_action) = config::detect_update_opportunity() {
-            match update_action {
-                config::UpdateAction::OfferUpdate(installed_path) => {
-                    config::run_update_from_download(&installed_path);
-                    return;
-                }
-                config::UpdateAction::AlreadyCurrent => {
-                    // Fall through to normal usage
+        if !config_exists && !has_existing_signs {
+            // Truly first time — no config, no HRM, no binary in PATH
+            config::run_first_time_installer();
+            return;
+        } else if !config_exists && has_existing_signs {
+            // Upgrade — has HRM and/or binary in PATH but no config.toml
+            config::run_upgrade_installer();
+            return;
+        } else if config_exists {
+            // Normal run with config — check for update from download location
+            if let Some(update_action) = config::detect_update_opportunity() {
+                match update_action {
+                    config::UpdateAction::OfferUpdate(installed_path) => {
+                        config::run_update_from_download(&installed_path);
+                        return;
+                    }
+                    config::UpdateAction::AlreadyCurrent => {
+                        // Fall through to normal usage
+                    }
                 }
             }
+            usage();
         }
-        usage();
     }
 
     if args.len() < 2 {

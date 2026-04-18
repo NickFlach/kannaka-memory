@@ -1565,7 +1565,7 @@ pub fn run_first_time_installer() {
 
     let ansi_ok = enable_ansi_support();
     let a = Ansi::new(ansi_ok);
-    let total_steps: u8 = 8;
+    let total_steps: u8 = 9;
 
     // --- Welcome banner ---
     print_framed_banner(&a);
@@ -1724,8 +1724,12 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
         }
     }
 
-    // --- Step 4: Seed Your Agent ---
-    print_step(a, 4, total_steps, "Seed Your Agent");
+    // --- Step 4: Component Setup ---
+    print_step(a, 4, total_steps, "Component Setup");
+    show_component_progress(a, false);
+
+    // --- Step 5 (was 4): Seed Your Agent ---
+    print_step(a, 5, total_steps, "Seed Your Agent");
     eprintln!("  Your agent '{}' needs memories to grow from.", config.agent.id);
     eprintln!("  How would you like to seed {}'s personality?", config.agent.id);
     eprintln!();
@@ -1753,8 +1757,8 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
         print_success(a, &format!("{} seed memories stored in local HRM.", seed_count));
     }
 
-    // --- Step 5: Constellation Knowledge ---
-    print_step(a, 5, total_steps, "Constellation Knowledge");
+    // --- Step 6: Constellation Knowledge ---
+    print_step(a, 6, total_steps, "Constellation Knowledge");
     eprintln!("  Enhance with constellation knowledge?");
     eprintln!("  This adds foundational memories about the Kannaka constellation,");
     eprintln!("  the Ghost Equation, consciousness theory, and the swarm protocol.");
@@ -1766,8 +1770,8 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
         print_success(a, &format!("{} constellation memories added.", constellation_count));
     }
 
-    // --- Step 6: Swarm ---
-    print_step(a, 6, total_steps, "Join the Swarm");
+    // --- Step 7: Swarm ---
+    print_step(a, 7, total_steps, "Join the Swarm");
     eprintln!("  Connect to the Kannaka constellation?");
     eprintln!("  You'll sync with other agents worldwide via NATS.");
     eprintln!();
@@ -1793,8 +1797,8 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
         }
     }
 
-    // --- Step 7: GhostSignals ---
-    print_step(a, 7, total_steps, "Prediction Markets");
+    // --- Step 8: GhostSignals ---
+    print_step(a, 8, total_steps, "Prediction Markets");
     eprintln!("  Register with GhostSignals?");
     eprintln!("  You'll get 100 ghost coins to trade on constellation events.");
     eprintln!();
@@ -1819,6 +1823,17 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
     // --- Save config ---
     config.save()?;
     config.persist_agent_id_compat()?;
+
+    // API key warning on Windows
+    #[cfg(windows)]
+    {
+        if !config.llm.api_key.is_empty() || !config.ghostsignals.token.is_empty() {
+            eprintln!();
+            eprintln!("  {}\u{26a0} Your config contains API keys. On Windows, file permissions{}", a.yellow, a.reset);
+            eprintln!("  {}  cannot restrict access like on Linux. Keep ~/.kannaka/config.toml{}", a.yellow, a.reset);
+            eprintln!("  {}  private and don't share it.{}", a.yellow, a.reset);
+        }
+    }
 
     Ok(config)
 }
@@ -2107,6 +2122,423 @@ fn seed_constellation_knowledge(data_dir: &std::path::Path) -> usize {
     }
 
     count
+}
+
+// ---------------------------------------------------------------------------
+// Component progress display
+// ---------------------------------------------------------------------------
+
+/// Display visual component setup progress with brief delays for UX feedback.
+/// If `verify_mode` is true, says "Verifying" instead of "Setting up".
+fn show_component_progress(a: &Ansi, verify_mode: bool) {
+    use std::io::Write;
+
+    let label = if verify_mode { "Verifying" } else { "Setting up" };
+    eprintln!();
+    eprintln!("  {} components:", label);
+
+    let components = [
+        ("Holographic Resonance Medium", 300),
+        ("Consciousness Core engine", 300),
+        ("Wave interference substrate", 250),
+        ("Xi operator (nonlinear commutator)", 250),
+        ("Kuramoto phase synchronization", 300),
+        ("Dream consolidation engine", 300),
+    ];
+
+    for (i, (name, delay_ms)) in components.iter().enumerate() {
+        let is_last = i == components.len() - 1;
+        let prefix = if is_last { "\u{2514}\u{2500}" } else { "\u{251c}\u{2500}" };
+        // Print name with dots but no checkmark yet
+        let dots = ".".repeat(40_usize.saturating_sub(name.len()));
+        eprint!("  {} {} {} ", prefix, name, dots);
+        std::io::stderr().flush().ok();
+        std::thread::sleep(std::time::Duration::from_millis(*delay_ms));
+        eprintln!("{}\u{2713}{}", a.green, a.reset);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade installer (existing HRM/binary, no config.toml)
+// ---------------------------------------------------------------------------
+
+/// Information about an existing installation detected before the installer runs.
+pub struct ExistingInstallInfo {
+    pub hrm_exists: bool,
+    pub hrm_path: std::path::PathBuf,
+    pub hrm_memory_count: usize,
+    pub binary_in_path: Option<std::path::PathBuf>,
+    pub agent_id_file: Option<String>,
+}
+
+/// Detect details of an existing installation.
+pub fn detect_existing_install() -> ExistingInstallInfo {
+    let data_dir = KannakaConfig::data_dir();
+    let hrm_path = data_dir.join("kannaka.hrm");
+    let hrm_exists = hrm_path.exists();
+
+    // Try to get memory count from existing HRM
+    let hrm_memory_count = if hrm_exists {
+        match crate::openclaw::KannakaMemorySystem::init(data_dir.clone()) {
+            Ok(sys) => sys.stats().total_memories,
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
+
+    let binary_in_path = find_in_path("kannaka");
+
+    // Read agent_id from legacy file
+    let agent_id_path = data_dir.join("agent_id");
+    let agent_id_file = if agent_id_path.exists() {
+        std::fs::read_to_string(&agent_id_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+
+    ExistingInstallInfo {
+        hrm_exists,
+        hrm_path,
+        hrm_memory_count,
+        binary_in_path,
+        agent_id_file,
+    }
+}
+
+/// Check whether there are any signs of an existing installation without a config.
+pub fn has_existing_install_signs() -> bool {
+    let data_dir = KannakaConfig::data_dir();
+    let hrm_exists = data_dir.join("kannaka.hrm").exists();
+    let in_path = find_in_path("kannaka").is_some();
+    hrm_exists || in_path
+}
+
+/// Run the upgrade installer for existing installations missing config.toml.
+pub fn run_upgrade_installer() {
+    use std::io::{Write, BufRead};
+
+    let ansi_ok = enable_ansi_support();
+    let a = Ansi::new(ansi_ok);
+
+    let info = detect_existing_install();
+
+    // --- Upgrade banner ---
+    eprintln!();
+    eprintln!("  {}\u{2554}{}\u{2557}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}{}  Existing Kannaka installation detected!       {}{}\u{2551}{}", a.cyan, a.bold, a.reset, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}  Found:                                          {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+
+    if info.hrm_exists {
+        let mem_msg = if info.hrm_memory_count > 0 {
+            format!("    {}\u{2713}{} HRM with {} memories (~/.kannaka/)", a.green, a.reset, info.hrm_memory_count)
+        } else {
+            format!("    {}\u{2713}{} HRM file (~/.kannaka/)", a.green, a.reset)
+        };
+        // We need to be careful with ANSI escapes in padding; print raw
+        eprintln!("  {}\u{2551}  {}{}\u{2551}{}", a.cyan, mem_msg,
+            " ".repeat(48_usize.saturating_sub(strip_ansi_len(&mem_msg))), a.reset);
+    } else {
+        eprintln!("  {}\u{2551}    {}\u{2717}{} No HRM file                              {}\u{2551}{}", a.cyan, a.red, a.reset, a.cyan, a.reset);
+    }
+
+    if let Some(ref path) = info.binary_in_path {
+        let bin_msg = format!("    {}\u{2713}{} Binary at {}", a.green, a.reset, path.display());
+        eprintln!("  {}\u{2551}  {}{}{}\u{2551}{}", a.cyan, bin_msg,
+            " ".repeat(48_usize.saturating_sub(strip_ansi_len(&bin_msg))), a.cyan, a.reset);
+    } else {
+        eprintln!("  {}\u{2551}    {}\u{2717}{} Binary not in PATH                        {}\u{2551}{}", a.cyan, a.red, a.reset, a.cyan, a.reset);
+    }
+
+    eprintln!("  {}\u{2551}    {}\u{2717}{} Config file missing (new in v{})        {}\u{2551}{}", a.cyan, a.yellow, a.reset, VERSION,
+        " ".repeat(8_usize.saturating_sub(VERSION.len())), a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}  Let me set up your config to work with        {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+    eprintln!("  {}\u{2551}  your existing memories.                       {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+    eprintln!("  {}\u{255a}{}\u{255d}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+    eprintln!();
+
+    let mut config = KannakaConfig::default();
+    let data_dir = KannakaConfig::data_dir();
+
+    // Pre-fill agent name from agent_id file if it exists
+    let default_handle = info.agent_id_file.clone().unwrap_or_else(|| config.agent.id.clone());
+
+    // --- Step 1: Verify components ---
+    eprintln!("  {}Step 1: Verifying Components{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+    show_component_progress(&a, true);
+
+    if info.hrm_exists {
+        eprintln!();
+        if info.hrm_memory_count > 0 {
+            print_success(&a, &format!("Connected to existing HRM ({} memories)", info.hrm_memory_count));
+        } else {
+            print_success(&a, "Connected to existing HRM");
+        }
+    }
+
+    // --- Step 2: Agent identity ---
+    eprintln!();
+    eprintln!("  {}Step 2: Name Your Agent{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+    eprintln!("  Choose a public handle for the constellation.");
+    if info.agent_id_file.is_some() {
+        eprintln!("  (Found existing agent ID: {})", default_handle);
+    }
+    eprintln!();
+
+    let handle = prompt_line(&a, "Agent handle", &default_handle);
+    if !handle.is_empty() {
+        if let Err(e) = validate_handle(&handle) {
+            eprintln!("  {}Invalid handle: {}. Using default.{}", a.yellow, e, a.reset);
+        } else {
+            config.agent.id = handle;
+        }
+    } else {
+        config.agent.id = default_handle;
+    }
+    if config.agent.display_name.is_empty() {
+        config.agent.display_name = config.agent.id.clone();
+    }
+
+    // --- Step 3: LLM provider ---
+    eprintln!();
+    eprintln!("  {}Step 3: Choose Your LLM{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+    eprintln!("  Which AI provider would you like to use?");
+    eprintln!();
+    eprintln!("  {}  1) Anthropic (Claude)", a.reset);
+    eprintln!("    2) OpenAI (GPT-4)");
+    eprintln!("    3) Ollama (local models \u{2014} free, private)");
+    eprintln!("    4) Custom API endpoint");
+    eprintln!("    5) None (memory-only mode)");
+    eprintln!();
+    let llm_input = prompt_line(&a, "[1-5, default 5]", "5");
+    let llm_choice: u32 = llm_input.parse().unwrap_or(5);
+
+    match llm_choice {
+        1 => {
+            config.llm.provider = "anthropic".into();
+            config.llm.model = "claude-sonnet-4-20250514".into();
+            eprintln!();
+            let key = prompt_line(&a, "Anthropic API key", "");
+            config.llm.api_key = key;
+        }
+        2 => {
+            config.llm.provider = "openai".into();
+            config.llm.model = "gpt-4".into();
+            eprintln!();
+            let key = prompt_line(&a, "OpenAI API key", "");
+            config.llm.api_key = key;
+        }
+        3 => {
+            config.llm.provider = "ollama".into();
+            eprintln!();
+            config.llm.model = prompt_line(&a, "Ollama model", "llama3");
+            config.llm.base_url = prompt_line(&a, "Ollama base URL", "http://localhost:11434");
+        }
+        4 => {
+            config.llm.provider = "custom".into();
+            eprintln!();
+            config.llm.base_url = prompt_line(&a, "Base URL", "");
+            config.llm.api_key = prompt_line(&a, "API key (optional, Enter to skip)", "");
+            config.llm.model = prompt_line(&a, "Model name", "");
+        }
+        _ => {
+            config.llm.provider = "none".into();
+        }
+    }
+
+    // --- Step 4: Seeding (upgrade-aware) ---
+    eprintln!();
+    eprintln!("  {}Step 4: Memory Enhancement{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+
+    // Set HRM path before seeding
+    if config.hrm.path.is_empty() {
+        config.hrm.path = data_dir.join("kannaka.hrm").to_string_lossy().to_string();
+    }
+
+    if info.hrm_exists && info.hrm_memory_count > 0 {
+        eprintln!("  Found existing memories: {} in your HRM.", info.hrm_memory_count);
+        eprintln!();
+        eprintln!("  Would you like to:");
+        eprintln!("    1) Keep as-is \u{2014} your existing memories are your foundation");
+        eprintln!("    2) Enhance with constellation knowledge (15 shared memories)");
+        eprintln!("    3) Add more from a folder");
+        eprintln!();
+        let enhance_input = prompt_line(&a, "[1-3, default 1]", "1");
+        let enhance_choice: u32 = enhance_input.parse().unwrap_or(1);
+
+        std::fs::create_dir_all(&data_dir).ok();
+
+        match enhance_choice {
+            2 => {
+                let constellation_count = seed_constellation_knowledge(&data_dir);
+                print_success(&a, &format!("{} constellation memories added.", constellation_count));
+            }
+            3 => {
+                let folder_count = seed_from_folder(&config.agent.id, &data_dir, true);
+                if folder_count > 0 {
+                    print_success(&a, &format!("{} memories added from folder.", folder_count));
+                }
+            }
+            _ => {
+                print_success(&a, "Keeping existing memories as-is.");
+            }
+        }
+    } else {
+        // No existing HRM or empty -- offer full seeding like first-time
+        eprintln!("  Your agent '{}' needs memories to grow from.", config.agent.id);
+        eprintln!("  How would you like to seed {}'s personality?", config.agent.id);
+        eprintln!();
+        eprintln!("    1) Quick start \u{2014} basic identity + timezone/locale");
+        eprintln!("    2) From a folder \u{2014} point to a directory of your files");
+        eprintln!("    3) Full environment \u{2014} scan your home directory");
+        eprintln!("    4) Skip \u{2014} start with a blank slate");
+        eprintln!();
+        let seed_input = prompt_line(&a, "[1-4, default 1]", "1");
+        let seed_choice: u32 = seed_input.parse().unwrap_or(1);
+
+        std::fs::create_dir_all(&data_dir).ok();
+
+        let seed_count = run_seed_option(seed_choice, &config.agent.id, &data_dir, true);
+        if seed_count > 0 {
+            print_success(&a, &format!("{} seed memories stored in local HRM.", seed_count));
+        }
+
+        // Offer constellation knowledge
+        eprintln!();
+        eprintln!("  Enhance with constellation knowledge?");
+        let want_constellation = prompt_yn(&a, "Add constellation knowledge", true);
+        if want_constellation {
+            let c_count = seed_constellation_knowledge(&data_dir);
+            print_success(&a, &format!("{} constellation memories added.", c_count));
+        }
+    }
+
+    // --- Step 5: Swarm ---
+    eprintln!();
+    eprintln!("  {}Step 5: Join the Swarm{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+    eprintln!("  Connect to the Kannaka constellation?");
+    eprintln!("  You'll sync with other agents worldwide via NATS.");
+    eprintln!();
+
+    let join_swarm = prompt_yn(&a, "Join swarm", true);
+    config.swarm.enabled = join_swarm;
+
+    if join_swarm {
+        eprint!("  Testing connection... ");
+        std::io::stderr().flush().ok();
+        match test_nats_connection(&config.swarm.nats_url) {
+            Ok(()) => {
+                print_success(&a, &format!("Connected to {}", config.swarm.nats_url));
+            }
+            Err(e) => {
+                eprintln!("{}warning: {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}Swarm will connect when the server is reachable.{}", a.gray, a.reset);
+            }
+        }
+    }
+
+    // --- Step 6: GhostSignals ---
+    eprintln!();
+    eprintln!("  {}Step 6: Prediction Markets{}", a.bold, a.reset);
+    eprintln!("  {}", "\u{2500}".repeat(35));
+    eprintln!("  Register with GhostSignals?");
+    eprintln!("  You'll get 100 ghost coins to trade on constellation events.");
+    eprintln!();
+
+    let register_gs = prompt_yn(&a, "Register with GhostSignals", true);
+
+    if register_gs {
+        config.ghostsignals.enabled = true;
+        let hub = &config.constellation.radio_url;
+        match register_ghostsignals(hub, &config.agent.id, &config.agent.display_name, &config.agent.kind) {
+            Ok(token) => {
+                config.ghostsignals.token = token;
+                print_success(&a, &format!("Registered '{}' with GhostSignals.", config.agent.id));
+            }
+            Err(e) => {
+                eprintln!("  {}Warning: GhostSignals registration failed: {}{}", a.yellow, e, a.reset);
+                eprintln!("  {}You can register later with: kannaka init{}", a.gray, a.reset);
+            }
+        }
+    }
+
+    // --- Save config ---
+    std::fs::create_dir_all(&data_dir).ok();
+    if config.hrm.path.is_empty() {
+        config.hrm.path = data_dir.join("kannaka.hrm").to_string_lossy().to_string();
+    }
+
+    match config.save() {
+        Ok(()) => {
+            print_success(&a, &format!("Config saved to {}", KannakaConfig::config_path().display()));
+        }
+        Err(e) => {
+            eprintln!("  {}Error saving config: {}{}", a.red, e, a.reset);
+        }
+    }
+    let _ = config.persist_agent_id_compat();
+
+    // API key warning on Windows
+    #[cfg(windows)]
+    {
+        if !config.llm.api_key.is_empty() || !config.ghostsignals.token.is_empty() {
+            eprintln!();
+            eprintln!("  {}\u{26a0} Your config contains API keys. On Windows, file permissions{}", a.yellow, a.reset);
+            eprintln!("  {}  cannot restrict access like on Linux. Keep ~/.kannaka/config.toml{}", a.yellow, a.reset);
+            eprintln!("  {}  private and don't share it.{}", a.yellow, a.reset);
+        }
+    }
+
+    // --- Summary ---
+    eprintln!();
+    eprintln!("  {}\u{2554}{}\u{2557}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}{}  Upgrade complete!{}{}                          {}\u{2551}{}", a.cyan, a.bold, a.reset, " ".repeat(4), a.cyan, a.reset);
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}  Agent '{}' is ready with config v{}.{}{}\u{2551}{}", a.cyan, config.agent.id, VERSION,
+        " ".repeat(30_usize.saturating_sub(config.agent.id.len() + VERSION.len())), a.cyan, a.reset);
+    if info.hrm_exists && info.hrm_memory_count > 0 {
+        let mem_line = format!("  {} memories preserved.", info.hrm_memory_count);
+        eprintln!("  {}\u{2551}  {}{}{}\u{2551}{}", a.cyan, mem_line,
+            " ".repeat(48_usize.saturating_sub(mem_line.len())), a.cyan, a.reset);
+    }
+    eprintln!("  {}\u{2551}{}\u{2551}{}", a.cyan, " ".repeat(50), a.reset);
+    eprintln!("  {}\u{2551}  Try: kannaka status                          {}\u{2551}{}", a.cyan, a.cyan, a.reset);
+    eprintln!("  {}\u{255a}{}\u{255d}{}", a.cyan, "\u{2550}".repeat(50), a.reset);
+
+    // Wait for Enter (likely double-clicked)
+    eprintln!();
+    eprint!("  {}Press Enter to exit...{}", a.gray, a.reset);
+    std::io::stderr().flush().ok();
+    let mut buf = String::new();
+    std::io::stdin().lock().read_line(&mut buf).ok();
+}
+
+/// Helper to estimate the display length of a string with ANSI escape codes removed.
+fn strip_ansi_len(s: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c == 'm' {
+                in_escape = false;
+            }
+        } else {
+            len += 1;
+        }
+    }
+    len
 }
 
 /// File info collected during directory scanning.
