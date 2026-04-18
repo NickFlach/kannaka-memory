@@ -12,18 +12,23 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: kannaka-windows-x86_64.exe
+            tui_artifact: kannaka-tui-windows-x86_64.exe
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: kannaka-linux-x86_64
+            tui_artifact: kannaka-tui-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: kannaka-linux-aarch64
+            tui_artifact: kannaka-tui-linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: kannaka-macos-x86_64
+            tui_artifact: kannaka-tui-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: kannaka-macos-aarch64
+            tui_artifact: kannaka-tui-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout kannaka-memory
@@ -49,22 +54,34 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - name: Build
+      - name: Build CLI
         working-directory: kannaka-memory
         run: cargo build --release --target ${{ matrix.target }} --bin kannaka
 
-      - name: Rename artifact
+      - name: Build TUI
+        working-directory: kannaka-memory
+        run: cargo build --release --target ${{ matrix.target }} --features tui --bin kannaka-tui
+
+      - name: Rename artifacts
         shell: bash
         run: |
-          src="kannaka-memory/target/${{ matrix.target }}/release/kannaka"
-          [[ "${{ matrix.target }}" == *windows* ]] && src="${src}.exe"
-          cp "$src" "${{ matrix.artifact }}"
+          cli="kannaka-memory/target/${{ matrix.target }}/release/kannaka"
+          tui="kannaka-memory/target/${{ matrix.target }}/release/kannaka-tui"
+          [[ "${{ matrix.target }}" == *windows* ]] && cli="${cli}.exe" && tui="${tui}.exe"
+          cp "$cli" "${{ matrix.artifact }}"
+          cp "$tui" "${{ matrix.tui_artifact }}"
 
-      - name: Upload artifact
+      - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.tui_artifact }}
+          path: ${{ matrix.tui_artifact }}
 
   release:
     needs: build
@@ -80,8 +97,13 @@ jobs:
         with:
           files: |
             kannaka-windows-x86_64.exe/kannaka-windows-x86_64.exe
+            kannaka-tui-windows-x86_64.exe/kannaka-tui-windows-x86_64.exe
             kannaka-linux-x86_64/kannaka-linux-x86_64
+            kannaka-tui-linux-x86_64/kannaka-tui-linux-x86_64
             kannaka-linux-aarch64/kannaka-linux-aarch64
+            kannaka-tui-linux-aarch64/kannaka-tui-linux-aarch64
             kannaka-macos-x86_64/kannaka-macos-x86_64
+            kannaka-tui-macos-x86_64/kannaka-tui-macos-x86_64
             kannaka-macos-aarch64/kannaka-macos-aarch64
+            kannaka-tui-macos-aarch64/kannaka-tui-macos-aarch64
           generate_release_notes: true

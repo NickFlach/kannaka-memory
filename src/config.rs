@@ -488,7 +488,7 @@ fn platform_triple() -> (&'static str, &'static str, &'static str) {
     let os = if cfg!(target_os = "linux") {
         "linux"
     } else if cfg!(target_os = "macos") {
-        "darwin"
+        "macos"
     } else if cfg!(target_os = "windows") {
         "windows"
     } else {
@@ -507,6 +507,52 @@ fn platform_triple() -> (&'static str, &'static str, &'static str) {
 
     (os, arch, ext)
 }
+
+/// Download and install the TUI binary alongside the CLI.
+/// Called during first-time install and self-update.
+pub fn install_tui_binary(install_dir: &std::path::Path) {
+    let (os, arch, ext) = platform_triple();
+    let tui_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
+    let url = format!(
+        "https://github.com/NickFlach/kannaka-memory/releases/latest/download/{}",
+        tui_name
+    );
+    let target = install_dir.join(format!("kannaka-tui{}", ext));
+
+    let a = Ansi::new(enable_ansi_support());
+    eprint!("  {}Downloading kannaka-tui...{}", a.gray, a.reset);
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+
+    match agent.get(&url).call() {
+        Ok(resp) => {
+            let mut bytes = Vec::new();
+            if resp.into_reader().read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
+                if let Err(e) = std::fs::write(&target, &bytes) {
+                    eprintln!(" {}failed: {}{}", a.red, e, a.reset);
+                    return;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&target,
+                        std::fs::Permissions::from_mode(0o755));
+                }
+                eprintln!(" {}✓{}", a.green, a.reset);
+            } else {
+                eprintln!(" {}empty response{}", a.red, a.reset);
+            }
+        }
+        Err(_) => {
+            eprintln!(" {}not available yet (build with: cargo build --features tui){}", a.gray, a.reset);
+        }
+    }
+}
+
+use std::io::Read as _;
 
 // ---------------------------------------------------------------------------
 // Existing-user update detection
@@ -1411,7 +1457,10 @@ fn self_install_to_path(a: &Ansi) -> Result<bool, String> {
     // Add to PATH
     add_to_path(a, target_dir)?;
 
-    print_success(a, "You can now run 'kannaka' from any terminal.");
+    // Also download and install the TUI binary
+    install_tui_binary(target_dir);
+
+    print_success(a, "You can now run 'kannaka' and 'kannaka-tui' from any terminal.");
     Ok(true)
 }
 
