@@ -22,6 +22,8 @@ clap = { version = "4.0", features = ["derive"], optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 toml = "0.8"
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 # tokio + async-trait removed (were only used by MCP server)
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core", features = ["serde"] }
@@ -45,6 +47,7 @@ video = ["image"]
 glyph = []
 collective = []  # rayon is now unconditional
 hrm = ["ndarray", "blake3"]
+tui = ["ratatui", "crossterm"]
 # sqlite-migrate feature removed
 
 [[bin]]
@@ -64,6 +67,11 @@ path = "src/bin/recompute_geometry.rs"
 [[bin]]
 name = "dump_xi_pairs"
 path = "src/bin/dump_xi_pairs.rs"
+
+[[bin]]
+name = "kannaka-tui"
+path = "src/bin/tui.rs"
+required-features = ["tui"]
 
 # hrm-migrate is obsolete (was Dolt→HRM migration); kept for reference
 # [[bin]]

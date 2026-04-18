@@ -146,6 +146,9 @@ fn usage() {
     eprintln!("  update                    Download and install the latest version");
     eprintln!("  --version                 Print version info");
     eprintln!();
+    eprintln!("Dashboard:");
+    eprintln!("  Try: kannaka-tui          Full terminal dashboard (build with --features tui)");
+    eprintln!();
     eprintln!("Environment:");
     eprintln!("  KANNAKA_DATA_DIR          Data directory (default: ~/.kannaka)");
     eprintln!("  KANNAKA_NATS_URL          NATS server (default: nats://swarm.ninja-portal.com:4222)");
