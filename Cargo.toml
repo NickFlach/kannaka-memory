@@ -21,6 +21,7 @@ rayon = "1"
 clap = { version = "4.0", features = ["derive"], optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
+toml = "0.8"
 # tokio + async-trait removed (were only used by MCP server)
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core", features = ["serde"] }

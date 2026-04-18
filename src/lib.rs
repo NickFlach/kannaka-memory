@@ -51,6 +51,8 @@ pub mod medium;
 
 pub mod hrm_store;
 
+pub mod config;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,

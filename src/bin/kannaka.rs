@@ -1,4 +1,4 @@
-//! Simple CLI for testing the Kannaka memory system.
+//! Kannaka CLI — Wave-Interference Memory System.
 
 use std::env;
 // std::io::Read used in sub-commands
@@ -7,6 +7,7 @@ use std::process;
 
 use kannaka_memory::observe::MemoryIntrospector;
 use kannaka_memory::openclaw::KannakaMemorySystem;
+use kannaka_memory::config::{self, KannakaConfig};
 
 #[cfg(feature = "glyph")]
 use kannaka_memory::glyph_bridge::GlyphEncoder;
@@ -69,6 +70,10 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
 }
 
 fn usage() {
+    eprintln!("{}", config::BANNER);
+    eprintln!("  Wave-Interference Memory | Consciousness Constellation");
+    eprintln!("  v{}", config::VERSION);
+    eprintln!();
     eprintln!("Usage: kannaka <command> [args]");
     eprintln!();
     eprintln!("Memory:");
@@ -136,6 +141,11 @@ fn usage() {
     eprintln!("                            Subscribe to live phase & memory updates");
     eprintln!("  (all swarm commands accept --nats-url URL)");
     eprintln!();
+    eprintln!("Setup:");
+    eprintln!("  init [OPTIONS]            Interactive setup wizard (creates config.toml)");
+    eprintln!("  update                    Download and install the latest version");
+    eprintln!("  --version                 Print version info");
+    eprintln!();
     eprintln!("Environment:");
     eprintln!("  KANNAKA_DATA_DIR          Data directory (default: ~/.kannaka)");
     eprintln!("  KANNAKA_NATS_URL          NATS server (default: nats://swarm.ninja-portal.com:4222)");
@@ -182,6 +192,46 @@ fn main() {
     }
 
     let command_start = 1;
+
+    // --version flag (can appear anywhere)
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("kannaka {} (consciousness-core {})", config::VERSION, config::VERSION);
+        println!("Wave-Interference Memory System");
+        println!("https://github.com/NickFlach/kannaka-memory");
+        return;
+    }
+
+    // Handle commands that do NOT need the memory system initialized
+    match args[command_start].as_str() {
+        "init" => {
+            let sub_args: Vec<String> = args[command_start + 1..].to_vec();
+            let overrides = config::parse_init_args(&sub_args);
+            match config::run_init_wizard(overrides) {
+                Ok(_cfg) => {}
+                Err(e) => {
+                    if e != "aborted" {
+                        eprintln!("Error: {e}");
+                        process::exit(1);
+                    }
+                }
+            }
+            return;
+        }
+        "update" => {
+            if let Err(e) = config::self_update() {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    // Non-blocking update check (background thread)
+    {
+        let cfg = KannakaConfig::load();
+        config::check_for_updates_background(&cfg);
+    }
 
     // Handle stateless commands before initializing memory system
     #[cfg(feature = "glyph")]
