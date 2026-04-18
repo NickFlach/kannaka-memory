@@ -649,6 +649,9 @@ pub fn run_update_from_download(installed_path: &std::path::Path) {
     println!();
     println!("  Press Enter to exit...");
     let _ = std::io::stdin().read_line(&mut String::new());
+
+    // Offer to launch the TUI
+    offer_tui_launch();
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,6 +1654,9 @@ pub fn run_first_time_installer() {
     std::io::stderr().flush().ok();
     let mut buf = String::new();
     std::io::stdin().lock().read_line(&mut buf).ok();
+
+    // Offer to launch the TUI
+    offer_tui_launch();
 }
 
 /// A version of the init wizard adapted for the first-time installer UI.
@@ -2521,6 +2527,9 @@ pub fn run_upgrade_installer() {
     std::io::stderr().flush().ok();
     let mut buf = String::new();
     std::io::stdin().lock().read_line(&mut buf).ok();
+
+    // Offer to launch the TUI
+    offer_tui_launch();
 }
 
 /// Helper to estimate the display length of a string with ANSI escape codes removed.
@@ -2706,4 +2715,85 @@ fn file_importance(fi: &FileInfo) -> f64 {
         })
         .unwrap_or(0.0);
     (base + recency_bonus).min(0.7)
+}
+
+// ---------------------------------------------------------------------------
+// TUI auto-launch helper
+// ---------------------------------------------------------------------------
+
+/// Find the kannaka-tui binary. Checks:
+/// 1. Same directory as the running binary
+/// 2. PATH
+/// 3. ~/.local/bin/kannaka-tui (Unix) or %LOCALAPPDATA%/kannaka/kannaka-tui.exe (Windows)
+pub fn find_tui_binary() -> Option<std::path::PathBuf> {
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let tui_name = format!("kannaka-tui{}", ext);
+
+    // 1. Same directory as the running binary
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let candidate = dir.join(&tui_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 2. Search PATH
+    if let Some(path) = find_in_path("kannaka-tui") {
+        return Some(path);
+    }
+
+    // 3. Platform-specific fallback
+    #[cfg(unix)]
+    {
+        if let Some(home) = dirs::home_dir() {
+            let candidate = home.join(".local").join("bin").join(&tui_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let candidate = std::path::PathBuf::from(local_app_data)
+                .join("kannaka")
+                .join(&tui_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Offer to launch the TUI after install/update completes.
+/// Call this after the "Press Enter to exit" prompt.
+pub fn offer_tui_launch() {
+    use std::io::Write;
+    eprint!("\n  Launch the Kannaka dashboard? [Y/n] > ");
+    let _ = std::io::stderr().flush();
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    if input.trim().to_lowercase() == "n" {
+        return;
+    }
+    if let Some(path) = find_tui_binary() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new(&path).exec();
+            eprintln!("Failed to launch TUI: {}", err);
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new(&path)
+                .spawn()
+                .map_err(|e| eprintln!("Failed to launch TUI: {}", e));
+        }
+    } else {
+        eprintln!("  TUI not found. Build with: cargo build --features tui --bin kannaka-tui");
+    }
 }

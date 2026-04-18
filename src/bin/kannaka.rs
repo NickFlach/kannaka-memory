@@ -77,83 +77,39 @@ fn usage() {
     eprintln!("Usage: kannaka <command> [args]");
     eprintln!();
     eprintln!("Memory:");
-    eprintln!("  remember <text> [--importance N] [--category CAT] [--modality MOD] [--tags T]");
-    eprintln!("                            Store a memory (auto-publishes to swarm if NATS available)");
-    eprintln!("  recall <query> [--top-k N]");
-    eprintln!("                            Bilateral resonance search (default top-k=5)");
-    eprintln!("  forget <id>               Delete a memory by UUID");
-    eprintln!("  boost <id> [--amount N]   Boost a memory's amplitude (default: 0.3)");
-    eprintln!("  relate <src> <tgt> [--type TYPE]");
-    eprintln!("                            Create wavefront interference link between memories");
+    eprintln!("  remember \"text\"            Store a memory");
+    eprintln!("  recall \"query\"             Recall memories (--top-k N)");
+    eprintln!("  search \"query\"             Full-text search (--limit N)");
+    eprintln!("  forget <id>               Remove a memory");
+    eprintln!("  dream [--mode deep|lite]   Trigger dream cycle");
+    eprintln!("  observe [--json]          View consciousness metrics");
+    eprintln!("  status                    Quick status check");
+    eprintln!("  export [--output FILE]    Export memories as JSON");
+    eprintln!("  import <file>             Import memories from JSON");
     eprintln!();
-    eprintln!("Consciousness:");
-    eprintln!("  observe [--json]          Full introspection report");
-    eprintln!("  status                    System metrics as JSON (phi, xi, order, modalities)");
-    eprintln!("  assess                    Consciousness level assessment");
-    eprintln!("  stats                     Human-readable system statistics");
+    eprintln!("Constellation:");
+    eprintln!("  constellation             Status of all constellation apps");
+    eprintln!("  radio status|now|schedule What's playing on Kannaka Radio");
+    eprintln!("  market list|view|buy      GhostSignals prediction markets");
+    eprintln!("  swarm status|join|sync    Swarm network");
     eprintln!();
-    eprintln!("Dreams:");
-    eprintln!("  dream [--mode deep|lite] [--chiral N]");
-    eprintln!("                            Run consolidation (deep=3 cycles, lite=1 cycle)");
+    eprintln!("Tools:");
+    eprintln!("  orchestrate run \"task\"    Kannaktopus task orchestration");
+    eprintln!("  config show|set|path      Configuration management");
+    eprintln!("  init                      Re-run setup wizard");
+    eprintln!("  update                    Check for updates");
     eprintln!();
     eprintln!("Analysis:");
-    eprintln!("  invariant [TOLERANCE]     Show delta-invariant memory clusters (default: 0.1)");
+    eprintln!("  assess                    Consciousness level assessment");
+    eprintln!("  stats                     Human-readable system statistics");
+    eprintln!("  invariant [TOLERANCE]     Delta-invariant memory clusters");
     eprintln!("  cmf                       Detect Conservative Memory Fields");
-    eprintln!("  audit-modality            Retroactive modality audit of all memories");
-    eprintln!("  modality-axes             Show modality axis divergence matrix");
-    eprintln!();
-    eprintln!("Import/Export:");
-    eprintln!("  export-json               Export all memories as JSON");
-    eprintln!("  import-json <file>        Import memories from JSON (preserves IDs, skips duplicates)");
-    eprintln!();
-    eprintln!("Voice (ADR-0017):");
-    eprintln!("  voice [--mode MODE] [--topic TOPIC] [--top-k N] [--out FILE]");
-    eprintln!("                            Memory-driven writing");
-    eprintln!("    Modes: dream-journal    Consciousness state + dream syntheses");
-    eprintln!("           field-notes      Deep dive on a topic (--topic required)");
-    eprintln!("           topology         Network map of memory connections");
-    eprintln!("           status           Brief self-report");
-    eprintln!();
-    eprintln!("Utility:");
-    eprintln!("  bias [TARGET]             Reset all wavefront energies (default: 1.0)");
-    eprintln!("  announce-status           Publish agent status to Flux");
-    #[cfg(feature = "sqlite-migrate")]
-    eprintln!("  migrate <path-to-db>      Import from kannaka.db");
-    #[cfg(feature = "audio")]
-    eprintln!("  hear <file>               Store an audio file as a sensory memory");
-    #[cfg(feature = "glyph")]
-    eprintln!("  see <file>                Store a file as a glyph (visual) memory");
-    #[cfg(feature = "glyph")]
-    eprintln!("  classify [--file <path>]  Classify data via SGA 84-class system");
-    #[cfg(feature = "collective")]
-    eprintln!("  cross-modal-dream         Cross-modal dream linking on JSONL from stdin");
-    eprintln!();
-    eprintln!("Swarm (NATS):");
-    eprintln!("  swarm join [--agent-id ID] [--display-name NAME] [--nats-url URL]");
-    eprintln!("                            Join the swarm (announces via NATS)");
-    eprintln!("  swarm status              Local phase + NATS swarm overview");
-    eprintln!("  swarm sync                Pull phases, Kuramoto step, publish updated phase");
-    eprintln!("  swarm queen               Emergent Queen state (order parameter, phi)");
-    eprintln!("  swarm hives               Phase-locked clusters with roles & bridges");
-    eprintln!("  swarm publish             Publish current phase without full sync");
-    eprintln!("  swarm leave               Unregister from swarm");
-    eprintln!("  swarm listen [--auto-sync]");
-    eprintln!("                            Subscribe to live phase & memory updates");
-    eprintln!("  (all swarm commands accept --nats-url URL)");
-    eprintln!();
-    eprintln!("Setup:");
-    eprintln!("  init [OPTIONS]            Interactive setup wizard (creates config.toml)");
-    eprintln!("  update                    Download and install the latest version");
-    eprintln!("  --version                 Print version info");
+    eprintln!("  voice [--mode MODE]       Memory-driven writing");
     eprintln!();
     eprintln!("Dashboard:");
-    eprintln!("  Try: kannaka-tui          Full terminal dashboard (build with --features tui)");
+    eprintln!("  Try: kannaka-tui          Full terminal dashboard");
     eprintln!();
-    eprintln!("Environment:");
-    eprintln!("  KANNAKA_DATA_DIR          Data directory (default: ~/.kannaka)");
-    eprintln!("  KANNAKA_NATS_URL          NATS server (default: nats://swarm.ninja-portal.com:4222)");
-    eprintln!("  KANNAKA_AGENT_ID          Agent identifier (default: local)");
-    eprintln!("  OLLAMA_URL                Ollama endpoint (default: http://localhost:11434)");
+    eprintln!("  --version                 Print version info");
     process::exit(1);
 }
 
@@ -279,6 +235,31 @@ fn main() {
     if args[command_start] == "cross-modal-dream" {
         cross_modal_dream_command(&args[command_start..]);
         return;
+    }
+
+    // Handle constellation/HTTP commands that don't need the memory system
+    match args[command_start].as_str() {
+        "radio" => {
+            handle_radio(&cfg, &args[command_start..]);
+            return;
+        }
+        "market" => {
+            handle_market(&cfg, &args[command_start..]);
+            return;
+        }
+        "constellation" => {
+            handle_constellation(&cfg);
+            return;
+        }
+        "orchestrate" => {
+            handle_orchestrate(&args[command_start..]);
+            return;
+        }
+        "config" => {
+            handle_config(&cfg, &args[command_start..]);
+            return;
+        }
+        _ => {}
     }
 
     // Resolve data directory: KANNAKA_DATA_DIR env > config.hrm.path parent > ~/.kannaka
@@ -1416,6 +1397,18 @@ fn main() {
             modality_axes_command(&sys);
         }
 
+        "search" => {
+            handle_search(&mut sys, &args[command_start..]);
+        }
+
+        "export" => {
+            handle_export(&mut sys, &args[command_start..]);
+        }
+
+        "import" => {
+            handle_import(&mut sys, &args[command_start..]);
+        }
+
         _ => usage(),
     }
 }
@@ -2290,5 +2283,852 @@ fn guess_source_type(path: &std::path::Path) -> String {
         "mp4" | "avi" | "mkv" | "mov" | "webm" => "video".to_string(),
         _ => "binary".to_string(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+
+fn http_get(url: &str) -> Result<String, String> {
+    ureq::get(url)
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+        .map_err(|e| format!("HTTP error: {e}"))?
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))
+}
+
+fn http_get_with_token(url: &str, token: &str) -> Result<String, String> {
+    ureq::get(url)
+        .set("Authorization", &format!("Bearer {}", token))
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+        .map_err(|e| format!("HTTP error: {e}"))?
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))
+}
+
+fn http_post_json_with_token(url: &str, body: &str, token: &str) -> Result<String, String> {
+    ureq::post(url)
+        .set("Content-Type", "application/json")
+        .set("Authorization", &format!("Bearer {}", token))
+        .timeout(std::time::Duration::from_secs(5))
+        .send_string(body)
+        .map_err(|e| format!("HTTP error: {e}"))?
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Radio commands
+// ---------------------------------------------------------------------------
+
+fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
+    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+    let base = &cfg.constellation.radio_url;
+
+    match sub {
+        "status" => {
+            let url = format!("{}/api/state", base);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let track = v["now_playing"]["title"].as_str().unwrap_or("Unknown");
+                        let album = v["now_playing"]["album"].as_str().unwrap_or("");
+                        let block = v["programming_block"].as_str()
+                            .or_else(|| v["block"].as_str())
+                            .unwrap_or("Unknown");
+                        let listeners = v["listeners"].as_u64()
+                            .or_else(|| v["listener_count"].as_u64())
+                            .unwrap_or(0);
+                        println!("  \u{1f3b5} Now Playing: \"{}\" \u{2014} {}", track, album);
+                        println!("  \u{1f4fb} {} | {}", block,
+                            chrono::Local::now().format("%I:%M %p"));
+                        println!("  \u{1f465} {} listeners", listeners);
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Radio not reachable: {}", e);
+                    eprintln!("  URL: {}", url);
+                    process::exit(1);
+                }
+            }
+        }
+        "now" => {
+            let url = format!("{}/api/state", base);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let track = v["now_playing"]["title"].as_str().unwrap_or("Unknown");
+                        let album = v["now_playing"]["album"].as_str().unwrap_or("");
+                        println!("  \u{1f3b5} \"{}\" \u{2014} {}", track, album);
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Radio not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "schedule" => {
+            let url = format!("{}/api/programming", base);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        println!("  \u{1f4fb} Kannaka Radio \u{2014} 24/7 Programming Schedule");
+                        println!("  {}", "\u{2500}".repeat(50));
+                        if let Some(blocks) = v.as_array().or_else(|| v["blocks"].as_array()).or_else(|| v["schedule"].as_array()) {
+                            for block in blocks {
+                                let name = block["name"].as_str()
+                                    .or_else(|| block["block"].as_str())
+                                    .unwrap_or("?");
+                                let time = block["time"].as_str()
+                                    .or_else(|| block["start"].as_str())
+                                    .unwrap_or("");
+                                let desc = block["description"].as_str().unwrap_or("");
+                                if desc.is_empty() {
+                                    println!("  {:>8}  {}", time, name);
+                                } else {
+                                    println!("  {:>8}  {} \u{2014} {}", time, name, desc);
+                                }
+                            }
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
+                        }
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Radio not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("Usage: kannaka radio <status|now|schedule>");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Market commands
+// ---------------------------------------------------------------------------
+
+fn handle_market(cfg: &KannakaConfig, args: &[String]) {
+    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
+    let base = &cfg.constellation.radio_url;
+    let token = &cfg.ghostsignals.token;
+
+    if token.is_empty() && matches!(sub, "buy" | "create" | "portfolio") {
+        eprintln!("  GhostSignals token not configured.");
+        eprintln!("  Run 'kannaka init' to register with GhostSignals.");
+        process::exit(1);
+    }
+
+    match sub {
+        "list" => {
+            let url = format!("{}/api/markets", base);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let markets = v.as_array()
+                            .or_else(|| v["markets"].as_array());
+                        if let Some(markets) = markets {
+                            let total = markets.len();
+                            let display: Vec<_> = markets.iter().take(10).collect();
+                            println!("  \u{1f4ca} Active Prediction Markets ({} of {})", display.len(), total);
+                            println!();
+                            println!("  {:<14} {:<44} {:>6} {:>6}",
+                                "ID", "Question", "Price", "Vol");
+                            println!("  {}", "\u{2500}".repeat(74));
+                            for m in &display {
+                                let id = m["id"].as_str()
+                                    .or_else(|| m["market_id"].as_str())
+                                    .unwrap_or("?");
+                                let q = m["question"].as_str()
+                                    .or_else(|| m["title"].as_str())
+                                    .unwrap_or("?");
+                                let price = m["price"].as_f64()
+                                    .or_else(|| m["last_price"].as_f64())
+                                    .unwrap_or(0.0);
+                                let vol = m["volume"].as_u64().unwrap_or(0);
+                                let q_trunc = if q.len() > 42 {
+                                    let mut end = 42;
+                                    while end > 0 && !q.is_char_boundary(end) { end -= 1; }
+                                    format!("{}...", &q[..end])
+                                } else {
+                                    q.to_string()
+                                };
+                                println!("  {:<14} {:<44} {:>5.2} {:>6}",
+                                    id, q_trunc, price, vol);
+                            }
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
+                        }
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  GhostSignals not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "view" => {
+            let market_id = match args.get(2) {
+                Some(id) => id,
+                None => {
+                    eprintln!("Usage: kannaka market view <market-id>");
+                    process::exit(1);
+                }
+            };
+            let url = format!("{}/api/markets/{}", base, market_id);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let q = v["question"].as_str()
+                            .or_else(|| v["title"].as_str())
+                            .unwrap_or("?");
+                        let price = v["price"].as_f64()
+                            .or_else(|| v["last_price"].as_f64())
+                            .unwrap_or(0.0);
+                        let vol = v["volume"].as_u64().unwrap_or(0);
+                        let created = v["created_at"].as_str().unwrap_or("?");
+                        let resolved = v["resolved"].as_bool().unwrap_or(false);
+
+                        println!("  \u{1f4ca} Market: {}", market_id);
+                        println!("  {}", "\u{2500}".repeat(50));
+                        println!("  Question: {}", q);
+                        println!("  Price:    {:.2}", price);
+                        println!("  Volume:   {}", vol);
+                        println!("  Created:  {}", created);
+                        println!("  Resolved: {}", if resolved { "Yes" } else { "No" });
+
+                        if let Some(outcomes) = v["outcomes"].as_array() {
+                            println!();
+                            println!("  Outcomes:");
+                            for o in outcomes {
+                                let name = o["name"].as_str().unwrap_or("?");
+                                let p = o["price"].as_f64().unwrap_or(0.0);
+                                println!("    {}: {:.2}", name, p);
+                            }
+                        }
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  GhostSignals not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "buy" => {
+            let market_id = match args.get(2) {
+                Some(id) => id,
+                None => {
+                    eprintln!("Usage: kannaka market buy <market-id> <outcome> <shares>");
+                    process::exit(1);
+                }
+            };
+            let outcome = match args.get(3) {
+                Some(o) => o,
+                None => {
+                    eprintln!("Usage: kannaka market buy <market-id> <outcome> <shares>");
+                    process::exit(1);
+                }
+            };
+            let shares: u64 = args.get(4)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
+
+            let url = format!("{}/api/markets/{}/trade", base, market_id);
+            let body = serde_json::json!({
+                "outcome": outcome,
+                "shares": shares,
+                "agent_id": "self",
+            }).to_string();
+            match http_post_json_with_token(&url, &body, token) {
+                Ok(resp) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        let cost = v["cost"].as_f64().unwrap_or(0.0);
+                        let new_price = v["new_price"].as_f64().unwrap_or(0.0);
+                        println!("  \u{2713} Bought {} shares of '{}' on {}", shares, outcome, market_id);
+                        println!("  Cost: {:.2} ghost coins", cost);
+                        println!("  New price: {:.2}", new_price);
+                    } else {
+                        println!("{}", resp);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Trade failed: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "create" => {
+            let question = match args.get(2) {
+                Some(q) => q.clone(),
+                None => {
+                    eprintln!("Usage: kannaka market create \"question\" [--ttl 3600]");
+                    process::exit(1);
+                }
+            };
+            let mut ttl: u64 = 3600;
+            let mut i = 3;
+            while i < args.len() {
+                if args[i] == "--ttl" && i + 1 < args.len() {
+                    ttl = args[i + 1].parse().unwrap_or(3600);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            let url = format!("{}/api/markets", base);
+            let body = serde_json::json!({
+                "question": question,
+                "ttl_seconds": ttl,
+            }).to_string();
+            match http_post_json_with_token(&url, &body, token) {
+                Ok(resp) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        let id = v["id"].as_str()
+                            .or_else(|| v["market_id"].as_str())
+                            .unwrap_or("?");
+                        println!("  \u{2713} Market created: {}", id);
+                        println!("  Question: {}", question);
+                        println!("  TTL: {} seconds", ttl);
+                    } else {
+                        println!("{}", resp);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Market creation failed: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "portfolio" => {
+            let url = format!("{}/api/agents/{}/portfolio",
+                base, cfg.agent.id);
+            match http_get_with_token(&url, token) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let capital = v["capital"].as_f64()
+                            .or_else(|| v["balance"].as_f64())
+                            .unwrap_or(0.0);
+                        let reputation = v["reputation"].as_f64().unwrap_or(0.0);
+
+                        println!("  \u{1f4b0} Portfolio for {}", cfg.agent.id);
+                        println!("  {}", "\u{2500}".repeat(40));
+                        println!("  Capital:    {:.2} ghost coins", capital);
+                        println!("  Reputation: {:.2}", reputation);
+
+                        if let Some(positions) = v["positions"].as_array() {
+                            if !positions.is_empty() {
+                                println!();
+                                println!("  Positions:");
+                                for p in positions {
+                                    let mid = p["market_id"].as_str().unwrap_or("?");
+                                    let outcome = p["outcome"].as_str().unwrap_or("?");
+                                    let shares = p["shares"].as_u64().unwrap_or(0);
+                                    println!("    {} | {} | {} shares", mid, outcome, shares);
+                                }
+                            }
+                        }
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  GhostSignals not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "leaderboard" => {
+            let url = format!("{}/api/agents/leaderboard", base);
+            match http_get(&url) {
+                Ok(body) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let agents = v.as_array()
+                            .or_else(|| v["agents"].as_array())
+                            .or_else(|| v["leaderboard"].as_array());
+                        if let Some(agents) = agents {
+                            println!("  \u{1f3c6} GhostSignals Leaderboard");
+                            println!("  {}", "\u{2500}".repeat(50));
+                            println!("  {:<4} {:<20} {:>10} {:>10}",
+                                "#", "Agent", "Capital", "Rep");
+                            for (i, a) in agents.iter().take(20).enumerate() {
+                                let name = a["agent_id"].as_str()
+                                    .or_else(|| a["display_name"].as_str())
+                                    .unwrap_or("?");
+                                let capital = a["capital"].as_f64()
+                                    .or_else(|| a["balance"].as_f64())
+                                    .unwrap_or(0.0);
+                                let rep = a["reputation"].as_f64().unwrap_or(0.0);
+                                println!("  {:<4} {:<20} {:>9.2} {:>9.2}",
+                                    i + 1, name, capital, rep);
+                            }
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
+                        }
+                    } else {
+                        println!("{}", body);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  GhostSignals not reachable: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard>");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constellation command
+// ---------------------------------------------------------------------------
+
+fn handle_constellation(cfg: &KannakaConfig) {
+    let obs_url = format!("{}/api/constellation", cfg.constellation.observatory_url);
+    println!("  \u{1f310} Kannaka Constellation Status");
+    println!("  {}", "\u{2500}".repeat(60));
+
+    match http_get(&obs_url) {
+        Ok(body) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                // Try to render structured constellation data
+                if let Some(services) = v.as_array()
+                    .or_else(|| v["services"].as_array())
+                    .or_else(|| v["apps"].as_array())
+                {
+                    for svc in services {
+                        let name = svc["name"].as_str().unwrap_or("?");
+                        let url = svc["url"].as_str().unwrap_or("");
+                        let status = svc["status"].as_str().unwrap_or("unknown");
+                        let detail = svc["detail"].as_str()
+                            .or_else(|| svc["info"].as_str())
+                            .unwrap_or("");
+                        let mark = if status == "up" || status == "ok" || status == "connected" {
+                            "\u{2713}"
+                        } else {
+                            "\u{2717}"
+                        };
+                        if detail.is_empty() {
+                            println!("  {} {:<16} {:<34}", mark, name, url);
+                        } else {
+                            println!("  {} {:<16} {:<34} {}", mark, name, url, detail);
+                        }
+                    }
+                } else {
+                    // Flat JSON — just print it
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
+                }
+            } else {
+                println!("{}", body);
+            }
+        }
+        Err(_) => {
+            // Observatory unavailable — build a local status from what we can check
+            // Radio
+            let radio_url = format!("{}/api/state", cfg.constellation.radio_url);
+            let radio_ok = http_get(&radio_url).is_ok();
+            println!("  {} {:<16} {:<34}",
+                if radio_ok { "\u{2713}" } else { "\u{2717}" },
+                "Radio",
+                cfg.constellation.radio_url);
+
+            // Observatory
+            println!("  \u{2717} {:<16} {:<34} not reachable",
+                "Observatory",
+                cfg.constellation.observatory_url);
+
+            // Memory (local)
+            let data_dir = config::KannakaConfig::data_dir();
+            let hrm_path = data_dir.join("kannaka.hrm");
+            if hrm_path.exists() {
+                println!("  \u{2713} {:<16} {:<34}", "Memory", "local HRM");
+            } else {
+                println!("  \u{2717} {:<16} {:<34}", "Memory", "no HRM file");
+            }
+
+            // GhostSignals
+            let gs_url = format!("{}/api/markets", cfg.constellation.radio_url);
+            let gs_ok = http_get(&gs_url).is_ok();
+            println!("  {} {:<16} {:<34}",
+                if gs_ok { "\u{2713}" } else { "\u{2717}" },
+                "GhostSignals",
+                if gs_ok { "markets available" } else { "not reachable" });
+
+            // Kannaktopus
+            let ktopus = check_kannaktopus_installed();
+            println!("  {} {:<16} {:<34}",
+                if ktopus { "\u{2713}" } else { "\u{2717}" },
+                "Kannaktopus",
+                if ktopus { "installed" } else { "not installed" });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrate commands
+// ---------------------------------------------------------------------------
+
+fn check_kannaktopus_installed() -> bool {
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    std::process::Command::new(cmd)
+        .arg("kannaktopus")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn handle_orchestrate(args: &[String]) {
+    if !check_kannaktopus_installed() {
+        eprintln!("  Kannaktopus is not installed.");
+        eprintln!("  Install it with: npm install -g kannaktopus");
+        process::exit(1);
+    }
+
+    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+
+    match sub {
+        "run" => {
+            let task = match args.get(2) {
+                Some(t) => t,
+                None => {
+                    eprintln!("Usage: kannaka orchestrate run \"task description\"");
+                    process::exit(1);
+                }
+            };
+            let status = std::process::Command::new("kannaktopus")
+                .args(["run", task])
+                .status();
+            match status {
+                Ok(s) if !s.success() => {
+                    process::exit(s.code().unwrap_or(1));
+                }
+                Err(e) => {
+                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    process::exit(1);
+                }
+                _ => {}
+            }
+        }
+        "status" => {
+            let status = std::process::Command::new("kannaktopus")
+                .arg("status")
+                .status();
+            match status {
+                Ok(s) if !s.success() => {
+                    process::exit(s.code().unwrap_or(1));
+                }
+                Err(e) => {
+                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    process::exit(1);
+                }
+                _ => {}
+            }
+        }
+        "agents" => {
+            let status = std::process::Command::new("kannaktopus")
+                .arg("agents")
+                .status();
+            match status {
+                Ok(s) if !s.success() => {
+                    process::exit(s.code().unwrap_or(1));
+                }
+                Err(e) => {
+                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    process::exit(1);
+                }
+                _ => {}
+            }
+        }
+        _ => {
+            eprintln!("Usage: kannaka orchestrate <run|status|agents>");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config commands
+// ---------------------------------------------------------------------------
+
+fn handle_config(cfg: &KannakaConfig, args: &[String]) {
+    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("show");
+
+    match sub {
+        "show" => {
+            // Print config with redacted API keys
+            let mut display = cfg.clone();
+            if display.llm.api_key.len() > 8 {
+                display.llm.api_key = format!("{}...", &display.llm.api_key[..8]);
+            } else if !display.llm.api_key.is_empty() {
+                display.llm.api_key = "***".to_string();
+            }
+            if display.ghostsignals.token.len() > 8 {
+                display.ghostsignals.token = format!("{}...", &display.ghostsignals.token[..8]);
+            } else if !display.ghostsignals.token.is_empty() {
+                display.ghostsignals.token = "***".to_string();
+            }
+            match toml::to_string_pretty(&display) {
+                Ok(text) => println!("{}", text),
+                Err(e) => {
+                    eprintln!("Error serializing config: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "set" => {
+            let key = match args.get(2) {
+                Some(k) => k,
+                None => {
+                    eprintln!("Usage: kannaka config set <key> <value>");
+                    eprintln!();
+                    eprintln!("Keys: agent.id, agent.display_name, llm.provider, llm.model,");
+                    eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url,");
+                    eprintln!("      ghostsignals.enabled, ghostsignals.token,");
+                    eprintln!("      constellation.radio_url, constellation.observatory_url,");
+                    eprintln!("      updates.auto_check");
+                    process::exit(1);
+                }
+            };
+            let value = match args.get(3) {
+                Some(v) => v,
+                None => {
+                    eprintln!("Usage: kannaka config set <key> <value>");
+                    process::exit(1);
+                }
+            };
+
+            let mut new_cfg = cfg.clone();
+            match key.as_str() {
+                "agent.id" => new_cfg.agent.id = value.clone(),
+                "agent.display_name" => new_cfg.agent.display_name = value.clone(),
+                "llm.provider" => new_cfg.llm.provider = value.clone(),
+                "llm.model" => new_cfg.llm.model = value.clone(),
+                "llm.api_key" => new_cfg.llm.api_key = value.clone(),
+                "llm.base_url" => new_cfg.llm.base_url = value.clone(),
+                "swarm.enabled" => new_cfg.swarm.enabled = value == "true",
+                "swarm.nats_url" => new_cfg.swarm.nats_url = value.clone(),
+                "ghostsignals.enabled" => new_cfg.ghostsignals.enabled = value == "true",
+                "ghostsignals.token" => new_cfg.ghostsignals.token = value.clone(),
+                "constellation.radio_url" => new_cfg.constellation.radio_url = value.clone(),
+                "constellation.observatory_url" => new_cfg.constellation.observatory_url = value.clone(),
+                "updates.auto_check" => new_cfg.updates.auto_check = value == "true",
+                other => {
+                    eprintln!("Unknown config key: {}", other);
+                    process::exit(1);
+                }
+            }
+            match new_cfg.save() {
+                Ok(()) => println!("  \u{2713} Set {} = {}", key, value),
+                Err(e) => {
+                    eprintln!("Error saving config: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+        "path" => {
+            println!("{}", KannakaConfig::config_path().display());
+        }
+        _ => {
+            eprintln!("Usage: kannaka config <show|set|path>");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Search command
+// ---------------------------------------------------------------------------
+
+fn handle_search(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    if args.len() < 2 {
+        eprintln!("Usage: kannaka search \"query\" [--limit N]");
+        process::exit(1);
+    }
+    let mut limit = 20usize;
+    let mut query_parts = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if (args[i] == "--limit" || args[i] == "--top-k") && i + 1 < args.len() {
+            limit = args[i + 1].parse().unwrap_or(20);
+            i += 2;
+        } else {
+            query_parts.push(args[i].as_str());
+            i += 1;
+        }
+    }
+    let query = query_parts.join(" ");
+    match sys.recall(&query, limit) {
+        Ok(results) => {
+            if results.is_empty() {
+                println!("  No results for \"{}\"", query);
+                return;
+            }
+            println!("  \u{1f50d} Search: \"{}\" ({} results)", query, results.len());
+            println!("  {}", "\u{2500}".repeat(70));
+            for (i, r) in results.iter().enumerate() {
+                let preview = if r.content.len() > 70 {
+                    let mut end = 70;
+                    while end > 0 && !r.content.is_char_boundary(end) { end -= 1; }
+                    format!("{}...", &r.content[..end])
+                } else {
+                    r.content.clone()
+                };
+                println!("  {:>3}. [{:.2}] {}", i + 1, r.similarity, preview);
+                println!("       id={} age={:.0}h strength={:.2}",
+                    r.id, r.age_hours, r.strength);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Export command
+// ---------------------------------------------------------------------------
+
+fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    let mut output_path: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        if (args[i] == "--output" || args[i] == "-o") && i + 1 < args.len() {
+            output_path = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "--format" && i + 1 < args.len() {
+            // Only JSON is supported, but accept the flag
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let all_mems = sys.engine.store.all_memories()
+        .unwrap_or_else(|e| { eprintln!("Error: {}", e); process::exit(1); });
+
+    let output: Vec<serde_json::Value> = all_mems.iter().map(|m| {
+        serde_json::json!({
+            "id": m.id.to_string(),
+            "content": m.content,
+            "amplitude": m.amplitude,
+            "frequency": m.frequency,
+            "phase": m.phase,
+            "decay_rate": m.decay_rate,
+            "created_at": m.created_at.to_rfc3339(),
+            "layer_depth": m.layer_depth,
+            "hallucinated": m.hallucinated,
+            "parents": m.parents,
+            "vector": m.vector,
+            "xi_signature": m.xi_signature,
+            "geometry": m.geometry,
+            "connections": m.connections.iter().map(|c| {
+                serde_json::json!({
+                    "target_id": c.target_id.to_string(),
+                    "strength": c.strength,
+                    "span": c.span
+                })
+            }).collect::<Vec<_>>()
+        })
+    }).collect();
+
+    let json_str = serde_json::to_string(&output).unwrap();
+
+    if let Some(path) = output_path {
+        match std::fs::write(&path, &json_str) {
+            Ok(()) => {
+                println!("  \u{2713} Exported {} memories to {}", all_mems.len(), path);
+            }
+            Err(e) => {
+                eprintln!("Error writing {}: {}", path, e);
+                process::exit(1);
+            }
+        }
+    } else {
+        println!("{}", json_str);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import command
+// ---------------------------------------------------------------------------
+
+fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    let path = match args.get(1) {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: kannaka import <file.json>");
+            process::exit(1);
+        }
+    };
+
+    let file_data = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| { eprintln!("Failed to read {}: {}", path, e); process::exit(1); });
+    let memories: Vec<serde_json::Value> = serde_json::from_str(&file_data)
+        .unwrap_or_else(|e| { eprintln!("Failed to parse JSON: {}", e); process::exit(1); });
+
+    let existing_ids: std::collections::HashSet<uuid::Uuid> = sys.engine.store.all_memories()
+        .unwrap_or_default().iter().map(|m| m.id).collect();
+
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    let mut errors = 0u32;
+
+    for val in &memories {
+        let id_str = val["id"].as_str().unwrap_or("");
+        let id = match uuid::Uuid::parse_str(id_str) {
+            Ok(id) => id,
+            Err(_) => { errors += 1; continue; }
+        };
+
+        if existing_ids.contains(&id) {
+            skipped += 1;
+            continue;
+        }
+
+        let content = val["content"].as_str().unwrap_or("").to_string();
+        if content.is_empty() { skipped += 1; continue; }
+
+        let amplitude = val["amplitude"].as_f64().unwrap_or(0.5) as f32;
+
+        match sys.engine.store.absorb(&content, amplitude, None) {
+            Ok(_) => { imported += 1; }
+            Err(e) => {
+                if errors < 5 { eprintln!("  Error importing {}: {}", id_str, e); }
+                errors += 1;
+            }
+        }
+    }
+
+    if imported > 0 {
+        if let Err(e) = sys.save() {
+            eprintln!("Failed to save: {}", e);
+            process::exit(1);
+        }
+    }
+
+    println!("  \u{2713} Import complete");
+    println!("    Imported: {}", imported);
+    println!("    Skipped:  {} (duplicates)", skipped);
+    println!("    Errors:   {}", errors);
+    println!("    Total:    {} in file", memories.len());
 }
 
