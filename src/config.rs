@@ -424,7 +424,7 @@ pub fn self_update() -> Result<(), String> {
 
     // Determine platform
     let (os, arch, ext) = platform_triple();
-    let asset_name = format!("kannaka-{}-{}-{}{}", remote_version, os, arch, ext);
+    let asset_name = format!("kannaka-{}-{}{}", os, arch, ext);
 
     // Find download URL in release assets
     let download_url = body["assets"].as_array()
