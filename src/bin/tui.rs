@@ -6,7 +6,7 @@
 //! against kannaka-memory as a library.
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -1125,7 +1125,11 @@ fn main() -> io::Result<()> {
         // Poll for events with 100ms timeout (allows periodic status refresh)
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+                // Only handle Press events — Windows emits both Press and
+                // Release for each keystroke, causing double input.
+                if key.kind == KeyEventKind::Press {
+                    app.handle_key(key);
+                }
             }
         }
 
