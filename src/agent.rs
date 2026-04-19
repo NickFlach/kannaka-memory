@@ -387,7 +387,7 @@ impl AnthropicClient {
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", ANTHROPIC_VERSION)
             .set("content-type", "application/json")
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(300))
             .send_json(body);
 
         match resp {
