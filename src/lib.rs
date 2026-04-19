@@ -53,6 +53,8 @@ pub mod hrm_store;
 
 pub mod config;
 
+pub mod agent;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,

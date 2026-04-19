@@ -93,6 +93,10 @@ fn usage() {
     eprintln!("  market list|view|buy      GhostSignals prediction markets");
     eprintln!("  swarm status|join|sync    Swarm network");
     eprintln!();
+    eprintln!("Agent (LLM):");
+    eprintln!("  ask \"question\"             One-shot — memories surface via wave resonance");
+    eprintln!("  chat                       Persistent conversation (Ctrl+D / 'exit' to quit)");
+    eprintln!();
     eprintln!("Tools:");
     eprintln!("  orchestrate run \"task\"    Kannaktopus task orchestration");
     eprintln!("  config show|set|path      Configuration management");
@@ -1305,6 +1309,14 @@ fn main() {
 
         "voice" => {
             voice_command(&args[command_start..], &mut sys);
+        }
+
+        "ask" => {
+            handle_ask(&mut sys, &cfg, &args[command_start..]);
+        }
+
+        "chat" => {
+            handle_chat(&mut sys, &cfg, &args[command_start..]);
         }
 
         "invariant" => {
@@ -2793,6 +2805,102 @@ fn check_kannaktopus_installed() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Agent commands — `ask` (one-shot) and `chat` (REPL)
+// ---------------------------------------------------------------------------
+
+fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
+    // Parse flags: --session <id>, --quiet-tools
+    let mut session: Option<String> = None;
+    let mut quiet_tools = false;
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session" if i + 1 < args.len() => { session = Some(args[i + 1].clone()); i += 2; }
+            "--quiet-tools" => { quiet_tools = true; i += 1; }
+            _ => { parts.push(args[i].clone()); i += 1; }
+        }
+    }
+    let prompt = parts.join(" ").trim().to_string();
+    if prompt.is_empty() {
+        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] \"your question\"");
+        process::exit(1);
+    }
+
+    let result = match session {
+        Some(id) => {
+            let path = data_dir().join("sessions").join(format!("{id}.json"));
+            kannaka_memory::agent::ask_with_session(sys, cfg, &path, &prompt)
+        }
+        None => kannaka_memory::agent::ask(sys, cfg, &prompt),
+    };
+
+    match result {
+        Ok(result) => {
+            if !quiet_tools && !result.tool_calls.is_empty() {
+                eprintln!("[agent] {} tool call(s):", result.tool_calls.len());
+                for tc in &result.tool_calls {
+                    let mark = if tc.is_error { "!" } else { "·" };
+                    eprintln!("  {mark} {}({})", tc.name, compact_input(&tc.input));
+                }
+            }
+            println!("{}", result.text);
+        }
+        Err(e) => {
+            eprintln!("agent error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
+    use std::io::{BufRead, Write};
+    // Build system prompt ONCE from current state; it stays stable for the session.
+    let surfaced = sys.recall("", kannaka_memory::agent::DEFAULT_TOP_K).unwrap_or_default();
+    let system = kannaka_memory::agent::system_prompt(sys, &surfaced);
+    let mut history: Vec<kannaka_memory::agent::Message> = Vec::new();
+
+    eprintln!("kannaka chat — Ctrl+D or `exit` to quit, blank line submits");
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+
+    loop {
+        print!("\nyou> ");
+        let _ = stdout.flush();
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => { eprintln!(); break; } // EOF
+            Ok(_) => {}
+            Err(e) => { eprintln!("read error: {e}"); break; }
+        }
+        let msg = line.trim();
+        if msg.is_empty() { continue; }
+        if msg == "exit" || msg == "quit" { break; }
+
+        match kannaka_memory::agent::chat_turn(sys, cfg, &mut history, &system, msg) {
+            Ok(result) => {
+                if !result.tool_calls.is_empty() {
+                    eprintln!("[tools] {}", result.tool_calls.iter()
+                        .map(|t| format!("{}{}", if t.is_error {"!"} else {""}, t.name))
+                        .collect::<Vec<_>>().join(", "));
+                }
+                println!("\nkannaka> {}", result.text);
+            }
+            Err(e) => {
+                eprintln!("agent error: {e}");
+                // Pop the user message so they can retry without a dangling turn.
+                history.pop();
+            }
+        }
+    }
+}
+
+fn compact_input(v: &serde_json::Value) -> String {
+    let s = v.to_string();
+    if s.len() > 80 { format!("{}…", &s[..s.floor_char_boundary(79)]) } else { s }
 }
 
 fn handle_orchestrate(args: &[String]) {

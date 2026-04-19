@@ -91,7 +91,22 @@ struct App {
     history: Vec<String>,
     history_idx: Option<usize>,
     kannaka_bin: String,
+    // Chat tab — persistent conversation with the agent. Each turn shells
+    // out to `kannaka ask --session kannaka-tui` in a background thread so
+    // the UI doesn't block during the API round-trip.
+    chat_messages: Vec<ChatLine>,
+    chat_pending: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    chat_tick: usize,
 }
+
+#[derive(Clone)]
+struct ChatLine {
+    who: ChatWho,
+    text: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ChatWho { User, Kannaka, System }
 
 impl App {
     fn new() -> Self {
@@ -101,7 +116,7 @@ impl App {
 
         Self {
             active_tab: 0,
-            tabs: vec!["Memory", "Status", "Constellation", "Dreams"],
+            tabs: vec!["Memory", "Status", "Constellation", "Dreams", "Chat"],
             input: String::new(),
             cursor_pos: 0,
             messages: vec![Message {
@@ -121,6 +136,12 @@ impl App {
             history: Vec::new(),
             history_idx: None,
             kannaka_bin,
+            chat_messages: vec![ChatLine {
+                who: ChatWho::System,
+                text: "Chat with Kannaka. Memories surface via wave resonance each turn. Enter to send.".into(),
+            }],
+            chat_pending: None,
+            chat_tick: 0,
         }
     }
 
@@ -437,6 +458,22 @@ impl App {
         self.history.push(input.clone());
         self.history_idx = None;
 
+        // Chat tab — send to agent in a background thread.
+        if self.tabs.get(self.active_tab).copied() == Some("Chat") {
+            if self.chat_pending.is_some() {
+                // A previous turn is still in flight — ignore new input.
+                self.input.clear();
+                self.cursor_pos = 0;
+                return;
+            }
+            self.chat_messages.push(ChatLine { who: ChatWho::User, text: input.clone() });
+            self.spawn_chat_turn(input);
+            self.input.clear();
+            self.cursor_pos = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+
         // Parse the command
         if input.starts_with("remember ") {
             let text = input.strip_prefix("remember ").unwrap().trim();
@@ -476,6 +513,53 @@ impl App {
         self.cursor_pos = 0;
         // Auto-scroll to bottom
         self.scroll_offset = 0;
+    }
+
+    fn spawn_chat_turn(&mut self, user_msg: String) {
+        let bin = self.kannaka_bin.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        self.chat_pending = Some(rx);
+        std::thread::spawn(move || {
+            let output = Command::new(&bin)
+                .args(["ask", "--session", "kannaka-tui", "--quiet-tools", &user_msg])
+                .env("KANNAKA_QUIET", "1")
+                .output();
+            let result = match output {
+                Ok(out) if out.status.success() => {
+                    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    Err(format!("agent exited {}: {}", out.status.code().unwrap_or(-1), stderr.trim()))
+                }
+                Err(e) => Err(format!("spawn failed: {e}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Called from the event loop each tick. If a pending chat turn finished,
+    /// append the response line.
+    fn poll_chat(&mut self) {
+        if let Some(rx) = &self.chat_pending {
+            match rx.try_recv() {
+                Ok(Ok(text)) => {
+                    self.chat_messages.push(ChatLine { who: ChatWho::Kannaka, text });
+                    self.chat_pending = None;
+                }
+                Ok(Err(err)) => {
+                    self.chat_messages.push(ChatLine {
+                        who: ChatWho::System,
+                        text: format!("error: {err}"),
+                    });
+                    self.chat_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.chat_pending = None;
+                }
+            }
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -611,6 +695,7 @@ fn ui(f: &mut Frame, app: &App) {
         1 => render_status_tab(f, app, outer[2]),
         2 => render_placeholder(f, "Constellation", "Swarm + GhostSignals markets. Coming soon.", outer[2]),
         3 => render_placeholder(f, "Dreams", "Dream cycle control. Coming soon.", outer[2]),
+        4 => render_chat_tab(f, app, outer[2]),
         _ => {}
     }
 
@@ -984,12 +1069,56 @@ fn render_placeholder(f: &mut Frame, title: &str, message: &str, area: Rect) {
     f.render_widget(para, area);
 }
 
+fn render_chat_tab(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    for msg in &app.chat_messages {
+        let (label, style) = match msg.who {
+            ChatWho::User =>    ("you",     Style::default().fg(INFO).add_modifier(Modifier::BOLD)),
+            ChatWho::Kannaka => ("kannaka", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            ChatWho::System =>  ("·",       Style::default().fg(DIM)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", label), style),
+            Span::styled(msg.text.clone(), Style::default().fg(TEXT)),
+        ]));
+        lines.push(Line::from(""));
+    }
+    if app.chat_pending.is_some() {
+        // Simple spinner keyed off chat_tick so it animates.
+        let frames = ['\u{2014}', '\\', '|', '/'];
+        let frame = frames[app.chat_tick % frames.len()];
+        lines.push(Line::from(vec![
+            Span::styled(format!("kannaka {frame} "), Style::default().fg(ACCENT)),
+            Span::styled("resonating…", Style::default().fg(DIM)),
+        ]));
+    }
+
+    let title = if app.chat_pending.is_some() {
+        " Chat · thinking… "
+    } else {
+        " Chat "
+    };
+
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .style(Style::default().bg(BG))
+                .title(Span::styled(title, Style::default().fg(TEXT).add_modifier(Modifier::BOLD))),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((app.scroll_offset as u16, 0));
+    f.render_widget(para, area);
+}
+
 fn render_input(f: &mut Frame, app: &App, area: Rect) {
     let tab_indicator = match app.active_tab {
         0 => "[M]",
         1 => "[S]",
         2 => "[C]",
         3 => "[D]",
+        4 => "[Ch]",
         _ => "[?]",
     };
 
@@ -1132,6 +1261,11 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+
+        // Drain any completed chat turn from the background thread and
+        // advance the spinner.
+        app.poll_chat();
+        if app.chat_pending.is_some() { app.chat_tick = app.chat_tick.wrapping_add(1); }
 
         // Auto-refresh status every 5s when on the Status tab
         if app.active_tab == 1
