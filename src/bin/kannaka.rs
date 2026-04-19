@@ -2812,30 +2812,38 @@ fn check_kannaktopus_installed() -> bool {
 // ---------------------------------------------------------------------------
 
 fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
-    // Parse flags: --session <id>, --quiet-tools
+    // Parse flags: --session <id>, --quiet-tools, --no-tools
     let mut session: Option<String> = None;
     let mut quiet_tools = false;
+    let mut no_tools = false;
     let mut parts: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--session" if i + 1 < args.len() => { session = Some(args[i + 1].clone()); i += 2; }
             "--quiet-tools" => { quiet_tools = true; i += 1; }
+            "--no-tools" => { no_tools = true; i += 1; }
             _ => { parts.push(args[i].clone()); i += 1; }
         }
     }
     let prompt = parts.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] \"your question\"");
+        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] \"your question\"");
         process::exit(1);
     }
 
-    let result = match session {
-        Some(id) => {
-            let path = data_dir().join("sessions").join(format!("{id}.json"));
-            kannaka_memory::agent::ask_with_session(sys, cfg, &path, &prompt)
+    let result = if no_tools {
+        // `--no-tools` takes precedence over --session — sessions exist
+        // to preserve tool-loop history, which is moot here.
+        kannaka_memory::agent::ask_notools(sys, cfg, &prompt)
+    } else {
+        match session {
+            Some(id) => {
+                let path = data_dir().join("sessions").join(format!("{id}.json"));
+                kannaka_memory::agent::ask_with_session(sys, cfg, &path, &prompt)
+            }
+            None => kannaka_memory::agent::ask(sys, cfg, &prompt),
         }
-        None => kannaka_memory::agent::ask(sys, cfg, &prompt),
     };
 
     match result {

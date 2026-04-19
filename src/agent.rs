@@ -370,13 +370,18 @@ impl AnthropicClient {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<Value, AgentError> {
-        let body = json!({
+        // Tools must be omitted entirely when the caller passed an empty
+        // registry — sending `"tools": []` still makes the model feel it
+        // has a toolbox to justify, burning iterations.
+        let mut body = json!({
             "model": self.model,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "system": system,
             "messages": messages,
-            "tools": tools_as_json(tools),
         });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools_as_json(tools));
+        }
 
         let resp = ureq::post(ANTHROPIC_URL)
             .set("x-api-key", &self.api_key)
@@ -458,6 +463,32 @@ pub fn ask(
     let system = system_prompt(sys, &surfaced);
     let mut history = vec![Message::user_text(prompt)];
     run_tool_loop(sys, &client, &system, &mut history)
+}
+
+/// Like `ask`, but skips the tool loop entirely — single API round-trip.
+/// Use when the caller has already gathered everything the model needs into
+/// the system prompt (e.g. the radio DJ) and doesn't want the model to
+/// wander through `recall`/`observe`/`list_clusters` iterations.
+pub fn ask_notools(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+) -> Result<TurnResult, AgentError> {
+    let client = client_from_config(cfg)?;
+    let surfaced = sys.recall(prompt, DEFAULT_TOP_K).unwrap_or_default();
+    let system = system_prompt(sys, &surfaced);
+    let messages = vec![Message::user_text(prompt)];
+    let response = client.send(&system, &messages, &[])?;
+    let blocks = parse_content(&response)?;
+    let text = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("\n");
+    Ok(TurnResult {
+        text,
+        tool_calls: Vec::new(),
+        new_messages: vec![Message::assistant(blocks)],
+    })
 }
 
 /// Ask with a persistent session file. History is loaded before the turn
