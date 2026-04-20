@@ -469,13 +469,28 @@ pub fn ask(
 /// Use when the caller has already gathered everything the model needs into
 /// the system prompt (e.g. the radio DJ) and doesn't want the model to
 /// wander through `recall`/`observe`/`list_clusters` iterations.
+///
+/// `recall_query` lets the caller decouple memory surfacing from the prompt
+/// text — pass `None` to use the prompt (default), or a custom string to
+/// probe a different region of the field (e.g. a random cluster theme).
+/// Varying it across calls is the cheapest way to break repetitive output.
 pub fn ask_notools(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
+    ask_notools_ex(sys, cfg, prompt, None)
+}
+
+pub fn ask_notools_ex(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+    recall_query: Option<&str>,
+) -> Result<TurnResult, AgentError> {
     let client = client_from_config(cfg)?;
-    let surfaced = sys.recall(prompt, DEFAULT_TOP_K).unwrap_or_default();
+    let query = recall_query.unwrap_or(prompt);
+    let surfaced = sys.recall(query, DEFAULT_TOP_K).unwrap_or_default();
     let system = system_prompt(sys, &surfaced);
     let messages = vec![Message::user_text(prompt)];
     let response = client.send(&system, &messages, &[])?;

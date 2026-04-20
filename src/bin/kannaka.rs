@@ -2812,10 +2812,11 @@ fn check_kannaktopus_installed() -> bool {
 // ---------------------------------------------------------------------------
 
 fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
-    // Parse flags: --session <id>, --quiet-tools, --no-tools
+    // Parse flags: --session <id>, --quiet-tools, --no-tools, --recall-query <text>
     let mut session: Option<String> = None;
     let mut quiet_tools = false;
     let mut no_tools = false;
+    let mut recall_query: Option<String> = None;
     let mut parts: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -2823,19 +2824,20 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
             "--session" if i + 1 < args.len() => { session = Some(args[i + 1].clone()); i += 2; }
             "--quiet-tools" => { quiet_tools = true; i += 1; }
             "--no-tools" => { no_tools = true; i += 1; }
+            "--recall-query" if i + 1 < args.len() => { recall_query = Some(args[i + 1].clone()); i += 2; }
             _ => { parts.push(args[i].clone()); i += 1; }
         }
     }
     let prompt = parts.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] \"your question\"");
+        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--recall-query \"text\"] \"your question\"");
         process::exit(1);
     }
 
     let result = if no_tools {
         // `--no-tools` takes precedence over --session — sessions exist
         // to preserve tool-loop history, which is moot here.
-        kannaka_memory::agent::ask_notools(sys, cfg, &prompt)
+        kannaka_memory::agent::ask_notools_ex(sys, cfg, &prompt, recall_query.as_deref())
     } else {
         match session {
             Some(id) => {
