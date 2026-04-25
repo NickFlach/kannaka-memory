@@ -2976,8 +2976,9 @@ fn handle_swarm_serve(
     args: &[String],
 ) {
     use std::time::Duration;
-    // Parse: kannaka swarm serve [--threshold 0.4] [--nats-url ...]
+    // Parse: kannaka swarm serve [--threshold 0.4] [--nats-url ...] [--agent-id ...]
     let mut threshold: f32 = 0.4;
+    let mut agent_id_override: Option<String> = None;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -2985,6 +2986,9 @@ fn handle_swarm_serve(
                 threshold = args[i + 1].parse().unwrap_or(0.4); i += 2;
             }
             "--nats-url" if i + 1 < args.len() => { i += 2; }
+            "--agent-id" if i + 1 < args.len() => {
+                agent_id_override = Some(args[i + 1].clone()); i += 2;
+            }
             _ => i += 1,
         }
     }
@@ -2993,7 +2997,7 @@ fn handle_swarm_serve(
         Ok(t) => t,
         Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
     };
-    let agent_id = cfg.agent.id.clone();
+    let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
     let directed = format!("KANNAKA.ask.{}", agent_id);
 
     eprintln!("[swarm serve] agent_id={agent_id}");
