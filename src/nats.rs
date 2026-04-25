@@ -1598,14 +1598,27 @@ impl SwarmTransport {
     /// transport will block (single-mutex stream); a serving agent should run
     /// on a dedicated SwarmTransport instance.
     pub fn subscribe(&self, subject: &str) -> Result<NatsSubscription, NatsError> {
+        self.subscribe_with_queue(subject, None)
+    }
+
+    /// Subscribe with an optional queue group. NATS delivers each message to
+    /// exactly ONE subscriber per queue group — this is how we get
+    /// work-queue semantics across multiple workers (#74). Wire format:
+    ///   SUB <subject> [queue-group] <sid>
+    pub fn subscribe_with_queue(
+        &self,
+        subject: &str,
+        queue_group: Option<&str>,
+    ) -> Result<NatsSubscription, NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
         })?;
-        // Use a sid we know isn't reused (95 is unique-ish; the existing
-        // ensure_js_stream uses 99, get_all_phases uses 98, request uses 97/96).
-        write!(stream, "SUB {} 95\r\n", subject)?;
+        // sid 95 is reserved for these long-poll subscriptions.
+        match queue_group {
+            Some(g) => write!(stream, "SUB {} {} 95\r\n", subject, g)?,
+            None => write!(stream, "SUB {} 95\r\n", subject)?,
+        }
         stream.flush()?;
-        // Long-poll: clear any read timeout on the subscription's clone.
         let stream_clone = stream.try_clone().map_err(NatsError::Io)?;
         stream_clone.set_read_timeout(None)?;
         Ok(NatsSubscription {

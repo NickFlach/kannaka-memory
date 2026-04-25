@@ -1324,6 +1324,12 @@ fn main() {
                 "autoabsorb" => {
                     handle_swarm_autoabsorb(&mut sys, &cfg, &args[command_start..]);
                 }
+                "enqueue" => {
+                    handle_swarm_enqueue(&cfg, &args[command_start..]);
+                }
+                "worker" => {
+                    handle_swarm_worker(&mut sys, &cfg, &args[command_start..]);
+                }
                 "absorb" => {
                     handle_swarm_absorb(&mut sys, &cfg, &args[command_start..]);
                 }
@@ -3624,6 +3630,208 @@ impl AutoabsorbState {
             .unwrap_or_else(|| "1970-01-01".to_string());
         self.absorbs_per_day.retain(|k, _| k.as_str() >= cutoff.as_str());
     }
+}
+
+// ── ADR-0026 Phase 4: Work queues (#74) ─────────────────────────────────────
+//
+// Cooperative task processing across the swarm. v1 uses raw NATS queue-group
+// subscriptions (not full JetStream consumer groups) — multiple workers
+// SUB to `KANNAKA.work.<kind>` with the same queue group; NATS delivers
+// each task to exactly one worker. The requester pubs with a reply-to and
+// awaits the result via existing request_one. Same wire shape as ask/serve;
+// the difference is the queue-group on the worker side.
+//
+// Supported task kinds:
+//   ask  — runs agent::ask_notools_ex on the worker's local HRM.
+// Future: dream.deep, batch HRM analysis, TTS pool. Each kind gets its own
+// subject + queue group.
+
+#[cfg(feature = "nats")]
+fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
+    use std::time::Duration;
+    // Usage: kannaka swarm enqueue <kind> "payload text" [--timeout 600]
+    let kind = match args.get(2) {
+        Some(s) => s.clone(),
+        None => { eprintln!("Usage: kannaka swarm enqueue <kind> \"payload\" [--timeout SECONDS]"); process::exit(1); }
+    };
+    let mut timeout_secs: u64 = 600;
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--timeout" if i + 1 < args.len() => {
+                timeout_secs = args[i + 1].parse().unwrap_or(600); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => i += 2,
+            _ => { text_parts.push(args[i].clone()); i += 1; }
+        }
+    }
+    let text = text_parts.join(" ").trim().to_string();
+    if text.is_empty() {
+        eprintln!("Usage: kannaka swarm enqueue <kind> \"payload\""); process::exit(1);
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+
+    let task_id = format!("t-{}", uuid::Uuid::new_v4().simple());
+    let payload = serde_json::json!({
+        "task_id": task_id,
+        "from": cfg.agent.id,
+        "text": text,
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    let subject = format!("KANNAKA.work.{}", kind);
+    eprintln!("[enqueue] {} task {} (waiting up to {}s for a worker reply)", subject, task_id, timeout_secs);
+
+    match transport.request_one(&subject, &bytes, Duration::from_secs(timeout_secs)) {
+        Ok(reply) => {
+            let parsed: serde_json::Value = serde_json::from_slice(&reply)
+                .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply).to_string()}));
+            let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("(no text)");
+            eprintln!("[enqueue] reply from {}", from);
+            println!("{}", text);
+        }
+        Err(e) => { eprintln!("enqueue: {e}"); process::exit(1); }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_enqueue(_: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm enqueue requires the 'nats' feature"); process::exit(1);
+}
+
+#[cfg(feature = "nats")]
+fn handle_swarm_worker(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::time::Duration;
+    // Usage: kannaka swarm worker [--kinds ask,dream,...] [--queue-group GROUP]
+    let mut kinds: Vec<String> = vec!["ask".to_string()];
+    let mut queue_group: String = "kannaka_workers".to_string();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--kinds" if i + 1 < args.len() => {
+                kinds = args[i + 1].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                i += 2;
+            }
+            "--queue-group" if i + 1 < args.len() => {
+                queue_group = args[i + 1].clone(); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => i += 2,
+            _ => i += 1,
+        }
+    }
+    if kinds.is_empty() { kinds.push("ask".to_string()); }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[worker] nats: {e}"); process::exit(1); }
+    };
+
+    eprintln!("[worker] kinds: {:?}, queue group: {}", kinds, queue_group);
+
+    // v1: support exactly one kind per worker process (round-robin across multiple
+    // would need a thread per kind). If multiple kinds were requested, we'll
+    // process them by rotating subscriptions every 5s.
+    if kinds.len() == 1 {
+        let kind = &kinds[0];
+        let subject = format!("KANNAKA.work.{}", kind);
+        let group = format!("{}_{}", queue_group, kind);
+        let mut sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[worker] subscribe: {e}"); process::exit(1); }
+        };
+        eprintln!("[worker] subscribed to {} (group {})", subject, group);
+        while let Some(msg) = sub.next_message() {
+            _process_work_msg(sys, cfg, &transport, &nats_url, kind, &msg);
+        }
+    } else {
+        // Multi-kind workers run sequentially with short polls — useful for
+        // light test setups, suboptimal for production. Real production
+        // should run one process per kind.
+        eprintln!("[worker] WARNING: multi-kind worker — running each kind for ~5s in rotation");
+        loop {
+            for kind in &kinds {
+                let subject = format!("KANNAKA.work.{}", kind);
+                let group = format!("{}_{}", queue_group, kind);
+                let mut sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("[worker] subscribe {kind}: {e}"); std::thread::sleep(Duration::from_secs(2)); continue; }
+                };
+                let _ = sub.set_timeout(Some(Duration::from_secs(5)));
+                if let Some(msg) = sub.next_message() {
+                    _process_work_msg(sys, cfg, &transport, &nats_url, kind, &msg);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "nats")]
+fn _process_work_msg(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    transport: &kannaka_memory::nats::SwarmTransport,
+    nats_url: &str,
+    kind: &str,
+    msg: &kannaka_memory::nats::NatsMessage,
+) {
+    let reply_to = match &msg.reply_to {
+        Some(r) => r.clone(),
+        None => { eprintln!("[worker] task without reply-to on {} — drop", msg.subject); return; }
+    };
+    let req: serde_json::Value = match serde_json::from_slice(&msg.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = serde_json::json!({"from": cfg.agent.id, "error": format!("bad json: {e}")});
+            let _ = transport.reply(&reply_to, err.to_string().as_bytes());
+            return;
+        }
+    };
+    let task_id = req.get("task_id").and_then(|v| v.as_str()).unwrap_or("(none)");
+    let from = req.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+    let text = req.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    eprintln!("[worker] kind={kind} task={task_id} from={from}");
+
+    let reply_payload = match kind {
+        "ask" => {
+            if text.is_empty() {
+                serde_json::json!({"from": cfg.agent.id, "error": "empty text"})
+            } else {
+                match kannaka_memory::agent::ask_notools_ex(sys, cfg, text, None) {
+                    Ok(r) => serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "text": r.text}),
+                    Err(e) => serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "error": format!("{e}")}),
+                }
+            }
+        }
+        other => serde_json::json!({"from": cfg.agent.id, "error": format!("unknown kind: {other}")}),
+    };
+
+    // Reply on a fresh connection (the original may have idled past PING).
+    let body = reply_payload.to_string();
+    let reply_result = match kannaka_memory::nats::SwarmTransport::connect(nats_url) {
+        Ok(fresh) => fresh.reply(&reply_to, body.as_bytes()),
+        Err(_) => transport.reply(&reply_to, body.as_bytes()),
+    };
+    if let Err(e) = reply_result {
+        eprintln!("[worker] reply failed: {e}");
+    } else {
+        eprintln!("[worker] replied on {reply_to}");
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_worker(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm worker requires the 'nats' feature"); process::exit(1);
 }
 
 fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
