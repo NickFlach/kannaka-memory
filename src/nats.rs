@@ -245,8 +245,23 @@ impl SwarmTransport {
             )));
         }
 
-        // Send CONNECT
-        let connect_payload = r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#;
+        // Send CONNECT — include user/pass if env-supplied. ADR-0026 #73.
+        // NATS_USER + NATS_PASSWORD let agents authenticate; public/anon
+        // connections leave them unset and the server applies the
+        // anonymous permissions (read-only).
+        let user = std::env::var("NATS_USER").unwrap_or_default();
+        let pass = std::env::var("NATS_PASSWORD").unwrap_or_default();
+        let connect_payload = if !user.is_empty() && !pass.is_empty() {
+            // Escape JSON safely. Both fields are short tokens — quotation
+            // and backslash are the only chars worth handling.
+            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!(
+                r#"{{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1,"user":"{}","pass":"{}"}}"#,
+                esc(&user), esc(&pass)
+            )
+        } else {
+            r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#.to_string()
+        };
         let mut stream = reader.into_inner();
         write!(stream, "CONNECT {}\r\n", connect_payload)?;
         write!(stream, "PING\r\n")?;
