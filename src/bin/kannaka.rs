@@ -91,7 +91,7 @@ fn usage() {
     eprintln!("  constellation             Status of all constellation apps");
     eprintln!("  radio status|now|schedule What's playing on Kannaka Radio");
     eprintln!("  market list|view|buy      GhostSignals prediction markets");
-    eprintln!("  swarm status|join|sync    Swarm network");
+    eprintln!("  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)");
     eprintln!();
     eprintln!("Agent (LLM):");
     eprintln!("  ask \"question\"             One-shot — memories surface via wave resonance");
@@ -971,7 +971,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve>");
                 process::exit(1);
             }
 
@@ -1298,9 +1298,16 @@ fn main() {
                         Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
                     }
                 }
+                "serve" => {
+                    // ADR-0026 Phase 1: long-running listener for KANNAKA.ask.<id>
+                    // and KANNAKA.ask.broadcast. Each inbound message is dispatched
+                    // to agent::ask_notools_ex; the reply goes back on the message's
+                    // reply-to subject.
+                    handle_swarm_serve(&mut sys, &cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve>");
                     process::exit(1);
                 }
             }
@@ -2812,11 +2819,14 @@ fn check_kannaktopus_installed() -> bool {
 // ---------------------------------------------------------------------------
 
 fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
-    // Parse flags: --session <id>, --quiet-tools, --no-tools, --recall-query <text>
+    // Parse flags: --session <id>, --quiet-tools, --no-tools, --recall-query <text>,
+    // --remote <agent_id|broadcast>, --remote-timeout <seconds>
     let mut session: Option<String> = None;
     let mut quiet_tools = false;
     let mut no_tools = false;
     let mut recall_query: Option<String> = None;
+    let mut remote: Option<String> = None;
+    let mut remote_timeout_secs: u64 = 60;
     let mut parts: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -2825,13 +2835,25 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
             "--quiet-tools" => { quiet_tools = true; i += 1; }
             "--no-tools" => { no_tools = true; i += 1; }
             "--recall-query" if i + 1 < args.len() => { recall_query = Some(args[i + 1].clone()); i += 2; }
+            "--remote" if i + 1 < args.len() => { remote = Some(args[i + 1].clone()); i += 2; }
+            "--remote-timeout" if i + 1 < args.len() => {
+                remote_timeout_secs = args[i + 1].parse().unwrap_or(60);
+                i += 2;
+            }
             _ => { parts.push(args[i].clone()); i += 1; }
         }
     }
     let prompt = parts.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--recall-query \"text\"] \"your question\"");
+        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \"your question\"");
         process::exit(1);
+    }
+
+    // --remote: route the question over NATS to a peer (or broadcast) running
+    // `kannaka swarm serve`. ADR-0026 Phase 1.
+    if let Some(target) = remote {
+        return handle_ask_remote(cfg, &target, &prompt, recall_query.as_deref(),
+            no_tools, remote_timeout_secs, quiet_tools);
     }
 
     let result = if no_tools {
@@ -2864,6 +2886,237 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
             process::exit(1);
         }
     }
+}
+
+// ── ADR-0026 Phase 1: Remote ask + swarm serve ──────────────────────────────
+
+#[cfg(feature = "nats")]
+fn handle_ask_remote(
+    cfg: &KannakaConfig,
+    target: &str,
+    prompt: &str,
+    recall_query: Option<&str>,
+    no_tools: bool,
+    timeout_secs: u64,
+    quiet_tools: bool,
+) {
+    use std::time::Duration;
+    let nats_url = if !cfg.swarm.nats_url.is_empty() {
+        cfg.swarm.nats_url.clone()
+    } else {
+        std::env::var("KANNAKA_NATS_URL")
+            .unwrap_or_else(|_| "nats://swarm.ninja-portal.com:4222".to_string())
+    };
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+    };
+
+    let request = serde_json::json!({
+        "from": cfg.agent.id,
+        "text": prompt,
+        "recall_query": recall_query,
+        "no_tools": no_tools,
+    });
+    let payload = match serde_json::to_vec(&request) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("serialize: {e}"); process::exit(1); }
+    };
+
+    let timeout = Duration::from_secs(timeout_secs);
+    if target == "broadcast" {
+        let subject = "KANNAKA.ask.broadcast";
+        eprintln!("[ask --remote broadcast] published; collecting replies for {}s...", timeout_secs);
+        match transport.request_many(subject, &payload, timeout) {
+            Ok(replies) => {
+                if replies.is_empty() {
+                    eprintln!("(no replies within {}s)", timeout_secs);
+                    process::exit(2);
+                }
+                for (i, reply) in replies.iter().enumerate() {
+                    let parsed: serde_json::Value = serde_json::from_slice(reply)
+                        .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(reply)}));
+                    let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+                    let text = parsed.get("text").and_then(|v| v.as_str())
+                        .unwrap_or("(no text)");
+                    if !quiet_tools {
+                        eprintln!("─── reply {} from {} ───", i + 1, from);
+                    }
+                    println!("{}", text);
+                    if !quiet_tools && i + 1 < replies.len() { println!(); }
+                }
+            }
+            Err(e) => { eprintln!("request_many: {e}"); process::exit(1); }
+        }
+    } else {
+        let subject = format!("KANNAKA.ask.{}", target);
+        match transport.request_one(&subject, &payload, timeout) {
+            Ok(reply) => {
+                let parsed: serde_json::Value = serde_json::from_slice(&reply)
+                    .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
+                let text = parsed.get("text").and_then(|v| v.as_str())
+                    .unwrap_or("(no text)");
+                println!("{}", text);
+            }
+            Err(e) => { eprintln!("request_one: {e}"); process::exit(1); }
+        }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_ask_remote(_: &KannakaConfig, _: &str, _: &str, _: Option<&str>, _: bool, _: u64, _: bool) {
+    eprintln!("--remote requires the 'nats' feature");
+    process::exit(1);
+}
+
+#[cfg(feature = "nats")]
+fn handle_swarm_serve(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::time::Duration;
+    // Parse: kannaka swarm serve [--threshold 0.4] [--nats-url ...]
+    let mut threshold: f32 = 0.4;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--threshold" if i + 1 < args.len() => {
+                threshold = args[i + 1].parse().unwrap_or(0.4); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+    };
+    let agent_id = cfg.agent.id.clone();
+    let directed = format!("KANNAKA.ask.{}", agent_id);
+
+    eprintln!("[swarm serve] agent_id={agent_id}");
+    eprintln!("[swarm serve] subscribing to {} and KANNAKA.ask.broadcast", directed);
+    eprintln!("[swarm serve] broadcast resonance threshold: {:.2}", threshold);
+    eprintln!("[swarm serve] press Ctrl+C to stop");
+
+    // Single subscription per subject; in v1 we run them sequentially via
+    // a switch, accepting that a busy listener processes one ask at a time.
+    // Future: dedicated reader thread + channel per subject.
+    let mut directed_sub = match transport.subscribe(&directed) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("subscribe directed: {e}"); process::exit(1); }
+    };
+    // Use 5s read timeout so we can poll between subjects.
+    let _ = directed_sub.set_timeout(Some(Duration::from_secs(5)));
+
+    // Broadcast on a separate connection so the directed sub doesn't block it.
+    let bcast_transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[swarm serve] WARN: broadcast subscription unavailable: {e}");
+            // Continue with directed-only.
+            return _serve_directed_only(sys, cfg, &transport, directed_sub);
+        }
+    };
+    let mut bcast_sub = match bcast_transport.subscribe("KANNAKA.ask.broadcast") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[swarm serve] WARN: broadcast subscribe failed: {e}");
+            return _serve_directed_only(sys, cfg, &transport, directed_sub);
+        }
+    };
+    let _ = bcast_sub.set_timeout(Some(Duration::from_secs(5)));
+
+    loop {
+        // Round-robin: try directed first, then broadcast.
+        if let Some(msg) = directed_sub.next_message() {
+            _handle_serve_msg(sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold);
+        }
+        if let Some(msg) = bcast_sub.next_message() {
+            _handle_serve_msg(sys, cfg, &bcast_transport, &msg, /*is_broadcast*/ true, threshold);
+        }
+    }
+}
+
+#[cfg(feature = "nats")]
+fn _serve_directed_only(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    transport: &kannaka_memory::nats::SwarmTransport,
+    mut sub: kannaka_memory::nats::NatsSubscription,
+) {
+    while let Some(msg) = sub.next_message() {
+        _handle_serve_msg(sys, cfg, transport, &msg, false, 0.0);
+    }
+}
+
+#[cfg(feature = "nats")]
+fn _handle_serve_msg(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    transport: &kannaka_memory::nats::SwarmTransport,
+    msg: &kannaka_memory::nats::NatsMessage,
+    is_broadcast: bool,
+    threshold: f32,
+) {
+    let reply_to = match &msg.reply_to {
+        Some(r) => r.clone(),
+        None => {
+            eprintln!("[swarm serve] msg without reply-to on {} — ignoring", msg.subject);
+            return;
+        }
+    };
+
+    let req: serde_json::Value = match serde_json::from_slice(&msg.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = serde_json::json!({ "from": cfg.agent.id, "error": format!("bad json: {e}") });
+            let _ = transport.reply(&reply_to, err.to_string().as_bytes());
+            return;
+        }
+    };
+    let from = req.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+    let text = req.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let recall_q = req.get("recall_query").and_then(|v| v.as_str());
+
+    if text.is_empty() {
+        let err = serde_json::json!({ "from": cfg.agent.id, "error": "empty text" });
+        let _ = transport.reply(&reply_to, err.to_string().as_bytes());
+        return;
+    }
+
+    // Self-throttle on broadcast: only reply if local recall has resonance ≥ threshold.
+    if is_broadcast {
+        let probe = recall_q.unwrap_or(text);
+        let res = sys.recall(probe, 1).unwrap_or_default();
+        let top = res.first().map(|r| r.strength).unwrap_or(0.0);
+        if top < threshold {
+            eprintln!("[swarm serve] broadcast from {from}: top resonance {top:.3} < threshold {threshold:.2} — staying quiet");
+            return;
+        }
+        eprintln!("[swarm serve] broadcast from {from}: top resonance {top:.3} ≥ threshold — answering");
+    } else {
+        eprintln!("[swarm serve] directed from {from}");
+    }
+
+    let result = kannaka_memory::agent::ask_notools_ex(sys, cfg, text, recall_q);
+    let reply = match result {
+        Ok(r) => serde_json::json!({ "from": cfg.agent.id, "text": r.text }),
+        Err(e) => serde_json::json!({ "from": cfg.agent.id, "error": format!("{e}") }),
+    };
+    if let Err(e) = transport.reply(&reply_to, reply.to_string().as_bytes()) {
+        eprintln!("[swarm serve] reply failed: {e}");
+    } else {
+        eprintln!("[swarm serve] replied on {reply_to}");
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm serve requires the 'nats' feature");
+    process::exit(1);
 }
 
 fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {

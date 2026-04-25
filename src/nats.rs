@@ -1278,6 +1278,164 @@ impl SwarmTransport {
         stream.flush()?;
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // Request / Reply (ADR-0026 Phase 1)
+    // -----------------------------------------------------------------------
+
+    /// Synchronous request: publish to `subject` with a unique reply-to inbox,
+    /// await the FIRST reply, return its payload. Used for directed agent
+    /// queries (`kannaka ask --remote <agent_id>`).
+    ///
+    /// Holds the connection lock for the whole exchange — same pattern as
+    /// `ensure_js_stream`. The serving agent must respond within `timeout`.
+    pub fn request_one(
+        &self,
+        subject: &str,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, NatsError> {
+        let inbox = new_inbox("req");
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+
+        // SUB inbox first so we don't race the reply.
+        write!(stream, "SUB {} 97\r\n", inbox)?;
+        // PUB <subject> <reply-to> <#bytes>
+        write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
+        stream.write_all(payload)?;
+        write!(stream, "\r\n")?;
+        // UNSUB after first message — let the server clean up automatically.
+        write!(stream, "UNSUB 97 1\r\n")?;
+        stream.flush()?;
+
+        stream.set_read_timeout(Some(timeout))?;
+        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(NatsError::Protocol("request_one timed out".into()));
+            }
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err(NatsError::Protocol("connection closed during request".into())),
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("PING") {
+                        write!(stream, "PONG\r\n")?;
+                        stream.flush()?;
+                        continue;
+                    }
+                    if trimmed.starts_with("MSG ") {
+                        // 4 parts: MSG <subj> <sid> <#bytes>
+                        // 5 parts: MSG <subj> <sid> <reply-to> <#bytes>
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        let nbytes: usize = parts.last()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let mut buf = vec![0u8; nbytes];
+                        reader.read_exact(&mut buf)?;
+                        let mut crlf = String::new();
+                        let _ = reader.read_line(&mut crlf);
+                        return Ok(buf);
+                    }
+                    // ignore +OK, INFO, and other server lines
+                }
+                Err(e) => {
+                    return Err(NatsError::Protocol(format!("request_one read error: {}", e)));
+                }
+            }
+        }
+    }
+
+    /// Broadcast request: publish to `subject` with a reply-to inbox, collect
+    /// every reply that arrives within `timeout`, return them all. Used for
+    /// `kannaka ask --remote broadcast` where any number of agents may answer.
+    pub fn request_many(
+        &self,
+        subject: &str,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<Vec<u8>>, NatsError> {
+        let inbox = new_inbox("reqm");
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+
+        write!(stream, "SUB {} 96\r\n", inbox)?;
+        write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
+        stream.write_all(payload)?;
+        write!(stream, "\r\n")?;
+        stream.flush()?;
+
+        stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+
+        let deadline = std::time::Instant::now() + timeout;
+        let mut replies: Vec<Vec<u8>> = Vec::new();
+
+        while std::time::Instant::now() < deadline {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("PING") {
+                        write!(stream, "PONG\r\n")?;
+                        stream.flush()?;
+                        continue;
+                    }
+                    if trimmed.starts_with("MSG ") {
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        let nbytes: usize = parts.last()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let mut buf = vec![0u8; nbytes];
+                        reader.read_exact(&mut buf)?;
+                        let mut crlf = String::new();
+                        let _ = reader.read_line(&mut crlf);
+                        replies.push(buf);
+                    }
+                }
+                Err(_) => continue, // timeout on this read, loop checks deadline
+            }
+        }
+
+        // UNSUB so the server stops delivering on this inbox.
+        write!(stream, "UNSUB 96\r\n", )?;
+        stream.flush()?;
+        Ok(replies)
+    }
+
+    /// Publish a reply to the given reply-to subject. Used by `swarm serve`
+    /// after handling an ask.
+    pub fn reply(&self, reply_to: &str, payload: &[u8]) -> Result<(), NatsError> {
+        self.publish_raw(reply_to, payload)
+    }
+
+    /// Open a long-running subscription on `subject` and return a stream of
+    /// messages. The caller drives the loop and decides when to stop.
+    /// Note: while the subscription is open, calls to other methods on this
+    /// transport will block (single-mutex stream); a serving agent should run
+    /// on a dedicated SwarmTransport instance.
+    pub fn subscribe(&self, subject: &str) -> Result<NatsSubscription, NatsError> {
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+        // Use a sid we know isn't reused (95 is unique-ish; the existing
+        // ensure_js_stream uses 99, get_all_phases uses 98, request uses 97/96).
+        write!(stream, "SUB {} 95\r\n", subject)?;
+        stream.flush()?;
+        // Long-poll: clear any read timeout on the subscription's clone.
+        let stream_clone = stream.try_clone().map_err(NatsError::Io)?;
+        stream_clone.set_read_timeout(None)?;
+        Ok(NatsSubscription {
+            reader: BufReader::new(stream_clone),
+            sid: "95".to_string(),
+        })
+    }
 }
 
 /// A subscription that yields NATS messages.
@@ -1291,6 +1449,10 @@ pub struct NatsSubscription {
 pub struct NatsMessage {
     pub subject: String,
     pub payload: Vec<u8>,
+    /// Reply-to subject if the publisher set one (NATS request/reply pattern).
+    /// Present when the wire MSG line had 5 parts instead of 4. Used by
+    /// `kannaka swarm serve` to respond to inbound `KANNAKA.ask.*` messages.
+    pub reply_to: Option<String>,
 }
 
 impl NatsMessage {
@@ -1322,9 +1484,17 @@ impl NatsSubscription {
                         continue;
                     }
                     if trimmed.starts_with("MSG ") {
+                        // Wire format:
+                        //   4 parts: MSG <subject> <sid> <#bytes>
+                        //   5 parts: MSG <subject> <sid> <reply-to> <#bytes>
                         let parts: Vec<&str> = trimmed.split_whitespace().collect();
                         if parts.len() >= 4 {
                             let subject = parts[1].to_string();
+                            let reply_to = if parts.len() >= 5 {
+                                Some(parts[3].to_string())
+                            } else {
+                                None
+                            };
                             let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
                             let mut payload = vec![0u8; nbytes];
                             if self.reader.read_exact(&mut payload).is_err() {
@@ -1332,7 +1502,7 @@ impl NatsSubscription {
                             }
                             let mut crlf = String::new();
                             let _ = self.reader.read_line(&mut crlf);
-                            return Some(NatsMessage { subject, payload });
+                            return Some(NatsMessage { subject, payload, reply_to });
                         }
                     }
                 }
