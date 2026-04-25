@@ -660,6 +660,138 @@ impl SwarmTransport {
         self.publish_raw("KANNAKA.dreams", &payload)
     }
 
+    /// Publish a single cluster exemplar to KANNAKA.exemplar.<agent>.<cluster>.
+    /// ADR-0026 Phase 2 — distilled-memory broadcast for cross-agent absorption.
+    /// Uses one subject per (agent, cluster) so JetStream's
+    /// max_msgs_per_subject=1 retention keeps the latest snapshot.
+    pub fn publish_exemplar(
+        &self,
+        agent_id: &str,
+        cluster_id: u32,
+        payload: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.exemplar.{}.{}", agent_id, cluster_id);
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Ensure the KANNAKA_EXEMPLARS JetStream stream exists.
+    /// ADR-0026 Phase 2.
+    pub fn ensure_exemplar_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_EXEMPLARS",
+            serde_json::json!({
+                "name": "KANNAKA_EXEMPLARS",
+                "subjects": ["KANNAKA.exemplar.>"],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "max_age": 604800_000_000_000i64, // 7 days in nanoseconds
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Pull all stored exemplar messages for one agent (or "*" for all
+    /// agents) by iterating the JetStream stream. Returns one payload per
+    /// (agent, cluster) — the most recent due to max_msgs_per_subject=1.
+    /// ADR-0026 Phase 2.
+    pub fn get_exemplars(
+        &self,
+        from_agent: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, NatsError> {
+        let subject_filter = match from_agent {
+            Some(a) => format!("KANNAKA.exemplar.{}.>", a),
+            None => "KANNAKA.exemplar.>".to_string(),
+        };
+        let mut stream = self.stream.lock().map_err(|e| {
+            NatsError::Protocol(format!("lock poisoned: {}", e))
+        })?;
+
+        let inbox = new_inbox("exempl");
+        write!(stream, "SUB {} 94\r\n", inbox)?;
+        stream.flush()?;
+
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        let mut next_seq: u64 = 1;
+
+        loop {
+            let req = serde_json::json!({
+                "seq": next_seq,
+                "next_by_subj": subject_filter,
+            });
+            let req_bytes = req.to_string();
+            let get_subject = format!("$JS.API.STREAM.MSG.GET.KANNAKA_EXEMPLARS");
+            write!(stream, "PUB {} {} {}\r\n", get_subject, inbox, req_bytes.len())?;
+            stream.write_all(req_bytes.as_bytes())?;
+            write!(stream, "\r\n")?;
+            stream.flush()?;
+
+            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+            let mut got_any = false;
+            let mut got_end = false;
+
+            for _ in 0..6 {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("PING") {
+                            write!(stream, "PONG\r\n")?;
+                            stream.flush()?;
+                            continue;
+                        }
+                        if trimmed.starts_with("MSG ") {
+                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                            let nbytes: usize = parts.last()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            let mut buf = vec![0u8; nbytes];
+                            reader.read_exact(&mut buf)?;
+                            let mut crlf = String::new();
+                            let _ = reader.read_line(&mut crlf);
+                            // The response is a JS API envelope. The actual
+                            // payload is inside `message.data` (base64).
+                            if let Ok(env) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                                if env.get("error").is_some() {
+                                    got_end = true;
+                                    break;
+                                }
+                                if let Some(msg) = env.get("message") {
+                                    if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
+                                        // base64 decode
+                                        if let Ok(decoded) = base64_decode(data_b64) {
+                                            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&decoded) {
+                                                out.push(v);
+                                                got_any = true;
+                                            }
+                                        }
+                                    }
+                                    if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
+                                        next_seq = seq + 1;
+                                    } else {
+                                        got_end = true;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    Err(_) => { got_end = true; break; }
+                }
+            }
+            if got_end || !got_any {
+                break;
+            }
+            if out.len() > 500 { break; } // safety cap
+        }
+        Ok(out)
+    }
+
     /// Publish a new memory to KANNAKA.memory.new for cross-agent synchronization.
     ///
     /// The payload is a JSON object wrapping the HyperMemory plus the source agent_id

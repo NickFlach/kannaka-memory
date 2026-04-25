@@ -1298,6 +1298,12 @@ fn main() {
                         Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
                     }
                 }
+                "exemplars" => {
+                    handle_swarm_exemplars(&mut sys, &cfg, &args[command_start..]);
+                }
+                "absorb" => {
+                    handle_swarm_absorb(&mut sys, &cfg, &args[command_start..]);
+                }
                 "serve" => {
                     // ADR-0026 Phase 1: long-running listener for KANNAKA.ask.<id>
                     // and KANNAKA.ask.broadcast. Each inbound message is dispatched
@@ -3137,6 +3143,221 @@ fn _handle_serve_msg(
 fn handle_swarm_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("swarm serve requires the 'nats' feature");
     process::exit(1);
+}
+
+// ── ADR-0026 Phase 2: Exemplar broadcast (#72) ─────────────────────────────
+
+#[cfg(feature = "nats")]
+fn handle_swarm_exemplars(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    // Usage:
+    //   kannaka swarm exemplars publish [--top-k N] [--agent-id ID]
+    //   kannaka swarm exemplars list [--from <agent_id>] [--top-k N]
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("publish");
+    let mut top_k: usize = 20;
+    let mut agent_id_override: Option<String> = None;
+    let mut from: Option<String> = None;
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(20); i += 2; }
+            "--agent-id" if i + 1 < args.len() => { agent_id_override = Some(args[i + 1].clone()); i += 2; }
+            "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+
+    match sub {
+        "publish" => {
+            // Make sure the stream exists. Best-effort — JetStream may already
+            // have it from a previous run.
+            let _ = transport.ensure_exemplar_stream();
+
+            let report = sys.observe();
+            let mut clusters = report.clusters.clusters.clone();
+            // Order by mean_amplitude desc — strongest exemplars first.
+            clusters.sort_by(|a, b| b.mean_amplitude.partial_cmp(&a.mean_amplitude)
+                .unwrap_or(std::cmp::Ordering::Equal));
+            let mut published = 0;
+            for c in clusters.iter().take(top_k) {
+                let payload = serde_json::json!({
+                    "agent_id": agent_id,
+                    "cluster_id": c.cluster_id,
+                    "size": c.size,
+                    "content": c.exemplar_content,
+                    "exemplar_id": c.exemplar_id,
+                    "amplitude": c.mean_amplitude,
+                    "frequency": c.mean_frequency,
+                    "phase": c.mean_phase,
+                    "modality": c.dominant_modality,
+                    "theme": c.theme,
+                    "semantic_summary": c.semantic_summary,
+                    "coherence": c.coherence,
+                    "xi_diversity": c.xi_diversity,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                });
+                match transport.publish_exemplar(&agent_id, c.cluster_id, &payload) {
+                    Ok(()) => published += 1,
+                    Err(e) => eprintln!("[exemplars] cluster {} publish failed: {e}", c.cluster_id),
+                }
+            }
+            println!("Published {} exemplars from {} (top-{} by amplitude)", published, agent_id, top_k);
+        }
+        "list" => {
+            let exemplars = match transport.get_exemplars(from.as_deref()) {
+                Ok(e) => e,
+                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+            };
+            let limit = if top_k == 0 { exemplars.len() } else { top_k };
+            for (i, e) in exemplars.iter().take(limit).enumerate() {
+                let agent = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let cid = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("(no content)");
+                let preview: String = content.chars().take(120).collect();
+                println!("[{:3}] {} c{:<3} amp={:.3}", i + 1, agent, cid, amp);
+                println!("       {}", preview);
+            }
+            println!();
+            println!("Total: {} exemplars", exemplars.len());
+        }
+        other => {
+            eprintln!("Usage: kannaka swarm exemplars <publish|list> [--top-k N] [--from <agent>]");
+            eprintln!("Unknown subcommand: {other}");
+            process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_exemplars(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm exemplars requires the 'nats' feature"); process::exit(1);
+}
+
+#[cfg(feature = "nats")]
+fn handle_swarm_absorb(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    // Usage: kannaka swarm absorb [--from <agent>] [--top-k N] [--threshold X] [--dry-run]
+    let mut from: Option<String> = None;
+    let mut top_k: usize = 50;
+    let mut threshold: f32 = 0.4;
+    let mut dry_run = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
+            "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(50); i += 2; }
+            "--threshold" if i + 1 < args.len() => { threshold = args[i + 1].parse().unwrap_or(0.4); i += 2; }
+            "--dry-run" => { dry_run = true; i += 1; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+
+    let exemplars = match transport.get_exemplars(from.as_deref()) {
+        Ok(e) => e,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+    if exemplars.is_empty() {
+        eprintln!("No exemplars found in stream{}.",
+            from.as_ref().map(|f| format!(" (from {})", f)).unwrap_or_default());
+        eprintln!("Hint: a peer must run 'kannaka swarm exemplars publish' first.");
+        return;
+    }
+    eprintln!("Found {} exemplars; evaluating against local medium (threshold {:.2})...",
+        exemplars.len(), threshold);
+
+    let mut absorbed = 0usize;
+    let mut skipped_threshold = 0usize;
+    let mut skipped_self = 0usize;
+    let my_id = &cfg.agent.id;
+
+    // Sort by amplitude descending so we evaluate the strongest first.
+    let mut ordered = exemplars;
+    ordered.sort_by(|a, b| {
+        let aa = a.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let bb = b.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for e in ordered.iter().take(top_k) {
+        let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+        if source == my_id {
+            skipped_self += 1;
+            continue;
+        }
+        let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if content.is_empty() { continue; }
+
+        // Resonance against the local medium — compute by recall-and-check
+        // the top result's strength.
+        let res = sys.recall(content, 1).ok().unwrap_or_default();
+        let top_strength = res.first().map(|r| r.strength).unwrap_or(0.0);
+        let cluster_id = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        if top_strength >= threshold {
+            // Already in our medium with high resonance — skip duplicates.
+            // (The match suggests we've heard this before.)
+            eprintln!("  ✓ already resonant: {} c{} strength={:.3} — skip",
+                source, cluster_id, top_strength);
+            continue;
+        }
+
+        // Low local resonance + non-trivial content = candidate for absorption.
+        // The absorb threshold inverts: we want NEW material that's distinctive,
+        // not already present. But we also don't want noise. Use a min content
+        // length + presence of metadata as a soft filter.
+        let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if amp < 0.3 || content.len() < 30 {
+            skipped_threshold += 1;
+            continue;
+        }
+
+        eprintln!("  + new wavefront: {} c{} amp={:.3} resonance={:.3}",
+            source, cluster_id, amp, top_strength);
+        eprintln!("      \"{}\"", &content.chars().take(120).collect::<String>());
+
+        if !dry_run {
+            // Tag with provenance so we can identify swarm-origin memories later.
+            let category = format!("swarm:{}", source);
+            match sys.remember_with_category(content, &category, amp.min(0.95)) {
+                Ok(id) => { eprintln!("      remembered as {}", id); absorbed += 1; }
+                Err(e) => { eprintln!("      remember failed: {e}"); }
+            }
+        } else {
+            absorbed += 1;
+        }
+    }
+
+    println!();
+    println!("Absorb complete{}:", if dry_run { " (DRY RUN)" } else { "" });
+    println!("  absorbed:    {}", absorbed);
+    println!("  skipped (threshold/length): {}", skipped_threshold);
+    println!("  skipped (self-origin):      {}", skipped_self);
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_absorb(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm absorb requires the 'nats' feature"); process::exit(1);
 }
 
 fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
