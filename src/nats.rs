@@ -694,10 +694,8 @@ impl SwarmTransport {
         )
     }
 
-    /// Pull all stored exemplar messages for one agent (or "*" for all
-    /// agents) by iterating the JetStream stream. Returns one payload per
-    /// (agent, cluster) — the most recent due to max_msgs_per_subject=1.
-    /// ADR-0026 Phase 2.
+    /// Pull all stored exemplar messages for one agent (or all agents).
+    /// Convenience wrapper around `get_stream_messages`.
     pub fn get_exemplars(
         &self,
         from_agent: Option<&str>,
@@ -706,11 +704,22 @@ impl SwarmTransport {
             Some(a) => format!("KANNAKA.exemplar.{}.>", a),
             None => "KANNAKA.exemplar.>".to_string(),
         };
+        self.get_stream_messages("KANNAKA_EXEMPLARS", &subject_filter, 500)
+    }
+
+    /// Generic helper: iterate a JetStream stream's messages by subject filter.
+    /// Used by both exemplars and presence (and future ADR-0026 streams).
+    pub fn get_stream_messages(
+        &self,
+        stream_name: &str,
+        subject_filter: &str,
+        max_messages: usize,
+    ) -> Result<Vec<serde_json::Value>, NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
             NatsError::Protocol(format!("lock poisoned: {}", e))
         })?;
 
-        let inbox = new_inbox("exempl");
+        let inbox = new_inbox("strmget");
         write!(stream, "SUB {} 94\r\n", inbox)?;
         stream.flush()?;
 
@@ -723,7 +732,7 @@ impl SwarmTransport {
                 "next_by_subj": subject_filter,
             });
             let req_bytes = req.to_string();
-            let get_subject = format!("$JS.API.STREAM.MSG.GET.KANNAKA_EXEMPLARS");
+            let get_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
             write!(stream, "PUB {} {} {}\r\n", get_subject, inbox, req_bytes.len())?;
             stream.write_all(req_bytes.as_bytes())?;
             write!(stream, "\r\n")?;
@@ -787,9 +796,45 @@ impl SwarmTransport {
             if got_end || !got_any {
                 break;
             }
-            if out.len() > 500 { break; } // safety cap
+            if out.len() >= max_messages { break; }
         }
         Ok(out)
+    }
+
+    /// Publish this agent's presence record. ADR-0026 Phase 5.
+    /// Subject: `KANNAKA.presence.<agent_id>` — JetStream KANNAKA_PRESENCE
+    /// keeps only the latest per agent (max_msgs_per_subject=1).
+    pub fn publish_presence(
+        &self,
+        agent_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.presence.{}", agent_id);
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Ensure the KANNAKA_PRESENCE stream exists. ADR-0026 Phase 5.
+    pub fn ensure_presence_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_PRESENCE",
+            serde_json::json!({
+                "name": "KANNAKA_PRESENCE",
+                "subjects": ["KANNAKA.presence.>"],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "max_age": 86_400_000_000_000i64, // 24h — agents who haven't refreshed are gone
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Read all current presence records.
+    pub fn get_presence(&self) -> Result<Vec<serde_json::Value>, NatsError> {
+        self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)
     }
 
     /// Publish a new memory to KANNAKA.memory.new for cross-agent synchronization.

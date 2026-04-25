@@ -1020,6 +1020,23 @@ fn main() {
                             } else {
                                 println!("[nats] Published initial phase \u{03b8}={:.3}", phase.phase);
                             }
+                            // Presence record (ADR-0026 Phase 5). Best-effort.
+                            let _ = transport.ensure_presence_stream();
+                            let presence = serde_json::json!({
+                                "agent_id": my_agent_id,
+                                "display_name": display_name,
+                                "capabilities": {
+                                    "ask": true, "dream": true,
+                                    "exemplar_broadcast": true, "absorb": true,
+                                },
+                                "joined_at": chrono::Utc::now().to_rfc3339(),
+                                "last_seen": chrono::Utc::now().to_rfc3339(),
+                                "memory_count": sys.engine.store.count(),
+                                "kannaka_version": kannaka_memory::config::VERSION,
+                            });
+                            if let Err(e) = transport.publish_presence(&my_agent_id, &presence) {
+                                eprintln!("[nats] Warning: presence publish failed: {}", e);
+                            }
                             println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
                         }
                         None => {
@@ -1300,6 +1317,9 @@ fn main() {
                 }
                 "exemplars" => {
                     handle_swarm_exemplars(&mut sys, &cfg, &args[command_start..]);
+                }
+                "peers" => {
+                    handle_swarm_peers(&cfg, &args[command_start..]);
                 }
                 "absorb" => {
                     handle_swarm_absorb(&mut sys, &cfg, &args[command_start..]);
@@ -3358,6 +3378,65 @@ fn handle_swarm_absorb(
 #[cfg(not(feature = "nats"))]
 fn handle_swarm_absorb(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("swarm absorb requires the 'nats' feature"); process::exit(1);
+}
+
+#[cfg(feature = "nats")]
+fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
+    // Usage: kannaka swarm peers [--json]
+    let mut as_json = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => { as_json = true; i += 1; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+    let peers = match transport.get_presence() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("get_presence: {e}"); process::exit(1); }
+    };
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&peers).unwrap_or_default());
+        return;
+    }
+    if peers.is_empty() {
+        println!("No peers in the swarm yet.");
+        println!("Hint: peers register via 'kannaka swarm join'.");
+        return;
+    }
+    println!();
+    println!("{:<24} {:<8} {:<8} {}", "AGENT", "MEMS", "VERSION", "CAPABILITIES");
+    println!("{}", "─".repeat(78));
+    for p in &peers {
+        let agent = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let display = p.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+        let mem = p.get("memory_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let ver = p.get("kannaka_version").and_then(|v| v.as_str()).unwrap_or("?");
+        let caps_obj = p.get("capabilities").and_then(|v| v.as_object());
+        let caps = caps_obj
+            .map(|o| o.iter().filter_map(|(k, v)| if v.as_bool() == Some(true) { Some(k.as_str()) } else { None })
+                .collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        let label = if display.is_empty() || display == agent {
+            agent.to_string()
+        } else {
+            format!("{} ({})", display, agent)
+        };
+        println!("{:<24} {:<8} {:<8} {}", label, mem, ver, caps);
+    }
+    println!();
+    println!("{} peers", peers.len());
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_peers(_: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm peers requires the 'nats' feature"); process::exit(1);
 }
 
 fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
