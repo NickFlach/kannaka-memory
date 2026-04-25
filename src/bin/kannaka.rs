@@ -1321,6 +1321,9 @@ fn main() {
                 "peers" => {
                     handle_swarm_peers(&cfg, &args[command_start..]);
                 }
+                "autoabsorb" => {
+                    handle_swarm_autoabsorb(&mut sys, &cfg, &args[command_start..]);
+                }
                 "absorb" => {
                     handle_swarm_absorb(&mut sys, &cfg, &args[command_start..]);
                 }
@@ -3437,6 +3440,190 @@ fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
 #[cfg(not(feature = "nats"))]
 fn handle_swarm_peers(_: &KannakaConfig, _: &[String]) {
     eprintln!("swarm peers requires the 'nats' feature"); process::exit(1);
+}
+
+// ── ADR-0026 Phase 6: Auto-absorb (#76) ─────────────────────────────────────
+// One-shot autonomous sweep with rate limits + anti-drift safety. Designed
+// to be invoked from cron every 30 min (or in-process loop) so a node that
+// stays online keeps absorbing fresh exemplars from peers.
+
+#[cfg(feature = "nats")]
+fn handle_swarm_autoabsorb(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::time::Duration;
+    // Usage: kannaka swarm autoabsorb [--threshold 0.4] [--per-source-daily-cap N] [--dry-run]
+    let mut threshold: f32 = 0.4;
+    let mut per_source_daily_cap: usize = 10;
+    let mut dry_run = false;
+    let mut max_phi_drop: f32 = 0.05;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--threshold" if i + 1 < args.len() => { threshold = args[i + 1].parse().unwrap_or(0.4); i += 2; }
+            "--per-source-daily-cap" if i + 1 < args.len() => { per_source_daily_cap = args[i + 1].parse().unwrap_or(10); i += 2; }
+            "--max-phi-drop" if i + 1 < args.len() => { max_phi_drop = args[i + 1].parse().unwrap_or(0.05); i += 2; }
+            "--dry-run" => { dry_run = true; i += 1; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+
+    let state_path = data_dir().join("autoabsorb-state.json");
+    let mut state = AutoabsorbState::load(&state_path);
+    let today_key = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    state.purge_old_days(&today_key);
+
+    // Anti-drift safety: compare current Phi to the snapshot the last sweep
+    // recorded. If Phi has dropped > max_phi_drop, pause autonomous absorb.
+    let current_phi = sys.assess().phi;
+    if let Some(prev) = state.last_phi {
+        let drop = prev - current_phi;
+        if drop > max_phi_drop {
+            eprintln!("[autoabsorb] PAUSED: Phi dropped {:.3} → {:.3} (Δ={:.3} > {:.3})",
+                prev, current_phi, drop, max_phi_drop);
+            eprintln!("[autoabsorb] manual intervention required: review recent absorbs in {}", state_path.display());
+            return;
+        }
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[autoabsorb] nats: {e}"); return; }
+    };
+    let _ = Duration::from_secs(0); // keep import live in case timeout helpers come back
+
+    let exemplars = match transport.get_exemplars(None) {
+        Ok(e) => e,
+        Err(e) => { eprintln!("[autoabsorb] get_exemplars: {e}"); return; }
+    };
+    if exemplars.is_empty() {
+        eprintln!("[autoabsorb] no exemplars in stream — nothing to do");
+        state.last_phi = Some(current_phi);
+        let _ = state.save(&state_path);
+        return;
+    }
+
+    // Sort by amplitude desc.
+    let mut ordered = exemplars;
+    ordered.sort_by(|a, b| {
+        let aa = a.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let bb = b.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let my_id = &cfg.agent.id;
+    let mut absorbed = 0usize;
+    let mut skipped_self = 0usize;
+    let mut skipped_capped = 0usize;
+    let mut skipped_resonant = 0usize;
+    let mut skipped_low = 0usize;
+
+    for e in ordered.iter() {
+        let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+        if source == *my_id { skipped_self += 1; continue; }
+
+        // Per-source per-day cap.
+        let used_today = state.absorbs_today(&today_key, &source);
+        if used_today >= per_source_daily_cap {
+            skipped_capped += 1;
+            continue;
+        }
+
+        let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if content.is_empty() || content.len() < 30 { skipped_low += 1; continue; }
+        let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if amp < 0.3 { skipped_low += 1; continue; }
+
+        // Local resonance — only absorb if the medium DOESN'T already have
+        // strong resonance (i.e. it's novel material).
+        let res = sys.recall(content, 1).ok().unwrap_or_default();
+        let top_strength = res.first().map(|r| r.strength).unwrap_or(0.0);
+        if top_strength >= threshold {
+            skipped_resonant += 1;
+            continue;
+        }
+
+        let cluster_id = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
+        eprintln!("[autoabsorb] absorb from {} c{} amp={:.3} resonance={:.3}", source, cluster_id, amp, top_strength);
+
+        if !dry_run {
+            let category = format!("swarm:{}", source);
+            match sys.remember_with_category(content, &category, amp.min(0.95)) {
+                Ok(id) => {
+                    eprintln!("[autoabsorb]   remembered {}", id);
+                    state.record_absorb(&today_key, &source);
+                    absorbed += 1;
+                }
+                Err(e) => eprintln!("[autoabsorb]   remember failed: {e}"),
+            }
+        } else {
+            absorbed += 1;
+            state.record_absorb(&today_key, &source);
+        }
+    }
+
+    state.last_phi = Some(current_phi);
+    if let Err(e) = state.save(&state_path) {
+        eprintln!("[autoabsorb] state save failed: {e}");
+    }
+
+    eprintln!("[autoabsorb] sweep complete{}: +{} absorbed (self={} capped={} resonant={} low={})",
+        if dry_run { " (DRY RUN)" } else { "" },
+        absorbed, skipped_self, skipped_capped, skipped_resonant, skipped_low);
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_swarm_autoabsorb(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm autoabsorb requires the 'nats' feature"); process::exit(1);
+}
+
+/// State persisted across autoabsorb sweeps. Tracks daily absorb counts per
+/// source agent and the last seen local Phi (for anti-drift detection).
+#[cfg(feature = "nats")]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct AutoabsorbState {
+    /// `{ "2026-04-25": { "kannaka-prime": 3, "agent-x": 1 } }`
+    absorbs_per_day: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    last_phi: Option<f32>,
+}
+
+#[cfg(feature = "nats")]
+impl AutoabsorbState {
+    fn load(path: &std::path::Path) -> Self {
+        if !path.exists() { return Self::default(); }
+        match std::fs::read_to_string(path) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+    fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, bytes)
+    }
+    fn absorbs_today(&self, day: &str, source: &str) -> usize {
+        self.absorbs_per_day.get(day).and_then(|d| d.get(source)).copied().unwrap_or(0)
+    }
+    fn record_absorb(&mut self, day: &str, source: &str) {
+        let day_map = self.absorbs_per_day.entry(day.to_string()).or_default();
+        *day_map.entry(source.to_string()).or_insert(0) += 1;
+    }
+    /// Drop entries older than 7 days so the state file doesn't grow unbounded.
+    fn purge_old_days(&mut self, today: &str) {
+        let cutoff = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
+            .ok()
+            .map(|d| d - chrono::Duration::days(7))
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "1970-01-01".to_string());
+        self.absorbs_per_day.retain(|k, _| k.as_str() >= cutoff.as_str());
+    }
 }
 
 fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
