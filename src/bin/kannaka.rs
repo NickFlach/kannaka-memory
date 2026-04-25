@@ -3110,11 +3110,27 @@ fn _handle_serve_msg(
         Ok(r) => serde_json::json!({ "from": cfg.agent.id, "text": r.text }),
         Err(e) => serde_json::json!({ "from": cfg.agent.id, "error": format!("{e}") }),
     };
-    if let Err(e) = transport.reply(&reply_to, reply.to_string().as_bytes()) {
-        eprintln!("[swarm serve] reply failed: {e}");
-    } else {
-        eprintln!("[swarm serve] replied on {reply_to}");
+
+    // Heavy ask calls take 3–5 min. The original NATS connection has been
+    // idle that whole time and the server typically closes it on PING
+    // timeout. Open a fresh connection just to send the reply so the
+    // long-running subscription on the parent transport doesn't have to
+    // be reconnected on every request.
+    let nats_url_for_reply = std::env::var("KANNAKA_NATS_URL")
+        .unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
+    let reply_payload = reply.to_string();
+    let reply_result = match kannaka_memory::nats::SwarmTransport::connect(&nats_url_for_reply) {
+        Ok(fresh) => fresh.reply(&reply_to, reply_payload.as_bytes()),
+        Err(e) => Err(e),
+    };
+    // Fall back to the original transport if the fresh connect failed.
+    if reply_result.is_err() {
+        if let Err(e2) = transport.reply(&reply_to, reply_payload.as_bytes()) {
+            eprintln!("[swarm serve] reply failed (fresh + fallback): {e2}");
+            return;
+        }
     }
+    eprintln!("[swarm serve] replied on {reply_to}");
 }
 
 #[cfg(not(feature = "nats"))]
