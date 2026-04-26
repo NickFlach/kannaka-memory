@@ -474,39 +474,53 @@ impl App {
             return;
         }
 
-        // Parse the command
-        if input.starts_with("remember ") {
-            let text = input.strip_prefix("remember ").unwrap().trim();
+        // Strip an optional leading '/' so `/recall x` and `recall x` both work.
+        // The slash is the conventional escape-hatch for "this is a command,
+        // not chat" — useful when the user wants to be unambiguous.
+        let cmd_input: &str = input.strip_prefix('/').unwrap_or(&input);
+
+        // Parse the command. If nothing matches, default to chat — the agent
+        // can call recall/remember/observe tools itself when the conversation
+        // warrants. The TUI is a chat surface first, command surface second.
+        if cmd_input.starts_with("remember ") {
+            let text = cmd_input.strip_prefix("remember ").unwrap().trim();
             let text = text.trim_matches('"').to_string();
             self.execute_remember(&text);
-        } else if input.starts_with("recall ") {
-            let query = input.strip_prefix("recall ").unwrap().trim();
+        } else if cmd_input.starts_with("recall ") {
+            let query = cmd_input.strip_prefix("recall ").unwrap().trim();
             let query = query.trim_matches('"').to_string();
             self.execute_recall(&query);
-        } else if input.starts_with("forget ") {
-            let id = input.strip_prefix("forget ").unwrap().trim().to_string();
+        } else if cmd_input.starts_with("forget ") {
+            let id = cmd_input.strip_prefix("forget ").unwrap().trim().to_string();
             self.execute_forget(&id);
-        } else if input == "dream" || input.starts_with("dream ") {
+        } else if cmd_input == "dream" || cmd_input.starts_with("dream ") {
             self.execute_dream();
-        } else if input == "status" || input == "observe" {
+        } else if cmd_input == "status" || cmd_input == "observe" {
             self.load_status();
             self.load_observe();
             self.messages.push(Message {
                 role: Role::System,
                 content: "Status refreshed.".to_string(),
             });
-        } else if input == "help" || input == "?" {
+        } else if cmd_input == "help" || cmd_input == "?" {
             self.show_help = true;
-        } else if input == "quit" || input == "exit" || input == "q" {
+        } else if cmd_input == "quit" || cmd_input == "exit" || cmd_input == "q" {
             self.should_quit = true;
         } else {
-            self.messages.push(Message {
-                role: Role::Error,
-                content: format!(
-                    "Unknown command: '{}'. Try: remember, recall, forget, dream, status, help",
-                    input
-                ),
-            });
+            // Default: route to chat. Switch to the Chat tab so the user sees
+            // the conversation, and let the agent decide which tools to call.
+            if let Some(idx) = self.tabs.iter().position(|t| *t == "Chat") {
+                self.active_tab = idx;
+            }
+            if self.chat_pending.is_some() {
+                // A previous turn is still in flight — drop the new prompt
+                // rather than queueing (avoids surprising long-tail behavior).
+                self.input.clear();
+                self.cursor_pos = 0;
+                return;
+            }
+            self.chat_messages.push(ChatLine { who: ChatWho::User, text: input.clone() });
+            self.spawn_chat_turn(input);
         }
 
         self.input.clear();

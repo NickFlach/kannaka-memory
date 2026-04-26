@@ -411,30 +411,157 @@ impl AnthropicClient {
     }
 }
 
-/// Pull `model` + `api_key` out of config/env and build a client.
-/// Falls back to `ANTHROPIC_API_KEY` if `llm.api_key` is empty.
-pub fn client_from_config(cfg: &KannakaConfig) -> Result<AnthropicClient, AgentError> {
-    match cfg.llm.provider.as_str() {
-        "anthropic" => {}
-        "none" | "" => return Err(AgentError::NotConfigured),
-        other => return Err(AgentError::UnsupportedProvider(other.to_string())),
+// ---------------------------------------------------------------------------
+// Ollama client — local-model fallback for users without an Anthropic key.
+//
+// Single round-trip via /api/chat. Tool calls aren't supported here yet:
+// most local models call tools inconsistently, and the fix would be a
+// schema translation layer that's its own project. For now we send the
+// system prompt + history, get text back, and shape the response so
+// `parse_content` and `run_tool_loop` accept it identically to Anthropic.
+// The tool-loop will see `stop_reason="end_turn"` and exit on the first
+// pass — which matches `ask --no-tools` behavior. Plain chat works.
+// ---------------------------------------------------------------------------
+
+pub struct OllamaClient {
+    base_url: String,
+    model: String,
+}
+
+impl OllamaClient {
+    pub fn new(base_url: String, model: String) -> Self {
+        // Trim trailing slash so we can join with `/api/chat` cleanly.
+        let base_url = base_url.trim_end_matches('/').to_string();
+        Self { base_url, model }
     }
 
-    let api_key = if !cfg.llm.api_key.is_empty() {
-        cfg.llm.api_key.clone()
-    } else {
-        std::env::var("ANTHROPIC_API_KEY")
-            .or_else(|_| std::env::var("KANNAKA_LLM_API_KEY"))
-            .map_err(|_| AgentError::MissingApiKey)?
-    };
+    pub fn send(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<Value, AgentError> {
+        // Build Ollama-shaped messages. Anthropic's Message uses content
+        // blocks; Ollama wants a flat string. We collect any text blocks
+        // from the assistant turn and concat. Tool blocks are dropped —
+        // the assistant won't have produced them on this provider, but a
+        // mixed-history (e.g. switching providers mid-session) shouldn't
+        // crash; just skip tool turns.
+        let mut ollama_messages: Vec<Value> = Vec::new();
+        ollama_messages.push(json!({"role": "system", "content": system}));
+        for m in messages {
+            // Flatten content blocks into a single string. Text + tool-result
+            // bodies are kept (so tool output participates in the conversation
+            // even though Ollama can't generate tool_use blocks); other block
+            // types are dropped.
+            let text = m.content.iter().filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            if text.trim().is_empty() { continue; }
+            ollama_messages.push(json!({"role": m.role, "content": text}));
+        }
 
-    let model = if cfg.llm.model.is_empty() {
-        DEFAULT_ANTHROPIC_MODEL.to_string()
-    } else {
-        cfg.llm.model.clone()
-    };
+        let body = json!({
+            "model": self.model,
+            "messages": ollama_messages,
+            "stream": false,
+            // Bound output to keep latency tolerable on local models. Same
+            // budget as Anthropic so prompts compose identically.
+            "options": { "num_predict": DEFAULT_MAX_TOKENS as i64 },
+        });
 
-    Ok(AnthropicClient::new(api_key, model))
+        let url = format!("{}/api/chat", self.base_url);
+        let resp = ureq::post(&url)
+            .set("content-type", "application/json")
+            .timeout(Duration::from_secs(300))
+            .send_json(body);
+
+        let v: Value = match resp {
+            Ok(r) => r.into_json().map_err(|e| AgentError::Malformed(e.to_string()))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(AgentError::Api { status: code, body });
+            }
+            Err(e) => return Err(AgentError::Http(e.to_string())),
+        };
+
+        // Ollama /api/chat returns { message: { role, content }, done, ... }.
+        // Reshape into the Anthropic content-block envelope the rest of the
+        // agent expects so `parse_content` + `run_tool_loop` work as-is.
+        let content_text = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(json!({
+            "content": [{"type": "text", "text": content_text}],
+            "stop_reason": "end_turn",
+        }))
+    }
+}
+
+/// Provider-agnostic LLM client. The agent codebase uses this everywhere
+/// instead of `AnthropicClient` so adding a third provider later is a
+/// single match-arm.
+pub enum LlmClient {
+    Anthropic(AnthropicClient),
+    Ollama(OllamaClient),
+}
+
+impl LlmClient {
+    pub fn send(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<Value, AgentError> {
+        match self {
+            LlmClient::Anthropic(c) => c.send(system, messages, tools),
+            LlmClient::Ollama(c) => c.send(system, messages, tools),
+        }
+    }
+}
+
+/// Pull `model` + `api_key` out of config/env and build a client.
+/// Falls back to `ANTHROPIC_API_KEY` if `llm.api_key` is empty.
+pub fn client_from_config(cfg: &KannakaConfig) -> Result<LlmClient, AgentError> {
+    match cfg.llm.provider.as_str() {
+        "anthropic" => {
+            let api_key = if !cfg.llm.api_key.is_empty() {
+                cfg.llm.api_key.clone()
+            } else {
+                std::env::var("ANTHROPIC_API_KEY")
+                    .or_else(|_| std::env::var("KANNAKA_LLM_API_KEY"))
+                    .map_err(|_| AgentError::MissingApiKey)?
+            };
+            let model = if cfg.llm.model.is_empty() {
+                DEFAULT_ANTHROPIC_MODEL.to_string()
+            } else {
+                cfg.llm.model.clone()
+            };
+            Ok(LlmClient::Anthropic(AnthropicClient::new(api_key, model)))
+        }
+        "ollama" => {
+            // Ollama is the local-model path. base_url defaults to the
+            // standard 11434 port; model defaults to llama3.
+            let base_url = if cfg.llm.base_url.is_empty() {
+                "http://localhost:11434".to_string()
+            } else {
+                cfg.llm.base_url.clone()
+            };
+            let model = if cfg.llm.model.is_empty() {
+                "llama3".to_string()
+            } else {
+                cfg.llm.model.clone()
+            };
+            Ok(LlmClient::Ollama(OllamaClient::new(base_url, model)))
+        }
+        "none" | "" => Err(AgentError::NotConfigured),
+        other => Err(AgentError::UnsupportedProvider(other.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +733,7 @@ pub fn chat_turn(
 /// Core loop: send → if tool_use blocks → dispatch → append tool_result → repeat.
 fn run_tool_loop(
     sys: &mut KannakaMemorySystem,
-    client: &AnthropicClient,
+    client: &LlmClient,
     system: &str,
     history: &mut Vec<Message>,
 ) -> Result<TurnResult, AgentError> {

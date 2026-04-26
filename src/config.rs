@@ -865,6 +865,42 @@ pub fn run_init_wizard(overrides: InitOverrides) -> Result<KannakaConfig, String
                 let v = line.trim().to_string();
                 if v.is_empty() { "http://localhost:11434".into() } else { v }
             };
+            // Pre-flight: verify the Ollama server is reachable AND has the
+            // chosen model installed. Surfacing this at onboarding time means
+            // the user sees a concrete error here rather than a confusing
+            // "spawn failed" later when the TUI tries to chat.
+            if !non_interactive {
+                eprintln!("  Checking Ollama at {} ...", config.llm.base_url);
+                let tags_url = format!("{}/api/tags", config.llm.base_url.trim_end_matches('/'));
+                match ureq::get(&tags_url).timeout(std::time::Duration::from_secs(3)).call() {
+                    Ok(resp) => {
+                        let body: serde_json::Value = resp.into_json().unwrap_or_else(|_| serde_json::json!({}));
+                        let names: Vec<String> = body.get("models")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|m| {
+                                m.get("name").and_then(|n| n.as_str()).map(|s| {
+                                    s.split(':').next().unwrap_or(s).to_string()
+                                })
+                            }).collect())
+                            .unwrap_or_default();
+                        let chosen_root = config.llm.model.split(':').next().unwrap_or(&config.llm.model);
+                        if names.iter().any(|n| n == chosen_root) {
+                            eprintln!("  ✓ Ollama running, model '{}' is installed.", config.llm.model);
+                        } else {
+                            eprintln!("  ! Ollama is running but model '{}' is NOT installed.", config.llm.model);
+                            eprintln!("    Pull it with:  ollama pull {}", config.llm.model);
+                            if !names.is_empty() {
+                                eprintln!("    Or pick one of: {}", names.join(", "));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!("  ! Could not reach Ollama at {} — is `ollama serve` running?", config.llm.base_url);
+                        eprintln!("    Install:  https://ollama.com/download");
+                        eprintln!("    Then:     ollama pull {}", config.llm.model);
+                    }
+                }
+            }
         }
         4 => {
             config.llm.provider = "custom".into();
