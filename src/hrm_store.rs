@@ -350,6 +350,13 @@ impl HrmStore {
         // Always compute from the flat medium — it's synced from right hemisphere on load
         self.medium.consciousness_metrics()
     }
+
+    /// Cheap, stale-tolerant lookup. See Medium::try_cached_consciousness_metrics.
+    /// Used by the agent's system_prompt path so a `kannaka ask` doesn't
+    /// pay an O(n³) eigendecomp on every call.
+    pub fn try_cached_consciousness_metrics(&self) -> Option<crate::medium::ConsciousnessMetrics> {
+        self.medium.try_cached_consciousness_metrics()
+    }
     
     /// Find memories associated with a given memory through emergent coherence.
     pub fn find_associated(&self, id: Uuid, top_k: usize) -> Vec<(Uuid, f32)> {
@@ -676,6 +683,10 @@ impl MediumBackend for HrmStore {
     fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {
         // Use the public method which handles chiral vs flat medium
         Self::consciousness_metrics(self)
+    }
+
+    fn try_cached_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
+        Self::try_cached_consciousness_metrics(self)
     }
 
     fn dream_native(

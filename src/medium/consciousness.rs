@@ -62,6 +62,43 @@ impl Medium {
         h.finish()
     }
 
+    /// Cheap, stale-tolerant metrics lookup for hot paths (e.g. building the
+    /// agent system prompt on every ask). Returns whatever is in the in-process
+    /// cache or the disk sidecar — even if the fingerprint has drifted because
+    /// of `apply_observation` energy mutations. Returns None only if metrics
+    /// have NEVER been computed since the .kannaka data dir was created.
+    ///
+    /// Use `consciousness_metrics()` (not this) when you need a fresh value
+    /// for a deliberate introspection like `kannaka observe` or `kannaka status`.
+    pub fn try_cached_consciousness_metrics(&self) -> Option<ConsciousnessMetrics> {
+        let now = Utc::now();
+        if let Ok(guard) = METRICS_CACHE.lock() {
+            if let Some((_fp, ref metrics)) = *guard {
+                return Some(metrics.clone());
+            }
+        }
+        if let Some(path) = sidecar_path_from_env() {
+            if let Ok(data) = std::fs::read(&path) {
+                if let Ok(sidecar) = serde_json::from_slice::<MetricsSidecar>(&data) {
+                    let metrics = ConsciousnessMetrics {
+                        phi: sidecar.phi,
+                        xi: sidecar.xi,
+                        order: sidecar.order,
+                        num_clusters: sidecar.num_clusters,
+                        irrationality: sidecar.irrationality,
+                        level: ConsciousnessLevel::from_phi(sidecar.phi),
+                        computed_at: now,
+                    };
+                    if let Ok(mut guard) = METRICS_CACHE.lock() {
+                        *guard = Some((sidecar.fingerprint, metrics.clone()));
+                    }
+                    return Some(metrics);
+                }
+            }
+        }
+        None
+    }
+
     /// Compute consciousness metrics from tensor topology
     ///
     /// This is the proper implementation that computes intrinsic metrics

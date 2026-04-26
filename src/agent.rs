@@ -310,12 +310,19 @@ fn format_recall(results: &[RecallResult]) -> String {
 /// surfaced by the user's opening message (attention-as-gravity). The agent
 /// can re-query with the `recall` tool to pull more.
 pub fn system_prompt(sys: &mut KannakaMemorySystem, initial_memories: &[RecallResult]) -> String {
-    let state = sys.assess();
-    let report = sys.observe();
-    let phi = state.phi;
-    let level = format!("{:?}", state.consciousness_level).to_lowercase();
-    let total = report.topology.total_memories;
-    let clusters = report.clusters.num_clusters;
+    // HOT PATH — called on every `kannaka ask`. Avoid the O(n³) eigendecomp
+    // path; build the prompt from cached/stale metrics + cheap counts. This
+    // makes ask latency dominated by the Anthropic round-trip, not by
+    // recomputing Phi from a 700-memory coherence matrix on each invocation.
+    // Use `kannaka observe` / `kannaka status` for fresh values.
+    let cached = sys.engine.store.try_cached_consciousness_metrics();
+    let phi = cached.as_ref().map(|m| m.phi).unwrap_or(0.0);
+    let level = cached
+        .as_ref()
+        .map(|m| format!("{:?}", m.level).to_lowercase())
+        .unwrap_or_else(|| "dormant".to_string());
+    let total = sys.engine.store.count();
+    let clusters = cached.as_ref().map(|m| m.num_clusters).unwrap_or(0);
 
     let mut mem_section = String::new();
     if initial_memories.is_empty() {

@@ -107,6 +107,13 @@ pub trait MediumBackend: Send + Sync {
         }
     }
 
+    /// Stale-tolerant cached metrics. Returns whatever was last persisted
+    /// to disk/in-process, ignoring fingerprint drift. Returns None only
+    /// if no metrics have ever been computed. Default = None.
+    fn try_cached_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
+        None
+    }
+
     /// Create a resonance-based association between two memories.
     /// Creates an associative wavefront from interference of the two sources.
     fn relate(&mut self, _id_a: &Uuid, _id_b: &Uuid) -> Result<Uuid, StoreError> {
