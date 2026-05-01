@@ -217,9 +217,10 @@ Use the CLI wrapper in `scripts/`:
 ./scripts/kannaka.sh export                            # Export all memories as JSON
 ./scripts/kannaka.sh announce                          # Publish agent status to Flux
 
-# Sensory perception (requires --features audio / glyph builds)
-./scripts/kannaka.sh hear recording.mp3                # Store audio as sensory memory
-./scripts/kannaka.sh see diagram.png                   # Store file as glyph memory
+# Sensory perception (audio is now always-on; glyph still requires --features glyph)
+./scripts/kannaka.sh hear recording.mp3                                      # local file
+./scripts/kannaka.sh hear https://radio.ninja-portal.com/stream --secs 30    # URL or stream
+./scripts/kannaka.sh see diagram.png                                         # glyph memory
 
 # Dolt backend (requires --features dolt build)
 ./scripts/kannaka.sh --dolt remember "versioned fact"
@@ -336,9 +337,10 @@ export FLUX_AGENT_ID=kannaka-01
 
 ### Store Sensory Memories
 ```bash
-# Requires --features audio build
-./scripts/kannaka.sh hear /path/to/recording.ogg
-# → Remembered: <uuid>  Duration: 8.3s  Tempo: 92 BPM  ...
+# Audio support is now always-on (no feature flag needed).
+./scripts/kannaka.sh hear /path/to/recording.ogg                              # local file
+./scripts/kannaka.sh hear https://radio.ninja-portal.com/stream --secs 30     # URL or stream
+# → Heard: <uuid>  Duration: 18.7s  Tempo: 117 BPM  RMS: 0.19  Centroid: 1.24 kHz  Tags: 117bpm, loud, tonal
 
 # Requires --features glyph build
 ./scripts/kannaka.sh see /path/to/diagram.png
@@ -553,7 +555,7 @@ connecting audio, glyph, and textual memories through shared geometric structure
 - Dolt is optional: without it, memories persist as binary snapshots in `KANNAKA_DATA_DIR`
 - Flux publishing is opt-in: set `FLUX_URL` to enable; omit it for fully local operation
 - `collective` feature flag requires rayon and enables parallel dreaming (ADR-0012)
-- Sensory commands (`hear`, `see`) require their respective feature flags at build time
+- `hear` is always available (audio is unconditional); `see` (glyph) still requires `--features glyph` at build time
 - All 15 MCP tools are available if you run `kannaka-mcp` directly — see references/mcp-tools.md
 - Full Dolt SQL / DoltHub operations: see references/dolt.md
 - Collective memory architecture and wave merge rules: ADR-0011

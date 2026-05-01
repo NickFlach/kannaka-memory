@@ -3,7 +3,7 @@
 Kannaka is a wave-interference memory system for AI agents, powered by the Holographic Resonance Medium (HRM). The medium *is* the computation. Memories exist as waves in superposition where recall is resonance, skip links emerge from phase alignment, and dreaming acts as energy-minimizing annealing. 
 
 **Binary location**: `C:\Users\nickf\Source\kannaka-memory\target\release\kannaka.exe`
-(fallback: build with `cargo build --release --features "glyph,collective,audio"`)
+(fallback: build with `cargo build --release` — audio support is now always-on; the `audio` feature flag is no-op)
 
 **Project root**: `C:\Users\nickf\Source\kannaka-memory`
 
@@ -54,9 +54,22 @@ Kannaka agents can link their holographic fields via NATS to form a resonant swa
 | `invariant` | Show δ-invariant memory clusters |
 | `audit-modality`| Retroactive modality audit of all memories (NCS Phase 1.3) |
 | `modality-axes` | Show modality axis divergence matrix (NCS Phase 2.1) |
-| `hear <file>` | Store an audio file as a sensory memory |
+| `hear <file-or-url> [--secs N]` | Absorb audio as a sensory memory. Accepts a local file path **or** an http(s) URL — Icecast streams and CDN MP3s included. URLs are sampled for `--secs` seconds (default 30, max 600). Prints tempo, RMS, spectral centroid, and feature tags. |
 | `export-json` | Export all memories as JSON |
 | `import-json` | Import memories from JSON |
+
+### Perception Examples
+
+```bash
+# File: absorb a local track
+kannaka hear ./track.mp3
+
+# URL: download a finite file, perceive it
+kannaka hear https://example.com/song.mp3
+
+# Stream: sample 60s of an Icecast feed
+kannaka hear https://radio.ninja-portal.com/stream --secs 60
+```
 
 ## Environment Variables
 
