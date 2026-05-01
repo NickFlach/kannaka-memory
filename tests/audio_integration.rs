@@ -1,7 +1,5 @@
 //! Integration tests for the audio perception module.
 
-#![cfg(feature = "audio")]
-
 use std::f32::consts::PI;
 
 use kannaka_memory::codebook::Codebook;

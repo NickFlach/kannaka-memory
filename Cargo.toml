@@ -28,10 +28,11 @@ crossterm = { version = "0.28", optional = true }
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core", features = ["serde"] }
 
-# Audio perception (optional)
-symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"], optional = true }
-rustfft = { version = "6", optional = true }
-rubato = { version = "0.15", optional = true }
+# Audio perception — always built. The "hear" command is a first-class
+# capability of the constellation, not an opt-in.
+symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"] }
+rustfft = "6"
+rubato = "0.15"
 
 # Video perception (optional) — uses ffmpeg subprocess, no C deps
 image = { version = "0.25", optional = true }
@@ -42,7 +43,9 @@ image = { version = "0.25", optional = true }
 default = ["hrm", "nats"]
 nats = []
 # mcp removed — CLI is the canonical interface
-audio = ["symphonia", "rustfft", "rubato"]
+# audio feature retained as a no-op alias so external Cargo.toml entries
+# specifying features = ["audio"] still build. Audio support is now always on.
+audio = []
 video = ["image"]
 glyph = []
 collective = []  # rayon is now unconditional

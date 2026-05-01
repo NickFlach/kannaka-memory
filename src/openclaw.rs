@@ -737,7 +737,6 @@ impl KannakaMemorySystem {
     ///
     /// Decodes the audio, extracts perceptual features, projects through
     /// the audio codebook, and stores via HRM-native absorb.
-    #[cfg(feature = "audio")]
     pub fn store_audio(&mut self, path: &std::path::Path) -> Result<(Uuid, crate::ear::AudioFeatures), SystemError> {
         use crate::ear::AudioPipeline;
 

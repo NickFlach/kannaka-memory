@@ -907,18 +907,56 @@ fn main() {
 
             println!("{{\"imported\": {}, \"skipped\": {}, \"errors\": {}, \"total_input\": {}}}", imported, skipped, errors, memories.len());
         }
-        #[cfg(feature = "audio")]
         "hear" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka hear <audio-file>");
+                eprintln!("Usage: kannaka hear <audio-file-or-url>");
+                eprintln!("  File:   kannaka hear ./song.mp3");
+                eprintln!("  URL:    kannaka hear https://radio.ninja-portal.com/stream");
+                eprintln!("  Stream URLs are sampled for ~30s (default; cap with --secs N).");
                 process::exit(1);
             }
-            let path = std::path::PathBuf::from(&args[command_start + 1]);
-            if !path.exists() {
-                eprintln!("File not found: {}", path.display());
-                process::exit(1);
+            let target = &args[command_start + 1];
+
+            // Optional --secs N for stream sampling cap. Default 30s ≈ 480 KB
+            // at 128 kbps MP3, plenty of audio to extract tempo/centroid/rms.
+            let mut secs: u64 = 30;
+            let mut i = command_start + 2;
+            while i < args.len() {
+                if args[i] == "--secs" && i + 1 < args.len() {
+                    if let Ok(n) = args[i + 1].parse::<u64>() {
+                        secs = n.max(1).min(600);
+                    }
+                    i += 2;
+                } else { i += 1; }
             }
-            match sys.store_audio(&path) {
+
+            let is_url = target.starts_with("http://") || target.starts_with("https://");
+            let mut tmp_holder: Option<std::path::PathBuf> = None;
+            let path: std::path::PathBuf = if is_url {
+                match fetch_audio_to_temp(target, secs) {
+                    Ok(p) => { tmp_holder = Some(p.clone()); p }
+                    Err(e) => {
+                        eprintln!("Error fetching {}: {}", target, e);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                let p = std::path::PathBuf::from(target);
+                if !p.exists() {
+                    eprintln!("File not found: {}", p.display());
+                    process::exit(1);
+                }
+                p
+            };
+
+            let result = sys.store_audio(&path);
+
+            // Clean up temp file regardless of outcome.
+            if let Some(tmp) = tmp_holder {
+                let _ = std::fs::remove_file(&tmp);
+            }
+
+            match result {
                 Ok((id, features)) => {
                     println!("Heard: {id}");
                     println!("  Duration: {:.1}s", features.duration_secs);
@@ -4216,5 +4254,61 @@ fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: 
     println!("    Skipped:  {} (duplicates)", skipped);
     println!("    Errors:   {}", errors);
     println!("    Total:    {} in file", memories.len());
+}
+
+/// Fetch up to `secs` seconds of audio from a URL into a temp file. Used by
+/// `kannaka hear <url>`. The byte cap is computed assuming 192 kbps so we
+/// always have enough data for the requested wall-clock duration even on
+/// streams that bursted MP3 frames slightly faster than realtime. The
+/// download stops when either the cap is reached or the connection ends
+/// (whichever comes first), which is what we want for both finite files
+/// and infinite Icecast streams.
+fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, String> {
+    use std::io::{Read, Write};
+
+    // 192 kbps × secs ÷ 8 bits = 24 KB/s × secs. Add a 64 KB cushion for
+    // mp3 sync words / variable frame sizing.
+    let max_bytes: u64 = (24 * 1024) * secs + 64 * 1024;
+
+    // Pick a temp path with a hint at extension based on the URL ending so
+    // symphonia's probe has a fighting chance for streams without
+    // Content-Type headers (Icecast usually sets it; CDNs sometimes don't).
+    let ext = if url.contains(".wav") { "wav" }
+        else if url.contains(".flac") { "flac" }
+        else if url.contains(".m4a") || url.contains(".aac") { "m4a" }
+        else { "mp3" };
+    let tmp = std::env::temp_dir().join(format!(
+        "kannaka-hear-{}.{}",
+        uuid::Uuid::new_v4().simple(),
+        ext,
+    ));
+
+    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(15)).call()
+        .map_err(|e| format!("HTTP error: {}", e))?;
+    let mut reader = resp.into_reader();
+
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("temp file create: {}", e))?;
+    let mut buf = [0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    while total < max_bytes {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e) => return Err(format!("read: {}", e)),
+        };
+        let want = std::cmp::min(n as u64, max_bytes - total) as usize;
+        file.write_all(&buf[..want]).map_err(|e| format!("write: {}", e))?;
+        total += want as u64;
+        if want < n { break; } // hit the cap mid-buffer
+    }
+    file.flush().ok();
+    drop(file);
+    if total < 1024 {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("got only {} bytes; URL did not yield audio", total));
+    }
+    Ok(tmp)
 }
 

@@ -31,7 +31,6 @@ pub mod glyph_bridge;
 
 // MCP server removed — CLI is the canonical interface, OpenClaw extension wraps it
 
-#[cfg(feature = "audio")]
 pub mod ear;
 
 #[cfg(feature = "video")]
