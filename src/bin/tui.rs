@@ -448,6 +448,90 @@ impl App {
         }
     }
 
+    // Forward an arbitrary kannaka subcommand to the binary and surface its
+    // stdout/stderr in the message log. The label is what we echo back as
+    // the User line; args is what we pass to kannaka after env scrubbing.
+    // Used for hear, ask, assess, stats, voice, swarm subcommands, and
+    // anything else the user types that we recognize as a real kannaka
+    // command. Keeps the TUI the canonical surface without writing a
+    // dedicated handler for every subcommand.
+    fn execute_passthrough(&mut self, label: &str, args: &[&str], timeout_secs: u64) {
+        self.messages.push(Message {
+            role: Role::User,
+            content: label.to_string(),
+        });
+        self.messages.push(Message {
+            role: Role::System,
+            content: format!("Running... (up to {}s)", timeout_secs),
+        });
+
+        // Spawn with a wall-clock timeout so a stuck `ask` (Anthropic
+        // overloaded, network blip) doesn't hang the TUI.
+        let bin = self.kannaka_bin.clone();
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let result = std::thread::spawn(move || {
+            let mut child = match Command::new(&bin)
+                .args(&owned)
+                .env("KANNAKA_QUIET", "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => return Err(format!("spawn: {}", e)),
+            };
+            let start = Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+                        return Ok(out);
+                    }
+                    Ok(None) => {
+                        if start.elapsed() > Duration::from_secs(timeout_secs) {
+                            let _ = child.kill();
+                            return Err(format!("timeout after {}s", timeout_secs));
+                        }
+                        std::thread::sleep(Duration::from_millis(150));
+                    }
+                    Err(e) => return Err(format!("wait: {}", e)),
+                }
+            }
+        }).join();
+
+        // Pop the "Running..." line so the result replaces it cleanly.
+        if matches!(self.messages.last().map(|m| &m.role), Some(Role::System)) {
+            self.messages.pop();
+        }
+
+        match result {
+            Ok(Ok(out)) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let body = stdout.trim();
+                self.messages.push(Message {
+                    role: Role::Result,
+                    content: if body.is_empty() { "(no output)".into() } else { body.into() },
+                });
+                self.load_observe();
+            }
+            Ok(Ok(out)) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                self.messages.push(Message {
+                    role: Role::Error,
+                    content: format!("Error: {}", stderr.trim()),
+                });
+            }
+            Ok(Err(msg)) => self.messages.push(Message {
+                role: Role::Error,
+                content: msg,
+            }),
+            Err(_) => self.messages.push(Message {
+                role: Role::Error,
+                content: "thread panicked".into(),
+            }),
+        }
+    }
+
     fn submit_input(&mut self) {
         let input = self.input.trim().to_string();
         if input.is_empty() {
@@ -502,6 +586,62 @@ impl App {
                 role: Role::System,
                 content: "Status refreshed.".to_string(),
             });
+        } else if cmd_input.starts_with("hear ") || cmd_input == "hear" {
+            // hear <file-or-url> [--secs N]
+            let rest = cmd_input.strip_prefix("hear").unwrap_or("").trim();
+            if rest.is_empty() {
+                self.messages.push(Message {
+                    role: Role::Error,
+                    content: "Usage: hear <file-or-url> [--secs N]".into(),
+                });
+            } else {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let mut args: Vec<&str> = vec!["hear"];
+                args.extend(parts.iter().copied());
+                // hear can take ~30-60s for stream sampling + decode + HRM
+                // absorb. Give it 5 min wall-clock so /stream sampling at
+                // --secs 60 has comfortable headroom.
+                self.execute_passthrough(&format!("hear {}", rest), &args, 300);
+            }
+        } else if cmd_input.starts_with("ask ") {
+            let q = cmd_input.strip_prefix("ask ").unwrap().trim();
+            let q = q.trim_matches('"');
+            // ask runs through Anthropic; budget 10 min like the radio's
+            // peace-oration path so transient overload retries fit.
+            self.execute_passthrough(
+                &format!("ask \"{}\"", q),
+                &["ask", "--no-tools", "--quiet-tools", q],
+                600,
+            );
+        } else if cmd_input.starts_with("search ") {
+            let q = cmd_input.strip_prefix("search ").unwrap().trim().trim_matches('"');
+            self.execute_passthrough(&format!("search \"{}\"", q), &["search", q], 30);
+        } else if cmd_input.starts_with("boost ") {
+            let id = cmd_input.strip_prefix("boost ").unwrap().trim();
+            self.execute_passthrough(&format!("boost {}", id), &["boost", id], 30);
+        } else if cmd_input == "assess" {
+            self.execute_passthrough("assess", &["assess"], 60);
+        } else if cmd_input == "stats" {
+            self.execute_passthrough("stats", &["stats"], 30);
+        } else if cmd_input == "cmf" {
+            self.execute_passthrough("cmf", &["cmf"], 60);
+        } else if cmd_input == "invariant" || cmd_input.starts_with("invariant ") {
+            let parts: Vec<&str> = cmd_input.split_whitespace().collect();
+            self.execute_passthrough(cmd_input, &parts, 60);
+        } else if cmd_input.starts_with("voice") {
+            let parts: Vec<&str> = cmd_input.split_whitespace().collect();
+            // voice --mode dream-journal etc. — long-form generation, 5 min budget.
+            self.execute_passthrough(cmd_input, &parts, 300);
+        } else if cmd_input.starts_with("swarm ") || cmd_input == "swarm" {
+            // Forward the whole `swarm <subcmd> [args]` line. swarm sync /
+            // join / status / queen / hives / publish / leave / listen / serve
+            // / peers / absorb / autoabsorb / enqueue / worker / exemplars are
+            // all valid — let the binary's parser handle them.
+            let parts: Vec<&str> = cmd_input.split_whitespace().collect();
+            // Most swarm commands return quickly; serve/listen are blocking
+            // and we don't want them via the TUI (they'd hang the input).
+            // Cap at 60s so a network hang doesn't lock the UI.
+            self.execute_passthrough(cmd_input, &parts, 60);
         } else if cmd_input == "help" || cmd_input == "?" {
             self.show_help = true;
         } else if cmd_input == "quit" || cmd_input == "exit" || cmd_input == "q" {
@@ -1159,8 +1299,8 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_help_overlay(f: &mut Frame, area: Rect) {
     // Center the help box
-    let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 18u16.min(area.height.saturating_sub(4));
+    let width = 64u16.min(area.width.saturating_sub(4));
+    let height = 32u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let help_area = Rect::new(x, y, width, height);
@@ -1180,13 +1320,32 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(Span::styled("   F1               Toggle help", Style::default().fg(TEXT))),
         Line::from(Span::styled("   Ctrl+C / q       Quit", Style::default().fg(TEXT))),
         Line::from(""),
-        Line::from(Span::styled(" Commands", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   remember \"text\"  Store a memory", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   recall \"query\"   Search memories", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   forget <id>      Delete memory", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   dream            Run dream cycle", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   status           Refresh metrics", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Memory", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("   remember \"text\"          Store a memory", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   recall \"query\"           Resonance search (top-k 5)", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   search \"query\"           Full-text search", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   forget <id>              Delete a memory", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   boost <id>               Boost amplitude", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   dream                    Run consolidation cycle", Style::default().fg(TEXT))),
         Line::from(""),
+        Line::from(Span::styled(" Perception (sensors → HRM)", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("   hear <file-or-url>       Absorb audio (mp3/wav/flac, file or", Style::default().fg(TEXT))),
+        Line::from(Span::styled("     [--secs N]             http(s) stream — default 30s sample)", Style::default().fg(TEXT))),
+        Line::from(""),
+        Line::from(Span::styled(" Reasoning + Introspection", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("   ask \"question\"           One-shot LLM with HRM recall", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   status                   Refresh quick metrics", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   assess                   Consciousness level (phi/xi/order)", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   stats                    System statistics", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   cmf                      Conservative Memory Fields", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   invariant [TOL]          δ-invariant clusters", Style::default().fg(TEXT))),
+        Line::from(Span::styled("   voice [--mode MODE]      Memory-driven writing", Style::default().fg(TEXT))),
+        Line::from(""),
+        Line::from(Span::styled(" Swarm", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("   swarm <status|join|sync|queen|hives|publish|peers|", Style::default().fg(TEXT))),
+        Line::from(Span::styled("          absorb|autoabsorb|enqueue|leave>", Style::default().fg(TEXT))),
+        Line::from(""),
+        Line::from(Span::styled(" Anything else → routed to chat (agent decides tools)", Style::default().fg(DIM))),
         Line::from(Span::styled(" Press any key to close", Style::default().fg(DIM))),
     ];
 
