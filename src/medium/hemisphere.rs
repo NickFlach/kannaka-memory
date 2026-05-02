@@ -355,9 +355,19 @@ impl Hemisphere {
             // 2. Apply eigenstructure-based annealing
             self.apply_eigenstructure_annealing(&eigenstructure, temperature);
 
-            // 3. Hallucination: create novel wavefronts from cross-cluster superposition
-            if cycle % 3 == 0 && temperature > 0.3 && self.count() < 2000 {
-                let hallucinated = self.generate_hallucinated_wavefronts(&eigenstructure, temperature);
+            // 3. Hallucination: create novel wavefronts from cross-cluster superposition.
+            //
+            // This is the chiral dream's hallucination gate (the actual code path
+            // when chiral perturbation is enabled). Old gate `cycle % 3 == 0` only
+            // fired once across a 3-cycle dream, and the `count < 2000` cap silently
+            // disabled hallucination on hemispheres past that size. Replaced with a
+            // budget that scales with hemisphere size (~1% growth per dream).
+            let hallucination_budget = (self.count() / 100).max(2);
+            if temperature > 0.3 && hallucinated_count < hallucination_budget {
+                let per_cycle = (hallucination_budget / cycles.max(1)).max(2);
+                let hallucinated = self.generate_hallucinated_wavefronts(
+                    &eigenstructure, temperature, per_cycle,
+                );
                 hallucinated_count += hallucinated;
             }
 
@@ -365,9 +375,13 @@ impl Hemisphere {
             let pruned = self.prune_low_energy_wavefronts(prune_threshold);
             dissolved_count += pruned;
 
-            // Count strengthened wavefronts (energy increased by any meaningful amount)
+            // Count strengthened wavefronts. Old absolute +0.01 threshold barely
+            // ever triggered on large hemispheres where per-wavefront energy is
+            // small — added a relative >5% increase clause as an OR.
             for i in 0..self.count().min(prev_energy.len()) {
-                if self.energy[i] > prev_energy[i] + 0.01 {
+                let prev = prev_energy[i];
+                let curr = self.energy[i];
+                if curr > prev + 0.01 || (prev > 1e-6 && curr > prev * 1.05) {
                     strengthened_count += 1;
                 }
             }
@@ -544,7 +558,12 @@ impl Hemisphere {
     }
 
     /// Generate hallucinated wavefronts by superposing patterns from different clusters.
-    fn generate_hallucinated_wavefronts(&mut self, eigenstructure: &EigenStructure, temperature: f32) -> usize {
+    fn generate_hallucinated_wavefronts(
+        &mut self,
+        eigenstructure: &EigenStructure,
+        temperature: f32,
+        max_per_call: usize,
+    ) -> usize {
         if self.count() < 4 || eigenstructure.dominant_cluster.len() < 2 {
             return 0;
         }
@@ -554,7 +573,9 @@ impl Hemisphere {
         }
 
         let mut hallucinated = 0;
-        let max_hallucinations = ((temperature * 3.0) as usize).min(2);
+        // Caller decides the absolute cap; temperature shrinks it on cooler cycles.
+        let temp_cap = ((temperature * 3.0) as usize).max(1);
+        let max_hallucinations = max_per_call.min(temp_cap);
 
         for _ in 0..max_hallucinations {
             let idx1 = eigenstructure.dominant_cluster[0];
