@@ -2952,6 +2952,24 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
                     eprintln!("  {mark} {}({})", tc.name, compact_input(&tc.input));
                 }
             }
+            // Hardening priority #6 — surface the silent-empty path. The
+            // 2026-05-02 outage: HRM grew past ~1000 wavefronts, the
+            // recall-laden system prompt blew Anthropic's input ceiling,
+            // the response had zero Text blocks, and we printed empty
+            // stdout + exited 0. Downstream consumers (radio's oration
+            // path) couldn't tell that from a successful empty-string
+            // generation. Now: surface the empty case explicitly so it
+            // can't hide.
+            if result.text.is_empty() {
+                eprintln!(
+                    "agent warning: empty response (no Text content blocks). \
+                    Likely causes: bloated HRM (>1000 memories) blew the \
+                    input ceiling, model returned only tool_use blocks \
+                    that weren't wired, or upstream truncation. \
+                    Check `kannaka observe` and consider `kannaka dream`."
+                );
+                process::exit(2);
+            }
             println!("{}", result.text);
         }
         Err(e) => {
