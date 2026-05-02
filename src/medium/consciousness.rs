@@ -25,6 +25,11 @@ lazy_static::lazy_static! {
 /// Disk sidecar for consciousness metrics — written after a cold compute,
 /// read on startup so subsequent `kannaka` invocations skip the expensive
 /// eigendecompositions entirely.
+///
+/// total_memories + level were added later so external consumers
+/// (push-nats.js, observatory cache-observe.sh) can read count + level
+/// without running the slow `kannaka observe` command. `default` on the
+/// new fields keeps old sidecars deserializable through one rebuild.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MetricsSidecar {
     fingerprint: u64,
@@ -33,6 +38,10 @@ struct MetricsSidecar {
     order: f32,
     num_clusters: usize,
     irrationality: f32,
+    #[serde(default)]
+    total_memories: usize,
+    #[serde(default)]
+    level: String,
 }
 
 fn sidecar_path_from_env() -> Option<std::path::PathBuf> {
@@ -190,6 +199,8 @@ impl Medium {
                 order: metrics.order,
                 num_clusters: metrics.num_clusters,
                 irrationality: metrics.irrationality,
+                total_memories: self.wavefront_count(),
+                level: format!("{:?}", metrics.level),
             };
             if let Ok(data) = serde_json::to_vec(&sidecar) {
                 let _ = std::fs::write(path, data);
