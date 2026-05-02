@@ -867,8 +867,12 @@ impl ConsolidationEngine {
                     mem.amplitude *= 1.0 - self.destructive_penalty * dt;
                     if mem.amplitude < self.prune_threshold {
                         mem.amplitude = 0.0; // soft-delete (ghost)
+                        // Count actual prune events (threshold crossings), not every
+                        // destructive-pair touch. Old code incremented unconditionally,
+                        // making `memories_pruned` insensitive to `prune_threshold` —
+                        // the OODA loop hit a wall on dream_efficiency because of this.
+                        count += 1;
                     }
-                    count += 1;
                 }
             }
         }
