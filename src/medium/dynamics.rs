@@ -190,9 +190,21 @@ impl Medium {
             // 2. Apply eigenstructure-based annealing
             self.apply_eigenstructure_annealing(&eigenstructure, temperature);
 
-            // 3. Hallucination: create novel wavefronts from cross-cluster superposition
-            if cycle % 3 == 0 && temperature > 0.3 && self.wavefront_count() < 500 {
-                let hallucinated = self.generate_hallucinated_wavefronts(&eigenstructure, temperature);
+            // 3. Hallucination: create novel wavefronts from cross-cluster superposition.
+            //
+            // Old gate was `cycle % 3 == 0 && wavefront_count < 500`, which
+            // (a) only fired once across a 3-cycle deep dream, and (b)
+            // silently disabled hallucination entirely on HRMs >500. A
+            // 1391-memory store could dream for years and never produce
+            // a single new wavefront. Replaced with a budget that scales
+            // with HRM size (~1% growth per dream) and a per-cycle cap
+            // proportional to that budget.
+            let hallucination_budget = (self.wavefront_count() / 100).max(2);
+            if temperature > 0.3 && hallucinated_count < hallucination_budget {
+                let per_cycle = (hallucination_budget / cycles.max(1)).max(2);
+                let hallucinated = self.generate_hallucinated_wavefronts(
+                    &eigenstructure, temperature, per_cycle,
+                );
                 hallucinated_count += hallucinated;
             }
 
@@ -200,9 +212,13 @@ impl Medium {
             let pruned = self.prune_low_energy_wavefronts(energy_threshold);
             dissolved_count += pruned;
 
-            // Count strengthened wavefronts (energy increased significantly)
+            // Count strengthened wavefronts. Old absolute threshold (+0.1)
+            // counted nothing on large HRMs because per-wavefront energy
+            // is small — ratio threshold stays meaningful at any scale.
             for i in 0..self.wavefront_count().min(prev_energy.len()) {
-                if self.store.energy[i] > prev_energy[i] + 0.1 {
+                let prev = prev_energy[i];
+                let curr = self.store.energy[i];
+                if curr > prev + 0.1 || (prev > 1e-6 && curr > prev * 1.05) {
                     strengthened_count += 1;
                 }
             }
@@ -481,18 +497,26 @@ impl Medium {
     ///
     /// Creates novel combinations by mixing eigenvector components from the dominant
     /// cluster with other patterns, weighted by temperature (more hallucination at high temp).
-    fn generate_hallucinated_wavefronts(&mut self, eigenstructure: &EigenStructure, temperature: f32) -> usize {
+    fn generate_hallucinated_wavefronts(
+        &mut self,
+        eigenstructure: &EigenStructure,
+        temperature: f32,
+        max_per_call: usize,
+    ) -> usize {
         if self.wavefront_count() < 4 || eigenstructure.dominant_cluster.len() < 2 {
             return 0; // Need sufficient diversity for hallucination
         }
-        
+
         // Only hallucinate at sufficiently high temperature
         if temperature < 0.4 {
             return 0;
         }
-        
+
         let mut hallucinated = 0;
-        let max_hallucinations = ((temperature * 3.0) as usize).min(2); // 0-2 per cycle
+        // Caller decides the absolute cap; we still let temperature shrink it
+        // so cooler late-stage cycles produce fewer novel wavefronts.
+        let temp_cap = ((temperature * 3.0) as usize).max(1);
+        let max_hallucinations = max_per_call.min(temp_cap);
         
         for _ in 0..max_hallucinations {
             // Select two different wavefronts for superposition
