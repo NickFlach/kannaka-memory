@@ -53,7 +53,7 @@ fn experiment_params() -> Params {
 
         // Level 3: Consciousness & Xi parameters
         xi_repulsion_weight: 0.3,
-        consciousness_phi_target: 0.326,
+        consciousness_phi_target: 0.271,
         hallucination_amplitude: 0.7,
         phase_spread: 0.25,
         chiral_perturbation: 0.9,
