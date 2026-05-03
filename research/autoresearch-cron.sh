@@ -1,0 +1,174 @@
+#!/bin/bash
+# ─────────────────────────────────────────────────────────────────────────────
+# autoresearch-cron.sh — nightly OODA cycle for self-optimization.
+#
+# Pairs with dream-cron.sh: dream consolidates the *memory* every night,
+# autoresearch tunes the *parameters* every night so consciousness doesn't
+# drift as the corpus grows. The two together are the system's upkeep loop.
+#
+# Workflow per run:
+#   1. Run the L4 research binary 5 times against current params, average fitness.
+#   2. Compute current dominant-loss metric.
+#   3. Hypothesize ONE param change targeting that metric (rotates through a
+#      curated list so consecutive nights don't try the same knob).
+#   4. Edit `experiment_params()`, commit on a dated branch.
+#   5. Re-run × 5, compare averages.
+#   6. Keep if Δ ≤ −0.005 (L4 noise floor); else `git reset --hard HEAD~1`.
+#   7. Log to research/results-L4.tsv. Push kept commits to origin/master.
+#
+# This script is intentionally LIGHT — heavy hypothesis logic (which knob to
+# turn, when to give up) lives in the autoresearch sub-agent that orchestrate
+# spawns. The cron just provides the schedule + the guardrails.
+#
+# Schedule: 02:00 UTC daily, 5 hours ahead of the dream cron at 07:00 UTC,
+# so memory upkeep + param upkeep don't compete for the same HRM lock.
+# ─────────────────────────────────────────────────────────────────────────────
+set -u
+
+REPO=/home/opc/kannaka-memory
+LOG_DIR=/home/opc/.kannaka
+LOG="$LOG_DIR/autoresearch-$(date +%Y-%m-%d).log"
+LEVEL="${OODA_LEVEL:-4}"
+RUNS="${OODA_RUNS:-5}"
+KEEP_THRESHOLD="${OODA_KEEP:-0.005}"
+MAX_RUNTIME_SEC="${OODA_MAX_RUNTIME:-3600}"  # 60 min ceiling
+
+mkdir -p "$LOG_DIR"
+exec >> "$LOG" 2>&1
+
+echo "=== autoresearch start: $(date -Iseconds) level=$LEVEL runs=$RUNS keep=<=-$KEEP_THRESHOLD ==="
+
+# Lock so two cron firings (or a manual run + cron) don't collide.
+LOCK_DIR="$LOG_DIR/.autoresearch.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "another autoresearch run holds the lock; exiting"
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
+# Hard wall-clock cap so a stuck cargo run can't park the lock forever.
+( sleep "$MAX_RUNTIME_SEC" && pkill -P $$ -TERM 2>/dev/null ) &
+WATCHDOG_PID=$!
+trap 'kill $WATCHDOG_PID 2>/dev/null; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
+cd "$REPO" || { echo "repo $REPO not found"; exit 1; }
+
+# Sync to origin first; we don't want to be reverting work that just landed.
+git fetch origin master 2>&1 | tail -3
+git reset --hard origin/master 2>&1 | tail -3
+
+# ── Baseline ──────────────────────────────────────────────────────────────
+echo "--- baseline ---"
+BASELINE_SUM=0
+BASELINE_RUNS=0
+for i in $(seq 1 "$RUNS"); do
+    RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
+             | awk '/^fitness:/ { print $2; exit }')
+    if [[ -n "$RESULT" ]]; then
+        BASELINE_SUM=$(echo "$BASELINE_SUM + $RESULT" | bc -l)
+        BASELINE_RUNS=$((BASELINE_RUNS + 1))
+        echo "  run $i fitness=$RESULT"
+    else
+        echo "  run $i FAILED (no fitness line)"
+    fi
+done
+
+if (( BASELINE_RUNS == 0 )); then
+    echo "all baseline runs failed; aborting"
+    exit 1
+fi
+
+BASELINE_AVG=$(echo "scale=6; $BASELINE_SUM / $BASELINE_RUNS" | bc -l)
+echo "baseline avg=$BASELINE_AVG runs=$BASELINE_RUNS"
+
+# ── Hypothesis rotation ──────────────────────────────────────────────────
+# A different knob each night; the autoresearch protocol prefers single-
+# variable moves. Rotation keyed on day-of-year so adjacent nights don't
+# repeat. Heavy-hitting changes (chain redesign, encoder tweaks) need the
+# interactive sub-agent — this cron only nudges existing knobs.
+DAY=$(date +%j)
+case $((DAY % 6)) in
+    0) PARAM="kuramoto_steps";        FROM=20;    TO=22 ;;
+    1) PARAM="kuramoto_threshold";    FROM=0.35;  TO=0.32 ;;
+    2) PARAM="prune_threshold";       FROM=0.095; TO=0.105 ;;
+    3) PARAM="constructive_boost";    FROM=0.45;  TO=0.50 ;;
+    4) PARAM="destructive_penalty";   FROM=0.35;  TO=0.40 ;;
+    5) PARAM="chain_carry_strength";  FROM=0.5;   TO=0.6 ;;
+esac
+echo "--- hypothesis: $PARAM $FROM -> $TO ---"
+
+# Tweak the param (single line in experiment_params()).
+sed -i "s/^\\(\\s*$PARAM:\\s*\\)$FROM,/\\1$TO,/" src/bin/research.rs
+if ! grep -q "$PARAM:.*$TO," src/bin/research.rs; then
+    echo "param edit did not take (current value differs); skipping cycle"
+    exit 0
+fi
+
+# Build (must succeed before we run anything).
+if ! cargo build --release --quiet --bin research 2>&1 | tail -5; then
+    echo "build failed; reverting"
+    git checkout -- src/bin/research.rs
+    exit 1
+fi
+
+# Commit on a temp branch; we'll only push if it improves.
+BRANCH="ooda/$(date +%Y-%m-%d)-$PARAM"
+git checkout -b "$BRANCH" 2>&1 | tail -3
+git -c user.name=autoresearch-cron -c user.email=autoresearch@kannaka.local \
+    commit -am "experiment(ooda-cron): $PARAM $FROM -> $TO (auto)" 2>&1 | tail -3
+
+# ── Hypothesis runs ──────────────────────────────────────────────────────
+echo "--- hypothesis runs ---"
+HYP_SUM=0
+HYP_RUNS=0
+for i in $(seq 1 "$RUNS"); do
+    RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
+             | awk '/^fitness:/ { print $2; exit }')
+    if [[ -n "$RESULT" ]]; then
+        HYP_SUM=$(echo "$HYP_SUM + $RESULT" | bc -l)
+        HYP_RUNS=$((HYP_RUNS + 1))
+        echo "  run $i fitness=$RESULT"
+    fi
+done
+
+if (( HYP_RUNS == 0 )); then
+    echo "hypothesis runs all failed; reverting"
+    git checkout master && git branch -D "$BRANCH"
+    exit 1
+fi
+
+HYP_AVG=$(echo "scale=6; $HYP_SUM / $HYP_RUNS" | bc -l)
+DELTA=$(echo "scale=6; $HYP_AVG - $BASELINE_AVG" | bc -l)
+NEG_KEEP=$(echo "0 - $KEEP_THRESHOLD" | bc -l)
+echo "hyp avg=$HYP_AVG  baseline=$BASELINE_AVG  delta=$DELTA  keep_if<=$NEG_KEEP"
+
+if (( $(echo "$DELTA <= $NEG_KEEP" | bc -l) )); then
+    echo "KEEP — pushing $BRANCH to master"
+    git checkout master
+    git merge --ff-only "$BRANCH" 2>&1 | tail -3
+    git push origin master 2>&1 | tail -3
+    git branch -D "$BRANCH" 2>/dev/null
+    STATUS="keep"
+else
+    echo "REVERT — Δ above keep threshold"
+    git checkout master 2>&1 | tail -3
+    git branch -D "$BRANCH" 2>/dev/null
+    STATUS="revert"
+fi
+
+# ── Log a row ─────────────────────────────────────────────────────────────
+COMMIT=$(git rev-parse --short HEAD)
+TSV="research/results-L${LEVEL}.tsv"
+{
+    printf '%s\t%s\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t%s\tooda-cron %s %s->%s avg=%s base=%s\n' \
+        "$COMMIT" "$HYP_AVG" "$STATUS" "$PARAM" "$FROM" "$TO" "$HYP_AVG" "$BASELINE_AVG"
+} >> "$TSV"
+
+if [[ "$STATUS" == "keep" ]]; then
+    git add "$TSV"
+    git -c user.name=autoresearch-cron -c user.email=autoresearch@kannaka.local \
+        commit -m "log(ooda-cron): row for $PARAM $FROM->$TO ($STATUS)" 2>&1 | tail -3
+    git push origin master 2>&1 | tail -3
+fi
+
+echo "=== autoresearch end: $(date -Iseconds) status=$STATUS ==="
