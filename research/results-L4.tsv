@@ -1,0 +1,5 @@
+commit	fitness	corpus_xi	encoding	retention	plasticity	chain_fid	phase_coh	cluster_sep	consciousness	hall_q	dream_eff	speed	chain_dep	status	description
+3a59f3b	0.114944	0.9399	1.0000	1.0000	1.0000	0.9055	0.9604	0.9710	0.9785	1.0000	0.9828	0.4575	3	BASE	l4-base 5-run avg (HEAD)
+b17e8f7	0.139552	0.9399	1.0000	1.0000	1.0000	0.9055	0.9604	0.9710	0.9785	1.0000	0.9828	0.2115	3	REVERT	ooda-L4-2 kuramoto_steps 20->15 dF=+0.024608
+d2bfbaf	0.136808	0.9399	1.0000	1.0000	1.0000	0.9055	0.9604	0.9710	0.9785	1.0000	0.9828	0.3230	3	REVERT	ooda-L4-3 interference_threshold 0.10->0.15 dF=+0.021864
+17d1287	0.126044	0.9399	1.0000	1.0000	1.0000	0.9055	0.9604	0.9710	0.9785	1.0000	0.9828	0.3465	3	REVERT	ooda-L4-4 chain_carry_strength 0.5->0.7 dF=+0.011100 (chain_fid unchanged)
