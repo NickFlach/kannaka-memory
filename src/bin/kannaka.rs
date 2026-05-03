@@ -434,6 +434,56 @@ fn main() {
                 }
             }
         }
+        "prune-prefix" => {
+            // Bulk-forget every memory whose `content` starts with one of the
+            // given prefixes. Single-binary-invocation (vs N round-trips of
+            // `kannaka forget <id>`) so we avoid reloading the HRM N times
+            // on the ARM box. Use --dry-run to see counts without deleting.
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka prune-prefix <PREFIX> [<PREFIX>...] [--dry-run]");
+                process::exit(1);
+            }
+            let mut dry_run = false;
+            let mut prefixes: Vec<String> = Vec::new();
+            for a in args[command_start + 1..].iter() {
+                if a == "--dry-run" { dry_run = true; }
+                else { prefixes.push(a.clone()); }
+            }
+            if prefixes.is_empty() {
+                eprintln!("prune-prefix: at least one prefix required");
+                process::exit(1);
+            }
+            // Phase 1: scan, collect IDs (immutable borrow scope).
+            let to_forget: Vec<uuid::Uuid> = {
+                let all = sys.engine.store.all_memories().unwrap_or_else(|e| {
+                    eprintln!("Error listing memories: {e}"); process::exit(1);
+                });
+                all.iter()
+                    .filter(|m| prefixes.iter().any(|p| m.content.starts_with(p.as_str())))
+                    .map(|m| m.id)
+                    .collect()
+            };
+            println!("[prune-prefix] {} match(es) across {} prefix(es){}",
+                to_forget.len(),
+                prefixes.len(),
+                if dry_run { " (dry-run, nothing deleted)" } else { "" });
+            if dry_run { return; }
+            // Phase 2: delete (mutable borrow).
+            let mut ok = 0usize;
+            let mut miss = 0usize;
+            for id in &to_forget {
+                match sys.forget(id) {
+                    Ok(true) => ok += 1,
+                    Ok(false) => miss += 1,
+                    Err(e) => eprintln!("forget {id}: {e}"),
+                }
+            }
+            if let Err(e) = sys.save() {
+                eprintln!("Failed to persist HRM after prune: {e}");
+                process::exit(1);
+            }
+            println!("[prune-prefix] forgotten={ok} not_found={miss}");
+        }
         "boost" => {
             if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka boost <id> [--amount N]");

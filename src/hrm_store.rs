@@ -658,12 +658,26 @@ impl MediumBackend for HrmStore {
 
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError> {
         if let Some(_) = self.memory_cache.remove(id) {
-            // Remove from medium
+            // Remove from flat medium (best-effort).
             if let Err(e) = self.medium.remove_wavefront(id) {
                 // Log error but don't fail - cache was already updated
                 eprintln!("Warning: Failed to remove wavefront from medium: {}", e);
             }
-            
+
+            // Remove from the chiral hemispheres if present. Without this the
+            // .hrm file (which serializes from `self.chiral`, not `self.medium`)
+            // re-hydrates the supposedly-forgotten wavefronts on the next load —
+            // making delete() a no-op as far as persistence is concerned.
+            if let Some(chiral) = &mut self.chiral {
+                chiral.right.remove_wavefront(id);
+                if let Some(&left_id) = chiral.right_to_left.get(id) {
+                    chiral.left.remove_wavefront(&left_id);
+                    chiral.left_to_right.remove(&left_id);
+                }
+                chiral.right_to_left.remove(id);
+                chiral.scales.remove(id);
+            }
+
             self.mark_dirty();
             Ok(true)
         } else {
