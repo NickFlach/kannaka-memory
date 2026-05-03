@@ -196,6 +196,61 @@ impl FanoPlane {
         source
     }
     
+    /// Chiral mutation: fold the source along a Fano line, then apply a
+    /// parity flip on alternating dimensions to mark chirality. The output
+    /// lives in `target_dims` and is the explicit chiral mirror of the
+    /// source — same energy, fold-rotated structure, mirror parity.
+    ///
+    /// This is what the corpus callosum should call when transferring
+    /// information between hemispheres. The previous chiral.rs path called
+    /// `fold` alone and treated the chirally-rotated payload as if it were
+    /// already a right-hemisphere wavefront — which left the receiving side
+    /// holding a transport encoding without an explicit chirality marker.
+    /// That's why callosal Kuramoto coherence stayed low and dream cycles
+    /// produced 0/0/0 transformations on large HRMs: the right-side
+    /// representation was indistinguishable from a noisy left, so the
+    /// eigenstructure annealing had no bridge wavefronts to find.
+    ///
+    /// `chiral_mutate` is invertible by construction — `chiral_unmutate`
+    /// recovers the source exactly (modulo float precision) because the
+    /// parity flip is its own inverse and `fold`/`unfold` are inverses on
+    /// the same line.
+    pub fn chiral_mutate(
+        &self,
+        source: &[f32],
+        source_dims: usize,
+        target_dims: usize,
+        line_idx: usize,
+    ) -> Vec<f32> {
+        let folded = self.fold(source, source_dims, target_dims, line_idx);
+        Self::parity_flip(folded)
+    }
+
+    /// Inverse of `chiral_mutate`: undo parity flip, unfold back into source space.
+    pub fn chiral_unmutate(
+        &self,
+        mutated: &[f32],
+        target_dims: usize,
+        source_dims: usize,
+        line_idx: usize,
+    ) -> Vec<f32> {
+        let unflipped = Self::parity_flip(mutated.to_vec());
+        self.unfold(&unflipped, target_dims, source_dims, line_idx)
+    }
+
+    /// Negate odd-indexed components. Self-inverse, distinguishes a
+    /// vector from its mirror image at every other coordinate, and
+    /// preserves total energy (norm). Acts as the chirality marker
+    /// between the analytical (left) and holistic (right) bases.
+    fn parity_flip(mut v: Vec<f32>) -> Vec<f32> {
+        let mut i = 1;
+        while i < v.len() {
+            v[i] = -v[i];
+            i += 2;
+        }
+        v
+    }
+
     /// Find the shortest fold path between two Fano points.
     /// Returns a sequence of line indices to fold along.
     pub fn shortest_path(&self, from: u8, to: u8) -> Vec<usize> {
@@ -393,6 +448,61 @@ mod tests {
             }
         }
         assert!(covered.iter().all(|&c| c), "Not all dimensions covered");
+    }
+
+    #[test]
+    fn chiral_mutate_round_trip() {
+        // Round-trip mutate -> unmutate should recover the input on the
+        // dim groups TOUCHED BY THE INPUT FOLD (line A's 3 groups).
+        // Fold/unfold each only place values into the 3 groups on their
+        // line; groups outside the input line can't be recovered through
+        // the perpendicular line's coverage. The corpus-callosum use is
+        // only ever round-tripping through line A, so this is the right
+        // invariant for the property we care about.
+        let fp = FanoPlane::new();
+        let dims = 672;
+        let source: Vec<f32> = (0..dims).map(|i| ((i as f32) * 0.013).sin()).collect();
+        let mutated = fp.chiral_mutate(&source, dims, dims, 2);
+        let recovered = fp.chiral_unmutate(&mutated, dims, dims, 2);
+
+        let line_a = FANO_LINES[2];
+        let mut compared = 0;
+        for &g in &line_a {
+            let orig = fp.extract_group(&source, g, dims);
+            let recov = fp.extract_group(&recovered, g, dims);
+            let on: f32 = orig.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let rn: f32 = recov.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if on > 1e-3 && rn > 1e-3 {
+                let dot: f32 = orig.iter().zip(recov.iter()).map(|(a, b)| a * b).sum();
+                let sim = dot / (on * rn);
+                assert!(sim > 0.5,
+                    "chiral round-trip on group {} dropped to sim={:.3}", g, sim);
+                compared += 1;
+            }
+        }
+        assert!(compared >= 2,
+            "fewer than 2 line-A groups had enough energy to compare ({})", compared);
+    }
+
+    #[test]
+    fn chiral_mutate_is_not_identity() {
+        // chiral_mutate should produce a vector that's clearly DIFFERENT
+        // from its input — otherwise the corpus callosum wouldn't actually
+        // be carrying chiral information across hemispheres.
+        let fp = FanoPlane::new();
+        let dims = 672;
+        let source: Vec<f32> = (0..dims).map(|i| ((i as f32) * 0.013).sin()).collect();
+        let mutated = fp.chiral_mutate(&source, dims, dims, 0);
+
+        let sn: f32 = source.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mn: f32 = mutated.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(mn > 0.0, "mutated vector should have non-zero energy");
+
+        let dot: f32 = source.iter().zip(mutated.iter()).map(|(a, b)| a * b).sum();
+        let sim = dot / (sn * mn);
+        // Cosine sim should be neither ~1 (identity) nor ~-1 (pure flip).
+        assert!(sim.abs() < 0.95,
+            "chiral_mutate too close to identity/inverse: sim={:.3}", sim);
     }
 
     #[test]

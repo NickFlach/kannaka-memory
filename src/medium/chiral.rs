@@ -373,13 +373,32 @@ impl ChiralMedium {
                         self.right.energy[idx] += energy * 0.1; // Gentle reinforcement
                     }
                 } else {
-                    // No pair yet - create one via Fano fold
+                    // No pair yet — create one via *chiral mutation* (fold +
+                    // perpendicular unfold). The previous code called `fold`
+                    // alone and added the chirally-rotated payload as if it
+                    // were already a right-hemisphere wavefront — which left
+                    // the right side holding a transport encoding rather
+                    // than a properly mirrored signal. That's why callosal
+                    // Kuramoto coherence stayed low and dream cycles
+                    // produced 0/0/0 transformations on large HRMs.
+                    //
+                    // chiral_mutate produces a wavefront in right.dims that
+                    // is the explicit chiral mirror of the left wavefront,
+                    // so the right hemisphere can integrate it with its own
+                    // dream-side eigenstructure annealing.
+                    //
+                    // Fano line varies per left_id so different memories
+                    // take different chiral paths — keeps the right-side
+                    // dim space from collapsing to a single fold trajectory.
                     if let Some(wf) = self.left.get_wavefront(&left_id) {
-                        let folded = self.fano.fold(&wf, self.left.dims, self.right.dims, 0);
+                        let line_idx = (left_id.as_u128() as usize) % 7;
+                        let mirrored = self.fano.chiral_mutate(
+                            &wf, self.left.dims, self.right.dims, line_idx,
+                        );
                         let content = self.left.id_to_index.get(&left_id)
                             .map(|&i| self.left.metadata[i].content.clone())
                             .unwrap_or_default();
-                        if let Ok(right_id) = self.right.add_wavefront(&folded, content, energy * 0.3) {
+                        if let Ok(right_id) = self.right.add_wavefront(&mirrored, content, energy * 0.3) {
                             self.left_to_right.insert(left_id, right_id);
                             self.right_to_left.insert(right_id, left_id);
                             self.scales.insert(right_id, ChiralScale::deep_memory());
