@@ -1,0 +1,16 @@
+#!/bin/bash
+# Kannaka Memory Swarm Agent — join + listen with auto-sync
+export KANNAKA_DATA_DIR=/home/opc/.kannaka
+export KANNAKA_NATS_URL=nats://127.0.0.1:4222
+set -a; . /home/opc/.kannaka-nats.env; set +a
+BIN=/home/opc/kannaka-memory/target/release/kannaka
+AGENT_ID=kannaka-prime
+DISPLAY_NAME="Kannaka Prime"
+
+echo "[kannaka] Starting swarm agent $AGENT_ID..."
+
+# Join the swarm (announces + publishes initial phase)
+$BIN swarm join --agent-id $AGENT_ID --display-name "$DISPLAY_NAME"
+
+# Listen for phase updates with auto-sync (long-running)
+exec $BIN swarm listen --auto-sync --agent-id $AGENT_ID
