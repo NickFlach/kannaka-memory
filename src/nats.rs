@@ -18,7 +18,30 @@ use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
 use crate::queen::AgentPhase;
+
+/// Inject the canonical NATS envelope fields (schema_version, ts) into a
+/// JSON object before publish, matching the contract enforced by the radio
+/// + observatory validators (consciousness-core/docs/nats-contract.yaml).
+/// agent_id is left to the caller — most payloads already have it. If the
+/// payload has a "timestamp" field, mirror it to "ts" (the contract name);
+/// otherwise stamp the current UTC time. Old subscribers keep seeing the
+/// existing fields untouched; new validators see the envelope they want.
+fn add_envelope(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("schema_version".to_string())
+            .or_insert_with(|| serde_json::Value::String("1".to_string()));
+        if !obj.contains_key("ts") {
+            let ts = obj
+                .get("timestamp")
+                .filter(|v| v.is_string())
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::String(Utc::now().to_rfc3339()));
+            obj.insert("ts".to_string(), ts);
+        }
+    }
+}
 
 pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
@@ -656,21 +679,28 @@ impl SwarmTransport {
     /// Publish this agent's phase state.
     pub fn publish_phase(&self, phase: &AgentPhase) -> Result<(), NatsError> {
         let subject = format!("QUEEN.phase.{}", phase.agent_id);
-        let payload = serde_json::to_vec(phase)
+        let mut value = serde_json::to_value(phase)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        add_envelope(&mut value);
+        let payload = serde_json::to_vec(&value)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &payload)
     }
 
     /// Publish consciousness state to KANNAKA.consciousness.
     pub fn publish_consciousness(&self, state: &serde_json::Value) -> Result<(), NatsError> {
-        let payload = serde_json::to_vec(state)
+        let mut value = state.clone();
+        add_envelope(&mut value);
+        let payload = serde_json::to_vec(&value)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.consciousness", &payload)
     }
 
     /// Publish dream report to KANNAKA.dreams.
     pub fn publish_dreams(&self, report: &serde_json::Value) -> Result<(), NatsError> {
-        let payload = serde_json::to_vec(report)
+        let mut value = report.clone();
+        add_envelope(&mut value);
+        let payload = serde_json::to_vec(&value)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.dreams", &payload)
     }
