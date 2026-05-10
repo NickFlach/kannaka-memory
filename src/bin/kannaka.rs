@@ -3322,6 +3322,7 @@ fn handle_attention_serve(
 ) {
     use kannaka_attention::{AttentionBeam, BeamConfig, ObservationEvent};
     use kannaka_attention::landmarks::Landmark;
+    use kannaka_attention::salience::RecencyWeightedGate;
     use std::time::{Duration, Instant};
 
     // Optional --top-k flag (recall depth per glyph event).
@@ -3382,6 +3383,12 @@ fn handle_attention_serve(
     }
 
     let mut beam = AttentionBeam::with_config(BeamConfig::default());
+    // Install the default recency-weighted salience gate. Landmarks
+    // whose exemplar id is in the recency ring get a 2.0× boost; in
+    // lookback (not recency), 1.3×; cold landmarks fall back to their
+    // intrinsic weight. Override later by exposing a --gate flag.
+    beam.set_gate(Box::new(RecencyWeightedGate::default()));
+    eprintln!("[attention serve] salience gate: {}", beam.gate_name());
     let mut last_stats_at = Instant::now();
     let stats_interval = Duration::from_secs(60);
 
