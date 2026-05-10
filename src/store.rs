@@ -97,6 +97,22 @@ pub trait MediumBackend: Send + Sync {
         self.resonate_query(query, top_k)
     }
 
+    /// Sparse-attention recall — score only the memories in `beam`.
+    ///
+    /// Default impl falls back to full `resonate_query` so backends that
+    /// haven't been beam-aware yet keep working. The HRM backend overrides
+    /// this to route through `Medium::recall_against_ids` for O(K) scoring.
+    fn resonate_query_with_beam(
+        &mut self,
+        _beam: &[Uuid],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        // Conservative fallback: a backend that doesn't know about beams
+        // shouldn't silently drop the call. Run full recall instead.
+        self.resonate_query(query, top_k)
+    }
+
     /// Consciousness metrics from the holographic medium topology.
     /// Eigendecomposition Phi, spectral Xi, Kuramoto order parameter.
     fn consciousness_metrics(&self) -> crate::consciousness::ConsciousnessMetrics {

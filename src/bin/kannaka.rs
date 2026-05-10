@@ -3321,6 +3321,7 @@ fn handle_attention_serve(
     args: &[String],
 ) {
     use kannaka_attention::{AttentionBeam, BeamConfig, ObservationEvent};
+    use kannaka_attention::landmarks::Landmark;
     use std::time::{Duration, Instant};
 
     // Optional --top-k flag (recall depth per glyph event).
@@ -3347,19 +3348,67 @@ fn handle_attention_serve(
     };
 
     eprintln!("[attention serve] subject={} top_k={}", subject, top_k);
+    eprintln!("[attention serve] landmarks=KANNAKA.exemplar.>  (best-effort)");
     eprintln!("[attention serve] nats={} press Ctrl+C to stop", nats_url);
 
     let mut sub = match transport.subscribe(&subject) {
         Ok(s) => s,
         Err(e) => { eprintln!("[attention serve] subscribe failed: {e}"); process::exit(1); }
     };
-    let _ = sub.set_timeout(Some(Duration::from_secs(30)));
+    let _ = sub.set_timeout(Some(Duration::from_secs(2)));
+
+    // Second transport for the exemplar landmark subscription. Each NATS
+    // subscription owns the connection's TCP read half (the kannaka-memory
+    // client locks the stream per-sub), so a second subject needs a second
+    // connection. Best-effort: if either the connect or the subscribe
+    // fails, run without landmarks — eye events still flow into the beam.
+    let lm_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
+    let mut lm_sub = lm_transport.as_ref().and_then(|t| t.subscribe("KANNAKA.exemplar.>").ok());
+    if let Some(ref mut s) = lm_sub {
+        let _ = s.set_timeout(Some(Duration::from_secs(2)));
+    } else {
+        eprintln!("[attention serve] WARN: no landmark subscription — running eye-only");
+    }
 
     let mut beam = AttentionBeam::with_config(BeamConfig::default());
     let mut last_stats_at = Instant::now();
     let stats_interval = Duration::from_secs(60);
 
-    while let Some(msg) = sub.next_message() {
+    loop {
+        // ── Poll the landmark subscription first (fast, light-touch
+        // updates to the LandmarkSet). Each exemplar event upserts a
+        // landmark keyed by cluster id. Subscription set with a 2s read
+        // timeout above so polling doesn't block the eye stream.
+        if let Some(ref mut lm) = lm_sub {
+            if let Some(lmmsg) = lm.next_message() {
+                if let Ok(payload) = std::str::from_utf8(&lmmsg.payload) {
+                    if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
+                        let exemplar_id = env.get("exemplar_id").and_then(|v| v.as_str())
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                        let cluster_id = env.get("cluster_id").and_then(|v| v.as_u64());
+                        let theme = env.get("theme").and_then(|v| v.as_str())
+                            .or_else(|| env.get("semantic_summary").and_then(|v| v.as_str()))
+                            .unwrap_or("?");
+                        let agent = env.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                        if let (Some(id), Some(cid)) = (exemplar_id, cluster_id) {
+                            // Use "<agent>/<cluster_id>" as the cluster_label so
+                            // exemplars from different agents don't collide.
+                            let label = format!("{}/{}", agent, cid);
+                            let weight = env.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                            beam.upsert_landmark(Landmark {
+                                id, cluster_label: label.clone(), weight,
+                            });
+                            eprintln!("[attention serve] landmark + {} theme=\"{}\"", label, theme);
+                        }
+                    }
+                }
+            }
+        }
+
+        let msg = match sub.next_message() {
+            Some(m) => m,
+            None => continue,
+        };
         let payload = match std::str::from_utf8(&msg.payload) {
             Ok(s) => s,
             Err(_) => continue,
@@ -3388,12 +3437,24 @@ fn handle_attention_serve(
         let query = format!("glyph dom={} fano=[{}] fold=[{}]", dom, fano, fold);
 
         // Recall top-K memories whose wavefronts resonate with this glyph.
-        // Today this is the full O(N) recall; once recall_against_ids is
-        // exposed at the system level, the beam itself is fed back into the
-        // recall call and we get O(K) end-to-end.
-        let results = match sys.recall(&query, top_k) {
-            Ok(r) => r,
-            Err(_) => continue,
+        // Two-stage warmup: when the beam is empty / cold (no observations
+        // yet), fall back to the full O(N) recall so the first glyph has
+        // somewhere to land. Once the beam has settled (≥ 8 candidates),
+        // every subsequent recall runs against the beam only — O(K) end to
+        // end. This is the gravity loop: each glyph pulls in the beam's
+        // closest memories, which then constrain the next glyph's recall.
+        const BEAM_WARM_THRESHOLD: usize = 8;
+        let beam_cands = beam.candidates();
+        let results = if beam_cands.len() >= BEAM_WARM_THRESHOLD {
+            match sys.recall_with_beam(&beam_cands, &query, top_k) {
+                Ok(r) => r,
+                Err(_) => continue,
+            }
+        } else {
+            match sys.recall(&query, top_k) {
+                Ok(r) => r,
+                Err(_) => continue,
+            }
         };
 
         let source = format!("eye:{}", hemisphere);
@@ -3413,7 +3474,8 @@ fn handle_attention_serve(
             last_stats_at = Instant::now();
         }
     }
-    eprintln!("[attention serve] subscription closed");
+    // The serve loop is intentionally infinite — Ctrl+C is the only exit.
+    // Both subs use a 2s read timeout so each iteration polls both.
 }
 
 #[cfg(not(feature = "nats"))]

@@ -329,6 +329,29 @@ impl HrmStore {
         Ok(results)
     }
 
+    /// Beam-aware recall — score only the memories in the attention beam.
+    ///
+    /// This is the system-level entry to `Medium::recall_against_ids`. The
+    /// chiral hemisphere logic is bypassed for the sparse path (chiral
+    /// attention is a future fold-in); the recall runs against the right
+    /// hemisphere / flat medium directly, then applies observation.
+    ///
+    /// Empty beam in -> empty results out (intentional — the sparsity is
+    /// meaningless if we silently fall back to full recall).
+    pub fn recall_resonance_with_beam(
+        &mut self,
+        beam: &[uuid::Uuid],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<Resonance>, StoreError> {
+        let results = self.medium.recall_against_ids(beam, query, top_k, &self.pipeline)
+            .map_err(|e| StoreError::Other(format!("beam-aware recall failed: {}", e)))?;
+        // Observation still shapes the field — sparse recall doesn't excuse
+        // a passive read. Same intensity formula as the dense path.
+        self.apply_observation(&results);
+        Ok(results)
+    }
+
     /// Apply observation effects to recall results.
     /// Ranked results get proportionally stronger observation.
     fn apply_observation(&mut self, results: &[Resonance]) {
@@ -765,6 +788,20 @@ impl MediumBackend for HrmStore {
             let results = self.recall_resonance(query, top_k)?;
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
         }
+    }
+
+    fn resonate_query_with_beam(
+        &mut self,
+        beam: &[Uuid],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        // Sparse-attention path: score only the memories in `beam`. Chiral
+        // bilateral observation is bypassed for v1 — the sparse path runs
+        // against the medium directly. Future fold-in: a chiral beam-aware
+        // recall once both hemispheres are addressed by an attention beam.
+        let results = self.recall_resonance_with_beam(beam, query, top_k)?;
+        Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())
     }
 
     fn relate(&mut self, id_a: &Uuid, id_b: &Uuid) -> Result<Uuid, StoreError> {

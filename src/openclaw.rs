@@ -264,6 +264,37 @@ impl KannakaMemorySystem {
         Ok(out)
     }
 
+    /// Beam-aware recall — sparse-attention path. Score only the memories
+    /// in `beam`; chiral bilateral observation is bypassed (see
+    /// `HrmStore::recall_resonance_with_beam`). Empty beam returns empty
+    /// results — sparsity is meaningless if we fall back to full recall.
+    pub fn recall_with_beam(
+        &mut self,
+        beam: &[uuid::Uuid],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<RecallResult>, SystemError> {
+        let results = self.engine.store.resonate_query_with_beam(beam, query, top_k)
+            .map_err(|e| SystemError::Store(e))?;
+        let now = Utc::now();
+
+        let mut out = Vec::with_capacity(results.len());
+        for (id, strength) in results {
+            if let Some(m) = self.engine.store.get(&id).ok().flatten() {
+                let age_hours = (now - m.created_at).num_seconds().max(0) as f64 / 3600.0;
+                out.push(RecallResult {
+                    id,
+                    content: m.content.clone(),
+                    similarity: strength,
+                    strength,
+                    age_hours,
+                    layer: m.layer_depth,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Run full consolidation cycle via wave-native dreaming.
     ///
     /// ADR-0022: Uses Medium's eigenstructure annealing exclusively.
