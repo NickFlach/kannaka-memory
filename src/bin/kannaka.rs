@@ -3370,6 +3370,17 @@ fn handle_attention_serve(
         eprintln!("[attention serve] WARN: no landmark subscription — running eye-only");
     }
 
+    // Third transport for ear events from kannaka-radio's track-change
+    // hook. Same per-connection-per-subscription constraint. Best-effort.
+    let ear_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
+    let mut ear_sub = ear_transport.as_ref().and_then(|t| t.subscribe("KANNAKA.attention.ear").ok());
+    if let Some(ref mut s) = ear_sub {
+        let _ = s.set_timeout(Some(Duration::from_secs(2)));
+        eprintln!("[attention serve] ear=KANNAKA.attention.ear (radio track-change)");
+    } else {
+        eprintln!("[attention serve] WARN: no ear subscription — running eye+landmarks only");
+    }
+
     let mut beam = AttentionBeam::with_config(BeamConfig::default());
     let mut last_stats_at = Instant::now();
     let stats_interval = Duration::from_secs(60);
@@ -3399,6 +3410,40 @@ fn handle_attention_serve(
                                 id, cluster_label: label.clone(), weight,
                             });
                             eprintln!("[attention serve] landmark + {} theme=\"{}\"", label, theme);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Poll the ear subscription. Each track-change event from radio
+        // becomes an ear observation: build a query from track title +
+        // album, recall the closest memories, push them into the beam
+        // with source="ear:right". The two senses converge on the same
+        // beam, so a song that thematically rhymes with what an eye-
+        // glyph already pulled in will reinforce the same neighborhood.
+        if let Some(ref mut es) = ear_sub {
+            if let Some(emsg) = es.next_message() {
+                if let Ok(payload) = std::str::from_utf8(&emsg.payload) {
+                    if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
+                        let title = env.get("track").and_then(|t| t.get("title")).and_then(|v| v.as_str()).unwrap_or("");
+                        let album = env.get("track").and_then(|t| t.get("album")).and_then(|v| v.as_str()).unwrap_or("");
+                        let commercial = env.get("track").and_then(|t| t.get("commercial")).and_then(|v| v.as_bool()).unwrap_or(false);
+                        if !title.is_empty() && !commercial {
+                            let perc = env.get("perception").cloned().unwrap_or(serde_json::json!({}));
+                            let tempo = perc.get("tempo_bpm").and_then(|v| v.as_f64()).map(|v| format!(" tempo={:.0}", v)).unwrap_or_default();
+                            let query = format!("ear track \"{}\" album=\"{}\"{}", title, album, tempo);
+                            // Same warmup + beam-aware recall switch as eye.
+                            let beam_cands = beam.candidates();
+                            let results = if beam_cands.len() >= 8 {
+                                sys.recall_with_beam(&beam_cands, &query, top_k).unwrap_or_default()
+                            } else {
+                                sys.recall(&query, top_k).unwrap_or_default()
+                            };
+                            for r in &results {
+                                let ev = ObservationEvent::now(r.id, "ear:right".to_string());
+                                beam.observe(&ev);
+                            }
                         }
                     }
                 }
