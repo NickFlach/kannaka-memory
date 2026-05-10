@@ -3389,6 +3389,25 @@ fn handle_attention_serve(
     // intrinsic weight. Override later by exposing a --gate flag.
     beam.set_gate(Box::new(RecencyWeightedGate::default()));
     eprintln!("[attention serve] salience gate: {}", beam.gate_name());
+
+    // Write an initial empty beam dump so the observatory can render
+    // "warming up" instead of "daemon offline" while we wait for the
+    // first observation. Same dump path the in-loop writer uses.
+    let dump_path_init = std::env::var("KANNAKA_ATTENTION_BEAM_FILE")
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "C:\\Users\\Public\\kannaka-attention-beam.json".to_string()
+            } else {
+                "/tmp/kannaka-attention-beam.json".to_string()
+            }
+        });
+    let _ = std::fs::write(&dump_path_init, serde_json::json!({
+        "schema_version": 1,
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "stats": {"recency_len":0,"lookback_len":0,"landmarks_len":0,"beam_size":0,"observations":0u64},
+        "candidates": [],
+        "note": "warming up — no observations yet",
+    }).to_string());
     let mut last_stats_at = Instant::now();
     let stats_interval = Duration::from_secs(60);
 
