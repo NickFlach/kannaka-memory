@@ -3473,6 +3473,37 @@ fn handle_attention_serve(
             );
             last_stats_at = Instant::now();
         }
+
+        // Dump beam state to a small JSON file the observatory can poll
+        // through a tiny endpoint. Done every observation so the viz feels
+        // alive without us building a long-lived HTTP server in this
+        // process. File path overridable via KANNAKA_ATTENTION_BEAM_FILE
+        // (default /tmp/kannaka-attention-beam.json on Unix,
+        // C:\Users\Public\kannaka-attention-beam.json on Windows). Best-
+        // effort write — if it fails, beam loop continues.
+        let dump_path = std::env::var("KANNAKA_ATTENTION_BEAM_FILE")
+            .unwrap_or_else(|_| {
+                if cfg!(windows) {
+                    "C:\\Users\\Public\\kannaka-attention-beam.json".to_string()
+                } else {
+                    "/tmp/kannaka-attention-beam.json".to_string()
+                }
+            });
+        let stats = beam.stats();
+        let cands = beam.candidates();
+        let dump = serde_json::json!({
+            "schema_version": 1,
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "stats": {
+                "recency_len": stats.recency_len,
+                "lookback_len": stats.lookback_len,
+                "landmarks_len": stats.landmarks_len,
+                "beam_size": stats.beam_size,
+                "observations": stats.observations,
+            },
+            "candidates": cands.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+        });
+        let _ = std::fs::write(&dump_path, dump.to_string());
     }
     // The serve loop is intentionally infinite — Ctrl+C is the only exit.
     // Both subs use a 2s read timeout so each iteration polls both.
