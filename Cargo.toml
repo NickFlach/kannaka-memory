@@ -28,6 +28,11 @@ crossterm = { version = "0.28", optional = true }
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core", features = ["serde"] }
 
+# Sparse-attention beam over the HRM. Tiny crate, std-only, no GPU/BLAS.
+# Wired into `kannaka attention serve` to consume KANNAKA.attention.eye
+# events and shape recall via Medium::recall_against_ids.
+kannaka-attention = { path = "../kannaka-attention" }
+
 # Audio perception — always built. The "hear" command is a first-class
 # capability of the constellation, not an opt-in.
 symphonia = { version = "0.5", features = ["mp3", "wav", "pcm", "aac"] }

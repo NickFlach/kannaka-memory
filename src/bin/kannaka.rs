@@ -92,6 +92,7 @@ fn usage() {
     eprintln!("  radio status|now|schedule What's playing on Kannaka Radio");
     eprintln!("  market list|view|buy      GhostSignals prediction markets");
     eprintln!("  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)");
+    eprintln!("  attention serve|stats     Attention beam (eye/ear → recall_against_ids)");
     eprintln!();
     eprintln!("Agent (LLM):");
     eprintln!("  ask \"question\"             One-shot — memories surface via wave resonance");
@@ -1436,6 +1437,31 @@ fn main() {
             }
         }
 
+
+        #[cfg(feature = "nats")]
+        "attention" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka attention <serve|stats>");
+                process::exit(1);
+            }
+            match args[command_start + 1].as_str() {
+                "serve" => {
+                    handle_attention_serve(&mut sys, &cfg, &args[command_start..]);
+                }
+                "stats" => {
+                    // One-shot stats — the serve loop holds the live beam in
+                    // memory, so this mostly prints zeros unless the daemon is
+                    // co-located. Reserved for the future shared-memory or
+                    // file-handoff path.
+                    println!("{{\"beam_size\":0,\"recency_len\":0,\"lookback_len\":0,\"landmarks_len\":0,\"observations\":0,\"note\":\"stats are live only inside the serve process; this CLI is a stub for now\"}}");
+                }
+                other => {
+                    eprintln!("Unknown attention command: {other}");
+                    eprintln!("Usage: kannaka attention <serve|stats>");
+                    process::exit(1);
+                }
+            }
+        }
 
         "voice" => {
             voice_command(&args[command_start..], &mut sys);
@@ -3277,6 +3303,122 @@ fn _handle_serve_msg(
 #[cfg(not(feature = "nats"))]
 fn handle_swarm_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("swarm serve requires the 'nats' feature");
+    process::exit(1);
+}
+
+// ── Wave 3b: attention serve loop ───────────────────────────────────────────
+// Subscribes to KANNAKA.attention.eye, treats each glyph event as a gravity
+// pull on the attention beam. For every event we run a top-K=3 recall on the
+// medium using a synthetic query string built from the glyph's signature
+// (dominant_class + fold_sequence + fano_signature); the resulting memory
+// ids are pushed onto the beam via AttentionBeam::observe. Later callers
+// can use Medium::recall_against_ids(beam.candidates(), q) for O(K) recall.
+
+#[cfg(feature = "nats")]
+fn handle_attention_serve(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use kannaka_attention::{AttentionBeam, BeamConfig, ObservationEvent};
+    use std::time::{Duration, Instant};
+
+    // Optional --top-k flag (recall depth per glyph event).
+    let mut top_k: usize = 3;
+    let mut subject: String = "KANNAKA.attention.eye".to_string();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--top-k" if i + 1 < args.len() => {
+                top_k = args[i + 1].parse().unwrap_or(3); i += 2;
+            }
+            "--subject" if i + 1 < args.len() => {
+                subject = args[i + 1].clone(); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[attention serve] NATS connect {}: {}", nats_url, e); process::exit(1); }
+    };
+
+    eprintln!("[attention serve] subject={} top_k={}", subject, top_k);
+    eprintln!("[attention serve] nats={} press Ctrl+C to stop", nats_url);
+
+    let mut sub = match transport.subscribe(&subject) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[attention serve] subscribe failed: {e}"); process::exit(1); }
+    };
+    let _ = sub.set_timeout(Some(Duration::from_secs(30)));
+
+    let mut beam = AttentionBeam::with_config(BeamConfig::default());
+    let mut last_stats_at = Instant::now();
+    let stats_interval = Duration::from_secs(60);
+
+    while let Some(msg) = sub.next_message() {
+        let payload = match std::str::from_utf8(&msg.payload) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // Parse the eye envelope: { schema_version, ts, source, hemisphere,
+        // source_type, glyph: { fold_sequence, dominant_class, fano_signature, ... } }
+        let env: serde_json::Value = match serde_json::from_str(payload) {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[attention serve] bad payload: {e}"); continue; }
+        };
+        let hemisphere = env.get("hemisphere").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+        let glyph = match env.get("glyph") {
+            Some(g) => g,
+            None => continue,
+        };
+        // Build a synthetic recall query out of the glyph's most distinctive
+        // features. The encoding pipeline will hash this consistently so
+        // glyphs with the same dominant_class converge on similar queries.
+        let dom = glyph.get("dominant_class").and_then(|v| v.as_u64()).unwrap_or(0);
+        let fano = glyph.get("fano_signature").and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_u64()).take(8).map(|x| x.to_string()).collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        let fold = glyph.get("fold_sequence").and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_u64()).take(8).map(|x| x.to_string()).collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        let query = format!("glyph dom={} fano=[{}] fold=[{}]", dom, fano, fold);
+
+        // Recall top-K memories whose wavefronts resonate with this glyph.
+        // Today this is the full O(N) recall; once recall_against_ids is
+        // exposed at the system level, the beam itself is fed back into the
+        // recall call and we get O(K) end-to-end.
+        let results = match sys.recall(&query, top_k) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let source = format!("eye:{}", hemisphere);
+        for r in &results {
+            let ev = ObservationEvent::now(r.id, source.clone());
+            beam.observe(&ev);
+        }
+
+        // Periodic stats line so an operator can watch the beam shape up.
+        if last_stats_at.elapsed() >= stats_interval {
+            let stats = beam.stats();
+            eprintln!(
+                "[attention serve] beam={} recency={} lookback={} landmarks={} obs={}",
+                stats.beam_size, stats.recency_len, stats.lookback_len,
+                stats.landmarks_len, stats.observations
+            );
+            last_stats_at = Instant::now();
+        }
+    }
+    eprintln!("[attention serve] subscription closed");
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_attention_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("attention serve requires the 'nats' feature");
     process::exit(1);
 }
 
