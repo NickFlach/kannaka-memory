@@ -220,11 +220,62 @@ impl Medium {
     }
 
     /// Recall memories through resonance — query wave interferes with stored patterns.
-    /// 
+    ///
     /// Now includes coherence expansion: after finding top-K results, includes
     /// high-coherence neighbors to capture associative recall patterns.
+    ///
+    /// Internally delegates to `recall_against(None, ...)` — i.e. score the full
+    /// medium. For the sparse-attention path, callers pass an explicit candidate
+    /// set via `recall_against(Some(beam), ...)` to get O(K) scoring instead of
+    /// O(N), regardless of medium size.
     pub fn recall(
         &self,
+        query: &str,
+        top_k: usize,
+        pipeline: &EncodingPipeline,
+    ) -> Result<Vec<Resonance>, MediumError> {
+        self.recall_against(None, query, top_k, pipeline)
+    }
+
+    /// Recall against an attention beam expressed as memory IDs.
+    ///
+    /// The kannaka-attention crate tracks beam membership in Uuids (stable
+    /// across wavefront insertions). This helper resolves Uuids to internal
+    /// indices and then runs the sparse path. Unknown ids are silently
+    /// dropped — beam reconciliation lives in the attention crate.
+    pub fn recall_against_ids(
+        &self,
+        beam: &[uuid::Uuid],
+        query: &str,
+        top_k: usize,
+        pipeline: &EncodingPipeline,
+    ) -> Result<Vec<Resonance>, MediumError> {
+        let indices: Vec<usize> = beam.iter()
+            .filter_map(|id| self.get_wavefront_index(id))
+            .collect();
+        if indices.is_empty() {
+            // An empty beam after resolution would otherwise fall through to
+            // full-medium recall, which silently defeats the sparsity. Be
+            // explicit: empty beam in → empty result out.
+            return Ok(Vec::new());
+        }
+        self.recall_against(Some(&indices), query, top_k, pipeline)
+    }
+
+    /// Recall against an explicit candidate set — the sparse-attention seam.
+    ///
+    /// `candidates`: when `Some(&[i])`, score only the wavefronts at these
+    /// indices (the "attention beam" picked by the kannaka-attention crate's
+    /// recency ring + log-stride snapshots + landmark exemplars). When `None`,
+    /// fall back to scoring every wavefront — equivalent to the original
+    /// `recall` semantics.
+    ///
+    /// Coherence expansion stays restricted to the same candidate set so a
+    /// caller running with a tight beam doesn't accidentally pull in
+    /// off-beam memories through the expansion side-channel.
+    pub fn recall_against(
+        &self,
+        candidates: Option<&[usize]>,
         query: &str,
         top_k: usize,
         pipeline: &EncodingPipeline,
@@ -241,11 +292,25 @@ impl Medium {
             )))
         })?;
 
-        // 2. Compute basic resonance pattern — matrix multiplication H @ q
-        let mut resonances: Vec<(usize, Resonance)> = Vec::new();
+        // Resolve the iteration set. `None` means "full medium" (original
+        // behavior). A `Some` slice is the attention beam — typically 64-512
+        // indices regardless of how many memories live in the medium.
+        let all_indices: Vec<usize>;
+        let cand_slice: &[usize] = match candidates {
+            Some(c) if !c.is_empty() => c,
+            _ => {
+                all_indices = (0..self.wavefront_count()).collect();
+                &all_indices
+            }
+        };
+
+        // 2. Compute basic resonance pattern — matrix multiplication H @ q,
+        // but only across the candidate set.
+        let mut resonances: Vec<(usize, Resonance)> = Vec::with_capacity(cand_slice.len());
         let effective_strengths = self.effective_strength(None);
 
-        for i in 0..self.wavefront_count() {
+        for &i in cand_slice {
+            if i >= self.wavefront_count() { continue; } // guard against stale beam indices
             let wavefront = self.store.wavefronts.row(i);
 
             // Dot product (similarity)
@@ -294,14 +359,101 @@ impl Medium {
         sorted.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
         sorted.truncate(top_k);
 
-        // 6. Coherence expansion: find high-coherence neighbors of initial results
-        let coherence_expansion_results = self.expand_with_coherence(&sorted, top_k);
+        // 6. Coherence expansion — restricted to the candidate set when one was
+        // provided, full medium otherwise. The restriction is what keeps a
+        // tight beam tight; without it the expansion side-channel would pull
+        // off-beam memories back in and defeat the sparsity win.
+        let coherence_expansion_results = self.expand_with_coherence_in_set(&sorted, top_k, candidates);
 
         Ok(coherence_expansion_results)
     }
 
+    /// Coherence expansion that respects an attention beam.
+    ///
+    /// When `candidates` is `Some`, neighbor scanning is restricted to that
+    /// index set — keeps a sparse-attention recall path actually sparse.
+    /// When `None`, behaves like the original `expand_with_coherence` (full
+    /// medium scan).
+    fn expand_with_coherence_in_set(
+        &self,
+        initial_results: &[Resonance],
+        max_total: usize,
+        candidates: Option<&[usize]>,
+    ) -> Vec<Resonance> {
+        match candidates {
+            Some(c) if !c.is_empty() => {
+                // Build a set for O(1) membership when scanning neighbors.
+                let cand_set: std::collections::HashSet<usize> =
+                    c.iter().copied().filter(|&i| i < self.wavefront_count()).collect();
+                self.expand_with_coherence_filtered(initial_results, max_total, Some(&cand_set))
+            }
+            _ => self.expand_with_coherence_filtered(initial_results, max_total, None),
+        }
+    }
+
+    /// Internal expansion — `allowed` gates which indices may be admitted as
+    /// neighbors. `None` = no gate = original behavior.
+    fn expand_with_coherence_filtered(
+        &self,
+        initial_results: &[Resonance],
+        max_total: usize,
+        allowed: Option<&std::collections::HashSet<usize>>,
+    ) -> Vec<Resonance> {
+        let coherence_matrix = self.coherence_matrix();
+        let coherence_threshold = 0.3;
+        let mut expanded_results = initial_results.to_vec();
+        let mut added_ids = std::collections::HashSet::new();
+
+        for result in initial_results {
+            added_ids.insert(result.id);
+        }
+
+        for initial in initial_results {
+            if let Some(result_idx) = self.get_wavefront_index(&initial.id) {
+                let mut neighbor_candidates = Vec::new();
+
+                for i in 0..self.wavefront_count() {
+                    if i == result_idx || added_ids.contains(&self.store.metadata[i].id) {
+                        continue;
+                    }
+                    if let Some(set) = allowed {
+                        if !set.contains(&i) { continue; }
+                    }
+
+                    let coherence = coherence_matrix[[result_idx, i]].abs();
+                    if coherence > coherence_threshold {
+                        let expansion_strength = coherence * self.store.energy[i];
+                        neighbor_candidates.push((i, expansion_strength, coherence));
+                    }
+                }
+
+                neighbor_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                let max_neighbors = 2;
+                for (neighbor_idx, expansion_strength, coherence) in neighbor_candidates.into_iter().take(max_neighbors) {
+                    if expanded_results.len() >= max_total { break; }
+                    let neighbor_id = self.store.metadata[neighbor_idx].id;
+                    if !added_ids.contains(&neighbor_id) {
+                        expanded_results.push(Resonance {
+                            id: neighbor_id,
+                            content: self.store.metadata[neighbor_idx].content.clone(),
+                            similarity: coherence,
+                            resonance_strength: expansion_strength,
+                            effective_strength: self.store.energy[neighbor_idx],
+                        });
+                        added_ids.insert(neighbor_id);
+                    }
+                }
+            }
+        }
+
+        expanded_results.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
+        expanded_results.truncate(max_total);
+        expanded_results
+    }
+
     /// Expand recall results with high-coherence neighbors.
-    /// 
+    ///
     /// For each result, finds other wavefronts with coherence above threshold (0.3)
     /// and includes them weighted by coherence * energy.
     fn expand_with_coherence(&self, initial_results: &[Resonance], max_total: usize) -> Vec<Resonance> {
