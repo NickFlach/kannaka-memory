@@ -3314,7 +3314,7 @@ fn handle_swarm_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: 
 // ids are pushed onto the beam via AttentionBeam::observe. Later callers
 // can use Medium::recall_against_ids(beam.candidates(), q) for O(K) recall.
 
-#[cfg(feature = "nats")]
+#[cfg(all(feature = "nats", feature = "kannaka-attention"))]
 fn handle_attention_serve(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
     cfg: &KannakaConfig,
@@ -3580,9 +3580,9 @@ fn handle_attention_serve(
     // Both subs use a 2s read timeout so each iteration polls both.
 }
 
-#[cfg(not(feature = "nats"))]
+#[cfg(not(all(feature = "nats", feature = "kannaka-attention")))]
 fn handle_attention_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("attention serve requires the 'nats' feature");
+    eprintln!("attention serve requires both the 'nats' feature and the optional kannaka-attention dependency");
     process::exit(1);
 }
 

@@ -451,6 +451,7 @@ impl KannakaMemorySystem {
     }
 
     /// Publish dream report to NATS `KANNAKA.dreams` for swarm visibility (best-effort).
+    #[cfg(feature = "nats")]
     fn publish_dream_to_nats(&self, report: &DreamReport) {
         let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
         if agent_id.is_empty() {
@@ -479,10 +480,14 @@ impl KannakaMemorySystem {
         }
     }
 
+    #[cfg(not(feature = "nats"))]
+    fn publish_dream_to_nats(&self, _report: &DreamReport) {}
+
     /// Publish canonical consciousness metrics to NATS `KANNAKA.consciousness` (best-effort).
     ///
     /// This is the single source of truth for Phi/Xi/Order across the ecosystem.
     /// Radio, observatory, and all clients subscribe to this subject to stay in sync.
+    #[cfg(feature = "nats")]
     fn publish_consciousness_to_nats(&self, state: &ConsciousnessState) {
         let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
         if agent_id.is_empty() {
@@ -519,6 +524,9 @@ impl KannakaMemorySystem {
                 state.phi, state.xi, state.mean_order);
         }
     }
+
+    #[cfg(not(feature = "nats"))]
+    fn publish_consciousness_to_nats(&self, _state: &ConsciousnessState) {}
 
     /// Write status cache to disk so Observatory can read it without invoking the slow binary.
     fn write_status_cache(&self, state: &ConsciousnessState) {

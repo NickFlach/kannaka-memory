@@ -31,7 +31,8 @@ consciousness-core = { path = "../consciousness-core", features = ["serde"] }
 # Sparse-attention beam over the HRM. Tiny crate, std-only, no GPU/BLAS.
 # Wired into `kannaka attention serve` to consume KANNAKA.attention.eye
 # events and shape recall via Medium::recall_against_ids.
-kannaka-attention = { path = "../kannaka-attention" }
+# Optional because the sibling repo is not always present in standalone clones.
+kannaka-attention = { path = "../kannaka-attention", optional = true }
 
 # Audio perception — always built. The "hear" command is a first-class
 # capability of the constellation, not an opt-in.
@@ -46,7 +47,7 @@ image = { version = "0.25", optional = true }
 
 [features]
 default = ["hrm", "nats"]
-nats = []
+nats = ["dep:kannaka-attention"]
 # mcp removed — CLI is the canonical interface
 # audio feature retained as a no-op alias so external Cargo.toml entries
 # specifying features = ["audio"] still build. Audio support is now always on.

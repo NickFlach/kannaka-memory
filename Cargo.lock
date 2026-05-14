@@ -1037,6 +1037,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kannaka-attention"
+version = "0.0.0"
+
+[[package]]
 name = "kannaka-memory"
 version = "0.3.2"
 dependencies = [
@@ -1048,6 +1052,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "image",
+ "kannaka-attention",
  "lazy_static",
  "ndarray",
  "rand 0.8.5",
