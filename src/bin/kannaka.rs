@@ -1069,14 +1069,33 @@ fn main() {
 
             match args[command_start + 1].as_str() {
                 "join" => {
+                    // `kannaka swarm join` is the user-facing "run a node"
+                    // command. Historically it was one-shot: announce, publish
+                    // initial phase, exit. The radio's swarm visualization
+                    // prunes agents after 5 min of silence (no QUEEN.phase.*
+                    // republish), so the user's node would disappear from
+                    // /player almost immediately after `join` returned. Users
+                    // reasonably expected `join` to run the node, so the
+                    // command now stays foregrounded and republishes phase +
+                    // presence every 30s until Ctrl+C, at which point it
+                    // announces leave and exits cleanly. Pass --once to keep
+                    // the legacy one-shot behavior (used by scripts that
+                    // manage the heartbeat themselves).
                     let mut my_agent_id = agent_id.clone();
                     let mut display_name = String::new();
+                    let mut once = false;
+                    let mut heartbeat_secs: u64 = 30;
                     let mut i = command_start + 2;
                     while i < args.len() {
                         match args[i].as_str() {
                             "--agent-id" if i + 1 < args.len() => { my_agent_id = args[i + 1].clone(); i += 2; }
                             "--display-name" if i + 1 < args.len() => { display_name = args[i + 1].clone(); i += 2; }
                             "--nats-url" if i + 1 < args.len() => { i += 2; }
+                            "--once" => { once = true; i += 1; }
+                            "--heartbeat-secs" if i + 1 < args.len() => {
+                                heartbeat_secs = args[i + 1].parse().unwrap_or(30).max(5);
+                                i += 2;
+                            }
                             _ => { i += 1; }
                         }
                     }
@@ -1092,47 +1111,91 @@ fn main() {
                     }
 
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
-                    match try_nats_connect(&nats_url) {
-                        Some(transport) => {
-                            if let Err(e) = transport.announce_join(&my_agent_id) {
-                                eprintln!("[nats] Warning: announce failed: {}", e);
-                            }
-                            // Publish initial phase
-                            let mut queen = kannaka_memory::QueenSync::new(
-                                kannaka_memory::QueenConfig::default(),
-                                &my_agent_id,
-                            );
-                            queen.derive_local_state(&sys.engine);
-                            let phase = queen.to_agent_phase(0, sys.engine.store.count());
-                            if let Err(e) = transport.publish_phase(&phase) {
-                                eprintln!("[nats] Warning: initial phase publish failed: {}", e);
-                            } else {
-                                println!("[nats] Published initial phase \u{03b8}={:.3}", phase.phase);
-                            }
-                            // Presence record (ADR-0026 Phase 5). Best-effort.
-                            let _ = transport.ensure_presence_stream();
-                            let presence = serde_json::json!({
-                                "agent_id": my_agent_id,
-                                "display_name": display_name,
-                                "capabilities": {
-                                    "ask": true, "dream": true,
-                                    "exemplar_broadcast": true, "absorb": true,
-                                },
-                                "joined_at": chrono::Utc::now().to_rfc3339(),
-                                "last_seen": chrono::Utc::now().to_rfc3339(),
-                                "memory_count": sys.engine.store.count(),
-                                "kannaka_version": kannaka_memory::config::VERSION,
-                            });
-                            if let Err(e) = transport.publish_presence(&my_agent_id, &presence) {
-                                eprintln!("[nats] Warning: presence publish failed: {}", e);
-                            }
-                            println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
-                        }
+                    let transport = match try_nats_connect(&nats_url) {
+                        Some(t) => t,
                         None => {
                             eprintln!("Error: NATS connection required for swarm. Set KANNAKA_NATS_URL or use --nats-url.");
                             process::exit(1);
                         }
+                    };
+
+                    if let Err(e) = transport.announce_join(&my_agent_id) {
+                        eprintln!("[nats] Warning: announce failed: {}", e);
                     }
+                    let _ = transport.ensure_presence_stream();
+
+                    // Helper: rebuild + publish phase and presence from the
+                    // current HRM state. Called once for one-shot mode, or in
+                    // a loop for the default daemon mode.
+                    let publish_heartbeat = |label: &str| {
+                        let mut queen = kannaka_memory::QueenSync::new(
+                            kannaka_memory::QueenConfig::default(),
+                            &my_agent_id,
+                        );
+                        queen.derive_local_state(&sys.engine);
+                        let phase = queen.to_agent_phase(0, sys.engine.store.count());
+                        if let Err(e) = transport.publish_phase(&phase) {
+                            eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
+                        }
+                        let presence = serde_json::json!({
+                            "agent_id": my_agent_id,
+                            "display_name": display_name,
+                            "capabilities": {
+                                "ask": true, "dream": true,
+                                "exemplar_broadcast": true, "absorb": true,
+                            },
+                            "joined_at": chrono::Utc::now().to_rfc3339(),
+                            "last_seen": chrono::Utc::now().to_rfc3339(),
+                            "memory_count": sys.engine.store.count(),
+                            "kannaka_version": kannaka_memory::config::VERSION,
+                        });
+                        if let Err(e) = transport.publish_presence(&my_agent_id, &presence) {
+                            eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
+                        }
+                        phase.phase
+                    };
+
+                    let initial_phase = publish_heartbeat("initial");
+                    println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
+                    println!("[nats] Initial phase \u{03b8}={:.3} published to {}", initial_phase, nats_url);
+
+                    if once {
+                        return;
+                    }
+
+                    // Daemon mode — keep the node visible by republishing
+                    // phase every `heartbeat_secs`. The radio's 5-min prune
+                    // window is the upper bound; we use 30s by default so
+                    // the badge in /player feels responsive.
+                    use std::sync::atomic::{AtomicBool, Ordering};
+                    use std::sync::Arc;
+                    let running = Arc::new(AtomicBool::new(true));
+                    let r = Arc::clone(&running);
+                    if let Err(e) = ctrlc::set_handler(move || {
+                        r.store(false, Ordering::SeqCst);
+                    }) {
+                        eprintln!("[nats] Warning: could not install Ctrl+C handler: {} — Ctrl+C will not announce leave", e);
+                    }
+
+                    println!("[nats] Heartbeat every {}s — Ctrl+C to leave the swarm cleanly", heartbeat_secs);
+                    let mut tick: u64 = 0;
+                    while running.load(Ordering::SeqCst) {
+                        // Granular sleep so Ctrl+C is responsive (<= 1s).
+                        for _ in 0..heartbeat_secs {
+                            if !running.load(Ordering::SeqCst) { break; }
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                        if !running.load(Ordering::SeqCst) { break; }
+                        tick += 1;
+                        let p = publish_heartbeat("heartbeat");
+                        // Quiet output — one terse status line per tick.
+                        println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+                    }
+
+                    if let Err(e) = transport.announce_leave(&my_agent_id) {
+                        eprintln!("[nats] Warning: leave announce failed: {}", e);
+                    }
+                    println!("Left swarm cleanly ({})", my_agent_id);
                 }
                 "leave" => {
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
