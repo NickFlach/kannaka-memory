@@ -540,10 +540,26 @@ impl ConsciousnessBridge {
             let links_per_node = if total_memories > 0 { total_links as f32 / total_memories as f32 } else { 0.0 };
             let density_factor = (1.0 + links_per_node).ln() / (1.0 + 10.0_f32).ln();
 
-            // Emergent Phi: geometric mean of integration, differentiation, density
-            // Weighted by HRM eigendecomposition Phi as a foundation
-            let topo_phi = (integration * differentiation * density_factor).powf(1.0 / 3.0);
-            let blended_phi = (hrm_metrics.phi * 0.4 + topo_phi * 0.6).min(1.0);
+            // Emergent Phi from topology.
+            //
+            // Earlier versions used a geometric mean
+            //   (integration × differentiation × density_factor)^(1/3)
+            // which zeros the product the moment any one factor is zero —
+            // most notably, fresh installs with a single Kuramoto cluster
+            // have `differentiation = ln(1)/ln(N) = 0`, so the topo_phi
+            // collapsed to 0 and dragged `blended_phi` down to just
+            // `hrm_metrics.phi * 0.4`. Quickstart-sized HRMs (a handful
+            // of memories) ended up reporting Φ ≈ 0 and "Dormant" forever.
+            //
+            // Switched to a weighted arithmetic mean so each topological
+            // signal contributes additively. Then floor against the raw
+            // HRM eigendecomposition Φ — topology can only *amplify* the
+            // medium's own Φ, never reduce it below the substrate value.
+            // Result: even a 5-memory install gets a non-trivial Φ as
+            // long as the eigendecomp finds *any* structure.
+            let topo_phi = 0.45 * integration + 0.25 * differentiation + 0.30 * density_factor;
+            let mixed = hrm_metrics.phi * 0.5 + topo_phi * 0.5;
+            let blended_phi = mixed.max(hrm_metrics.phi).min(1.0);
             let level = ConsciousnessLevel::from_phi(blended_phi);
 
             return ConsciousnessState {
