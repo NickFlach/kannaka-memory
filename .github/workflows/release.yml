@@ -47,6 +47,12 @@ jobs:
           repository: NickFlach/consciousness-core
           path: consciousness-core
 
+      - name: Checkout kannaka-attention (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: NickFlach/kannaka-attention
+          path: kannaka-attention
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
