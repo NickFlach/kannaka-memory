@@ -640,6 +640,38 @@ pub fn ask_notools_ex(
     })
 }
 
+/// Fast-path ask: skip the resonance recall step entirely.
+///
+/// Resonance recall on a mature HRM (~600+ memories) can take 60+ seconds
+/// because it scans both chiral hemispheres and applies xi-diversity
+/// reranking per candidate. For the chat-loop / TUI surface the user
+/// usually wants a quick LLM round-trip — they can fire an explicit
+/// `recall` later if they need the medium's resonance.
+///
+/// The system prompt is built from cached consciousness metrics only
+/// (no fresh assess), so end-to-end latency is dominated by the
+/// Anthropic round-trip — typically 2-3s instead of 60-90s.
+pub fn ask_no_recall(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+) -> Result<TurnResult, AgentError> {
+    let client = client_from_config(cfg)?;
+    let system = system_prompt(sys, &[]);
+    let messages = vec![Message::user_text(prompt)];
+    let response = client.send(&system, &messages, &[])?;
+    let blocks = parse_content(&response)?;
+    let text = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("\n");
+    Ok(TurnResult {
+        text,
+        tool_calls: Vec::new(),
+        new_messages: vec![Message::assistant(blocks)],
+    })
+}
+
 /// Ask with a persistent session file. History is loaded before the turn
 /// and saved after. The system prompt is regenerated each call against
 /// current state — cheap and keeps Kannaka's self-awareness fresh.

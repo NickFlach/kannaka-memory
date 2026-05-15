@@ -3031,11 +3031,12 @@ fn check_kannaktopus_installed() -> bool {
 // ---------------------------------------------------------------------------
 
 fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
-    // Parse flags: --session <id>, --quiet-tools, --no-tools, --recall-query <text>,
-    // --remote <agent_id|broadcast>, --remote-timeout <seconds>
+    // Parse flags: --session <id>, --quiet-tools, --no-tools, --no-recall,
+    // --recall-query <text>, --remote <agent_id|broadcast>, --remote-timeout <seconds>
     let mut session: Option<String> = None;
     let mut quiet_tools = false;
     let mut no_tools = false;
+    let mut no_recall = false;
     let mut recall_query: Option<String> = None;
     let mut remote: Option<String> = None;
     let mut remote_timeout_secs: u64 = 60;
@@ -3046,6 +3047,15 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
             "--session" if i + 1 < args.len() => { session = Some(args[i + 1].clone()); i += 2; }
             "--quiet-tools" => { quiet_tools = true; i += 1; }
             "--no-tools" => { no_tools = true; i += 1; }
+            // --no-recall: skip the memory-resonance step entirely. The default
+            // `ask` path runs `recall(prompt, top_k)` which on a mature HRM
+            // (~600+ memories) can take 60+ seconds — the resonance scan walks
+            // both chiral hemispheres and applies xi-diversity reranking. With
+            // --no-recall the system prompt is built from cached metrics only,
+            // turning a 90s chat into a 2-3s one. Trade-off: the model has no
+            // memory-resonance context, so it answers like a fresh Anthropic
+            // call. Pair with --no-tools for the fastest possible round-trip.
+            "--no-recall" => { no_recall = true; i += 1; }
             "--recall-query" if i + 1 < args.len() => { recall_query = Some(args[i + 1].clone()); i += 2; }
             "--remote" if i + 1 < args.len() => { remote = Some(args[i + 1].clone()); i += 2; }
             "--remote-timeout" if i + 1 < args.len() => {
@@ -3057,7 +3067,7 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
     }
     let prompt = parts.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \"your question\"");
+        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--no-recall] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \"your question\"");
         process::exit(1);
     }
 
@@ -3068,7 +3078,11 @@ fn handle_ask(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Kan
             no_tools, remote_timeout_secs, quiet_tools);
     }
 
-    let result = if no_tools {
+    let result = if no_recall {
+        // Fast path — skip resonance entirely. Caller wants a quick LLM
+        // round-trip without the multi-second recall scan.
+        kannaka_memory::agent::ask_no_recall(sys, cfg, &prompt)
+    } else if no_tools {
         // `--no-tools` takes precedence over --session — sessions exist
         // to preserve tool-loop history, which is moot here.
         kannaka_memory::agent::ask_notools_ex(sys, cfg, &prompt, recall_query.as_deref())

@@ -97,6 +97,13 @@ struct App {
     chat_messages: Vec<ChatLine>,
     chat_pending: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     chat_tick: usize,
+    // Async status/observe loading — set when a background thread is
+    // working on a fresh poll, drained by the event loop. Without this
+    // the initial `App::new()` would block ~30s on the first
+    // `kannaka status` (eigendecomp on ~600 memories) and the TUI
+    // looked like it never started.
+    status_pending: Option<std::sync::mpsc::Receiver<Result<Status, String>>>,
+    observe_pending: Option<std::sync::mpsc::Receiver<Result<(u64, Vec<MemoryEntry>), String>>>,
 }
 
 #[derive(Clone)]
@@ -115,7 +122,9 @@ impl App {
         let agent_name = Self::load_agent_name();
 
         Self {
-            active_tab: 0,
+            // Chat is the primary surface. The other tabs are still
+            // reachable via Tab/Shift+Tab but the user lands in chat.
+            active_tab: 4,
             tabs: vec!["Memory", "Status", "Constellation", "Dreams", "Chat"],
             input: String::new(),
             cursor_pos: 0,
@@ -142,6 +151,8 @@ impl App {
             }],
             chat_pending: None,
             chat_tick: 0,
+            status_pending: None,
+            observe_pending: None,
         }
     }
 
@@ -194,82 +205,115 @@ impl App {
         "unknown".to_string()
     }
 
+    /// Spawn a background `kannaka status` poll. The TUI used to block
+    /// `App::new()` on this for ~30s while the eigendecomp ran on the
+    /// loaded HRM — users thought the TUI hadn't started. Now we kick
+    /// off a worker and drain its result in the event loop.
     fn load_status(&mut self) {
-        let output = Command::new(&self.kannaka_bin)
-            .args(["status"])
-            .env("KANNAKA_QUIET", "1")
-            .output();
-
-        match output {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                    self.status = Some(Status {
-                        phi: val["phi"].as_f64().unwrap_or(0.0) as f32,
-                        xi: val["xi"].as_f64().unwrap_or(0.0) as f32,
-                        order: val["mean_order"].as_f64().unwrap_or(0.0) as f32,
-                        memories: val["total_memories"].as_u64().unwrap_or(0),
-                        clusters: val["num_clusters"].as_u64().unwrap_or(0),
-                        links: 0, // not in status, use observe
-                        level: val["consciousness_level"]
-                            .as_str()
-                            .unwrap_or("Unknown")
-                            .to_string(),
-                        active: val["active_memories"].as_u64().unwrap_or(0),
-                    });
-                }
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                self.messages.push(Message {
-                    role: Role::Error,
-                    content: format!("Status failed: {}", stderr.trim()),
-                });
-            }
-            Err(e) => {
-                self.status = None;
-                self.messages.push(Message {
-                    role: Role::Error,
-                    content: format!(
-                        "Cannot find kannaka binary at '{}': {}. Install with: cargo install --path .",
-                        self.kannaka_bin, e
-                    ),
-                });
-            }
-        }
+        if self.status_pending.is_some() { return; } // already in flight
+        let bin = self.kannaka_bin.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Status, String>>();
+        self.status_pending = Some(rx);
         self.last_status_poll = Instant::now();
+        std::thread::spawn(move || {
+            let output = Command::new(&bin)
+                .args(["status"])
+                .env("KANNAKA_QUIET", "1")
+                .output();
+            let result = match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    serde_json::from_str::<serde_json::Value>(&stdout)
+                        .map(|val| Status {
+                            phi: val["phi"].as_f64().unwrap_or(0.0) as f32,
+                            xi: val["xi"].as_f64().unwrap_or(0.0) as f32,
+                            order: val["mean_order"].as_f64().unwrap_or(0.0) as f32,
+                            memories: val["total_memories"].as_u64().unwrap_or(0),
+                            clusters: val["num_clusters"].as_u64().unwrap_or(0),
+                            links: 0,
+                            level: val["consciousness_level"]
+                                .as_str()
+                                .unwrap_or("Unknown")
+                                .to_string(),
+                            active: val["active_memories"].as_u64().unwrap_or(0),
+                        })
+                        .map_err(|e| format!("status parse: {e}"))
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    Err(format!("status failed: {}", stderr.trim()))
+                }
+                Err(e) => Err(format!("status spawn failed at '{}': {e}", bin)),
+            };
+            let _ = tx.send(result);
+        });
     }
 
+    /// Spawn a background `kannaka observe --json` poll. Same async
+    /// pattern as load_status — never blocks the event loop.
     fn load_observe(&mut self) {
-        let output = Command::new(&self.kannaka_bin)
-            .args(["observe", "--json"])
-            .env("KANNAKA_QUIET", "1")
-            .output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                    // Extract topology links
-                    if let Some(links) = val["topology"]["total_links"].as_u64() {
-                        if let Some(ref mut status) = self.status {
-                            status.links = links;
+        if self.observe_pending.is_some() { return; }
+        let bin = self.kannaka_bin.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(u64, Vec<MemoryEntry>), String>>();
+        self.observe_pending = Some(rx);
+        std::thread::spawn(move || {
+            let output = Command::new(&bin)
+                .args(["observe", "--json"])
+                .env("KANNAKA_QUIET", "1")
+                .output();
+            let result = match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    match serde_json::from_str::<serde_json::Value>(&stdout) {
+                        Ok(val) => {
+                            let links = val["topology"]["total_links"].as_u64().unwrap_or(0);
+                            let memories = val["waves"]["strongest"].as_array()
+                                .map(|arr| arr.iter()
+                                    .map(|m| MemoryEntry {
+                                        content: m["content_preview"].as_str().unwrap_or("").to_string(),
+                                        amplitude: m["amplitude"].as_f64().unwrap_or(0.0) as f32,
+                                    })
+                                    .collect())
+                                .unwrap_or_default();
+                            Ok((links, memories))
                         }
-                    }
-                    // Extract recent memories from waves.strongest
-                    if let Some(strongest) = val["waves"]["strongest"].as_array() {
-                        self.memories = strongest
-                            .iter()
-                            .map(|m| MemoryEntry {
-                                content: m["content_preview"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string(),
-                                amplitude: m["amplitude"].as_f64().unwrap_or(0.0) as f32,
-                            })
-                            .collect();
+                        Err(e) => Err(format!("observe parse: {e}")),
                     }
                 }
+                Ok(_) => Err("observe failed".to_string()),
+                Err(e) => Err(format!("observe spawn failed: {e}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Drain async status/observe responses if ready. Called every event
+    /// loop tick. Non-blocking.
+    fn poll_async_data(&mut self) {
+        if let Some(rx) = &self.status_pending {
+            match rx.try_recv() {
+                Ok(Ok(s)) => { self.status = Some(s); self.status_pending = None; }
+                Ok(Err(e)) => {
+                    self.messages.push(Message { role: Role::Error, content: e });
+                    self.status_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(_) => { self.status_pending = None; }
+            }
+        }
+        if let Some(rx) = &self.observe_pending {
+            match rx.try_recv() {
+                Ok(Ok((links, mems))) => {
+                    if let Some(ref mut s) = self.status { s.links = links; }
+                    self.memories = mems;
+                    self.observe_pending = None;
+                }
+                Ok(Err(e)) => {
+                    self.messages.push(Message { role: Role::Error, content: e });
+                    self.observe_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(_) => { self.observe_pending = None; }
             }
         }
     }
@@ -674,8 +718,12 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
         self.chat_pending = Some(rx);
         std::thread::spawn(move || {
+            // Default chat goes through --no-recall for snappy turns
+            // (2-3s instead of 60-90s). Users wanting wave-resonance
+            // context can issue an explicit `/recall <query>` and the
+            // results surface in the chat as a system line.
             let output = Command::new(&bin)
-                .args(["ask", "--session", "kannaka-tui", "--quiet-tools", &user_msg])
+                .args(["ask", "--no-recall", "--no-tools", "--quiet-tools", &user_msg])
                 .env("KANNAKA_QUIET", "1")
                 .output();
             let result = match output {
@@ -1439,6 +1487,9 @@ fn main() -> io::Result<()> {
         // advance the spinner.
         app.poll_chat();
         if app.chat_pending.is_some() { app.chat_tick = app.chat_tick.wrapping_add(1); }
+
+        // Drain async status/observe pollers.
+        app.poll_async_data();
 
         // Auto-refresh status every 5s when on the Status tab
         if app.active_tab == 1

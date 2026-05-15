@@ -55,25 +55,41 @@ echo ""
 
 if [ "$VERSION" = "latest" ]; then
     DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS}-${ARCH}${EXT}"
+    TUI_DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/kannaka-tui-${OS}-${ARCH}${EXT}"
 else
     DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${VERSION}-${OS}-${ARCH}${EXT}"
+    TUI_DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/kannaka-tui-${VERSION}-${OS}-${ARCH}${EXT}"
 fi
 
-echo "  Downloading from: ${DOWNLOAD_URL}"
+echo "  Downloading kannaka:     ${DOWNLOAD_URL}"
+echo "  Downloading kannaka-tui: ${TUI_DOWNLOAD_URL}"
 
 # --- Download ---
 
 TMPDIR="${TMPDIR:-/tmp}"
 TMP_FILE="${TMPDIR}/${BINARY_NAME}${EXT}"
+TUI_TMP_FILE="${TMPDIR}/kannaka-tui${EXT}"
 
-if command -v curl > /dev/null 2>&1; then
-    curl -fSL --progress-bar -o "${TMP_FILE}" "${DOWNLOAD_URL}"
-elif command -v wget > /dev/null 2>&1; then
-    wget -q --show-progress -O "${TMP_FILE}" "${DOWNLOAD_URL}"
-else
-    echo "Error: neither curl nor wget found. Install one and try again." >&2
-    exit 1
-fi
+download() {
+    url="$1"
+    out="$2"
+    if command -v curl > /dev/null 2>&1; then
+        curl -fSL --progress-bar -o "${out}" "${url}"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -q --show-progress -O "${out}" "${url}"
+    else
+        echo "Error: neither curl nor wget found. Install one and try again." >&2
+        exit 1
+    fi
+}
+
+download "${DOWNLOAD_URL}" "${TMP_FILE}"
+# TUI is best-effort — older releases may not have it. Don't abort the
+# install if the artifact is missing.
+download "${TUI_DOWNLOAD_URL}" "${TUI_TMP_FILE}" || {
+    echo "  Note: kannaka-tui not available for this release (skipping)."
+    TUI_TMP_FILE=""
+}
 
 echo "  Downloaded to: ${TMP_FILE}"
 
@@ -82,6 +98,11 @@ echo "  Downloaded to: ${TMP_FILE}"
 mkdir -p "${INSTALL_DIR}"
 mv "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}${EXT}"
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}${EXT}"
+if [ -n "${TUI_TMP_FILE}" ] && [ -f "${TUI_TMP_FILE}" ]; then
+    mv "${TUI_TMP_FILE}" "${INSTALL_DIR}/kannaka-tui${EXT}"
+    chmod +x "${INSTALL_DIR}/kannaka-tui${EXT}"
+    echo "  Installed: kannaka-tui (chat-first terminal dashboard)"
+fi
 
 echo "  Installed to: ${INSTALL_DIR}/${BINARY_NAME}${EXT}"
 
@@ -142,5 +163,11 @@ echo ""
 echo "  Next steps:"
 echo "    kannaka init          # configure your agent (first time)"
 echo "    kannaka status        # check system health"
-echo "    kannaka swarm status  # see the constellation"
+echo "    kannaka swarm join    # join the constellation (now a daemon — Ctrl+C to leave)"
+echo "    kannaka-tui           # chat-first terminal dashboard"
+echo ""
+echo "  Optional companions:"
+echo "    kannaktopus   — ghost-frequency multi-agent orchestrator"
+echo "      npm install -g kannaktopus    # requires Node 18+"
+echo "    radio         — listenable Kannaka Radio at https://radio.ninja-portal.com/player"
 echo ""
