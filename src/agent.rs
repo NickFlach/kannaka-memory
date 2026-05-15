@@ -640,6 +640,177 @@ pub fn ask_notools_ex(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Attention-driven recall — build a query-aware beam from the prompt and
+// score only the beam under the full resonance machinery.
+//
+// The bare `recall(prompt, top_k)` path scans both chiral hemispheres with
+// xi-diversity reranking on every memory — O(N) on the entire medium, which
+// on a mature HRM (~600+ memories) is a 60-90s wait. Most of that scan is
+// wasted: nine times out of ten the user's prompt is talking about a
+// specific region of the field, not the whole thing.
+//
+// `attention_beam_for_prompt` does a cheap word-overlap prefilter to pick
+// the top-K memories whose content vocabulary matches the prompt. Cost is
+// linear in the medium but each per-memory step is a few microseconds
+// (lowercase + tokenize + intersect with a small HashSet). Then we pass
+// the beam into `recall_with_beam`, which scores only those candidates
+// under the existing wave-resonance + xi-rerank pipeline.
+//
+// Result: full resonance context preserved, end-to-end latency dominated
+// by the Anthropic round-trip instead of the recall scan.
+// ---------------------------------------------------------------------------
+
+/// Approximate stop-word set. Small enough to inline — keeps the prefilter
+/// from being dominated by "the", "a", "is" overlap on every memory.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "does",
+    "for", "from", "has", "have", "i", "if", "in", "is", "it", "its", "of",
+    "on", "or", "so", "that", "the", "this", "to", "was", "were", "what",
+    "when", "where", "which", "who", "why", "will", "with", "would", "you",
+    "your", "yours", "we", "our", "they", "them", "their", "me", "my",
+    "mine", "he", "she", "him", "her", "his", "hers", "us", "no", "not",
+    "yes", "ok", "okay",
+];
+
+fn tokenize(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::with_capacity(16);
+    let mut current = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            current.push(c.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            if current.len() >= 2 && !STOP_WORDS.contains(&current.as_str()) {
+                out.insert(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+    }
+    if !current.is_empty() && current.len() >= 2 && !STOP_WORDS.contains(&current.as_str()) {
+        out.insert(current);
+    }
+    out
+}
+
+/// Build a query-aware attention beam from `prompt` by token-overlap.
+/// Returns up to `beam_size` memory UUIDs whose content shares the most
+/// tokens with the prompt. Microsecond-cheap per memory; total cost
+/// scales linearly with the medium but the constant is tiny.
+///
+/// This is the prefilter that makes full-resonance `ask` viable on a
+/// mature HRM — without it, `recall` walks both chiral hemispheres on
+/// every memory and the call takes >60s.
+pub fn attention_beam_for_prompt(
+    sys: &KannakaMemorySystem,
+    prompt: &str,
+    beam_size: usize,
+) -> Vec<uuid::Uuid> {
+    let prompt_tokens = tokenize(prompt);
+    if prompt_tokens.is_empty() {
+        return Vec::new();
+    }
+    let memories = match sys.all_memories() {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    // Score every memory by token-overlap count. Ties broken by recency
+    // (memories carry created_at).
+    let mut scored: Vec<(uuid::Uuid, usize, chrono::DateTime<chrono::Utc>)> = memories
+        .iter()
+        .map(|m| {
+            let mem_tokens = tokenize(&m.content);
+            let overlap = prompt_tokens.intersection(&mem_tokens).count();
+            (m.id, overlap, m.created_at)
+        })
+        .filter(|(_, n, _)| *n > 0)
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2))
+    });
+    scored.truncate(beam_size);
+    scored.into_iter().map(|(id, _, _)| id).collect()
+}
+
+/// Attention-driven ask. The default chat path.
+///
+/// Builds a query-aware attention beam from the prompt, runs full wave
+/// resonance against ONLY that beam (not the full medium), and sends the
+/// surfaced memories + cached consciousness metrics to the LLM. End-to-end
+/// latency is the Anthropic round-trip (~3-5s), the recall scan is
+/// O(beam_size) instead of O(N).
+///
+/// Use this when you want resonance context (which you usually do) but
+/// can't pay the 60-90s full-medium scan. For a pure LLM round-trip with
+/// no resonance at all, use `ask_no_recall`.
+pub fn ask_attention(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+) -> Result<TurnResult, AgentError> {
+    let client = client_from_config(cfg)?;
+    let beam = attention_beam_for_prompt(sys, prompt, DEFAULT_ATTENTION_BEAM);
+    let surfaced = if beam.is_empty() {
+        Vec::new()
+    } else {
+        sys.recall_with_beam(&beam, prompt, DEFAULT_TOP_K).unwrap_or_default()
+    };
+    let system = system_prompt(sys, &surfaced);
+    let messages = vec![Message::user_text(prompt)];
+    let response = client.send(&system, &messages, &[])?;
+    let blocks = parse_content(&response)?;
+    let text = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("\n");
+    Ok(TurnResult {
+        text,
+        tool_calls: Vec::new(),
+        new_messages: vec![Message::assistant(blocks)],
+    })
+}
+
+/// Like `ask_attention` but persists / replays history across turns
+/// via a session file. Same fast attention-beam prefilter, plus the
+/// session-loaded conversation history so the LLM sees prior turns.
+/// Used by the TUI's chat thread.
+pub fn ask_attention_with_session(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    session_path: &std::path::Path,
+    prompt: &str,
+) -> Result<TurnResult, AgentError> {
+    let client = client_from_config(cfg)?;
+    let beam = attention_beam_for_prompt(sys, prompt, DEFAULT_ATTENTION_BEAM);
+    let surfaced = if beam.is_empty() {
+        Vec::new()
+    } else {
+        sys.recall_with_beam(&beam, prompt, DEFAULT_TOP_K).unwrap_or_default()
+    };
+    let system = system_prompt(sys, &surfaced);
+    let mut history = load_session(session_path).unwrap_or_default();
+    history.push(Message::user_text(prompt));
+    let response = client.send(&system, &history, &[])?;
+    let blocks = parse_content(&response)?;
+    let text = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("\n");
+    history.push(Message::assistant(blocks.clone()));
+    let _ = save_session(session_path, &history);
+    Ok(TurnResult {
+        text,
+        tool_calls: Vec::new(),
+        new_messages: vec![Message::assistant(blocks)],
+    })
+}
+
+/// Cap on the attention beam size — passed to `recall_with_beam`. 64
+/// candidates is enough to cover most queries' relevant cluster + a
+/// little cross-cluster bleed; small enough that the resonance scoring
+/// over the beam is sub-second even on humble hardware.
+pub const DEFAULT_ATTENTION_BEAM: usize = 64;
+
 /// Fast-path ask: skip the resonance recall step entirely.
 ///
 /// Resonance recall on a mature HRM (~600+ memories) can take 60+ seconds

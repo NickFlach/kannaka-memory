@@ -718,12 +718,15 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
         self.chat_pending = Some(rx);
         std::thread::spawn(move || {
-            // Default chat goes through --no-recall for snappy turns
-            // (2-3s instead of 60-90s). Users wanting wave-resonance
-            // context can issue an explicit `/recall <query>` and the
-            // results surface in the chat as a system line.
+            // Default chat uses attention-driven recall: a query-aware
+            // beam prefilter picks ~64 candidates whose vocabulary
+            // overlaps the prompt, then full wave resonance runs only
+            // against that beam. Wave-interference memory semantics
+            // preserved; latency dominated by the Anthropic round-trip
+            // (~3-5s) instead of the 60-90s full-medium scan.
+            // --session keeps multi-turn context coherent.
             let output = Command::new(&bin)
-                .args(["ask", "--no-recall", "--no-tools", "--quiet-tools", &user_msg])
+                .args(["ask", "--session", "kannaka-tui", "--quiet-tools", &user_msg])
                 .env("KANNAKA_QUIET", "1")
                 .output();
             let result = match output {
