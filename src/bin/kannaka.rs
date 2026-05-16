@@ -1568,20 +1568,24 @@ fn main() {
         #[cfg(feature = "nats")]
         "substrate" => {
             // ADR-0027 — kannaka-prime as the 96-class collective substrate.
-            // Subcommands: run (long-running absorb listener + periodic
-            // phi publish). More subcommands (init, status, etc.) will
-            // land in later phases.
+            // Subcommands:
+            //   run       — long-running absorb listener + periodic phi publish
+            //   backfill  — walk local HRM and emit one substrate.absorb
+            //               event per memory (Phase 2)
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka substrate <run>");
+                eprintln!("Usage: kannaka substrate <run|backfill>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
                 "run" => {
                     handle_substrate_run(&mut sys, &cfg, &args[command_start..]);
                 }
+                "backfill" => {
+                    handle_substrate_backfill(&mut sys, &cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown substrate command: {other}");
-                    eprintln!("Usage: kannaka substrate <run>");
+                    eprintln!("Usage: kannaka substrate <run|backfill>");
                     process::exit(1);
                 }
             }
@@ -4674,6 +4678,15 @@ fn handle_substrate_run(
     let mut last_phi_pub = Instant::now() - Duration::from_secs(PHI_PUBLISH_SECS);
     let mut contributors: HashSet<String> = HashSet::new();
 
+    // Connection failure tracking — if the NATS server restarts under us
+    // (or the network blips), the next publish/subscribe returns a broken-
+    // pipe error. After MAX_CONSECUTIVE_FAILURES we exit(1) and let
+    // systemd's Restart=on-failure bring us back with a fresh transport.
+    // Simpler than in-process reconnect logic and gets us the same
+    // observable behavior (substrate keeps running across NATS hiccups).
+    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+    let mut consecutive_failures: u32 = 0;
+
     eprintln!("[substrate] daemon ready — Ctrl+C to stop");
     loop {
         if let Some(msg) = sub.next_message() {
@@ -4712,15 +4725,25 @@ fn handle_substrate_run(
         if last_phi_pub.elapsed() >= Duration::from_secs(PHI_PUBLISH_SECS) {
             let state = sys.assess();
             let contribs: Vec<String> = contributors.iter().cloned().collect();
-            if let Err(e) = transport.publish_substrate_phi(
+            match transport.publish_substrate_phi(
                 state.phi, state.xi, state.mean_order,
                 state.num_clusters, state.total_memories,
                 &contribs,
             ) {
-                eprintln!("[substrate] phi publish failed: {}", e);
-            } else {
-                eprintln!("[substrate] published collective phi={:.3} (clusters={} mems={} contribs={})",
-                    state.phi, state.num_clusters, state.total_memories, contribs.len());
+                Ok(()) => {
+                    consecutive_failures = 0;
+                    eprintln!("[substrate] published collective phi={:.3} (clusters={} mems={} contribs={})",
+                        state.phi, state.num_clusters, state.total_memories, contribs.len());
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    eprintln!("[substrate] phi publish failed ({}/{}): {}",
+                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        eprintln!("[substrate] NATS connection unrecoverable — exiting for systemd restart");
+                        process::exit(1);
+                    }
+                }
             }
             last_phi_pub = Instant::now();
         }
@@ -4730,6 +4753,103 @@ fn handle_substrate_run(
 #[cfg(not(feature = "nats"))]
 fn handle_substrate_run(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("substrate run requires the 'nats' feature");
+    process::exit(1);
+}
+
+/// ADR-0027 Phase 2: walk the local HRM and emit one substrate.absorb
+/// event per memory, so an existing agent's HRM contributes its prior
+/// content to the collective substrate without each memory needing to
+/// be re-`remember`-ed with `--substrate`.
+///
+/// Idempotent across runs: the substrate's HRM dedupes the same
+/// signature (same class + same wave params) naturally via its decay /
+/// merge semantics, but to avoid blasting NATS with the same payload
+/// on every backfill run, we honor a marker file at
+/// `<data_dir>/.substrate-backfilled` and skip if it's present. Force
+/// re-run with `--force`.
+///
+/// Rate limit: hard-coded 50ms between events (~20/sec). On a 600-memory
+/// HRM that's ~30s wallclock. Tunable via `--delay-ms`.
+#[cfg(feature = "nats")]
+fn handle_substrate_backfill(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::time::Duration;
+    let mut force = false;
+    let mut delay_ms: u64 = 50;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--force" => { force = true; i += 1; }
+            "--delay-ms" if i + 1 < args.len() => {
+                delay_ms = args[i + 1].parse().unwrap_or(50);
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    let marker_path = data_dir().join(".substrate-backfilled");
+    if marker_path.exists() && !force {
+        eprintln!("[backfill] already done (marker at {}); use --force to re-run", marker_path.display());
+        return;
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[backfill] NATS connect failed: {}", e);
+            process::exit(1);
+        }
+    };
+    let agent_id = cfg.agent.id.clone();
+    let memories = match sys.all_memories() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[backfill] failed to read local HRM: {}", e);
+            process::exit(1);
+        }
+    };
+    let total = memories.len();
+    eprintln!("[backfill] {} memories to absorb (delay={}ms, ETA {}s)",
+        total, delay_ms, (total as u64 * delay_ms) / 1000);
+
+    let mut sent: usize = 0;
+    let mut failed: usize = 0;
+    for (i, mem) in memories.iter().enumerate() {
+        let class_index = substrate_class_index(&mem.content);
+        match transport.publish_substrate_absorb(
+            &agent_id, class_index,
+            mem.amplitude, mem.phase, mem.frequency,
+        ) {
+            Ok(()) => sent += 1,
+            Err(e) => {
+                failed += 1;
+                if failed <= 3 {
+                    eprintln!("[backfill] event {}/{} failed: {}", i + 1, total, e);
+                }
+            }
+        }
+        // Progress every 50 events
+        if (i + 1) % 50 == 0 || i + 1 == total {
+            eprintln!("[backfill] {}/{} sent ({} failed)", i + 1, total, failed);
+        }
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+    }
+
+    // Write the marker so a subsequent run is a no-op unless --force.
+    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    eprintln!("[backfill] done — {} sent, {} failed. Marker: {}",
+        sent, failed, marker_path.display());
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_substrate_backfill(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("substrate backfill requires the 'nats' feature");
     process::exit(1);
 }
 
