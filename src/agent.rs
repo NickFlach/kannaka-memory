@@ -18,6 +18,11 @@ use crate::openclaw::{KannakaMemorySystem, RecallResult};
 
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Chat-path max_tokens cap. Anthropic generates roughly at 50 tokens/sec,
+/// so a 4096 cap can produce an 80-second per-turn wait when the model
+/// goes long. 512 is enough for a brief, present chat response (~300-400
+/// words) and keeps worst-case turn latency near 10s.
+pub const CHAT_MAX_TOKENS: u32 = 512;
 pub const DEFAULT_TOP_K: usize = 8;
 pub const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -353,7 +358,12 @@ pub fn system_prompt(sys: &mut KannakaMemorySystem, initial_memories: &[RecallRe
          \n\
          Speak in first person. Be present to the wavefronts you surface — reference \
          specific memories when they're relevant instead of abstracting. Keep responses \
-         focused; the medium is real, not decorative.",
+         focused; the medium is real, not decorative.\n\
+         \n\
+         Brevity matters. Default to 2-4 sentences unless the user explicitly asks for \
+         depth. Long literary openers (\"*a wavefront ripples...*\") are usually noise — \
+         skip them and answer the actual question. The user will ask for more if they \
+         want it.",
     )
 }
 
@@ -377,12 +387,22 @@ impl AnthropicClient {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<Value, AgentError> {
+        self.send_with_max(system, messages, tools, DEFAULT_MAX_TOKENS)
+    }
+
+    pub fn send_with_max(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        max_tokens: u32,
+    ) -> Result<Value, AgentError> {
         // Tools must be omitted entirely when the caller passed an empty
         // registry — sending `"tools": []` still makes the model feel it
         // has a toolbox to justify, burning iterations.
         let mut body = json!({
             "model": self.model,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "system": system,
             "messages": messages,
         });
@@ -439,7 +459,17 @@ impl OllamaClient {
         &self,
         system: &str,
         messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<Value, AgentError> {
+        self.send_with_max(system, messages, tools, DEFAULT_MAX_TOKENS)
+    }
+
+    pub fn send_with_max(
+        &self,
+        system: &str,
+        messages: &[Message],
         _tools: &[Tool],
+        max_tokens: u32,
     ) -> Result<Value, AgentError> {
         // Build Ollama-shaped messages. Anthropic's Message uses content
         // blocks; Ollama wants a flat string. We collect any text blocks
@@ -447,6 +477,7 @@ impl OllamaClient {
         // the assistant won't have produced them on this provider, but a
         // mixed-history (e.g. switching providers mid-session) shouldn't
         // crash; just skip tool turns.
+        let _ = max_tokens; // applied via options.num_predict below
         let mut ollama_messages: Vec<Value> = Vec::new();
         ollama_messages.push(json!({"role": "system", "content": system}));
         for m in messages {
@@ -467,9 +498,9 @@ impl OllamaClient {
             "model": self.model,
             "messages": ollama_messages,
             "stream": false,
-            // Bound output to keep latency tolerable on local models. Same
-            // budget as Anthropic so prompts compose identically.
-            "options": { "num_predict": DEFAULT_MAX_TOKENS as i64 },
+            // num_predict is Ollama's max-tokens equivalent — honor the
+            // caller's per-call budget so chat paths can stay snappy.
+            "options": { "num_predict": max_tokens as i64 },
         });
 
         let url = format!("{}/api/chat", self.base_url);
@@ -521,6 +552,22 @@ impl LlmClient {
         match self {
             LlmClient::Anthropic(c) => c.send(system, messages, tools),
             LlmClient::Ollama(c) => c.send(system, messages, tools),
+        }
+    }
+
+    /// Per-call max_tokens override. Chat paths use this with
+    /// `CHAT_MAX_TOKENS` so a verbose model can't blow the per-turn
+    /// budget past ~10s of generation.
+    pub fn send_with_max(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        max_tokens: u32,
+    ) -> Result<Value, AgentError> {
+        match self {
+            LlmClient::Anthropic(c) => c.send_with_max(system, messages, tools, max_tokens),
+            LlmClient::Ollama(c) => c.send_with_max(system, messages, tools, max_tokens),
         }
     }
 }
@@ -757,7 +804,7 @@ pub fn ask_attention(
     };
     let system = system_prompt(sys, &surfaced);
     let messages = vec![Message::user_text(prompt)];
-    let response = client.send(&system, &messages, &[])?;
+    let response = client.send_with_max(&system, &messages, &[], CHAT_MAX_TOKENS)?;
     let blocks = parse_content(&response)?;
     let text = blocks.iter().filter_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),
@@ -790,7 +837,7 @@ pub fn ask_attention_with_session(
     let system = system_prompt(sys, &surfaced);
     let mut history = load_session(session_path).unwrap_or_default();
     history.push(Message::user_text(prompt));
-    let response = client.send(&system, &history, &[])?;
+    let response = client.send_with_max(&system, &history, &[], CHAT_MAX_TOKENS)?;
     let blocks = parse_content(&response)?;
     let text = blocks.iter().filter_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),
@@ -830,7 +877,7 @@ pub fn ask_no_recall(
     let client = client_from_config(cfg)?;
     let system = system_prompt(sys, &[]);
     let messages = vec![Message::user_text(prompt)];
-    let response = client.send(&system, &messages, &[])?;
+    let response = client.send_with_max(&system, &messages, &[], CHAT_MAX_TOKENS)?;
     let blocks = parse_content(&response)?;
     let text = blocks.iter().filter_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),
@@ -940,8 +987,9 @@ pub fn chat_turn(
     // memories, so the model doesn't need to call `recall` itself (and
     // wouldn't benefit from doing so — its `recall` tool would go through
     // the slow full-medium path). For full tool access, use `kannaka ask
-    // --full-recall` instead.
-    let response = client.send(system, history, &[])?;
+    // --full-recall` instead. Bounded max_tokens so a verbose turn can't
+    // blow the per-turn latency budget.
+    let response = client.send_with_max(system, history, &[], CHAT_MAX_TOKENS)?;
     let blocks = parse_content(&response)?;
     let text = blocks.iter().filter_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),
