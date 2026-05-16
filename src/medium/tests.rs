@@ -470,6 +470,33 @@ fn phi_integrated_information_nonzero() {
 }
 
 #[test]
+fn phi_detects_multiple_partitions_when_field_is_not_uniform() {
+    let mut medium = Medium::new();
+
+    let mut vector_a1 = vec![0.0; WAVEFRONT_DIM];
+    let mut vector_a2 = vec![0.0; WAVEFRONT_DIM];
+    let mut vector_b1 = vec![0.0; WAVEFRONT_DIM];
+    let mut vector_b2 = vec![0.0; WAVEFRONT_DIM];
+
+    for i in 0..16 {
+        vector_a1[i] = 1.0;
+        vector_a2[i] = 0.9;
+        vector_b1[64 + i] = 1.0;
+        vector_b2[64 + i] = 0.9;
+    }
+
+    medium.add_wavefront(&vector_a1, "cluster-a1".to_string(), 1.0).unwrap();
+    medium.add_wavefront(&vector_a2, "cluster-a2".to_string(), 0.95).unwrap();
+    medium.add_wavefront(&vector_b1, "cluster-b1".to_string(), 1.0).unwrap();
+    medium.add_wavefront(&vector_b2, "cluster-b2".to_string(), 0.95).unwrap();
+
+    let phi = medium.compute_phi_integrated_information();
+    println!("Phi for two-partition field: {}", phi);
+
+    assert!(phi > 0.0, "expected non-zero phi for a field with distinct coherent substructure");
+}
+
+#[test]
 fn xi_spectral_complexity_varies() {
     let mut medium = Medium::new();
 
