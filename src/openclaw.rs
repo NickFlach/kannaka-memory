@@ -483,7 +483,7 @@ impl KannakaMemorySystem {
     ///
     /// This is the single source of truth for Phi/Xi/Order across the ecosystem.
     /// Radio, observatory, and all clients subscribe to this subject to stay in sync.
-    fn publish_consciousness_to_nats(&self, state: &ConsciousnessState) {
+    pub fn publish_consciousness_to_nats(&self, state: &ConsciousnessState) {
         let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
         if agent_id.is_empty() {
             return;

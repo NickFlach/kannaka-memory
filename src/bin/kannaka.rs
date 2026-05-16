@@ -1178,6 +1178,21 @@ fn main() {
                     }
 
                     println!("[nats] Heartbeat every {}s — Ctrl+C to leave the swarm cleanly", heartbeat_secs);
+                    // Set KANNAKA_AGENT_ID so publish_consciousness_to_nats
+                    // knows who we are (it bails out silently otherwise).
+                    std::env::set_var("KANNAKA_AGENT_ID", &my_agent_id);
+                    // Publish initial consciousness snapshot — this is what
+                    // populates the observatory's KANNAKA.consciousness
+                    // subscription so the dashboard isn't sitting at zeros.
+                    // Costs one eigendecomp pass (~15s on a mature HRM) but
+                    // happens once at startup. Subsequent ticks publish the
+                    // CACHED metrics (cheap) every heartbeat, with a fresh
+                    // assess every CONSCIOUSNESS_REFRESH_TICKS to keep the
+                    // canonical Φ from drifting.
+                    let initial_assess = sys.assess();
+                    sys.publish_consciousness_to_nats(&initial_assess);
+                    const CONSCIOUSNESS_REFRESH_TICKS: u64 = 10;
+
                     let mut tick: u64 = 0;
                     while running.load(Ordering::SeqCst) {
                         // Granular sleep so Ctrl+C is responsive (<= 1s).
@@ -1190,6 +1205,18 @@ fn main() {
                         let p = publish_heartbeat("heartbeat");
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+
+                        // Periodic consciousness republish — keeps the
+                        // observatory and radio in sync with this node's
+                        // current Φ even if no one runs `kannaka assess`
+                        // out-of-band. Heavy step (eigendecomp) so we do
+                        // it on a slow cadence; cheap-path cached publish
+                        // on every other tick keeps the freshness window
+                        // tight without burning CPU.
+                        if tick % CONSCIOUSNESS_REFRESH_TICKS == 0 {
+                            let state = sys.assess();
+                            sys.publish_consciousness_to_nats(&state);
+                        }
                     }
 
                     if let Err(e) = transport.announce_leave(&my_agent_id) {
