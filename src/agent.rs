@@ -917,9 +917,15 @@ pub fn chat_turn(
 ) -> Result<TurnResult, AgentError> {
     let client = client_from_config(cfg)?;
     // Attention as gravity: each turn re-probes the field with the current
-    // message. Surfaced memories are injected ONCE as an inline preface so
-    // they become part of the cache-hit trail rather than a fresh system prompt.
-    let surfaced = sys.recall(user_message, DEFAULT_TOP_K).unwrap_or_default();
+    // message. Resonance runs against an attention beam (token-overlap
+    // prefilter) so the per-turn recall cost is sub-second on a mature HRM
+    // instead of the 60-90s full-medium scan the old path triggered.
+    let beam = attention_beam_for_prompt(sys, user_message, DEFAULT_ATTENTION_BEAM);
+    let surfaced = if beam.is_empty() {
+        Vec::new()
+    } else {
+        sys.recall_with_beam(&beam, user_message, DEFAULT_TOP_K).unwrap_or_default()
+    };
     let content = if surfaced.is_empty() {
         user_message.to_string()
     } else {
@@ -930,7 +936,23 @@ pub fn chat_turn(
         )
     };
     history.push(Message::user_text(content));
-    run_tool_loop(sys, &client, system, history)
+    // Single-shot — no tool loop. The beam already surfaced the resonant
+    // memories, so the model doesn't need to call `recall` itself (and
+    // wouldn't benefit from doing so — its `recall` tool would go through
+    // the slow full-medium path). For full tool access, use `kannaka ask
+    // --full-recall` instead.
+    let response = client.send(system, history, &[])?;
+    let blocks = parse_content(&response)?;
+    let text = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("\n");
+    history.push(Message::assistant(blocks.clone()));
+    Ok(TurnResult {
+        text,
+        tool_calls: Vec::new(),
+        new_messages: vec![Message::assistant(blocks)],
+    })
 }
 
 /// Core loop: send → if tool_use blocks → dispatch → append tool_result → repeat.
