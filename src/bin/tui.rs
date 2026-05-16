@@ -885,13 +885,59 @@ impl App {
                         if let Some(ref mut h) = self.chat_child { h.ready = true; }
                     }
                     Ok(ChatChildEvent::Response { kind, text }) => {
-                        let who = match kind.as_str() {
-                            "chat" => ChatWho::Kannaka,
-                            "error" => ChatWho::System,
-                            _ => ChatWho::System, // slash / ready / other
-                        };
-                        self.chat_messages.push(ChatLine { who, text });
-                        self.chat_pending = None;
+                        match kind.as_str() {
+                            "chunk" => {
+                                // Streaming token from the in-flight chat
+                                // turn. Append to the trailing Kannaka line
+                                // so the response builds up live in the UI.
+                                let needs_new = match self.chat_messages.last() {
+                                    Some(line) => !matches!(line.who, ChatWho::Kannaka),
+                                    None => true,
+                                };
+                                if needs_new {
+                                    self.chat_messages.push(ChatLine {
+                                        who: ChatWho::Kannaka,
+                                        text: text.clone(),
+                                    });
+                                } else if let Some(last) = self.chat_messages.last_mut() {
+                                    last.text.push_str(&text);
+                                }
+                                // Don't clear chat_pending yet — the final
+                                // "chat" frame is the turn-done signal.
+                            }
+                            "chat" => {
+                                // Turn-done. If we streamed chunks, the line
+                                // already has the text; just clear pending.
+                                // If we didn't (e.g. Ollama fallback), push
+                                // the assembled text as a new line.
+                                let already_streamed = matches!(
+                                    self.chat_messages.last().map(|l| &l.who),
+                                    Some(ChatWho::Kannaka)
+                                );
+                                if !already_streamed {
+                                    self.chat_messages.push(ChatLine {
+                                        who: ChatWho::Kannaka,
+                                        text,
+                                    });
+                                }
+                                self.chat_pending = None;
+                            }
+                            "error" => {
+                                self.chat_messages.push(ChatLine {
+                                    who: ChatWho::System,
+                                    text,
+                                });
+                                self.chat_pending = None;
+                            }
+                            _ => {
+                                // slash / ready / other
+                                self.chat_messages.push(ChatLine {
+                                    who: ChatWho::System,
+                                    text,
+                                });
+                                self.chat_pending = None;
+                            }
+                        }
                     }
                     Ok(ChatChildEvent::Closed(reason)) => {
                         closed_reason = Some(reason);

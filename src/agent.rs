@@ -429,6 +429,92 @@ impl AnthropicClient {
             Err(e) => Err(AgentError::Http(e.to_string())),
         }
     }
+
+    /// Streaming send. Anthropic's messages endpoint accepts `stream: true`
+    /// and returns Server-Sent Events. Each `content_block_delta` event
+    /// carries a chunk of text; we call `on_chunk(text)` per chunk so the
+    /// UI can render tokens as they arrive (~250ms to first token instead
+    /// of 30-60s for the full response).
+    ///
+    /// Returns a Message-style Value matching the non-streaming `send`
+    /// output (a `content` array of text blocks) so callers can reuse
+    /// `parse_content`. Tools are intentionally not supported on the
+    /// streaming path — chat surfaces don't run tool loops.
+    pub fn send_streaming<F: FnMut(&str)>(
+        &self,
+        system: &str,
+        messages: &[Message],
+        max_tokens: u32,
+        mut on_chunk: F,
+    ) -> Result<Value, AgentError> {
+        use std::io::{BufRead, BufReader};
+        let body = json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+            "stream": true,
+        });
+        let resp = ureq::post(ANTHROPIC_URL)
+            .set("x-api-key", &self.api_key)
+            .set("anthropic-version", ANTHROPIC_VERSION)
+            .set("content-type", "application/json")
+            .set("accept", "text/event-stream")
+            .timeout(Duration::from_secs(300))
+            .send_json(body);
+        let r = match resp {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(AgentError::Api { status: code, body });
+            }
+            Err(e) => return Err(AgentError::Http(e.to_string())),
+        };
+        let reader = BufReader::new(r.into_reader());
+        let mut assembled = String::new();
+        // SSE format: alternating `event: <name>` and `data: <json>` lines,
+        // separated by blank lines. We only need the data lines — the
+        // event type can be inferred from the JSON shape.
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => return Err(AgentError::Http(format!("stream read: {e}"))),
+            };
+            if line.is_empty() || !line.starts_with("data:") {
+                continue;
+            }
+            let payload = line[5..].trim();
+            // [DONE] terminator (some SSE producers send this; Anthropic
+            // uses message_stop instead, but tolerate it either way).
+            if payload == "[DONE]" { break; }
+            let v: Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(_) => continue, // skip un-parseable lines
+            };
+            let ty = v["type"].as_str().unwrap_or("");
+            match ty {
+                "content_block_delta" => {
+                    if let Some(text) = v["delta"]["text"].as_str() {
+                        assembled.push_str(text);
+                        on_chunk(text);
+                    }
+                }
+                "message_stop" => break,
+                "error" => {
+                    let msg = v["error"]["message"].as_str().unwrap_or("stream error").to_string();
+                    return Err(AgentError::Api { status: 0, body: msg });
+                }
+                _ => {} // message_start, content_block_start/stop, ping, etc.
+            }
+        }
+        // Synthesize a non-streaming-shaped response so the caller can
+        // reuse parse_content + downstream Message construction.
+        Ok(json!({
+            "content": [{ "type": "text", "text": assembled }],
+            "role": "assistant",
+            "stop_reason": "end_turn",
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +654,35 @@ impl LlmClient {
         match self {
             LlmClient::Anthropic(c) => c.send_with_max(system, messages, tools, max_tokens),
             LlmClient::Ollama(c) => c.send_with_max(system, messages, tools, max_tokens),
+        }
+    }
+
+    /// Streaming send. Only Anthropic supports SSE in this codebase right
+    /// now — Ollama falls back to a buffered call. Callers should still
+    /// invoke `on_chunk` with the full text once for Ollama so the
+    /// UI codepath is uniform.
+    pub fn send_streaming<F: FnMut(&str)>(
+        &self,
+        system: &str,
+        messages: &[Message],
+        max_tokens: u32,
+        mut on_chunk: F,
+    ) -> Result<Value, AgentError> {
+        match self {
+            LlmClient::Anthropic(c) => c.send_streaming(system, messages, max_tokens, on_chunk),
+            LlmClient::Ollama(c) => {
+                let v = c.send_with_max(system, messages, &[], max_tokens)?;
+                // Surface the whole reply as one chunk so the caller's
+                // chunk pipe still fires at least once.
+                if let Some(arr) = v["message"]["content"].as_str() {
+                    on_chunk(arr);
+                } else if let Some(arr) = v["content"].as_array() {
+                    for block in arr {
+                        if let Some(t) = block["text"].as_str() { on_chunk(t); }
+                    }
+                }
+                Ok(v)
+            }
         }
     }
 }
@@ -954,13 +1069,42 @@ pub fn save_session(path: &std::path::Path, history: &[Message]) -> std::io::Res
 }
 
 /// Multi-turn chat: surface fresh memories from the new user message, append
-/// them as an inline preface, and run the tool loop. Mutates `history`.
+/// them as an inline preface, and run a single LLM turn. Mutates `history`.
+///
+/// Calls the non-streaming send path. For UIs that want to render tokens
+/// as they arrive, use `chat_turn_streaming` and pass a chunk callback.
 pub fn chat_turn(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
     history: &mut Vec<Message>,
     system: &str,
     user_message: &str,
+) -> Result<TurnResult, AgentError> {
+    chat_turn_inner(sys, cfg, history, system, user_message, None::<fn(&str)>)
+}
+
+/// Streaming variant — same prefilter, but tokens flow through `on_chunk`
+/// as they arrive from the LLM SSE stream. The full assembled text is
+/// also returned in TurnResult.text so callers don't need to accumulate
+/// chunks themselves.
+pub fn chat_turn_streaming<F: FnMut(&str)>(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    history: &mut Vec<Message>,
+    system: &str,
+    user_message: &str,
+    on_chunk: F,
+) -> Result<TurnResult, AgentError> {
+    chat_turn_inner(sys, cfg, history, system, user_message, Some(on_chunk))
+}
+
+fn chat_turn_inner<F: FnMut(&str)>(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    history: &mut Vec<Message>,
+    system: &str,
+    user_message: &str,
+    on_chunk: Option<F>,
 ) -> Result<TurnResult, AgentError> {
     let client = client_from_config(cfg)?;
     // Attention as gravity: each turn re-probes the field with the current
@@ -989,7 +1133,10 @@ pub fn chat_turn(
     // the slow full-medium path). For full tool access, use `kannaka ask
     // --full-recall` instead. Bounded max_tokens so a verbose turn can't
     // blow the per-turn latency budget.
-    let response = client.send_with_max(system, history, &[], CHAT_MAX_TOKENS)?;
+    let response = match on_chunk {
+        Some(cb) => client.send_streaming(system, history, CHAT_MAX_TOKENS, cb)?,
+        None => client.send_with_max(system, history, &[], CHAT_MAX_TOKENS)?,
+    };
     let blocks = parse_content(&response)?;
     let text = blocks.iter().filter_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),

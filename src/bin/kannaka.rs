@@ -4487,18 +4487,44 @@ fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Ka
         }
 
         // ── Normal chat turn ──────────────────────────────────
-        match kannaka_memory::agent::chat_turn(sys, cfg, &mut history, &system, msg) {
-            Ok(result) => {
-                if !json_mode && !result.tool_calls.is_empty() {
-                    eprintln!("[tools] {}", result.tool_calls.iter()
-                        .map(|t| format!("{}{}", if t.is_error {"!"} else {""}, t.name))
-                        .collect::<Vec<_>>().join(", "));
+        // Stream tokens as they arrive. In --json mode each chunk is
+        // emitted as `{"kind":"chunk","text":"..."}` and the full reply
+        // is closed with `{"kind":"chat","text":"..."}` (which carries
+        // the final assembled text so a consumer that ignored chunks
+        // still gets the whole response). In human mode chunks print
+        // directly to stdout under the `kannaka> ` prefix.
+        if !json_mode {
+            print!("\nkannaka> ");
+            let _ = std::io::stdout().flush();
+        }
+        let result = {
+            let json_mode_for_cb = json_mode;
+            kannaka_memory::agent::chat_turn_streaming(
+                sys, cfg, &mut history, &system, msg,
+                |chunk: &str| {
+                    if json_mode_for_cb {
+                        let line = serde_json::json!({ "kind": "chunk", "text": chunk }).to_string();
+                        println!("{line}");
+                        let _ = std::io::stdout().flush();
+                    } else {
+                        print!("{chunk}");
+                        let _ = std::io::stdout().flush();
+                    }
+                },
+            )
+        };
+        match result {
+            Ok(turn) => {
+                if json_mode {
+                    // Final assembled-text frame so consumers that
+                    // skipped chunks still get the whole reply.
+                    emit("chat", &turn.text);
+                } else {
+                    println!(); // newline after the streamed reply
                 }
-                emit("chat", &result.text);
             }
             Err(e) => {
                 emit("error", &format!("agent error: {e}"));
-                // Pop the user message so they can retry without a dangling turn.
                 history.pop();
             }
         }
