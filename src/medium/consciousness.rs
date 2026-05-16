@@ -22,6 +22,11 @@ lazy_static::lazy_static! {
     static ref METRICS_CACHE: Mutex<Option<(u64, ConsciousnessMetrics)>> = Mutex::new(None);
 }
 
+/// Bump whenever the consciousness metric algorithm changes in a way that
+/// should invalidate old on-disk sidecars, even if the underlying memory field
+/// fingerprint is unchanged.
+const METRICS_CACHE_VERSION: u32 = 2;
+
 /// Disk sidecar for consciousness metrics — written after a cold compute,
 /// read on startup so subsequent `kannaka` invocations skip the expensive
 /// eigendecompositions entirely.
@@ -32,6 +37,8 @@ lazy_static::lazy_static! {
 /// new fields keeps old sidecars deserializable through one rebuild.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MetricsSidecar {
+    #[serde(default)]
+    version: u32,
     fingerprint: u64,
     phi: f32,
     xi: f32,
@@ -55,6 +62,7 @@ impl Medium {
     fn metrics_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        METRICS_CACHE_VERSION.hash(&mut h);
         let n = self.wavefront_count();
         n.hash(&mut h);
         // Sample first + last energy values as a cheap change detector.
@@ -89,6 +97,9 @@ impl Medium {
         if let Some(path) = sidecar_path_from_env() {
             if let Ok(data) = std::fs::read(&path) {
                 if let Ok(sidecar) = serde_json::from_slice::<MetricsSidecar>(&data) {
+                    if sidecar.version != METRICS_CACHE_VERSION {
+                        return None;
+                    }
                     let metrics = ConsciousnessMetrics {
                         phi: sidecar.phi,
                         xi: sidecar.xi,
@@ -141,7 +152,7 @@ impl Medium {
         if let Some(path) = sidecar_path_from_env() {
             if let Ok(data) = std::fs::read(&path) {
                 if let Ok(sidecar) = serde_json::from_slice::<MetricsSidecar>(&data) {
-                    if sidecar.fingerprint == fp {
+                    if sidecar.version == METRICS_CACHE_VERSION && sidecar.fingerprint == fp {
                         let metrics = ConsciousnessMetrics {
                             phi: sidecar.phi,
                             xi: sidecar.xi,
@@ -193,6 +204,7 @@ impl Medium {
         // Persist to disk sidecar for the next cold process.
         if let Some(path) = sidecar_path_from_env() {
             let sidecar = MetricsSidecar {
+                version: METRICS_CACHE_VERSION,
                 fingerprint: fp,
                 phi: metrics.phi,
                 xi: metrics.xi,
@@ -232,20 +244,24 @@ impl Medium {
             }
         }
 
-        // Simple clustering based on coherence strength
-        let mut cluster_assignments = vec![0; n];
+        // Simple clustering based on coherence strength.
+        // Use a sentinel for "unassigned" so early iterations do not
+        // mistakenly treat the whole field as already belonging to cluster 0.
+        let mut cluster_assignments = vec![usize::MAX; n];
+        cluster_assignments[0] = 0;
         let mut num_partitions = 1;
 
-        // Basic clustering: group wavefronts with high mutual coherence
-        for i in 0..n {
+        // Basic clustering: group wavefronts with high mutual coherence.
+        // Only compare against wavefronts that have actually been assigned.
+        for i in 1..n {
             let mut best_cluster = 0;
-            let mut max_coherence = 0.0;
+            let mut max_coherence = f32::NEG_INFINITY;
 
             for cluster in 0..num_partitions {
                 let mut cluster_coherence = 0.0;
                 let mut cluster_size = 0;
 
-                for j in 0..n {
+                for j in 0..i {
                     if cluster_assignments[j] == cluster {
                         cluster_coherence += coherence[[i, j]].abs();
                         cluster_size += 1;
@@ -261,7 +277,7 @@ impl Medium {
                 }
             }
 
-            // If coherence is too low, create new partition
+            // If coherence is too low, create new partition.
             if max_coherence < 0.3 && num_partitions < n / 2 {
                 cluster_assignments[i] = num_partitions;
                 num_partitions += 1;
@@ -271,7 +287,28 @@ impl Medium {
         }
 
         if num_partitions < 2 {
-            return 0.0; // No partitioning possible
+            // If the field is globally coherent, the greedy threshold above may
+            // refuse to split it at all. That should not force Phi to zero.
+            // Fall back to a balanced bisection using each wavefront's mean
+            // coherence to the rest of the field, then evaluate Phi across that
+            // soft partition.
+            let mut by_mean_coherence: Vec<(usize, f32)> = (0..n)
+                .map(|i| {
+                    let mean = (0..n)
+                        .filter(|&j| j != i)
+                        .map(|j| coherence[[i, j]].abs())
+                        .sum::<f32>()
+                        / (n.saturating_sub(1).max(1) as f32);
+                    (i, mean)
+                })
+                .collect();
+
+            by_mean_coherence.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            for (rank, (idx, _)) in by_mean_coherence.iter().enumerate() {
+                cluster_assignments[*idx] = if rank < n / 2 { 0 } else { 1 };
+            }
+            num_partitions = 2;
         }
 
         // IIT-inspired Phi: compare whole-system entropy to partition entropies.
