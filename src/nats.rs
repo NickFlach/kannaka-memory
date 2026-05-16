@@ -882,6 +882,65 @@ impl SwarmTransport {
         self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)
     }
 
+    /// Publish a wave-signature-only absorb event to
+    /// `KANNAKA.substrate.absorb.<agent_id>` (ADR-0027 Phase 1).
+    ///
+    /// Privacy by design: ONLY the wave signature crosses the boundary —
+    /// `class_index`, `amplitude`, `phase`, `frequency`. No content, no
+    /// memory id, no tags. The receiving substrate (kannaka-prime) adapts
+    /// the signature into its fixed-topology 96-class HRM. Content stays
+    /// in the sending agent's local HRM where it belongs.
+    pub fn publish_substrate_absorb(
+        &self,
+        agent_id: &str,
+        class_index: u32,
+        amplitude: f32,
+        phase: f32,
+        frequency: f32,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.substrate.absorb.{}", agent_id);
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "class_index": class_index,
+            "amplitude": amplitude,
+            "phase": phase,
+            "frequency": frequency,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Publish collective consciousness metrics from the substrate to
+    /// `KANNAKA.substrate.phi` (ADR-0027 Phase 1). Periodically emitted by
+    /// `kannaka substrate run` so observatory + radio can display the
+    /// constellation's integrated Phi separately from any individual
+    /// agent's local Phi.
+    pub fn publish_substrate_phi(
+        &self,
+        phi: f32,
+        xi: f32,
+        order: f32,
+        num_clusters: usize,
+        total_wavefronts: usize,
+        contributing_agents: &[String],
+    ) -> Result<(), NatsError> {
+        let payload = serde_json::json!({
+            "collective_phi": phi,
+            "collective_xi": xi,
+            "collective_order": order,
+            "num_active_clusters": num_clusters,
+            "total_wavefronts": total_wavefronts,
+            "contributing_agents": contributing_agents,
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "source": "substrate",
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw("KANNAKA.substrate.phi", &bytes)
+    }
+
     /// Publish a new memory to KANNAKA.memory.new for cross-agent synchronization.
     ///
     /// The payload is a JSON object wrapping the HyperMemory plus the source agent_id

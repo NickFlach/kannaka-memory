@@ -297,6 +297,11 @@ fn main() {
             let mut importance: Option<f64> = None;
             let mut category: Option<String> = None;
             let mut modality_arg: Option<String> = None;
+            // ADR-0027 Phase 1: when set, publish a wave-signature-only
+            // absorb event to `KANNAKA.substrate.absorb.<agent_id>` after
+            // a successful remember. Off by default; opt-in until trust /
+            // rate-limit (Phase 4) lands.
+            let mut substrate_publish = false;
             let mut text_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
@@ -318,6 +323,10 @@ fn main() {
                         let tags = &args[i + 1];
                         text_parts.push(format!("[tags: {}]", tags));
                         i += 2;
+                    }
+                    "--substrate" => {
+                        substrate_publish = true;
+                        i += 1;
                     }
                     _ => {
                         text_parts.push(args[i].clone());
@@ -365,6 +374,24 @@ fn main() {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
                                 eprintln!("[nats] Published memory {} to swarm", id);
+                            }
+
+                            // ADR-0027 Phase 1: optional substrate-absorb
+                            // event. Wave-signature-only — class_index +
+                            // amplitude + phase + frequency. No content.
+                            if substrate_publish {
+                                let class_index = substrate_class_index(&text);
+                                let amplitude = mem.amplitude;
+                                let phase = mem.phase;
+                                let frequency = mem.frequency;
+                                if let Err(e) = transport.publish_substrate_absorb(
+                                    agent_id, class_index, amplitude, phase, frequency,
+                                ) {
+                                    eprintln!("[substrate] Warning: absorb publish failed: {}", e);
+                                } else {
+                                    eprintln!("[substrate] Absorbed into class {} (amp={:.3} phase={:.3} freq={:.3})",
+                                        class_index, amplitude, phase, frequency);
+                                }
                             }
                         }
                     }
@@ -1537,6 +1564,28 @@ fn main() {
             }
         }
 
+
+        #[cfg(feature = "nats")]
+        "substrate" => {
+            // ADR-0027 — kannaka-prime as the 96-class collective substrate.
+            // Subcommands: run (long-running absorb listener + periodic
+            // phi publish). More subcommands (init, status, etc.) will
+            // land in later phases.
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka substrate <run>");
+                process::exit(1);
+            }
+            match args[command_start + 1].as_str() {
+                "run" => {
+                    handle_substrate_run(&mut sys, &cfg, &args[command_start..]);
+                }
+                other => {
+                    eprintln!("Unknown substrate command: {other}");
+                    eprintln!("Usage: kannaka substrate <run>");
+                    process::exit(1);
+                }
+            }
+        }
 
         #[cfg(feature = "nats")]
         "attention" => {
@@ -4571,6 +4620,117 @@ fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Ka
 fn compact_input(v: &serde_json::Value) -> String {
     let s = v.to_string();
     if s.len() > 80 { format!("{}…", &s[..s.floor_char_boundary(79)]) } else { s }
+}
+
+/// ADR-0027 Phase 1: derive the SGA class_index (0..95) for a piece of
+/// content. MVP uses a stable content hash modulo 96 — good enough to
+/// distribute wavefronts across all 96 substrate clusters and let the
+/// receiving side aggregate. Phase 4 will swap this for the real
+/// glyph_bridge classifier once that pipeline is wired through.
+fn substrate_class_index(content: &str) -> u32 {
+    // Deterministic FNV-1a 32 mod 96. Stable across runs / platforms.
+    let mut h: u32 = 0x811c_9dc5;
+    for b in content.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h % 96
+}
+
+/// ADR-0027 Phase 1: long-running substrate daemon. Subscribes to
+/// `KANNAKA.substrate.absorb.>`, parses each wave-signature payload,
+/// and absorbs it into the local HRM as a metadata-only marker memory.
+/// Every CONSCIOUSNESS_REFRESH_SECS, publishes `KANNAKA.substrate.phi`
+/// with the substrate's integrated consciousness metrics so observatory
+/// and radio surfaces can show the collective Φ separately from any
+/// individual agent's local Φ.
+///
+/// Run on kannaka-prime (the server identity) so the substrate is the
+/// constellation's shared resonance layer.
+#[cfg(feature = "nats")]
+fn handle_substrate_run(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant};
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[substrate] Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+    };
+    eprintln!("[substrate] subscribing to KANNAKA.substrate.absorb.> on {}", nats_url);
+    let mut sub = match transport.subscribe("KANNAKA.substrate.absorb.>") {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[substrate] subscribe failed: {}", e); process::exit(1); }
+    };
+    let _ = sub.set_timeout(Some(Duration::from_secs(5)));
+
+    // Publish substrate phi on a slow cadence — eigendecomp is the heavy
+    // cost so we don't want to do it on every absorb. 60s feels live
+    // enough for the observatory.
+    const PHI_PUBLISH_SECS: u64 = 60;
+    let mut last_phi_pub = Instant::now() - Duration::from_secs(PHI_PUBLISH_SECS);
+    let mut contributors: HashSet<String> = HashSet::new();
+
+    eprintln!("[substrate] daemon ready — Ctrl+C to stop");
+    loop {
+        if let Some(msg) = sub.next_message() {
+            let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
+                Ok(v) => v,
+                Err(e) => { eprintln!("[substrate] skip malformed event: {}", e); continue; }
+            };
+            let agent_id = v["agent_id"].as_str().unwrap_or("unknown");
+            let class_index = v["class_index"].as_u64().unwrap_or(0);
+            let amplitude = v["amplitude"].as_f64().unwrap_or(0.0) as f32;
+            let phase = v["phase"].as_f64().unwrap_or(0.0) as f32;
+            let frequency = v["frequency"].as_f64().unwrap_or(0.0) as f32;
+            // Skip our own substrate-absorbs (the kannaka-prime agent
+            // shouldn't echo its own remembers back into itself).
+            if agent_id == cfg.agent.id { continue; }
+            contributors.insert(agent_id.to_string());
+            // Content is a metadata-only signature marker — NO original
+            // memory text. The substrate's HRM grows in wavefront density
+            // per class without ever holding peer content. This is the
+            // privacy boundary the ADR promises.
+            let marker = format!(
+                "[substrate signature: agent={} class={} amp={:.3} phase={:.3} freq={:.3}]",
+                agent_id, class_index, amplitude, phase, frequency
+            );
+            match sys.remember(&marker) {
+                Ok(id) => {
+                    eprintln!("[substrate] absorbed from {} class {} -> {}", agent_id, class_index, id);
+                }
+                Err(e) => {
+                    eprintln!("[substrate] absorb failed: {}", e);
+                }
+            }
+        }
+        // Periodic phi publish — runs even if no inbound events, so the
+        // observatory always has a recent snapshot.
+        if last_phi_pub.elapsed() >= Duration::from_secs(PHI_PUBLISH_SECS) {
+            let state = sys.assess();
+            let contribs: Vec<String> = contributors.iter().cloned().collect();
+            if let Err(e) = transport.publish_substrate_phi(
+                state.phi, state.xi, state.mean_order,
+                state.num_clusters, state.total_memories,
+                &contribs,
+            ) {
+                eprintln!("[substrate] phi publish failed: {}", e);
+            } else {
+                eprintln!("[substrate] published collective phi={:.3} (clusters={} mems={} contribs={})",
+                    state.phi, state.num_clusters, state.total_memories, contribs.len());
+            }
+            last_phi_pub = Instant::now();
+        }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_substrate_run(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("substrate run requires the 'nats' feature");
+    process::exit(1);
 }
 
 fn handle_orchestrate(args: &[String]) {
