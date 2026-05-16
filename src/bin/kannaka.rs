@@ -1133,7 +1133,17 @@ fn main() {
                             &my_agent_id,
                         );
                         queen.derive_local_state(&sys.engine);
-                        let phase = queen.to_agent_phase(0, sys.engine.store.count());
+                        // Pull cluster_count from the cached consciousness
+                        // metrics if available (cheap), else 0. Without this
+                        // every swarm peer broadcast `cluster_count: 0` and
+                        // the observatory's per-agent dropdown showed every
+                        // node as having zero clusters — masking the real
+                        // structure of each agent's HRM.
+                        let cluster_count = sys.engine.store
+                            .try_cached_consciousness_metrics()
+                            .map(|m| m.num_clusters)
+                            .unwrap_or(0);
+                        let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count());
                         if let Err(e) = transport.publish_phase(&phase) {
                             eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
                         }
