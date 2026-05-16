@@ -104,6 +104,33 @@ struct App {
     // looked like it never started.
     status_pending: Option<std::sync::mpsc::Receiver<Result<Status, String>>>,
     observe_pending: Option<std::sync::mpsc::Receiver<Result<(u64, Vec<MemoryEntry>), String>>>,
+    // Persistent `kannaka chat --json` child process — HRM loads once
+    // at first chat turn, every subsequent turn reuses the loaded
+    // medium for ~3-5s per turn instead of 30s per `kannaka ask`.
+    chat_child: Option<ChatChildHandle>,
+    chat_child_rx: Option<std::sync::mpsc::Receiver<ChatChildEvent>>,
+    chat_pending_msg: Option<String>,
+}
+
+/// Handle to the spawned `kannaka chat --json` child. Stdin is held here
+/// so the main thread can write user turns into it; stdout/stderr are
+/// owned by reader threads inside the spawn helper and dispatch events
+/// back via `chat_child_rx`.
+struct ChatChildHandle {
+    stdin: Option<std::process::ChildStdin>,
+    ready: bool,
+}
+
+/// Events streamed from the chat-child worker threads back to the TUI.
+enum ChatChildEvent {
+    /// First event after spawn — hands stdin over for turn-sending.
+    Stdin(std::process::ChildStdin),
+    /// Child printed its `{"kind":"ready"}` line on stderr — HRM loaded.
+    Ready,
+    /// One NDJSON line from stdout: a response (chat / slash / error).
+    Response { kind: String, text: String },
+    /// Child exited or pipe broke. Next turn will re-spawn.
+    Closed(String),
 }
 
 #[derive(Clone)]
@@ -153,6 +180,9 @@ impl App {
             chat_tick: 0,
             status_pending: None,
             observe_pending: None,
+            chat_child: None,
+            chat_child_rx: None,
+            chat_pending_msg: None,
         }
     }
 
@@ -713,18 +743,102 @@ impl App {
         self.scroll_offset = 0;
     }
 
+    /// Lazily spawn the persistent `kannaka chat --json` child. The child
+    /// loads HRM once at startup (the slow 15s step); every subsequent
+    /// turn reuses that loaded medium for ~3-5s per turn instead of
+    /// shelling out a fresh `kannaka ask` each time and paying the load
+    /// cost on every message. First chat turn is therefore slow (~15s);
+    /// everything after that is fast.
+    fn ensure_chat_child(&mut self) {
+        if self.chat_child.is_some() { return; }
+        let (tx, rx) = std::sync::mpsc::channel::<ChatChildEvent>();
+        self.chat_child_rx = Some(rx);
+        let bin = self.kannaka_bin.clone();
+        let tx_spawn = tx.clone();
+        // Spawn-and-attach happens on a worker so the TUI doesn't block
+        // for the ~15s HRM load. The worker:
+        //   1. Spawns `kannaka chat --json`
+        //   2. Sends `Ready` once the child prints its `{"kind":"ready"}` line on stderr
+        //   3. Streams stdout NDJSON as `Response { text, kind }` events
+        //   4. On child exit / IO error, sends `Closed(reason)`
+        std::thread::spawn(move || {
+            use std::process::{Command, Stdio};
+            use std::io::{BufRead, BufReader};
+            let mut child = match Command::new(&bin)
+                .args(["chat", "--json"])
+                .env("KANNAKA_QUIET", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => { let _ = tx_spawn.send(ChatChildEvent::Closed(format!("spawn failed: {e}"))); return; }
+            };
+            // Hand stdin back to the parent via a Stdin event so the
+            // turn-sender side can write to it. Stdout/stderr stay in
+            // the worker.
+            if let Some(stdin) = child.stdin.take() {
+                let _ = tx_spawn.send(ChatChildEvent::Stdin(stdin));
+            } else {
+                let _ = tx_spawn.send(ChatChildEvent::Closed("no stdin pipe".into()));
+                return;
+            }
+            // Stderr reader thread — emits Ready on first ready event.
+            if let Some(stderr) = child.stderr.take() {
+                let tx_err = tx_spawn.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines().flatten() {
+                        if line.contains("\"ready\"") {
+                            let _ = tx_err.send(ChatChildEvent::Ready);
+                        }
+                    }
+                });
+            }
+            // Stdout reader — parse NDJSON and forward each turn response.
+            if let Some(stdout) = child.stdout.take() {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().flatten() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                        let kind = v["kind"].as_str().unwrap_or("chat").to_string();
+                        let text = v["text"].as_str().unwrap_or("").to_string();
+                        let _ = tx_spawn.send(ChatChildEvent::Response { kind, text });
+                    }
+                }
+            }
+            let _ = tx_spawn.send(ChatChildEvent::Closed("child stdout EOF".into()));
+        });
+        self.chat_child = Some(ChatChildHandle { stdin: None, ready: false });
+    }
+
     fn spawn_chat_turn(&mut self, user_msg: String) {
+        // Lazy-spawn the persistent REPL on the first turn so the user
+        // sees the "Loading HRM…" status only once.
+        self.ensure_chat_child();
+        // If the child is already running and ready, write the message to
+        // its stdin. The reader thread will deliver the response via the
+        // ChatChildEvent channel; poll_chat drains it into chat_messages.
+        if let Some(ref mut handle) = self.chat_child {
+            if let Some(ref mut stdin) = handle.stdin {
+                use std::io::Write;
+                let _ = writeln!(stdin, "{}", user_msg);
+                let _ = stdin.flush();
+                self.chat_pending = Some(std::sync::mpsc::channel().1); // sentinel: a turn is in flight
+                return;
+            }
+            // Child spawned but stdin not yet attached — buffer the message.
+            self.chat_pending_msg = Some(user_msg);
+            self.chat_pending = Some(std::sync::mpsc::channel().1);
+            return;
+        }
+        // Fallback path — shouldn't normally hit this since ensure_chat_child
+        // installs a handle. If we do (spawn failed instantly), fall back
+        // to the one-shot `ask` path so the user gets *some* response.
         let bin = self.kannaka_bin.clone();
         let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
         self.chat_pending = Some(rx);
         std::thread::spawn(move || {
-            // Default chat uses attention-driven recall: a query-aware
-            // beam prefilter picks ~64 candidates whose vocabulary
-            // overlaps the prompt, then full wave resonance runs only
-            // against that beam. Wave-interference memory semantics
-            // preserved; latency dominated by the Anthropic round-trip
-            // (~3-5s) instead of the 60-90s full-medium scan.
-            // --session keeps multi-turn context coherent.
             let output = Command::new(&bin)
                 .args(["ask", "--session", "kannaka-tui", "--quiet-tools", &user_msg])
                 .env("KANNAKA_QUIET", "1")
@@ -743,9 +857,67 @@ impl App {
         });
     }
 
-    /// Called from the event loop each tick. If a pending chat turn finished,
-    /// append the response line.
+    /// Called from the event loop each tick. Drains the persistent chat
+    /// child's event channel (Stdin attach / Ready / Response / Closed)
+    /// AND any legacy fallback `chat_pending` Receiver from the one-shot
+    /// path. Non-blocking; appends new chat lines to chat_messages.
     fn poll_chat(&mut self) {
+        // Drain persistent-child events first.
+        let mut closed_reason: Option<String> = None;
+        if let Some(rx) = &self.chat_child_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(ChatChildEvent::Stdin(stdin)) => {
+                        if let Some(ref mut h) = self.chat_child {
+                            h.stdin = Some(stdin);
+                            // Flush any message we buffered while waiting
+                            // for stdin to be available.
+                            if let Some(msg) = self.chat_pending_msg.take() {
+                                if let Some(ref mut s) = h.stdin {
+                                    use std::io::Write;
+                                    let _ = writeln!(s, "{msg}");
+                                    let _ = s.flush();
+                                }
+                            }
+                        }
+                    }
+                    Ok(ChatChildEvent::Ready) => {
+                        if let Some(ref mut h) = self.chat_child { h.ready = true; }
+                    }
+                    Ok(ChatChildEvent::Response { kind, text }) => {
+                        let who = match kind.as_str() {
+                            "chat" => ChatWho::Kannaka,
+                            "error" => ChatWho::System,
+                            _ => ChatWho::System, // slash / ready / other
+                        };
+                        self.chat_messages.push(ChatLine { who, text });
+                        self.chat_pending = None;
+                    }
+                    Ok(ChatChildEvent::Closed(reason)) => {
+                        closed_reason = Some(reason);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        closed_reason = Some("disconnected".into());
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(reason) = closed_reason {
+            self.chat_messages.push(ChatLine {
+                who: ChatWho::System,
+                text: format!("[chat child closed — next turn will respawn: {reason}]"),
+            });
+            self.chat_child = None;
+            self.chat_child_rx = None;
+            self.chat_pending = None;
+        }
+
+        // Legacy fallback Receiver from the one-shot `ask` spawn path.
+        // Drained only if the persistent child path didn't deliver a
+        // structured response above.
         if let Some(rx) = &self.chat_pending {
             match rx.try_recv() {
                 Ok(Ok(text)) => {
@@ -761,7 +933,9 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.chat_pending = None;
+                    // Sentinel Receiver from the persistent path — never
+                    // delivers. Don't clear chat_pending here, the child
+                    // event channel will signal completion.
                 }
             }
         }

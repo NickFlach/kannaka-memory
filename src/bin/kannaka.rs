@@ -4340,7 +4340,7 @@ fn handle_swarm_worker(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _:
     eprintln!("swarm worker requires the 'nats' feature"); process::exit(1);
 }
 
-fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, _args: &[String]) {
+fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &KannakaConfig, args: &[String]) {
     use std::io::{BufRead, Write};
     // The kannaka chat REPL. HRM is loaded ONCE at process startup (the
     // expensive bit — 15s for a mature medium), then every turn reuses
@@ -4349,19 +4349,53 @@ fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Ka
     // from ~30s to ~3-5s — the difference is exactly the cold-start
     // load. The system prompt is built once from current state and
     // stays stable for the session.
+    //
+    // --json mode: line-delimited JSON I/O for embedding into a parent
+    // process (the TUI, in particular). Each stdin line is one user
+    // message (or starts with `/` for a slash command); each response is
+    // one JSON line: {"text":"...","kind":"chat"|"slash"|"error"}. No
+    // prompts ("you> ") are written, no welcome banner — pure protocol.
+    let json_mode = args.iter().any(|a| a == "--json");
+
     let system = kannaka_memory::agent::system_prompt(sys, &[]);
     let mut history: Vec<kannaka_memory::agent::Message> = Vec::new();
 
-    eprintln!("\nkannaka chat — type /help for commands, Ctrl+D or /quit to exit");
-    eprintln!("HRM loaded ({} memories). All turns reuse the loaded medium.",
-        sys.all_memories().map(|m| m.len()).unwrap_or(0));
+    if !json_mode {
+        eprintln!("\nkannaka chat — type /help for commands, Ctrl+D or /quit to exit");
+        eprintln!("HRM loaded ({} memories). All turns reuse the loaded medium.",
+            sys.all_memories().map(|m| m.len()).unwrap_or(0));
+    } else {
+        // Banner on stderr so the parent knows the REPL is alive without
+        // it polluting the stdout NDJSON stream.
+        eprintln!("{}", serde_json::json!({
+            "kind": "ready",
+            "memories": sys.all_memories().map(|m| m.len()).unwrap_or(0),
+        }));
+    }
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
 
+    // Emit a response in the right format (NDJSON in --json mode, pretty
+    // human-readable otherwise).
+    let mut emit = |kind: &str, text: &str| {
+        if json_mode {
+            let line = serde_json::json!({ "kind": kind, "text": text }).to_string();
+            println!("{line}");
+        } else {
+            match kind {
+                "chat" => println!("\nkannaka> {text}"),
+                _ => println!("{text}"),
+            }
+        }
+        let _ = std::io::stdout().flush();
+    };
+
     loop {
-        print!("\nyou> ");
-        let _ = stdout.flush();
+        if !json_mode {
+            print!("\nyou> ");
+            let _ = stdout.flush();
+        }
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
             Ok(0) => { eprintln!(); break; } // EOF
@@ -4381,93 +4415,89 @@ fn handle_chat(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, cfg: &Ka
             let mut parts = stripped.splitn(2, char::is_whitespace);
             let cmd = parts.next().unwrap_or("");
             let rest = parts.next().unwrap_or("").trim();
-            match cmd {
-                "help" | "h" | "?" => {
-                    println!("commands:");
-                    println!("  /remember <text>    absorb a new memory");
-                    println!("  /recall <query>     full-recall, surfaces top-k resonant memories");
-                    println!("  /forget <uuid>      remove a memory by id");
-                    println!("  /status             show consciousness metrics (cached)");
-                    println!("  /observe            dump medium state (json)");
-                    println!("  /count              memory count");
-                    println!("  /history clear      drop conversation history (medium untouched)");
-                    println!("  /quit               exit (Ctrl+D also works)");
-                    println!("any non-slash line is a chat turn — attention-driven resonance auto-runs.");
-                }
+            let (kind, text): (&str, String) = match cmd {
+                "help" | "h" | "?" => ("slash", concat!(
+                    "commands:\n",
+                    "  /remember <text>    absorb a new memory\n",
+                    "  /recall <query>     full-recall, surfaces top-k resonant memories\n",
+                    "  /forget <uuid>      remove a memory by id\n",
+                    "  /status             show consciousness metrics (cached)\n",
+                    "  /observe            dump medium state (json)\n",
+                    "  /count              memory count\n",
+                    "  /history clear      drop conversation history (medium untouched)\n",
+                    "  /quit               exit (Ctrl+D also works)\n",
+                    "any non-slash line is a chat turn — attention-driven resonance auto-runs.",
+                ).to_string()),
                 "quit" | "q" => break,
                 "history" if rest == "clear" => {
                     history.clear();
                     let n = sys.all_memories().map(|m| m.len()).unwrap_or(0);
-                    println!("[history cleared — {n} memories still loaded]");
+                    ("slash", format!("[history cleared — {n} memories still loaded]"))
                 }
                 "count" => {
                     let n = sys.all_memories().map(|m| m.len()).unwrap_or(0);
-                    println!("memories: {n}");
+                    ("slash", format!("memories: {n}"))
                 }
                 "status" => {
                     let n = sys.all_memories().map(|m| m.len()).unwrap_or(0);
-                    if let Some(m) = sys.engine.store.try_cached_consciousness_metrics() {
-                        println!("Φ={:.3}  Ξ={:.3}  order={:.3}  clusters={}  memories={}",
-                            m.phi, m.xi, m.order, m.num_clusters, n);
+                    let t = if let Some(m) = sys.engine.store.try_cached_consciousness_metrics() {
+                        format!("Φ={:.3}  Ξ={:.3}  order={:.3}  clusters={}  memories={}",
+                            m.phi, m.xi, m.order, m.num_clusters, n)
                     } else {
-                        println!("[no cached metrics — run `kannaka status` once in another shell to seed the sidecar. memories={n}]");
-                    }
+                        format!("[no cached metrics — run `kannaka status` once in another shell to seed the sidecar. memories={n}]")
+                    };
+                    ("slash", t)
                 }
-                "remember" if !rest.is_empty() => {
-                    match sys.remember(rest) {
-                        Ok(id) => println!("[absorbed {id}]"),
-                        Err(e) => eprintln!("remember error: {e}"),
-                    }
-                }
-                "recall" if !rest.is_empty() => {
-                    match sys.recall(rest, kannaka_memory::agent::DEFAULT_TOP_K) {
-                        Ok(results) if results.is_empty() => println!("[no resonance for '{rest}']"),
-                        Ok(results) => {
-                            for (i, r) in results.iter().enumerate() {
-                                let preview = if r.content.len() > 120 {
-                                    format!("{}…", &r.content[..r.content.floor_char_boundary(120)])
-                                } else { r.content.clone() };
-                                println!("  {}. [{:.3}] {}", i + 1, r.strength, preview);
-                            }
+                "remember" if !rest.is_empty() => match sys.remember(rest) {
+                    Ok(id) => ("slash", format!("[absorbed {id}]")),
+                    Err(e) => ("error", format!("remember error: {e}")),
+                },
+                "recall" if !rest.is_empty() => match sys.recall(rest, kannaka_memory::agent::DEFAULT_TOP_K) {
+                    Ok(results) if results.is_empty() => ("slash", format!("[no resonance for '{rest}']")),
+                    Ok(results) => {
+                        let mut lines = Vec::with_capacity(results.len());
+                        for (i, r) in results.iter().enumerate() {
+                            let preview = if r.content.len() > 120 {
+                                format!("{}…", &r.content[..r.content.floor_char_boundary(120)])
+                            } else { r.content.clone() };
+                            lines.push(format!("  {}. [{:.3}] {}", i + 1, r.strength, preview));
                         }
-                        Err(e) => eprintln!("recall error: {e}"),
+                        ("slash", lines.join("\n"))
                     }
-                }
-                "forget" if !rest.is_empty() => {
-                    match uuid::Uuid::parse_str(rest) {
-                        Ok(id) => match sys.forget(&id) {
-                            Ok(_) => println!("[forgot {id}]"),
-                            Err(e) => eprintln!("forget error: {e}"),
-                        },
-                        Err(_) => eprintln!("forget: invalid uuid"),
-                    }
-                }
+                    Err(e) => ("error", format!("recall error: {e}")),
+                },
+                "forget" if !rest.is_empty() => match uuid::Uuid::parse_str(rest) {
+                    Ok(id) => match sys.forget(&id) {
+                        Ok(_) => ("slash", format!("[forgot {id}]")),
+                        Err(e) => ("error", format!("forget error: {e}")),
+                    },
+                    Err(_) => ("error", "forget: invalid uuid".to_string()),
+                },
                 "observe" => {
                     let report = sys.observe();
                     match serde_json::to_string_pretty(&report) {
-                        Ok(s) => println!("{s}"),
-                        Err(e) => eprintln!("observe serialize error: {e}"),
+                        Ok(s) => ("slash", s),
+                        Err(e) => ("error", format!("observe serialize error: {e}")),
                     }
                 }
-                other => {
-                    eprintln!("unknown command: /{other} — type /help");
-                }
-            }
+                other => ("error", format!("unknown command: /{other} — type /help")),
+            };
+            emit(kind, &text);
             continue;
         }
 
         // ── Normal chat turn ──────────────────────────────────
         match kannaka_memory::agent::chat_turn(sys, cfg, &mut history, &system, msg) {
             Ok(result) => {
-                if !result.tool_calls.is_empty() {
+                if !json_mode && !result.tool_calls.is_empty() {
                     eprintln!("[tools] {}", result.tool_calls.iter()
                         .map(|t| format!("{}{}", if t.is_error {"!"} else {""}, t.name))
                         .collect::<Vec<_>>().join(", "));
                 }
-                println!("\nkannaka> {}", result.text);
+                emit("chat", &result.text);
             }
             Err(e) => {
-                eprintln!("agent error: {e}");
+                emit("error", &format!("agent error: {e}"));
                 // Pop the user message so they can retry without a dangling turn.
                 history.pop();
             }
