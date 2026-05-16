@@ -481,7 +481,101 @@ pub fn self_update() -> Result<(), String> {
         eprintln!("Updated to v{}! (old binary saved as .exe.old)", remote_version);
     }
 
+    // Sibling TUI update — keep `kannaka-tui` aligned with `kannaka` so
+    // users don't end up with a v0.3.7 TUI shelling out to a v0.3.9
+    // CLI (or worse, the reverse). Best-effort: if the sibling doesn't
+    // exist or download fails, we don't abort the main update.
+    update_sibling_tui(&agent, &body, tag, &current_exe, remote_version);
+
     Ok(())
+}
+
+/// Best-effort update of the `kannaka-tui` binary alongside `kannaka`.
+/// Looks for a `kannaka-tui[.exe]` in the same directory as the current
+/// binary; if found, downloads the matching tui artifact from the same
+/// release and atomically replaces it (Windows: rename old to .exe.old,
+/// new into place; Unix: chmod + rename). Silent no-op if the TUI isn't
+/// installed; warning on download failure so the user knows to retry.
+fn update_sibling_tui(
+    agent: &ureq::Agent,
+    release_body: &serde_json::Value,
+    tag: &str,
+    current_exe: &std::path::Path,
+    remote_version: &str,
+) {
+    let dir = match current_exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let (os, arch, ext) = platform_triple();
+    let tui_name = if cfg!(windows) { "kannaka-tui.exe" } else { "kannaka-tui" };
+    let tui_path = dir.join(tui_name);
+    if !tui_path.exists() {
+        // Sibling not installed — nothing to do.
+        return;
+    }
+
+    let asset_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
+    let download_url = match release_body["assets"].as_array()
+        .and_then(|assets| {
+            assets.iter().find(|a| a["name"].as_str().map_or(false, |n| n == asset_name))
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+    {
+        Some(u) => u.to_string(),
+        None => {
+            eprintln!("Note: tui artifact `{}` not found in release {} — skipping TUI update.", asset_name, tag);
+            return;
+        }
+    };
+
+    eprintln!("Downloading {} (sibling)...", asset_name);
+    let resp = match agent.get(&download_url)
+        .set("User-Agent", "kannaka-update")
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Note: tui download failed: {e}"); return; }
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) = resp.into_reader().read_to_end(&mut bytes) {
+        eprintln!("Note: tui read failed: {e}");
+        return;
+    }
+
+    let tmp_path = tui_path.with_extension("new");
+    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
+        eprintln!("Note: tui write failed: {e}");
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
+        if let Err(e) = std::fs::rename(&tmp_path, &tui_path) {
+            eprintln!("Note: tui install failed: {e}");
+            return;
+        }
+    }
+    #[cfg(windows)]
+    {
+        let old_path = tui_path.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old_path);
+        // If the rename fails (e.g. tui is running), it just stays at
+        // the old version — user will see a clear note and can retry.
+        if let Err(e) = std::fs::rename(&tui_path, &old_path) {
+            eprintln!("Note: could not move tui aside (is it running?): {e}");
+            let _ = std::fs::remove_file(&tmp_path);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &tui_path) {
+            eprintln!("Note: tui install failed: {e}");
+            let _ = std::fs::rename(&old_path, &tui_path);
+            return;
+        }
+    }
+    eprintln!("kannaka-tui also updated to v{}.", remote_version);
 }
 
 fn platform_triple() -> (&'static str, &'static str, &'static str) {

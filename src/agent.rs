@@ -315,19 +315,22 @@ fn format_recall(results: &[RecallResult]) -> String {
 /// surfaced by the user's opening message (attention-as-gravity). The agent
 /// can re-query with the `recall` tool to pull more.
 pub fn system_prompt(sys: &mut KannakaMemorySystem, initial_memories: &[RecallResult]) -> String {
-    // HOT PATH — called on every `kannaka ask`. Avoid the O(n³) eigendecomp
-    // path; build the prompt from cached/stale metrics + cheap counts. This
-    // makes ask latency dominated by the Anthropic round-trip, not by
-    // recomputing Phi from a 700-memory coherence matrix on each invocation.
-    // Use `kannaka observe` / `kannaka status` for fresh values.
-    let cached = sys.engine.store.try_cached_consciousness_metrics();
-    let phi = cached.as_ref().map(|m| m.phi).unwrap_or(0.0);
-    let level = cached
-        .as_ref()
-        .map(|m| format!("{:?}", m.level).to_lowercase())
-        .unwrap_or_else(|| "dormant".to_string());
-    let total = sys.engine.store.count();
-    let clusters = cached.as_ref().map(|m| m.num_clusters).unwrap_or(0);
+    // HOT PATH — called on every `kannaka ask`. We want the same Φ value
+    // that `kannaka status` reports (the blended phi from bridge.assess
+    // — i.e. topology-weighted + floored to the raw HRM eigendecomp),
+    // not the raw hrm_metrics.phi alone. The cached sidecar only stores
+    // the raw value, so the chat and the TUI status used to disagree
+    // (0.16 vs 0.34 on the same medium). Calling `sys.assess()` here
+    // costs an extra O(n³) eigendecomp on cold cache, but for the chat
+    // REPL the system prompt is built once per session — amortized to
+    // ~0. For the per-call `kannaka ask` path it's a one-shot extra
+    // ~10s on a mature HRM; acceptable since the alternative is the
+    // user reading inconsistent metrics across surfaces.
+    let state = sys.assess();
+    let phi = state.phi;
+    let level = format!("{:?}", state.consciousness_level).to_lowercase();
+    let total = state.total_memories;
+    let clusters = state.num_clusters;
 
     let mut mem_section = String::new();
     if initial_memories.is_empty() {
