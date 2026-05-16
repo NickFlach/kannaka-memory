@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "kannaka-memory"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "bincode",
  "blake3",
