@@ -751,28 +751,160 @@ pub struct ToolCallRecord {
     pub is_error: bool,
 }
 
-/// One-shot ask: surface memories from `prompt`, run the tool loop, return text.
+// ---------------------------------------------------------------------------
+// Unified ask API.
+//
+// Prior to v0.3.23 this module carried seven `ask_*` flavours
+// (`ask`, `ask_notools`, `ask_notools_ex`, `ask_attention`,
+// `ask_attention_with_session`, `ask_no_recall`, `ask_with_session`) that
+// differed only along five orthogonal axes:
+//
+//   1. recall mode      — none / full-medium / attention-beam prefilter
+//   2. recall query     — surface against the prompt or a custom string
+//   3. session          — one-shot or load/save history at `path`
+//   4. tool loop        — single round-trip or iterate up to MAX_TOOL_ITERATIONS
+//   5. max_tokens       — client default (DEFAULT_MAX_TOKENS) or chat cap (CHAT_MAX_TOKENS)
+//
+// `ask_with_opts(AskOptions { … })` is the canonical entry. The seven legacy
+// names remain as thin wrappers so existing callers don't break — they each
+// just set the fields they need on AskOptions and delegate.
+// ---------------------------------------------------------------------------
+
+/// How a turn should surface memories before the LLM call.
+#[derive(Clone, Copy, Debug)]
+pub enum RecallMode {
+    /// Skip recall entirely. Fastest path — system_prompt sees no surfaced memories.
+    None,
+    /// Scan both chiral hemispheres with xi-diversity reranking.
+    /// O(N) on the entire medium; 60-90s on a mature HRM.
+    Full { top_k: usize },
+    /// Token-overlap prefilter picks a beam of `beam_size` candidates, then
+    /// full wave-resonance runs against only that beam. O(beam) instead of O(N).
+    Attention { beam_size: usize, top_k: usize },
+}
+
+impl Default for RecallMode {
+    fn default() -> Self {
+        Self::Attention {
+            beam_size: DEFAULT_ATTENTION_BEAM,
+            top_k: DEFAULT_TOP_K,
+        }
+    }
+}
+
+/// All knobs the ask path varies on. Defaults match the chat surface:
+/// attention-beam recall, no session, no tool loop, chat-cap max_tokens.
+pub struct AskOptions<'a> {
+    pub recall: RecallMode,
+    /// If `Some`, surface against this string instead of the prompt.
+    pub recall_query: Option<&'a str>,
+    /// If `Some`, load history from this path before the turn and persist after.
+    pub session_path: Option<&'a std::path::Path>,
+    /// Run the tool loop. False = single round-trip.
+    pub tools: bool,
+    /// Override the response token cap. `None` = client default.
+    pub max_tokens: Option<u32>,
+}
+
+impl<'a> Default for AskOptions<'a> {
+    fn default() -> Self {
+        Self {
+            recall: RecallMode::default(),
+            recall_query: None,
+            session_path: None,
+            tools: false,
+            max_tokens: Some(CHAT_MAX_TOKENS),
+        }
+    }
+}
+
+/// Canonical ask entry. All `ask_*` flavours route here.
+pub fn ask_with_opts(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+    opts: AskOptions<'_>,
+) -> Result<TurnResult, AgentError> {
+    let client = client_from_config(cfg)?;
+
+    // Surface memories per the chosen recall mode.
+    let query = opts.recall_query.unwrap_or(prompt);
+    let surfaced = match opts.recall {
+        RecallMode::None => Vec::new(),
+        RecallMode::Full { top_k } => sys.recall(query, top_k).unwrap_or_default(),
+        RecallMode::Attention { beam_size, top_k } => {
+            let beam = attention_beam_for_prompt(sys, query, beam_size);
+            if beam.is_empty() {
+                Vec::new()
+            } else {
+                sys.recall_with_beam(&beam, query, top_k).unwrap_or_default()
+            }
+        }
+    };
+    let system = system_prompt(sys, &surfaced);
+
+    // Load or seed history.
+    let mut history = match opts.session_path {
+        Some(path) => load_session(path).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    history.push(Message::user_text(prompt));
+
+    // Run the LLM turn — tool loop or single round-trip.
+    let result = if opts.tools {
+        run_tool_loop(sys, &client, &system, &mut history)?
+    } else {
+        let response = match opts.max_tokens {
+            Some(n) => client.send_with_max(&system, &history, &[], n)?,
+            None => client.send(&system, &history, &[])?,
+        };
+        let blocks = parse_content(&response)?;
+        let text = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let assistant = Message::assistant(blocks);
+        history.push(assistant.clone());
+        TurnResult {
+            text,
+            tool_calls: Vec::new(),
+            new_messages: vec![assistant],
+        }
+    };
+
+    if let Some(path) = opts.session_path {
+        let _ = save_session(path, &history);
+    }
+    Ok(result)
+}
+
+/// One-shot ask: surface memories from `prompt` (full medium scan), run the
+/// tool loop, return text.
 pub fn ask(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let surfaced = sys.recall(prompt, DEFAULT_TOP_K).unwrap_or_default();
-    let system = system_prompt(sys, &surfaced);
-    let mut history = vec![Message::user_text(prompt)];
-    run_tool_loop(sys, &client, &system, &mut history)
+    ask_with_opts(
+        sys,
+        cfg,
+        prompt,
+        AskOptions {
+            recall: RecallMode::Full { top_k: DEFAULT_TOP_K },
+            tools: true,
+            max_tokens: None,
+            ..AskOptions::default()
+        },
+    )
 }
 
-/// Like `ask`, but skips the tool loop entirely — single API round-trip.
-/// Use when the caller has already gathered everything the model needs into
-/// the system prompt (e.g. the radio DJ) and doesn't want the model to
-/// wander through `recall`/`observe`/`list_clusters` iterations.
-///
-/// `recall_query` lets the caller decouple memory surfacing from the prompt
-/// text — pass `None` to use the prompt (default), or a custom string to
-/// probe a different region of the field (e.g. a random cluster theme).
-/// Varying it across calls is the cheapest way to break repetitive output.
+/// Like `ask`, but skips the tool loop — single API round-trip.
+/// Use when the caller has already gathered everything the model needs (e.g.
+/// the radio DJ) and doesn't want the model wandering through tool calls.
 pub fn ask_notools(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
@@ -781,28 +913,26 @@ pub fn ask_notools(
     ask_notools_ex(sys, cfg, prompt, None)
 }
 
+/// `ask_notools` with a custom recall query — surface against `recall_query`
+/// instead of the prompt. Varying the query across calls is the cheapest way
+/// to break repetitive output (radio DJ uses this with cluster themes).
 pub fn ask_notools_ex(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
     prompt: &str,
     recall_query: Option<&str>,
 ) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let query = recall_query.unwrap_or(prompt);
-    let surfaced = sys.recall(query, DEFAULT_TOP_K).unwrap_or_default();
-    let system = system_prompt(sys, &surfaced);
-    let messages = vec![Message::user_text(prompt)];
-    let response = client.send(&system, &messages, &[])?;
-    let blocks = parse_content(&response)?;
-    let text = blocks.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("\n");
-    Ok(TurnResult {
-        text,
-        tool_calls: Vec::new(),
-        new_messages: vec![Message::assistant(blocks)],
-    })
+    ask_with_opts(
+        sys,
+        cfg,
+        prompt,
+        AskOptions {
+            recall: RecallMode::Full { top_k: DEFAULT_TOP_K },
+            recall_query,
+            max_tokens: None,
+            ..AskOptions::default()
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -913,26 +1043,7 @@ pub fn ask_attention(
     cfg: &KannakaConfig,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let beam = attention_beam_for_prompt(sys, prompt, DEFAULT_ATTENTION_BEAM);
-    let surfaced = if beam.is_empty() {
-        Vec::new()
-    } else {
-        sys.recall_with_beam(&beam, prompt, DEFAULT_TOP_K).unwrap_or_default()
-    };
-    let system = system_prompt(sys, &surfaced);
-    let messages = vec![Message::user_text(prompt)];
-    let response = client.send_with_max(&system, &messages, &[], CHAT_MAX_TOKENS)?;
-    let blocks = parse_content(&response)?;
-    let text = blocks.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("\n");
-    Ok(TurnResult {
-        text,
-        tool_calls: Vec::new(),
-        new_messages: vec![Message::assistant(blocks)],
-    })
+    ask_with_opts(sys, cfg, prompt, AskOptions::default())
 }
 
 /// Like `ask_attention` but persists / replays history across turns
@@ -945,29 +1056,15 @@ pub fn ask_attention_with_session(
     session_path: &std::path::Path,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let beam = attention_beam_for_prompt(sys, prompt, DEFAULT_ATTENTION_BEAM);
-    let surfaced = if beam.is_empty() {
-        Vec::new()
-    } else {
-        sys.recall_with_beam(&beam, prompt, DEFAULT_TOP_K).unwrap_or_default()
-    };
-    let system = system_prompt(sys, &surfaced);
-    let mut history = load_session(session_path).unwrap_or_default();
-    history.push(Message::user_text(prompt));
-    let response = client.send_with_max(&system, &history, &[], CHAT_MAX_TOKENS)?;
-    let blocks = parse_content(&response)?;
-    let text = blocks.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("\n");
-    history.push(Message::assistant(blocks.clone()));
-    let _ = save_session(session_path, &history);
-    Ok(TurnResult {
-        text,
-        tool_calls: Vec::new(),
-        new_messages: vec![Message::assistant(blocks)],
-    })
+    ask_with_opts(
+        sys,
+        cfg,
+        prompt,
+        AskOptions {
+            session_path: Some(session_path),
+            ..AskOptions::default()
+        },
+    )
 }
 
 /// Cap on the attention beam size — passed to `recall_with_beam`. 64
@@ -992,62 +1089,37 @@ pub fn ask_no_recall(
     cfg: &KannakaConfig,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let system = system_prompt(sys, &[]);
-    let messages = vec![Message::user_text(prompt)];
-    let response = client.send_with_max(&system, &messages, &[], CHAT_MAX_TOKENS)?;
-    let blocks = parse_content(&response)?;
-    let text = blocks.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("\n");
-    Ok(TurnResult {
-        text,
-        tool_calls: Vec::new(),
-        new_messages: vec![Message::assistant(blocks)],
-    })
+    ask_with_opts(
+        sys,
+        cfg,
+        prompt,
+        AskOptions {
+            recall: RecallMode::None,
+            ..AskOptions::default()
+        },
+    )
 }
 
-/// Ask with a persistent session file. History is loaded before the turn
-/// and saved after. The system prompt is regenerated each call against
-/// current state — cheap and keeps Kannaka's self-awareness fresh.
+/// Ask with a persistent session file, full-medium recall, and tool loop.
+/// History is loaded before the turn and saved after.
 pub fn ask_with_session(
     sys: &mut KannakaMemorySystem,
     cfg: &KannakaConfig,
     session_path: &std::path::Path,
     prompt: &str,
 ) -> Result<TurnResult, AgentError> {
-    let mut history = load_session(session_path).unwrap_or_default();
-    let system = {
-        let surfaced = sys.recall(prompt, DEFAULT_TOP_K).unwrap_or_default();
-        system_prompt(sys, &surfaced)
-    };
-    let result = chat_turn_with_client(sys, cfg, &mut history, &system, prompt)?;
-    let _ = save_session(session_path, &history);
-    Ok(result)
-}
-
-/// Internal: identical to `chat_turn` but returns so we can save history after.
-fn chat_turn_with_client(
-    sys: &mut KannakaMemorySystem,
-    cfg: &KannakaConfig,
-    history: &mut Vec<Message>,
-    system: &str,
-    user_message: &str,
-) -> Result<TurnResult, AgentError> {
-    let client = client_from_config(cfg)?;
-    let surfaced = sys.recall(user_message, DEFAULT_TOP_K).unwrap_or_default();
-    let content = if surfaced.is_empty() {
-        user_message.to_string()
-    } else {
-        format!(
-            "<memory_resonance>\n{}</memory_resonance>\n\n{}",
-            format_recall(&surfaced),
-            user_message
-        )
-    };
-    history.push(Message::user_text(content));
-    run_tool_loop(sys, &client, system, history)
+    ask_with_opts(
+        sys,
+        cfg,
+        prompt,
+        AskOptions {
+            recall: RecallMode::Full { top_k: DEFAULT_TOP_K },
+            session_path: Some(session_path),
+            tools: true,
+            max_tokens: None,
+            ..AskOptions::default()
+        },
+    )
 }
 
 /// Load a session's message history from disk. Missing file → empty history.
