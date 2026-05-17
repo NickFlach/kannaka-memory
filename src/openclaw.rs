@@ -466,7 +466,7 @@ impl KannakaMemorySystem {
                 &agent_id,
             );
             queen.derive_local_state(&self.engine);
-            let phase = queen.to_agent_phase(0, self.engine.store.count());
+            let phase = queen.to_agent_phase(0, self.engine.store.count(), 0);
             if let Err(e) = transport.publish_phase(&phase) {
                 eprintln!("[swarm] post-dream NATS publish failed: {e}");
             }

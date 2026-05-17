@@ -203,7 +203,8 @@ fn swarm_publish_heartbeat(
     if let Some(ref m) = cached {
         queen.phi = m.phi;
     }
-    let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count());
+    let link_count = cached.as_ref().map(|m| m.total_skip_links).unwrap_or(0);
+    let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count(), link_count);
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
     }
@@ -1494,7 +1495,7 @@ fn main() {
                                     phase.coherence, phase.phi, phase.memory_count);
 
                                 if auto_sync && phase.agent_id != agent_id {
-                                    let my_phase = queen.to_agent_phase(0, sys.engine.store.count());
+                                    let my_phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
                                     let swarm = vec![my_phase, phase];
                                     let state = queen.queen_sync_step(&swarm);
                                     println!("  -> synced: r={:.3} psi={:.3} K={:.3}",
@@ -1563,7 +1564,7 @@ fn main() {
                         &agent_id,
                     );
                     queen.derive_local_state(&sys.engine);
-                    let local_phase = queen.to_agent_phase(0, sys.engine.store.count());
+                    let local_phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
 
                     let mut nats_status = serde_json::json!("disconnected");
                     let mut peer_count = 0usize;
@@ -1630,7 +1631,7 @@ fn main() {
                     let state = queen.queen_sync_step(&nats_phases);
 
                     // Publish updated phase back to NATS
-                    let updated_phase = queen.to_agent_phase(0, sys.engine.store.count());
+                    let updated_phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
                     if let Err(e) = transport.publish_phase(&updated_phase) {
                         eprintln!("[nats] Warning: failed to publish updated phase: {e}");
                     }
@@ -1703,7 +1704,7 @@ fn main() {
                         &agent_id,
                     );
                     queen.derive_local_state(&sys.engine);
-                    let phase = queen.to_agent_phase(0, sys.engine.store.count());
+                    let phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
                     match transport.publish_phase(&phase) {
                         Ok(()) => println!("Published phase: \u{03b8}={:.3}, \u{03c9}={:.3}, coherence={:.3}",
                             phase.phase, phase.frequency, phase.coherence),

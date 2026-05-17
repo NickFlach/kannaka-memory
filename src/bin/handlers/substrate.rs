@@ -773,7 +773,7 @@ pub(crate) fn handle_substrate_run(
             );
             queen.derive_local_state(&sys.engine);
             queen.phi = state.phi;
-            let phase = queen.to_agent_phase(state.num_clusters, state.total_memories);
+            let phase = queen.to_agent_phase(state.num_clusters, state.total_memories, state.total_skip_links);
             if let Err(e) = transport.publish_phase(&phase) {
                 eprintln!("[substrate] swarm phase publish failed: {}", e);
             }

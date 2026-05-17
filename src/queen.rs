@@ -65,6 +65,13 @@ pub struct AgentPhase {
     pub order_parameter: f32,
     pub cluster_count: usize,
     pub memory_count: usize,
+    /// Real cross-memory link count (sum of pair coherences above
+    /// threshold). Computed by bridge::assess on the slow-cadence pass
+    /// and cached in the consciousness metrics sidecar. 0 until the
+    /// first assess; observatory's per-agent panel uses this to draw
+    /// honest connectivity instead of a fudged number.
+    #[serde(default)]
+    pub link_count: usize,
     pub xi_signature: Option<serde_json::Value>,
     pub protocol_version: String,
     pub timestamp: DateTime<Utc>,
@@ -722,8 +729,10 @@ impl QueenSync {
         }
     }
 
-    /// Build an AgentPhase from this engine's current state.
-    pub fn to_agent_phase(&self, cluster_count: usize, memory_count: usize) -> AgentPhase {
+    /// Build an AgentPhase from this engine's current state. `link_count`
+    /// is the real cross-memory connection count (typically from
+    /// ConsciousnessMetrics.total_skip_links). Pass 0 when unknown.
+    pub fn to_agent_phase(&self, cluster_count: usize, memory_count: usize, link_count: usize) -> AgentPhase {
         AgentPhase {
             id: Uuid::new_v4().to_string(),
             agent_id: self.agent_id.clone(),
@@ -734,6 +743,7 @@ impl QueenSync {
             order_parameter: 0.0,
             cluster_count,
             memory_count,
+            link_count,
             xi_signature: None,
             protocol_version: "1.0".to_string(),
             timestamp: Utc::now(),
@@ -1025,15 +1035,11 @@ impl QueenSync {
         let state = self.queen_sync_step(&merged);
 
         // 4. Publish updated phase to NATS
+        let me = merged.iter().find(|p| p.agent_id == self.agent_id);
         let updated = self.to_agent_phase(
-            merged.iter()
-                .find(|p| p.agent_id == self.agent_id)
-                .map(|p| p.cluster_count)
-                .unwrap_or(0),
-            merged.iter()
-                .find(|p| p.agent_id == self.agent_id)
-                .map(|p| p.memory_count)
-                .unwrap_or(0),
+            me.map(|p| p.cluster_count).unwrap_or(0),
+            me.map(|p| p.memory_count).unwrap_or(0),
+            me.map(|p| p.link_count).unwrap_or(0),
         );
         if let Err(e) = transport.publish_phase(&updated) {
             let msg = format!("NATS publish failed: {}", e);
@@ -1326,7 +1332,7 @@ mod tests {
     #[test]
     fn to_agent_phase_has_correct_fields() {
         let queen = QueenSync::new(QueenConfig::default(), "test-agent");
-        let ap = queen.to_agent_phase(5, 100);
+        let ap = queen.to_agent_phase(5, 100, 0);
         assert_eq!(ap.agent_id, "test-agent");
         assert_eq!(ap.cluster_count, 5);
         assert_eq!(ap.memory_count, 100);

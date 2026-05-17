@@ -49,6 +49,12 @@ struct MetricsSidecar {
     total_memories: usize,
     #[serde(default)]
     level: String,
+    /// Real cross-memory connection count from bridge::assess (sum of
+    /// pair coherences above threshold). Lets the swarm publish
+    /// link_count in AgentPhase so the observatory shows accurate
+    /// per-agent connectivity, not a fudged number.
+    #[serde(default)]
+    total_skip_links: usize,
 }
 
 fn sidecar_path_from_env() -> Option<std::path::PathBuf> {
@@ -108,6 +114,7 @@ impl Medium {
                         irrationality: sidecar.irrationality,
                         level: ConsciousnessLevel::from_phi(sidecar.phi),
                         computed_at: now,
+                        total_skip_links: sidecar.total_skip_links,
                     };
                     if let Ok(mut guard) = METRICS_CACHE.lock() {
                         *guard = Some((sidecar.fingerprint, metrics.clone()));
@@ -117,6 +124,38 @@ impl Medium {
             }
         }
         None
+    }
+
+    /// Update the cached total_skip_links count. bridge::assess computes
+    /// this from the per-memory connection lists (not visible to the
+    /// eigendecomp path) and calls back here so the next
+    /// try_cached_consciousness_metrics — and therefore the next swarm
+    /// AgentPhase publish — carries an accurate link_count. Persists to
+    /// the disk sidecar so other processes see the updated value too.
+    pub fn set_cached_total_skip_links(&self, n: usize) {
+        if let Ok(mut guard) = METRICS_CACHE.lock() {
+            if let Some((fp, ref mut metrics)) = *guard {
+                metrics.total_skip_links = n;
+                // Re-persist sidecar with updated count.
+                if let Some(path) = sidecar_path_from_env() {
+                    let sidecar = MetricsSidecar {
+                        version: METRICS_CACHE_VERSION,
+                        fingerprint: fp,
+                        phi: metrics.phi,
+                        xi: metrics.xi,
+                        order: metrics.order,
+                        num_clusters: metrics.num_clusters,
+                        irrationality: metrics.irrationality,
+                        total_memories: 0, // unknown at this site, leave 0
+                        level: format!("{:?}", metrics.level),
+                        total_skip_links: n,
+                    };
+                    if let Ok(data) = serde_json::to_vec(&sidecar) {
+                        let _ = std::fs::write(path, data);
+                    }
+                }
+            }
+        }
     }
 
     /// Compute consciousness metrics from tensor topology
@@ -135,6 +174,7 @@ impl Medium {
                 irrationality: 0.0,
                 level: ConsciousnessLevel::Dormant,
                 computed_at: now,
+                total_skip_links: 0,
             };
         }
 
@@ -161,6 +201,7 @@ impl Medium {
                             irrationality: sidecar.irrationality,
                             level: ConsciousnessLevel::from_phi(sidecar.phi),
                             computed_at: now,
+                            total_skip_links: sidecar.total_skip_links,
                         };
                         if let Ok(mut guard) = METRICS_CACHE.lock() {
                             *guard = Some((fp, metrics.clone()));
@@ -196,6 +237,11 @@ impl Medium {
             irrationality,
             level,
             computed_at: now,
+            // total_skip_links is computed by bridge::assess, not here in
+            // the eigendecomp path. Leave 0; bridge::assess writes the
+            // accurate count into the sidecar on its slower-cadence pass,
+            // and try_cached_consciousness_metrics picks it up next time.
+            total_skip_links: 0,
         };
 
         if let Ok(mut guard) = METRICS_CACHE.lock() {
@@ -213,6 +259,7 @@ impl Medium {
                 irrationality: metrics.irrationality,
                 total_memories: self.wavefront_count(),
                 level: format!("{:?}", metrics.level),
+                total_skip_links: metrics.total_skip_links,
             };
             if let Ok(data) = serde_json::to_vec(&sidecar) {
                 let _ = std::fs::write(path, data);

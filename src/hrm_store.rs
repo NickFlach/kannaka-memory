@@ -770,6 +770,10 @@ impl MediumBackend for HrmStore {
         Self::try_cached_consciousness_metrics(self)
     }
 
+    fn set_cached_total_skip_links(&self, n: usize) {
+        self.medium.set_cached_total_skip_links(n);
+    }
+
     fn dream_native(
         &mut self,
         cycles: usize,

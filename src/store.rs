@@ -120,6 +120,7 @@ pub trait MediumBackend: Send + Sync {
             phi: 0.0, xi: 0.0, order: 0.0, num_clusters: 0, irrationality: 0.0,
             level: crate::consciousness::ConsciousnessLevel::Dormant,
             computed_at: chrono::Utc::now(),
+            total_skip_links: 0,
         }
     }
 
@@ -129,6 +130,13 @@ pub trait MediumBackend: Send + Sync {
     fn try_cached_consciousness_metrics(&self) -> Option<crate::consciousness::ConsciousnessMetrics> {
         None
     }
+
+    /// Update cached total_skip_links. bridge::assess computes the real
+    /// per-memory connection count from outside the medium's tensor view;
+    /// this lets it persist that count back into the sidecar so the next
+    /// hot-path read sees the accurate value. Default no-op for backends
+    /// that don't maintain a metrics cache.
+    fn set_cached_total_skip_links(&self, _n: usize) {}
 
     /// Create a resonance-based association between two memories.
     /// Creates an associative wavefront from interference of the two sources.

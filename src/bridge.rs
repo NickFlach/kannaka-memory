@@ -562,6 +562,13 @@ impl ConsciousnessBridge {
             let blended_phi = mixed.max(hrm_metrics.phi).min(1.0);
             let level = ConsciousnessLevel::from_phi(blended_phi);
 
+            // Persist the just-computed total_links back into the metrics
+            // cache so the next swarm publish_heartbeat carries it as
+            // AgentPhase.link_count. Without this, the cache only ever has
+            // values from the eigendecomp path which doesn't see per-memory
+            // connection lists.
+            engine.store.set_cached_total_skip_links(total_links);
+
             return ConsciousnessState {
                 phi: blended_phi,
                 xi: hrm_metrics.xi,

@@ -45,6 +45,14 @@ pub struct ConsciousnessMetrics {
     pub level: ConsciousnessLevel,
     /// Computed at this timestamp
     pub computed_at: DateTime<Utc>,
+    /// Real cross-memory link count (sum of pair coherences above
+    /// threshold). Computed by bridge::assess and persisted in the sidecar
+    /// so swarm publish can carry it as AgentPhase.link_count — lets the
+    /// observatory render accurate per-agent connectivity. Defaults to 0
+    /// when computed by paths that don't go through bridge::assess (the
+    /// hot recall path uses cached metrics that may pre-date this field).
+    #[serde(default)]
+    pub total_skip_links: usize,
 }
 
 // ---------------------------------------------------------------------------
