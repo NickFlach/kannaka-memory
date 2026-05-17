@@ -944,20 +944,39 @@ impl SwarmTransport {
     /// Publish a new memory to KANNAKA.memory.new for cross-agent synchronization.
     ///
     /// The payload is a JSON object wrapping the HyperMemory plus the source agent_id
-    /// so receivers can skip their own messages.
-    pub fn publish_memory_new(
+    /// so receivers can skip their own messages. Optional `memory_count` and
+    /// `cluster_count` fields let the radio's swarm aggregator surface the
+    /// sender's authoritative counts even when the sender isn't running a
+    /// `swarm join` daemon — without these, agents that only `remember` from
+    /// the CLI always showed up with cl:0 in the per-agent dropdown.
+    pub fn publish_memory_new_with_counts(
         &self,
         memory: &crate::memory::HyperMemory,
         agent_id: &str,
+        memory_count: usize,
+        cluster_count: usize,
     ) -> Result<(), NatsError> {
         let payload = serde_json::json!({
             "agent_id": agent_id,
             "memory": memory,
+            "memory_count": memory_count,
+            "cluster_count": cluster_count,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.memory.new", &bytes)
+    }
+
+    /// Backward-compat shim — same as publish_memory_new_with_counts but
+    /// without the memory/cluster counts. Kept so older call sites keep
+    /// compiling; new call sites should prefer the _with_counts variant.
+    pub fn publish_memory_new(
+        &self,
+        memory: &crate::memory::HyperMemory,
+        agent_id: &str,
+    ) -> Result<(), NatsError> {
+        self.publish_memory_new_with_counts(memory, agent_id, 0, 0)
     }
 
     // -----------------------------------------------------------------------

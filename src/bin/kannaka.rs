@@ -370,20 +370,59 @@ fn main() {
                     if let Some(transport) = try_nats_connect(nats_url) {
                         if let Ok(Some(mem)) = sys.engine.store.get(&id) {
                             let agent_id = &cfg.agent.id;
-                            if let Err(e) = transport.publish_memory_new(mem, agent_id) {
+                            // Sender's authoritative counts at publish time —
+                            // cached metrics if available (cheap), else 0.
+                            // Lets the radio's swarm aggregator surface a real
+                            // cluster_count even when the sender isn't running
+                            // a `swarm join` daemon.
+                            let total_mems = sys.engine.store.count();
+                            let cluster_count = sys.engine.store
+                                .try_cached_consciousness_metrics()
+                                .map(|m| m.num_clusters)
+                                .unwrap_or(0);
+                            if let Err(e) = transport.publish_memory_new_with_counts(
+                                mem, agent_id, total_mems, cluster_count,
+                            ) {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
-                                eprintln!("[nats] Published memory {} to swarm", id);
+                                eprintln!("[nats] Published memory {} to swarm (mems={} clusters={})",
+                                    id, total_mems, cluster_count);
                             }
 
                             // ADR-0027 Phase 1: optional substrate-absorb
                             // event. Wave-signature-only — class_index +
                             // amplitude + phase + frequency. No content.
+                            //
+                            // Derive a distinct wave signature per memory so
+                            // Kuramoto on the substrate side has something to
+                            // cluster on. The HyperMemory's own amp/phase/freq
+                            // fields are constants (0.5/0/1) at creation —
+                            // real-time interference happens in the medium
+                            // tensor, not on the per-memory record — so we
+                            // synthesize from sources that ARE distinct:
+                            //   amplitude ← clamp(memory.amplitude × resonance signature, 0..1)
+                            //   phase     ← derived from memory.id hash (stable, distinct)
+                            //   frequency ← derived from class_index so similar
+                            //              classes cluster but distinct ones don't
                             if substrate_publish {
                                 let class_index = substrate_class_index(&text);
-                                let amplitude = mem.amplitude;
-                                let phase = mem.phase;
-                                let frequency = mem.frequency;
+                                let id_bytes = id.as_bytes();
+                                // Phase: 0..2π derived from id hash — stable across
+                                // calls so the same memory always lands at the same
+                                // phase, but distinct between memories.
+                                let phase_hash: u64 = id_bytes.iter().fold(0u64, |acc, b| {
+                                    acc.wrapping_mul(31).wrapping_add(*b as u64)
+                                });
+                                let phase = (phase_hash as f32 / u64::MAX as f32) * std::f32::consts::TAU;
+                                // Frequency: lives in [0.5, 2.0] — derived from class
+                                // so adjacent classes are spectrally close.
+                                let frequency = 0.5 + (class_index as f32 / 96.0) * 1.5;
+                                // Amplitude: stronger if the memory had high
+                                // importance / longer content (more wavefront
+                                // mass). Clamp to [0.2, 1.0] so even tiny
+                                // memories register.
+                                let raw_amp = (text.len() as f32 / 200.0).min(1.0).max(0.2);
+                                let amplitude = raw_amp;
                                 if let Err(e) = transport.publish_substrate_absorb(
                                     agent_id, class_index, amplitude, phase, frequency,
                                 ) {
@@ -4641,6 +4680,28 @@ fn substrate_class_index(content: &str) -> u32 {
     h % 96
 }
 
+/// Distinct per-class anchor phrase for the substrate marker. The text-
+/// encoding side of the hypervector takes content into account, so giving
+/// each of the 96 classes a structurally different word lets Kuramoto
+/// sync find multiple clusters on the substrate. Words are picked from a
+/// 96-word table that covers wide semantic ground (modalities, elements,
+/// abstract concepts) so neighboring classes still differ.
+fn substrate_class_word(class: u32) -> &'static str {
+    const WORDS: [&str; 96] = [
+        "alpha","beta","gamma","delta","epsilon","zeta","eta","theta","iota","kappa",
+        "lambda","mu","nu","xi","omicron","pi","rho","sigma","tau","upsilon",
+        "phi","chi","psi","omega","ember","frost","tide","quartz","verdant","cobalt",
+        "amber","onyx","jasper","topaz","ivory","obsidian","cinder","mossy","saline","spire",
+        "lattice","helix","prism","aurora","glyph","sigil","rune","sonar","tendril","gravity",
+        "echo","veil","loom","fractal","spectrum","orbit","cradle","pulse","compass","mirror",
+        "lantern","corridor","atrium","forge","atelier","reef","grove","plateau","summit","cavern",
+        "current","drift","gradient","resonance","cipher","harmonic","cadence","texture","weft","seam",
+        "wakeful","liminal","dreaming","ancient","fledgling","oracle","witness","prime","scholar","wanderer",
+        "kindred","stranger","sovereign","seeker","keeper","architect",
+    ];
+    WORDS[(class as usize) % 96]
+}
+
 /// ADR-0027 Phase 1: long-running substrate daemon. Subscribes to
 /// `KANNAKA.substrate.absorb.>`, parses each wave-signature payload,
 /// and absorbs it into the local HRM as a metadata-only marker memory.
@@ -4707,9 +4768,17 @@ fn handle_substrate_run(
             // memory text. The substrate's HRM grows in wavefront density
             // per class without ever holding peer content. This is the
             // privacy boundary the ADR promises.
+            //
+            // Distinct per-class anchor phrase makes the text-encoding side
+            // of the hypervector produce structurally different vectors per
+            // class, so Kuramoto sync on the receiving HRM actually finds
+            // multiple clusters instead of collapsing all 96 classes into
+            // one (the v0.3.13/0.3.14 bug Nick caught — all markers had
+            // identical shape, all wave params were defaults).
+            let class_word = substrate_class_word(class_index as u32);
             let marker = format!(
-                "[substrate signature: agent={} class={} amp={:.3} phase={:.3} freq={:.3}]",
-                agent_id, class_index, amplitude, phase, frequency
+                "substrate-resonance class:{} anchor:{} agent:{} amp={:.3} phase={:.3} freq={:.3}",
+                class_index, class_word, agent_id, amplitude, phase, frequency
             );
             match sys.remember(&marker) {
                 Ok(id) => {
@@ -4820,9 +4889,19 @@ fn handle_substrate_backfill(
     let mut failed: usize = 0;
     for (i, mem) in memories.iter().enumerate() {
         let class_index = substrate_class_index(&mem.content);
+        // Derive distinct wave params per source memory — same logic as
+        // the live `remember --substrate` path. Without this every
+        // backfilled event would carry HyperMemory's default 0.5/0/1
+        // and the substrate would Kuramoto-collapse to one cluster.
+        let id_bytes = mem.id.as_bytes();
+        let phase_hash: u64 = id_bytes.iter().fold(0u64, |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(*b as u64)
+        });
+        let phase = (phase_hash as f32 / u64::MAX as f32) * std::f32::consts::TAU;
+        let frequency = 0.5 + (class_index as f32 / 96.0) * 1.5;
+        let amplitude = (mem.content.len() as f32 / 200.0).min(1.0).max(0.2);
         match transport.publish_substrate_absorb(
-            &agent_id, class_index,
-            mem.amplitude, mem.phase, mem.frequency,
+            &agent_id, class_index, amplitude, phase, frequency,
         ) {
             Ok(()) => sent += 1,
             Err(e) => {
