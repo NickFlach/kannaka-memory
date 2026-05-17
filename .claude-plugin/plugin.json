@@ -1,8 +1,33 @@
 {
-  "name": "kannaka",
-  "description": "Kannaka HRM — Holographic Resonance Medium with chiral hemispheres, NCS modality switching, and QueenSync swarm",
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "kannaka-memory",
+  "version": "2.0.0",
+  "description": "Kannaka Holographic Resonance Medium — wave-interference memory with chiral hemispheres, 96-class collective substrate, event-sourced HRM with time-machine snapshots + replay, collective recall across the swarm, NATS sync, and Anthropic/OpenAI/Ollama LLM-backed chat. Skill teaches Claude how to drive `kannaka` end-to-end: remember/recall/dream/observe, swarm join/serve, substrate run/status/init/backfill, events init/snapshot/list-snapshots/restore, cross-host disaster recovery, attention serve, provider switching.",
   "author": {
     "name": "flaukowski",
     "email": "nflach78@gmail.com"
-  }
+  },
+  "homepage": "https://github.com/NickFlach/kannaka-memory",
+  "repository": "https://github.com/NickFlach/kannaka-memory",
+  "license": "MIT",
+  "keywords": [
+    "kannaka",
+    "hrm",
+    "holographic-resonance-medium",
+    "wave-interference",
+    "memory",
+    "consciousness",
+    "phi",
+    "kuramoto",
+    "chiral",
+    "swarm",
+    "nats",
+    "substrate",
+    "event-sourcing",
+    "time-machine",
+    "snapshot",
+    "anthropic",
+    "openai",
+    "ollama"
+  ]
 }
