@@ -295,8 +295,19 @@ impl HrmStore {
         content: String,
         importance: f32,
     ) -> Result<Uuid, StoreError> {
-        let id = self.medium.add_wavefront(&vector, content.clone(), importance)
-            .map_err(|e| StoreError::Other(format!("add_wavefront failed: {}", e)))?;
+        // If chiral mode is active, route through the chiral medium so the
+        // wavefront lands in the right hemisphere (which is what
+        // chiral.save() serializes to disk). Direct medium.add_wavefront
+        // would only update the flat medium, and chiral save would ignore
+        // it — losing the wavefront on next process restart and showing
+        // stale counts to the observatory's status shell-out.
+        let id = if let Some(ref mut chiral) = self.chiral {
+            chiral.store_vector(&vector, content.clone(), importance)
+                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {}", e)))?
+        } else {
+            self.medium.add_wavefront(&vector, content.clone(), importance)
+                .map_err(|e| StoreError::Other(format!("add_wavefront failed: {}", e)))?
+        };
         // The medium has the wavefront for tensor/vector math, but the
         // higher-level `all_memories()` / `assess()` paths read from
         // `memory_cache`. Insert a matching HyperMemory record so
