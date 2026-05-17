@@ -21,7 +21,16 @@ use kannaka_memory::collective::{
     dream_cross_modal_link,
 };
 
-fn data_dir() -> PathBuf {
+// Extracted handler groups. See `src/bin/handlers/<group>.rs` and the
+// header comment in `handlers/substrate.rs` for the extraction pattern.
+#[path = "handlers/substrate.rs"]
+mod handlers_substrate;
+use handlers_substrate::{
+    handle_substrate_run, handle_substrate_backfill,
+    handle_substrate_init, handle_events_init,
+};
+
+pub(crate) fn data_dir() -> PathBuf {
     env::var("KANNAKA_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -120,7 +129,7 @@ fn usage() {
 
 /// Resolve NATS URL: CLI flag > KANNAKA_NATS_URL env > config.toml > hardcoded default.
 #[cfg(feature = "nats")]
-fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &str) -> String {
+pub(crate) fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &str) -> String {
     // Check args for --nats-url (highest priority)
     let mut i = start;
     while i < args.len() {
@@ -4730,7 +4739,7 @@ fn compact_input(v: &serde_json::Value) -> String {
 /// distribute wavefronts across all 96 substrate clusters and let the
 /// receiving side aggregate. Phase 4 will swap this for the real
 /// glyph_bridge classifier once that pipeline is wired through.
-fn substrate_class_index(content: &str) -> u32 {
+pub(crate) fn substrate_class_index(content: &str) -> u32 {
     // Deterministic FNV-1a 32 mod 96. Stable across runs / platforms.
     let mut h: u32 = 0x811c_9dc5;
     for b in content.as_bytes() {
@@ -4746,7 +4755,7 @@ fn substrate_class_index(content: &str) -> u32 {
 /// sync find multiple clusters on the substrate. Words are picked from a
 /// 96-word table that covers wide semantic ground (modalities, elements,
 /// abstract concepts) so neighboring classes still differ.
-fn substrate_class_word(class: u32) -> &'static str {
+pub(crate) fn substrate_class_word(class: u32) -> &'static str {
     const WORDS: [&str; 96] = [
         "alpha","beta","gamma","delta","epsilon","zeta","eta","theta","iota","kappa",
         "lambda","mu","nu","xi","omicron","pi","rho","sigma","tau","upsilon",
@@ -4760,410 +4769,6 @@ fn substrate_class_word(class: u32) -> &'static str {
         "kindred","stranger","sovereign","seeker","keeper","architect",
     ];
     WORDS[(class as usize) % 96]
-}
-
-/// ADR-0027 Phase 1: long-running substrate daemon. Subscribes to
-/// `KANNAKA.substrate.absorb.>`, parses each wave-signature payload,
-/// and absorbs it into the local HRM as a metadata-only marker memory.
-/// Every CONSCIOUSNESS_REFRESH_SECS, publishes `KANNAKA.substrate.phi`
-/// with the substrate's integrated consciousness metrics so observatory
-/// and radio surfaces can show the collective Φ separately from any
-/// individual agent's local Φ.
-///
-/// Run on kannaka-prime (the server identity) so the substrate is the
-/// constellation's shared resonance layer.
-#[cfg(feature = "nats")]
-fn handle_substrate_run(
-    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
-    cfg: &KannakaConfig,
-    args: &[String],
-) {
-    use std::collections::HashSet;
-    use std::time::{Duration, Instant};
-    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
-    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-        Ok(t) => t,
-        Err(e) => { eprintln!("[substrate] Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
-    };
-    eprintln!("[substrate] subscribing to KANNAKA.substrate.absorb.> on {}", nats_url);
-    let mut sub = match transport.subscribe("KANNAKA.substrate.absorb.>") {
-        Ok(s) => s,
-        Err(e) => { eprintln!("[substrate] subscribe failed: {}", e); process::exit(1); }
-    };
-    let _ = sub.set_timeout(Some(Duration::from_secs(5)));
-
-    // Publish substrate phi on a slow cadence — eigendecomp is the heavy
-    // cost so we don't want to do it on every absorb. 60s feels live
-    // enough for the observatory.
-    const PHI_PUBLISH_SECS: u64 = 60;
-    let mut last_phi_pub = Instant::now() - Duration::from_secs(PHI_PUBLISH_SECS);
-    let mut contributors: HashSet<String> = HashSet::new();
-
-    // Connection failure tracking — if the NATS server restarts under us
-    // (or the network blips), the next publish/subscribe returns a broken-
-    // pipe error. After MAX_CONSECUTIVE_FAILURES we exit(1) and let
-    // systemd's Restart=on-failure bring us back with a fresh transport.
-    // Simpler than in-process reconnect logic and gets us the same
-    // observable behavior (substrate keeps running across NATS hiccups).
-    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
-    let mut consecutive_failures: u32 = 0;
-
-    eprintln!("[substrate] daemon ready — Ctrl+C to stop");
-    loop {
-        if let Some(msg) = sub.next_message() {
-            let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
-                Ok(v) => v,
-                Err(e) => { eprintln!("[substrate] skip malformed event: {}", e); continue; }
-            };
-            let agent_id = v["agent_id"].as_str().unwrap_or("unknown");
-            let class_index = v["class_index"].as_u64().unwrap_or(0);
-            let amplitude = v["amplitude"].as_f64().unwrap_or(0.0) as f32;
-            let phase = v["phase"].as_f64().unwrap_or(0.0) as f32;
-            let frequency = v["frequency"].as_f64().unwrap_or(0.0) as f32;
-            // Skip our own substrate-absorbs (the kannaka-prime agent
-            // shouldn't echo its own remembers back into itself).
-            if agent_id == cfg.agent.id { continue; }
-            contributors.insert(agent_id.to_string());
-            // ADR-0027 Phase 1.c — direct wavefront insertion. Bypass
-            // the text encoder entirely; build a hypervector centered on
-            // the class anchor slice + perturbed by (amplitude, phase,
-            // frequency) so distinct absorbs in the same class land at
-            // distinct points within that cluster instead of stacking on
-            // the anchor itself. Privacy: content is metadata-only
-            // ("substrate-absorb[class] from agent ..."), no peer text.
-            const WAVEFRONT_DIM: usize = 10_000;
-            let slice_size = WAVEFRONT_DIM / 96;
-            let mut vector = vec![0.0f32; WAVEFRONT_DIM];
-            let start = (class_index as usize) * slice_size;
-            let end = (start + slice_size).min(WAVEFRONT_DIM);
-            // Anchor activation in the class slice, modulated by amplitude
-            // so weaker absorbs sit further from the anchor center.
-            let anchor_strength = amplitude.max(0.1);
-            for i in start..end {
-                vector[i] = anchor_strength;
-            }
-            // Phase-derived perturbation: small noise in adjacent slices,
-            // sign and magnitude derived from phase + frequency. Keeps the
-            // cosine to the anchor > 0.5 (same cluster) but distinct from
-            // other absorbs in the same class. Use a small deterministic
-            // PRNG seeded by the wave params for reproducibility.
-            let mut seed: u32 = ((phase * 1000.0) as i32 as u32)
-                .wrapping_add(((frequency * 1000.0) as i32 as u32).wrapping_mul(31))
-                .wrapping_add(class_index as u32 * 7);
-            for i in 0..WAVEFRONT_DIM {
-                // xorshift32 — fast deterministic noise
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                // Tiny perturbation: 1% of anchor strength
-                let noise = ((seed as f32 / u32::MAX as f32) - 0.5) * 0.02 * anchor_strength;
-                vector[i] += noise;
-            }
-            let norm = (vector.iter().map(|v| v * v).sum::<f32>()).sqrt();
-            if norm > 0.0 {
-                for v in vector.iter_mut() { *v /= norm; }
-            }
-            let content = format!(
-                "substrate-absorb[class={}] from {} amp={:.3} phase={:.3} freq={:.3}",
-                class_index, agent_id, amplitude, phase, frequency
-            );
-
-            // Need mutable HrmStore handle each iteration (re-borrowed from
-            // sys.engine.store since sys.remember would have re-borrowed
-            // the whole sys reference too).
-            let hrm = match sys.engine.store
-                .as_any_mut()
-                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
-            {
-                Some(h) => h,
-                None => {
-                    eprintln!("[substrate] non-HrmStore backend — cannot direct-insert");
-                    continue;
-                }
-            };
-            match hrm.insert_raw_wavefront(vector, content, amplitude) {
-                Ok(id) => {
-                    eprintln!("[substrate] absorbed from {} class {} -> {}", agent_id, class_index, id);
-                }
-                Err(e) => {
-                    eprintln!("[substrate] absorb failed: {}", e);
-                }
-            }
-        }
-        // Periodic phi publish — runs even if no inbound events, so the
-        // observatory always has a recent snapshot.
-        if last_phi_pub.elapsed() >= Duration::from_secs(PHI_PUBLISH_SECS) {
-            // Flush to disk so the observatory's `kannaka status`
-            // shell-out sees the live count (it reads the on-disk
-            // file). Without periodic flush, only Drop persists —
-            // meaning a systemd restart loses everything since the
-            // last process start.
-            if let Err(e) = sys.engine.store.flush() {
-                eprintln!("[substrate] flush warning: {}", e);
-            }
-            let state = sys.assess();
-            let contribs: Vec<String> = contributors.iter().cloned().collect();
-            match transport.publish_substrate_phi(
-                state.phi, state.xi, state.mean_order,
-                state.num_clusters, state.total_memories,
-                &contribs,
-            ) {
-                Ok(()) => {
-                    consecutive_failures = 0;
-                    eprintln!("[substrate] published collective phi={:.3} (clusters={} mems={} contribs={})",
-                        state.phi, state.num_clusters, state.total_memories, contribs.len());
-                }
-                Err(e) => {
-                    consecutive_failures += 1;
-                    eprintln!("[substrate] phi publish failed ({}/{}): {}",
-                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        eprintln!("[substrate] NATS connection unrecoverable — exiting for systemd restart");
-                        process::exit(1);
-                    }
-                }
-            }
-            last_phi_pub = Instant::now();
-        }
-    }
-}
-
-#[cfg(not(feature = "nats"))]
-fn handle_substrate_run(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("substrate run requires the 'nats' feature");
-    process::exit(1);
-}
-
-/// ADR-0027 Phase 2: walk the local HRM and emit one substrate.absorb
-/// event per memory, so an existing agent's HRM contributes its prior
-/// content to the collective substrate without each memory needing to
-/// be re-`remember`-ed with `--substrate`.
-///
-/// Idempotent across runs: the substrate's HRM dedupes the same
-/// signature (same class + same wave params) naturally via its decay /
-/// merge semantics, but to avoid blasting NATS with the same payload
-/// on every backfill run, we honor a marker file at
-/// `<data_dir>/.substrate-backfilled` and skip if it's present. Force
-/// re-run with `--force`.
-///
-/// Rate limit: hard-coded 50ms between events (~20/sec). On a 600-memory
-/// HRM that's ~30s wallclock. Tunable via `--delay-ms`.
-#[cfg(feature = "nats")]
-fn handle_substrate_backfill(
-    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
-    cfg: &KannakaConfig,
-    args: &[String],
-) {
-    use std::time::Duration;
-    let mut force = false;
-    let mut delay_ms: u64 = 50;
-    let mut i = 2;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--force" => { force = true; i += 1; }
-            "--delay-ms" if i + 1 < args.len() => {
-                delay_ms = args[i + 1].parse().unwrap_or(50);
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-    let marker_path = data_dir().join(".substrate-backfilled");
-    if marker_path.exists() && !force {
-        eprintln!("[backfill] already done (marker at {}); use --force to re-run", marker_path.display());
-        return;
-    }
-
-    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
-    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("[backfill] NATS connect failed: {}", e);
-            process::exit(1);
-        }
-    };
-    let agent_id = cfg.agent.id.clone();
-    let memories = match sys.all_memories() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("[backfill] failed to read local HRM: {}", e);
-            process::exit(1);
-        }
-    };
-    let total = memories.len();
-    eprintln!("[backfill] {} memories to absorb (delay={}ms, ETA {}s)",
-        total, delay_ms, (total as u64 * delay_ms) / 1000);
-
-    let mut sent: usize = 0;
-    let mut failed: usize = 0;
-    for (i, mem) in memories.iter().enumerate() {
-        let class_index = substrate_class_index(&mem.content);
-        // Derive distinct wave params per source memory — same logic as
-        // the live `remember --substrate` path. Without this every
-        // backfilled event would carry HyperMemory's default 0.5/0/1
-        // and the substrate would Kuramoto-collapse to one cluster.
-        let id_bytes = mem.id.as_bytes();
-        let phase_hash: u64 = id_bytes.iter().fold(0u64, |acc, b| {
-            acc.wrapping_mul(31).wrapping_add(*b as u64)
-        });
-        let phase = (phase_hash as f32 / u64::MAX as f32) * std::f32::consts::TAU;
-        let frequency = 0.5 + (class_index as f32 / 96.0) * 1.5;
-        let amplitude = (mem.content.len() as f32 / 200.0).min(1.0).max(0.2);
-        match transport.publish_substrate_absorb(
-            &agent_id, class_index, amplitude, phase, frequency,
-        ) {
-            Ok(()) => sent += 1,
-            Err(e) => {
-                failed += 1;
-                if failed <= 3 {
-                    eprintln!("[backfill] event {}/{} failed: {}", i + 1, total, e);
-                }
-            }
-        }
-        // Progress every 50 events
-        if (i + 1) % 50 == 0 || i + 1 == total {
-            eprintln!("[backfill] {}/{} sent ({} failed)", i + 1, total, failed);
-        }
-        if delay_ms > 0 {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-        }
-    }
-
-    // Write the marker so a subsequent run is a no-op unless --force.
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
-    eprintln!("[backfill] done — {} sent, {} failed. Marker: {}",
-        sent, failed, marker_path.display());
-}
-
-#[cfg(not(feature = "nats"))]
-fn handle_substrate_backfill(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("substrate backfill requires the 'nats' feature");
-    process::exit(1);
-}
-
-/// ADR-0028 Phase 1 — create the durable JetStream streams that hold
-/// the event-sourced HRM history. Idempotent: re-running adjusts
-/// retention to match the in-code config but won't duplicate data.
-#[cfg(feature = "nats")]
-fn handle_events_init(cfg: &KannakaConfig, args: &[String]) {
-    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
-    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-        Ok(t) => t,
-        Err(e) => { eprintln!("[events init] NATS connect failed: {}", e); process::exit(1); }
-    };
-    eprintln!("[events init] creating JetStream streams on {}", nats_url);
-    let mut failed = 0;
-    for kind in kannaka_memory::nats::StreamKind::ALL {
-        let name = kind.spec().name;
-        match transport.ensure_event_stream(*kind) {
-            Ok(()) => eprintln!("[events init]   {}  ok", name),
-            Err(e) => { eprintln!("[events init]   {}  FAILED: {}", name, e); failed += 1; }
-        }
-    }
-    if failed > 0 {
-        eprintln!("[events init] {} stream(s) failed — check NATS JetStream config + ACLs", failed);
-        process::exit(1);
-    }
-    eprintln!("[events init] done — event-sourced history is now durable. Replay (Phase 3) and snapshots (Phase 2) ship in subsequent slices.");
-}
-
-#[cfg(not(feature = "nats"))]
-fn handle_events_init(_: &KannakaConfig, _: &[String]) {
-    eprintln!("events init requires the 'nats' feature");
-    process::exit(1);
-}
-
-/// ADR-0027 Phase 1.b — seed the substrate's HRM with 96 anchor
-/// wavefronts (one per SGA class). Each anchor is a high-amplitude
-/// memory whose content is maximally distinct from every other class:
-/// 32 occurrences of the class word + 16 occurrences of the class
-/// index as text. This forces the hypervector encoder to produce
-/// genuinely different vectors per class, giving Kuramoto sync real
-/// structure to find. Subsequent substrate.absorb events generate
-/// markers that PREPEND the matching anchor word so they flow into
-/// the right cluster by text-similarity.
-///
-/// Idempotent: writes a marker at <data_dir>/.substrate-initialized.
-/// Use --force to re-seed (will create 96 NEW anchors, doesn't delete
-/// the old ones — usually you want to nuke the HRM file first).
-fn handle_substrate_init(
-    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
-    args: &[String],
-) {
-    let mut force = false;
-    let mut i = 2;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--force" => { force = true; i += 1; }
-            _ => i += 1,
-        }
-    }
-    let marker_path = data_dir().join(".substrate-initialized");
-    if marker_path.exists() && !force {
-        eprintln!("[init] substrate already seeded (marker at {}); use --force to re-seat", marker_path.display());
-        return;
-    }
-
-    eprintln!("[init] seeding 96 anchor wavefronts — one per SGA class");
-    eprintln!("[init] direct hypervector insertion (bypassing text encoder) so anchors are mutually orthogonal");
-
-    // Build 96 maximally distinct hypervectors. Each anchor gets a
-    // unique 1/96 slice of the WAVEFRONT_DIM activated to +1.0; the
-    // remaining 95/96 slices are zero. This guarantees pairwise dot
-    // product = 0 across classes (cos = 0), well under the 0.5
-    // coherence threshold that compute_eigenvalue_clusters uses to
-    // merge into a single cluster. Result: 96 truly separate clusters
-    // for Kuramoto sync to find.
-    const WAVEFRONT_DIM: usize = 10_000;
-    let slice_size = WAVEFRONT_DIM / 96; // ~104 dims per class
-
-    // Grab a mutable handle to the HrmStore so we can call the new
-    // insert_raw_wavefront API (added in v0.3.16 hrm_store.rs).
-    let hrm = match sys.engine.store
-        .as_any_mut()
-        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
-    {
-        Some(h) => h,
-        None => {
-            eprintln!("[init] substrate requires HRM backend; got non-HrmStore");
-            process::exit(1);
-        }
-    };
-
-    let mut seeded: u32 = 0;
-    let mut failed: u32 = 0;
-    for class in 0u32..96 {
-        let word = substrate_class_word(class);
-        let mut vector = vec![0.0f32; WAVEFRONT_DIM];
-        let start = (class as usize) * slice_size;
-        let end = (start + slice_size).min(WAVEFRONT_DIM);
-        for i in start..end {
-            vector[i] = 1.0;
-        }
-        // Normalize to unit length so wavefront magnitudes are uniform.
-        let norm = (vector.iter().map(|v| v * v).sum::<f32>()).sqrt();
-        for v in vector.iter_mut() {
-            *v /= norm;
-        }
-        let content = format!("anchor[{}] {} (class-orthogonal seed)", class, word);
-        match hrm.insert_raw_wavefront(vector, content, 1.0) {
-            Ok(_) => seeded += 1,
-            Err(e) => {
-                failed += 1;
-                if failed <= 3 {
-                    eprintln!("[init] anchor class {} failed: {}", class, e);
-                }
-            }
-        }
-        if (class + 1) % 16 == 0 {
-            eprintln!("[init] {}/96 anchors seeded", class + 1);
-        }
-    }
-
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
-    eprintln!("[init] done — {} anchors seeded ({} failed). Marker: {}",
-        seeded, failed, marker_path.display());
-    eprintln!("[init] substrate is now class-structured; restart `kannaka substrate run` so absorbs flow into the seeded clusters");
 }
 
 fn handle_orchestrate(args: &[String]) {
