@@ -297,11 +297,13 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     use flate2::read::GzDecoder;
     let mut from: Option<String> = None;
     let mut agent_filter: Option<String> = None;
+    let mut dry_run = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
             "--agent" if i + 1 < args.len() => { agent_filter = Some(args[i + 1].clone()); i += 2; }
+            "--dry-run" => { dry_run = true; i += 1; }
             "--nats-url" if i + 1 < args.len() => { i += 2; }
             _ => i += 1,
         }
@@ -357,6 +359,24 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     }
 
     let hrm_path = data_dir().join("kannaka.hrm");
+
+    if dry_run {
+        // Validate without overwriting. Report what would happen so the
+        // operator can confirm before re-running without --dry-run.
+        eprintln!("[restore] DRY RUN — no files written");
+        eprintln!("[restore]   gz body bytes : {}", gz_bytes.len());
+        eprintln!("[restore]   decoded bytes : {}", decoded.len());
+        eprintln!("[restore]   would write   : {}", hrm_path.display());
+        if hrm_path.exists() {
+            let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{}", ts));
+            eprintln!("[restore]   would backup  : {} -> {}", hrm_path.display(), backup_path.display());
+        } else {
+            eprintln!("[restore]   no existing HRM to back up");
+        }
+        return;
+    }
+
     if hrm_path.exists() {
         let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{}", ts));

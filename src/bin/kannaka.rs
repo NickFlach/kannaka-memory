@@ -1693,7 +1693,7 @@ fn main() {
             //   snapshot  — capture + publish a gzipped HRM snapshot (Phase 2).
             //               --interval N runs as a daemon at N-second cadence.
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID]|restore [--agent ID] [--from PATH]>");
+                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH] [--dry-run]>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
@@ -1711,7 +1711,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown events command: {other}");
-                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID]|restore [--agent ID] [--from PATH]>");
+                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH] [--dry-run]>");
                     process::exit(1);
                 }
             }
