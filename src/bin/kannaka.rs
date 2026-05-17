@@ -28,6 +28,7 @@ mod handlers_substrate;
 use handlers_substrate::{
     handle_substrate_run, handle_substrate_backfill,
     handle_substrate_init, handle_events_init, handle_events_snapshot,
+    handle_events_list_snapshots, handle_events_restore,
 };
 
 #[path = "handlers/chat.rs"]
@@ -1691,7 +1692,7 @@ fn main() {
             //   snapshot  — capture + publish a gzipped HRM snapshot (Phase 2).
             //               --interval N runs as a daemon at N-second cadence.
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]>");
+                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID]|restore [--agent ID] [--from PATH]>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
@@ -1701,9 +1702,15 @@ fn main() {
                 "snapshot" => {
                     handle_events_snapshot(&mut sys, &cfg, &args[command_start..]);
                 }
+                "list-snapshots" => {
+                    handle_events_list_snapshots(&cfg, &args[command_start..]);
+                }
+                "restore" => {
+                    handle_events_restore(&cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown events command: {other}");
-                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]>");
+                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID]|restore [--agent ID] [--from PATH]>");
                     process::exit(1);
                 }
             }

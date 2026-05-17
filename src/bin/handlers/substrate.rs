@@ -151,6 +151,170 @@ pub(crate) fn handle_events_snapshot(_: &mut kannaka_memory::openclaw::KannakaMe
     process::exit(1);
 }
 
+/// ADR-0028 Phase 3 — `kannaka events list-snapshots [--agent ID]`.
+///
+/// Pulls all snapshot manifests from KANNAKA_SNAPSHOTS and prints them
+/// sorted newest-first, one per line. Optional `--agent` filter narrows
+/// to a single agent. Each line shows ts, agent_id, wavefronts,
+/// clusters, phi, body_gz_bytes (KB), body_path.
+#[cfg(feature = "nats")]
+pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String]) {
+    let mut agent_filter: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--agent" if i + 1 < args.len() => {
+                agent_filter = Some(args[i + 1].clone()); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[list-snapshots] NATS connect failed: {}", e); process::exit(1); }
+    };
+    let subject_filter = match &agent_filter {
+        Some(a) => format!("KANNAKA.snapshots.{}.full", a),
+        None => "KANNAKA.snapshots.>".to_string(),
+    };
+    let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject_filter, 500) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[list-snapshots] read failed: {}", e); process::exit(1); }
+    };
+    if manifests.is_empty() {
+        eprintln!("[list-snapshots] no manifests found");
+        return;
+    }
+    // Sort by ts descending.
+    let mut sorted = manifests;
+    sorted.sort_by(|a, b| {
+        let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        bt.cmp(at)
+    });
+    println!("{:<25} {:<28} {:>6} {:>4} {:>6} {:>8}  {}",
+        "ts", "agent_id", "waves", "cls", "phi", "gz(KB)", "body");
+    for m in sorted.iter() {
+        let ts = m.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
+        let agent = m.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let manifest = m.get("manifest");
+        let waves = manifest.and_then(|x| x.get("wavefronts")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cls = manifest.and_then(|x| x.get("clusters")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let phi = manifest.and_then(|x| x.get("phi")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let bytes = m.get("body_gz_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let body = m.get("body_path").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("{:<25} {:<28} {:>6} {:>4} {:>6.3} {:>8}  {}",
+            ts.chars().take(24).collect::<String>(),
+            agent, waves, cls, phi, bytes / 1024, body);
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_events_list_snapshots(_: &KannakaConfig, _: &[String]) {
+    eprintln!("events list-snapshots requires the 'nats' feature");
+    process::exit(1);
+}
+
+/// ADR-0028 Phase 3 — `kannaka events restore [--agent ID] [--from PATH]`.
+///
+/// Restore HRM from a snapshot body on disk. Without `--from`, picks the
+/// most recent snapshot for the given agent (or this agent's id from
+/// config). With `--from PATH`, uses the explicit gz file. Backs up the
+/// current kannaka.hrm to kannaka.hrm.pre-restore-<ts> before overwriting.
+///
+/// Safety: refuses to run if `kannaka.hrm` is open / locked by another
+/// process — operator must stop the substrate/swarm daemon first.
+#[cfg(feature = "nats")]
+pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
+    use std::io::Read;
+    use flate2::read::GzDecoder;
+    let mut from: Option<String> = None;
+    let mut agent_filter: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
+            "--agent" if i + 1 < args.len() => { agent_filter = Some(args[i + 1].clone()); i += 2; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+
+    // Resolve body_path: either explicit --from or look up latest manifest.
+    let body_path = match from {
+        Some(p) => p,
+        None => {
+            let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+            let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                Ok(t) => t,
+                Err(e) => { eprintln!("[restore] NATS connect failed: {}", e); process::exit(1); }
+            };
+            let target_agent = agent_filter.unwrap_or_else(|| cfg.agent.id.clone());
+            let subject = format!("KANNAKA.snapshots.{}.full", target_agent);
+            let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject, 500) {
+                Ok(v) => v,
+                Err(e) => { eprintln!("[restore] read manifests failed: {}", e); process::exit(1); }
+            };
+            if manifests.is_empty() {
+                eprintln!("[restore] no snapshots found for agent={}", target_agent);
+                process::exit(1);
+            }
+            let mut latest = manifests;
+            latest.sort_by(|a, b| {
+                let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                bt.cmp(at)
+            });
+            let path = latest[0].get("body_path").and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match path {
+                Some(p) => p,
+                None => {
+                    eprintln!("[restore] latest manifest has no body_path");
+                    process::exit(1);
+                }
+            }
+        }
+    };
+
+    eprintln!("[restore] source: {}", body_path);
+    let gz_bytes = match std::fs::read(&body_path) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("[restore] read body failed: {}", e); process::exit(1); }
+    };
+    let mut decoder = GzDecoder::new(gz_bytes.as_slice());
+    let mut decoded: Vec<u8> = Vec::with_capacity(gz_bytes.len() * 4);
+    if let Err(e) = decoder.read_to_end(&mut decoded) {
+        eprintln!("[restore] gunzip failed: {}", e);
+        process::exit(1);
+    }
+
+    let hrm_path = data_dir().join("kannaka.hrm");
+    if hrm_path.exists() {
+        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{}", ts));
+        if let Err(e) = std::fs::rename(&hrm_path, &backup_path) {
+            eprintln!("[restore] backup rename failed: {} (is the HRM in use? stop substrate/swarm daemon first)", e);
+            process::exit(1);
+        }
+        eprintln!("[restore] backed up existing HRM to {}", backup_path.display());
+    }
+    if let Err(e) = std::fs::write(&hrm_path, &decoded) {
+        eprintln!("[restore] write decoded HRM failed: {}", e);
+        process::exit(1);
+    }
+    eprintln!("[restore] wrote {} bytes to {}", decoded.len(), hrm_path.display());
+    eprintln!("[restore] done — restart any kannaka daemons (substrate/swarm) so they pick up the new HRM");
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_events_restore(_: &KannakaConfig, _: &[String]) {
+    eprintln!("events restore requires the 'nats' feature");
+    process::exit(1);
+}
+
 /// ADR-0027 Phase 1: subscribe to `KANNAKA.substrate.absorb.>` and route
 /// each absorb directly into the substrate's HRM (bypassing the text
 /// encoder so distinct absorbs in the same class don't Kuramoto-collapse).
