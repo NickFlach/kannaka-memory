@@ -560,7 +560,13 @@ pub(crate) fn handle_substrate_run(
     let mut consecutive_failures: u32 = 0;
 
     eprintln!("[substrate] daemon ready — Ctrl+C to stop");
+    let mut loop_count: u64 = 0;
     loop {
+        loop_count += 1;
+        if loop_count % 50 == 1 {
+            eprintln!("[substrate trace] loop iter #{}, recall_sub={}",
+                loop_count, recall_sub.is_some());
+        }
         // ADR-0027 Phase 3 — collective recall handler.
         // Payload: {"query": "...", "top_k": 8 (optional)}
         // Reply: {"from": substrate_agent_id, "query": "...", "matches":
@@ -571,7 +577,11 @@ pub(crate) fn handle_substrate_run(
         // crossed the boundary in the first place (ADR-0027 Phase 1.c
         // privacy: only wave signatures absorb into the substrate).
         if let Some(ref mut rsub) = recall_sub {
-            if let Some(msg) = rsub.next_message() {
+            let msg_opt = rsub.next_message();
+            if msg_opt.is_some() && loop_count % 1 == 0 {
+                eprintln!("[substrate trace] recall msg arrived at iter #{}", loop_count);
+            }
+            if let Some(msg) = msg_opt {
                 let reply_to = msg.reply_to.clone();
                 let req: serde_json::Value = serde_json::from_slice(&msg.payload)
                     .unwrap_or(serde_json::Value::Null);
