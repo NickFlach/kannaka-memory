@@ -27,7 +27,8 @@ use kannaka_memory::collective::{
 mod handlers_substrate;
 use handlers_substrate::{
     handle_substrate_run, handle_substrate_backfill,
-    handle_substrate_init, handle_events_init, handle_events_snapshot,
+    handle_substrate_init, handle_substrate_status,
+    handle_events_init, handle_events_snapshot,
     handle_events_list_snapshots, handle_events_restore,
 };
 
@@ -1727,7 +1728,7 @@ fn main() {
             //   backfill  — walk local HRM and emit one substrate.absorb
             //               event per memory (Phase 2)
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka substrate <init|run|backfill>");
+                eprintln!("Usage: kannaka substrate <init|run|backfill|status [--wait SECS]>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
@@ -1740,9 +1741,12 @@ fn main() {
                 "backfill" => {
                     handle_substrate_backfill(&mut sys, &cfg, &args[command_start..]);
                 }
+                "status" => {
+                    handle_substrate_status(&cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown substrate command: {other}");
-                    eprintln!("Usage: kannaka substrate <init|run|backfill>");
+                    eprintln!("Usage: kannaka substrate <init|run|backfill|status [--wait SECS]>");
                     process::exit(1);
                 }
             }

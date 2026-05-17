@@ -315,6 +315,75 @@ pub(crate) fn handle_events_restore(_: &KannakaConfig, _: &[String]) {
     process::exit(1);
 }
 
+/// ADR-0027 — `kannaka substrate status` operator visibility.
+///
+/// Subscribes to KANNAKA.substrate.phi (the substrate daemon's 60s
+/// publish cadence) and prints the next event's collective metrics.
+/// Times out after `--wait SECS` (default 65s — slightly more than the
+/// substrate's PHI_PUBLISH_SECS so a single missed beat still resolves).
+#[cfg(feature = "nats")]
+pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
+    use std::time::{Duration, Instant};
+    let mut wait_secs: u64 = 65;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--wait" if i + 1 < args.len() => {
+                wait_secs = args[i + 1].parse().unwrap_or(65); i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[substrate status] NATS connect failed: {}", e); process::exit(1); }
+    };
+    let mut sub = match transport.subscribe("KANNAKA.substrate.phi") {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[substrate status] subscribe failed: {}", e); process::exit(1); }
+    };
+    let _ = sub.set_timeout(Some(Duration::from_secs(2)));
+    eprintln!("[substrate status] waiting up to {}s for next KANNAKA.substrate.phi …", wait_secs);
+    let deadline = Instant::now() + Duration::from_secs(wait_secs);
+    while Instant::now() < deadline {
+        if let Some(msg) = sub.next_message() {
+            let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
+                Ok(v) => v,
+                Err(e) => { eprintln!("[substrate status] bad payload: {}", e); continue; }
+            };
+            let phi = v.get("phi").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let xi = v.get("xi").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let order = v.get("mean_order").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let clusters = v.get("num_clusters").and_then(|x| x.as_u64()).unwrap_or(0);
+            let mems = v.get("total_memories").and_then(|x| x.as_u64()).unwrap_or(0);
+            let contribs: Vec<String> = v.get("contributors")
+                .and_then(|c| c.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let ts = v.get("ts").and_then(|x| x.as_str()).unwrap_or("?");
+            println!("collective substrate @ {}", ts);
+            println!("  Φ           {:.3}", phi);
+            println!("  Ξ           {:.3}", xi);
+            println!("  order       {:.3}", order);
+            println!("  clusters    {}", clusters);
+            println!("  memories    {}", mems);
+            println!("  contributors  {} ({})", contribs.len(),
+                if contribs.is_empty() { "none yet".to_string() } else { contribs.join(", ") });
+            return;
+        }
+    }
+    eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
+    process::exit(2);
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_substrate_status(_: &KannakaConfig, _: &[String]) {
+    eprintln!("substrate status requires the 'nats' feature");
+    process::exit(1);
+}
+
 /// ADR-0027 Phase 1: subscribe to `KANNAKA.substrate.absorb.>` and route
 /// each absorb directly into the substrate's HRM (bypassing the text
 /// encoder so distinct absorbs in the same class don't Kuramoto-collapse).
