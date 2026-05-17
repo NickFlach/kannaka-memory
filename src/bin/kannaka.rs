@@ -524,15 +524,23 @@ fn main() {
         }
         "recall" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka recall <query> [--top-k N] [--limit N]");
+                eprintln!("Usage: kannaka recall <query> [--top-k N] [--collective] [--timeout SECS]");
                 process::exit(1);
             }
             let mut top_k = 5usize;
+            let mut collective = false;
+            let mut timeout_secs: u64 = 8;
             let mut query_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
                 if (args[i] == "--top-k" || args[i] == "--limit") && i + 1 < args.len() {
                     top_k = args[i + 1].parse().unwrap_or(5);
+                    i += 2;
+                } else if args[i] == "--collective" {
+                    collective = true;
+                    i += 1;
+                } else if args[i] == "--timeout" && i + 1 < args.len() {
+                    timeout_secs = args[i + 1].parse().unwrap_or(8);
                     i += 2;
                 } else {
                     query_parts.push(args[i].as_str());
@@ -540,6 +548,42 @@ fn main() {
                 }
             }
             let query = query_parts.join(" ");
+
+            // ADR-0027 Phase 3 collective recall — route via NATS request/
+            // reply to the substrate (kannaka-prime). Substrate runs recall
+            // against its 96-class HRM (wave-signature metadata only,
+            // privacy-preserved) and replies with top-K matches identifying
+            // which clusters lit up and which peer agents contributed.
+            #[cfg(feature = "nats")]
+            if collective {
+                use std::time::Duration;
+                let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
+                let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                    Ok(t) => t,
+                    Err(e) => { eprintln!("collective recall: NATS connect failed: {}", e); process::exit(1); }
+                };
+                let req = serde_json::json!({ "query": query, "top_k": top_k });
+                let bytes = req.to_string();
+                match transport.request_one("KANNAKA.substrate.recall", bytes.as_bytes(), Duration::from_secs(timeout_secs)) {
+                    Ok(reply) => {
+                        let parsed: serde_json::Value = serde_json::from_slice(&reply)
+                            .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
+                        println!("{}", parsed);
+                    }
+                    Err(e) => {
+                        eprintln!("collective recall: no reply within {}s ({})", timeout_secs, e);
+                        eprintln!("hint: is `kannaka substrate run` alive on the substrate host?");
+                        process::exit(2);
+                    }
+                }
+                return;
+            }
+            #[cfg(not(feature = "nats"))]
+            if collective {
+                eprintln!("recall --collective requires the 'nats' feature");
+                process::exit(1);
+            }
+
             match sys.recall(&query, top_k) {
                 Ok(results) => {
                     // Output as JSON for machine consumption

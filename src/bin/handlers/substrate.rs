@@ -520,6 +520,22 @@ pub(crate) fn handle_substrate_run(
     };
     let _ = sub.set_timeout(Some(Duration::from_secs(5)));
 
+    // ADR-0027 Phase 3 — collective recall. Second transport (NATS sub
+    // owns the connection's TCP read half, so each subject needs a
+    // separate connection). Peer agents send a query payload via
+    // request_one; we run recall against the substrate's 96-class HRM
+    // and reply with the top-K matches.
+    let recall_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
+    let mut recall_sub = recall_transport
+        .as_ref()
+        .and_then(|t| t.subscribe("KANNAKA.substrate.recall").ok());
+    if let Some(ref mut s) = recall_sub {
+        let _ = s.set_timeout(Some(Duration::from_secs(2)));
+        eprintln!("[substrate] subscribing to KANNAKA.substrate.recall (collective recall)");
+    } else {
+        eprintln!("[substrate] WARN: no collective-recall subscription — running absorb-only");
+    }
+
     // Publish substrate phi on a slow cadence — eigendecomp is the heavy
     // cost so we don't want to do it on every absorb. 60s feels live
     // enough for the observatory.
@@ -545,6 +561,51 @@ pub(crate) fn handle_substrate_run(
 
     eprintln!("[substrate] daemon ready — Ctrl+C to stop");
     loop {
+        // ADR-0027 Phase 3 — collective recall handler.
+        // Payload: {"query": "...", "top_k": 8 (optional)}
+        // Reply: {"from": substrate_agent_id, "query": "...", "matches":
+        //         [{memory_id, content, similarity, strength, ...}, ...],
+        //         "total_memories": N}
+        // Content surface area is metadata-only ("substrate-absorb[class=N]
+        // from <agent> amp=... phase=... freq=...") — peer texts never
+        // crossed the boundary in the first place (ADR-0027 Phase 1.c
+        // privacy: only wave signatures absorb into the substrate).
+        if let Some(ref mut rsub) = recall_sub {
+            if let Some(msg) = rsub.next_message() {
+                let reply_to = msg.reply_to.clone();
+                let req: serde_json::Value = serde_json::from_slice(&msg.payload)
+                    .unwrap_or(serde_json::Value::Null);
+                let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+                if !query.is_empty() && reply_to.is_some() {
+                    let matches: Vec<serde_json::Value> = match sys.recall(query, top_k) {
+                        Ok(rs) => rs.iter().map(|r| serde_json::json!({
+                            "memory_id": r.id.to_string(),
+                            "content": r.content,
+                            "similarity": r.similarity,
+                            "strength": r.strength,
+                            "age_hours": r.age_hours,
+                        })).collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    let total = sys.all_memories().map(|m| m.len()).unwrap_or(0);
+                    let reply_payload = serde_json::json!({
+                        "from": cfg.agent.id,
+                        "query": query,
+                        "matches": matches,
+                        "total_memories": total,
+                    });
+                    if let Some(reply_subject) = reply_to {
+                        if let Some(ref rt) = recall_transport {
+                            let _ = rt.reply(&reply_subject, reply_payload.to_string().as_bytes());
+                            eprintln!("[substrate recall] from peer: '{}' -> {} matches",
+                                query.chars().take(60).collect::<String>(), matches.len());
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(msg) = sub.next_message() {
             let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
                 Ok(v) => v,
