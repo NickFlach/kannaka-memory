@@ -4839,6 +4839,14 @@ fn handle_substrate_run(
         // Periodic phi publish — runs even if no inbound events, so the
         // observatory always has a recent snapshot.
         if last_phi_pub.elapsed() >= Duration::from_secs(PHI_PUBLISH_SECS) {
+            // Flush to disk so the observatory's `kannaka status`
+            // shell-out sees the live count (it reads the on-disk
+            // file). Without periodic flush, only Drop persists —
+            // meaning a systemd restart loses everything since the
+            // last process start.
+            if let Err(e) = sys.engine.store.flush() {
+                eprintln!("[substrate] flush warning: {}", e);
+            }
             let state = sys.assess();
             let contribs: Vec<String> = contributors.iter().cloned().collect();
             match transport.publish_substrate_phi(
