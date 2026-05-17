@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "kannaka-memory"
-version = "0.3.32"
+version = "0.3.33"
 dependencies = [
  "bincode",
  "blake3",
@@ -1095,6 +1095,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "dirs",
+ "flate2",
  "image",
  "kannaka-attention",
  "lazy_static",

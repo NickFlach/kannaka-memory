@@ -27,7 +27,7 @@ use kannaka_memory::collective::{
 mod handlers_substrate;
 use handlers_substrate::{
     handle_substrate_run, handle_substrate_backfill,
-    handle_substrate_init, handle_events_init,
+    handle_substrate_init, handle_events_init, handle_events_snapshot,
 };
 
 #[path = "handlers/chat.rs"]
@@ -1686,19 +1686,24 @@ fn main() {
         #[cfg(feature = "nats")]
         "events" => {
             // ADR-0028 — event-sourced HRM + time machine.
-            // Subcommands (more land in later phases):
-            //   init  — create JetStream streams for memory/substrate/snapshots
+            // Subcommands:
+            //   init      — create JetStream streams for memory/substrate/snapshots
+            //   snapshot  — capture + publish a gzipped HRM snapshot (Phase 2).
+            //               --interval N runs as a daemon at N-second cadence.
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka events <init>");
+                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
                 "init" => {
                     handle_events_init(&cfg, &args[command_start..]);
                 }
+                "snapshot" => {
+                    handle_events_snapshot(&mut sys, &cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown events command: {other}");
-                    eprintln!("Usage: kannaka events <init>");
+                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]>");
                     process::exit(1);
                 }
             }

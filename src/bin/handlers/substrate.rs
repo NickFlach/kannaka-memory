@@ -15,6 +15,142 @@ use super::{
     KannakaConfig,
 };
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
+
+/// Capture HRM snapshot: gzip the HRM file to `<data_dir>/snapshots/`,
+/// publish a manifest event to KANNAKA.snapshots.<agent>.full pointing
+/// at the on-disk body. NATS silently caps payloads ~8MB even with
+/// max_payload bumped, and HRMs grow to 35MB+, so we keep snapshots
+/// out-of-band on disk and put only the manifest in JetStream. Once
+/// ADR-0026 Phase 5 Object Store lands the body_path becomes a URL.
+///
+/// Local-disk retention is naive — every snapshot is kept until manual
+/// cleanup. A future slice can prune to the latest N per agent (the
+/// KANNAKA_SNAPSHOTS stream already auto-prunes manifests to 168).
+#[cfg(feature = "nats")]
+fn capture_and_publish_snapshot(
+    transport: &kannaka_memory::nats::SwarmTransport,
+    agent_id: &str,
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+) -> Result<u64, String> {
+    use std::io::Write;
+    // Flush in-memory medium to disk so the snapshot reflects current state.
+    sys.engine.store.flush().map_err(|e| format!("flush: {e}"))?;
+    let hrm_path = data_dir().join("kannaka.hrm");
+    let bytes = std::fs::read(&hrm_path)
+        .map_err(|e| format!("read {}: {e}", hrm_path.display()))?;
+    let raw_size = bytes.len() as u64;
+    let mut gz = GzEncoder::new(Vec::with_capacity(bytes.len() / 4), Compression::default());
+    gz.write_all(&bytes).map_err(|e| format!("gzip: {e}"))?;
+    let compressed = gz.finish().map_err(|e| format!("gzip finish: {e}"))?;
+    let gz_size = compressed.len() as u64;
+
+    // Persist to <data_dir>/snapshots/<ts>-<agent>.hrm.gz.
+    let snapshots_dir = data_dir().join("snapshots");
+    std::fs::create_dir_all(&snapshots_dir)
+        .map_err(|e| format!("mkdir snapshots/: {e}"))?;
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let filename = format!("{}-{}.hrm.gz", ts, agent_id);
+    let body_path = snapshots_dir.join(&filename);
+    std::fs::write(&body_path, &compressed)
+        .map_err(|e| format!("write snapshot body: {e}"))?;
+
+    let state = sys.assess();
+    let wavefronts = sys.all_memories().map(|m| m.len() as u64).unwrap_or(0);
+    let clusters = state.num_clusters as u64;
+    let phi = state.phi;
+    let version = env!("CARGO_PKG_VERSION");
+    let body_path_str = body_path.to_string_lossy().to_string();
+
+    transport.publish_event(kannaka_memory::nats::EventPayload::SnapshotFull {
+        agent_id,
+        version,
+        wavefronts,
+        clusters,
+        phi,
+        body_path: &body_path_str,
+        body_gz_bytes: gz_size,
+    }).map_err(|e| format!("publish manifest: {e}"))?;
+
+    // Give the OS a moment to actually flush the TCP send buffer before
+    // the one-shot CLI exits. Without this, the publish_raw flush() returns
+    // before the kernel has put the bytes on the wire and NATS never sees
+    // the message. Daemon mode (--interval) doesn't need this because the
+    // long-running loop keeps the connection open.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    eprintln!(
+        "[snapshot] agent={} wavefronts={} clusters={} phi={:.3} \
+         raw={}KB gz={}KB body={}",
+        agent_id, wavefronts, clusters, phi,
+        raw_size / 1024, gz_size / 1024, body_path.display(),
+    );
+    Ok(raw_size)
+}
+
+/// ADR-0028 Phase 2 — `kannaka events snapshot [--interval SECS]`.
+///
+/// One-shot mode (no `--interval`): captures the current HRM, gzip+b64
+/// encodes it, publishes to KANNAKA.snapshots.<agent_id>.full, exits.
+///
+/// Daemon mode (`--interval N`): same capture/publish loop every N seconds,
+/// Ctrl+C to stop. Default cadence for `kannaka substrate run` autosnapshot
+/// hook is 3600s (one snapshot per hour).
+#[cfg(feature = "nats")]
+pub(crate) fn handle_events_snapshot(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    use std::time::Duration;
+    let mut interval_secs: Option<u64> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--interval" if i + 1 < args.len() => {
+                interval_secs = args[i + 1].parse().ok();
+                i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[snapshot] NATS connect failed: {}", e); process::exit(1); }
+    };
+    let agent_id = cfg.agent.id.as_str();
+
+    match interval_secs {
+        None => {
+            // One-shot
+            if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys) {
+                eprintln!("[snapshot] failed: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(secs) => {
+            // Daemon
+            eprintln!("[snapshot] daemon ready — cadence {}s, Ctrl+C to stop", secs);
+            loop {
+                if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys) {
+                    eprintln!("[snapshot] warning: {}", e);
+                }
+                std::thread::sleep(Duration::from_secs(secs));
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_events_snapshot(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("events snapshot requires the 'nats' feature");
+    process::exit(1);
+}
+
 /// ADR-0027 Phase 1: subscribe to `KANNAKA.substrate.absorb.>` and route
 /// each absorb directly into the substrate's HRM (bypassing the text
 /// encoder so distinct absorbs in the same class don't Kuramoto-collapse).

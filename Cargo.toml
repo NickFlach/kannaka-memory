@@ -1,6 +1,6 @@
 [package]
 name = "kannaka-memory"
-version = "0.3.32"
+version = "0.3.33"
 edition = "2021"
 description = "Hypervector memory system for Kannaka — wave-modulated holographic memory with skip links"
 license = "MIT"
@@ -47,6 +47,10 @@ image = { version = "0.25", optional = true }
 # Cross-platform Ctrl+C handler for the long-running `kannaka swarm join`
 # daemon loop — lets the binary publish announce_leave cleanly on SIGINT.
 ctrlc = { version = "3", features = ["termination"] }
+
+# ADR-0028 Phase 2 — gzip for HRM snapshots written to
+# <data_dir>/snapshots/. Pure-rust, no system deps.
+flate2 = "1"
 
 [features]
 default = ["hrm", "nats"]

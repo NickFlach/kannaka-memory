@@ -337,6 +337,25 @@ pub enum EventPayload<'a> {
         phase: f32,
         frequency: f32,
     },
+    /// Full-HRM snapshot manifest. ADR-0028 Phase 2 + ADR-0026 Phase 5:
+    /// the gzipped HRM body lives on local disk at `body_path` (or a
+    /// future Object Store URL), the JetStream event carries only the
+    /// manifest + path + size. This is because NATS silently caps
+    /// payloads ~8-10MB even with max_payload bumped to 64MB; 35MB raw
+    /// HRMs need out-of-band storage.
+    /// Subject: `KANNAKA.snapshots.<agent_id>.full`
+    SnapshotFull {
+        agent_id: &'a str,
+        version: &'a str,
+        wavefronts: u64,
+        clusters: u64,
+        phi: f32,
+        /// Path to the gzipped HRM body (local FS path today; URL once
+        /// ADR-0026 Phase 5 Object Store lands).
+        body_path: &'a str,
+        /// Compressed body size in bytes.
+        body_gz_bytes: u64,
+    },
 }
 
 impl<'a> EventPayload<'a> {
@@ -350,6 +369,9 @@ impl<'a> EventPayload<'a> {
             }
             EventPayload::SubstrateAbsorb { .. } => {
                 "KANNAKA.events.substrate.absorb".to_string()
+            }
+            EventPayload::SnapshotFull { agent_id, .. } => {
+                format!("KANNAKA.snapshots.{}.full", agent_id)
             }
         }
     }
@@ -383,6 +405,20 @@ impl<'a> EventPayload<'a> {
                 obj.insert("amplitude".into(), serde_json::json!(amplitude));
                 obj.insert("phase".into(), serde_json::json!(phase));
                 obj.insert("frequency".into(), serde_json::json!(frequency));
+            }
+            EventPayload::SnapshotFull {
+                agent_id, version, wavefronts, clusters, phi,
+                body_path, body_gz_bytes,
+            } => {
+                obj.insert("agent_id".into(), serde_json::json!(agent_id));
+                obj.insert("manifest".into(), serde_json::json!({
+                    "version": version,
+                    "wavefronts": wavefronts,
+                    "clusters": clusters,
+                    "phi": phi,
+                }));
+                obj.insert("body_path".into(), serde_json::json!(body_path));
+                obj.insert("body_gz_bytes".into(), serde_json::json!(body_gz_bytes));
             }
         }
         serde_json::Value::Object(obj)

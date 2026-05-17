@@ -9,7 +9,7 @@ use std::process;
 
 use kannaka_memory::config;
 
-use super::{check_kannaktopus_installed, data_dir, KannakaConfig};
+use super::{check_kannaktopus_installed, KannakaConfig};
 
 // ---------------------------------------------------------------------------
 
