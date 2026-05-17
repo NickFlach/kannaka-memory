@@ -389,6 +389,20 @@ fn main() {
                                     id, total_mems, cluster_count);
                             }
 
+                            // ADR-0028 Phase 1 — also publish to the durable
+                            // event-sourced stream so the memory survives any
+                            // future HRM corruption / format change / nuke.
+                            // Best-effort: if JetStream isn't set up (no
+                            // `events init` run yet) the publish still goes
+                            // to the subject — it just won't persist. Once
+                            // streams exist, every remember lands durably.
+                            let modality_str = format!("{}", modality);
+                            if let Err(e) = transport.publish_event_memory_remember(
+                                agent_id, &id, &text, importance.unwrap_or(0.5) as f32, &modality_str,
+                            ) {
+                                eprintln!("[events] Warning: event publish failed: {}", e);
+                            }
+
                             // ADR-0027 Phase 1: optional substrate-absorb
                             // event. Wave-signature-only — class_index +
                             // amplitude + phase + frequency. No content.
@@ -430,6 +444,13 @@ fn main() {
                                 } else {
                                     eprintln!("[substrate] Absorbed into class {} (amp={:.3} phase={:.3} freq={:.3})",
                                         class_index, amplitude, phase, frequency);
+                                }
+
+                                // ADR-0028 Phase 1 — durable event log
+                                if let Err(e) = transport.publish_event_substrate_absorb(
+                                    agent_id, class_index, amplitude, phase, frequency,
+                                ) {
+                                    eprintln!("[events] Warning: substrate event publish failed: {}", e);
                                 }
                             }
                         }
@@ -1603,6 +1624,27 @@ fn main() {
             }
         }
 
+
+        #[cfg(feature = "nats")]
+        "events" => {
+            // ADR-0028 — event-sourced HRM + time machine.
+            // Subcommands (more land in later phases):
+            //   init  — create JetStream streams for memory/substrate/snapshots
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka events <init>");
+                process::exit(1);
+            }
+            match args[command_start + 1].as_str() {
+                "init" => {
+                    handle_events_init(&cfg, &args[command_start..]);
+                }
+                other => {
+                    eprintln!("Unknown events command: {other}");
+                    eprintln!("Usage: kannaka events <init>");
+                    process::exit(1);
+                }
+            }
+        }
 
         #[cfg(feature = "nats")]
         "substrate" => {
@@ -4984,6 +5026,44 @@ fn handle_substrate_backfill(
 #[cfg(not(feature = "nats"))]
 fn handle_substrate_backfill(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("substrate backfill requires the 'nats' feature");
+    process::exit(1);
+}
+
+/// ADR-0028 Phase 1 — create the durable JetStream streams that hold
+/// the event-sourced HRM history. Idempotent: re-running adjusts
+/// retention to match the in-code config but won't duplicate data.
+#[cfg(feature = "nats")]
+fn handle_events_init(cfg: &KannakaConfig, args: &[String]) {
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("[events init] NATS connect failed: {}", e); process::exit(1); }
+    };
+    eprintln!("[events init] creating JetStream streams on {}", nats_url);
+    let mut failed = 0;
+    for (name, ensure_fn) in &[
+        ("KANNAKA_MEMORY_EVENTS",
+            &kannaka_memory::nats::SwarmTransport::ensure_memory_events_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
+        ("KANNAKA_SUBSTRATE_EVENTS",
+            &kannaka_memory::nats::SwarmTransport::ensure_substrate_events_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
+        ("KANNAKA_SNAPSHOTS",
+            &kannaka_memory::nats::SwarmTransport::ensure_snapshots_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
+    ] {
+        match ensure_fn(&transport) {
+            Ok(()) => eprintln!("[events init]   {}  ok", name),
+            Err(e) => { eprintln!("[events init]   {}  FAILED: {}", name, e); failed += 1; }
+        }
+    }
+    if failed > 0 {
+        eprintln!("[events init] {} stream(s) failed — check NATS JetStream config + ACLs", failed);
+        process::exit(1);
+    }
+    eprintln!("[events init] done — event-sourced history is now durable. Replay (Phase 3) and snapshots (Phase 2) ship in subsequent slices.");
+}
+
+#[cfg(not(feature = "nats"))]
+fn handle_events_init(_: &KannakaConfig, _: &[String]) {
+    eprintln!("events init requires the 'nats' feature");
     process::exit(1);
 }
 

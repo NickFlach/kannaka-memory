@@ -877,6 +877,148 @@ impl SwarmTransport {
         )
     }
 
+    // ──────────────────────────────────────────────────────────────────
+    // ADR-0028 — event-sourced HRM + time-machine replay. Three durable
+    // streams establish the source-of-truth event log that HRMs are
+    // projections of:
+    //   KANNAKA_MEMORY_EVENTS    — per-agent remember/forget/dream
+    //   KANNAKA_SUBSTRATE_EVENTS — substrate absorb/anchor/flush
+    //   KANNAKA_SNAPSHOTS        — periodic gzipped HRM snapshots
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Create the per-agent memory-event stream (90-day retention).
+    /// Captures `KANNAKA.events.<agent_id>.memory.>` — remember, forget,
+    /// dream-start, dream-end. Replay rebuilds an agent's HRM at any
+    /// timestamp inside the retention window.
+    pub fn ensure_memory_events_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_MEMORY_EVENTS",
+            serde_json::json!({
+                "name": "KANNAKA_MEMORY_EVENTS",
+                "subjects": ["KANNAKA.events.*.memory.>"],
+                "retention": "limits",
+                "max_age": 90i64 * 24 * 3_600 * 1_000_000_000, // 90 days in ns
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Create the substrate-event stream (365-day retention — the
+    /// substrate IS the long memory; its event log is the constellation's
+    /// diary). Captures `KANNAKA.events.substrate.>` — absorb, anchor
+    /// seed, flush markers.
+    pub fn ensure_substrate_events_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_SUBSTRATE_EVENTS",
+            serde_json::json!({
+                "name": "KANNAKA_SUBSTRATE_EVENTS",
+                "subjects": ["KANNAKA.events.substrate.>"],
+                "retention": "limits",
+                "max_age": 365i64 * 24 * 3_600 * 1_000_000_000,
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Create the snapshot stream (last 168 per agent — one week of hourly
+    /// snapshots). Body is gzipped HRM bytes wrapped in a manifest.
+    /// Replay can warm-start from a snapshot instead of from event zero.
+    pub fn ensure_snapshots_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_SNAPSHOTS",
+            serde_json::json!({
+                "name": "KANNAKA_SNAPSHOTS",
+                "subjects": ["KANNAKA.snapshots.>"],
+                "retention": "limits",
+                "max_msgs_per_subject": 168i64,
+                "max_msg_size": 100i64 * 1_024 * 1_024, // 100 MB per snapshot
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Publish a `remember` event to the per-agent memory-event stream.
+    /// Carries content + importance + modality + memory_id so a replay
+    /// can fully reconstruct the wavefront. Best-effort; failures don't
+    /// abort the remember.
+    pub fn publish_event_memory_remember(
+        &self,
+        agent_id: &str,
+        memory_id: &uuid::Uuid,
+        content: &str,
+        importance: f32,
+        modality: &str,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.events.{}.memory.remember", agent_id);
+        let payload = serde_json::json!({
+            "event_id": uuid::Uuid::new_v4(),
+            "schema_version": 1,
+            "agent_id": agent_id,
+            "memory_id": memory_id,
+            "content": content,
+            "importance": importance,
+            "modality": modality,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Publish a `forget` event. Replay drops the matching memory_id.
+    pub fn publish_event_memory_forget(
+        &self,
+        agent_id: &str,
+        memory_id: &uuid::Uuid,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.events.{}.memory.forget", agent_id);
+        let payload = serde_json::json!({
+            "event_id": uuid::Uuid::new_v4(),
+            "schema_version": 1,
+            "agent_id": agent_id,
+            "memory_id": memory_id,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Publish a substrate-absorb event to the durable substrate-event
+    /// stream. Same payload shape as the live KANNAKA.substrate.absorb.>
+    /// subject (ADR-0027) but with `event_id` for idempotent replay.
+    /// Receiver lands at `KANNAKA.events.substrate.absorb` (no per-agent
+    /// suffix — every absorb in one stream for easier time-machine
+    /// reconstruction of the collective).
+    pub fn publish_event_substrate_absorb(
+        &self,
+        agent_id: &str,
+        class_index: u32,
+        amplitude: f32,
+        phase: f32,
+        frequency: f32,
+    ) -> Result<(), NatsError> {
+        let payload = serde_json::json!({
+            "event_id": uuid::Uuid::new_v4(),
+            "schema_version": 1,
+            "agent_id": agent_id,
+            "class_index": class_index,
+            "amplitude": amplitude,
+            "phase": phase,
+            "frequency": frequency,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw("KANNAKA.events.substrate.absorb", &bytes)
+    }
+
     /// Read all current presence records.
     pub fn get_presence(&self) -> Result<Vec<serde_json::Value>, NatsError> {
         self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)
