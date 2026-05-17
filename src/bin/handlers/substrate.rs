@@ -296,12 +296,14 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     use std::io::Read;
     use flate2::read::GzDecoder;
     let mut from: Option<String> = None;
+    let mut from_url: Option<String> = None;
     let mut agent_filter: Option<String> = None;
     let mut dry_run = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
+            "--from-url" if i + 1 < args.len() => { from_url = Some(args[i + 1].clone()); i += 2; }
             "--agent" if i + 1 < args.len() => { agent_filter = Some(args[i + 1].clone()); i += 2; }
             "--dry-run" => { dry_run = true; i += 1; }
             "--nats-url" if i + 1 < args.len() => { i += 2; }
@@ -346,10 +348,43 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
         }
     };
 
-    eprintln!("[restore] source: {}", body_path);
-    let gz_bytes = match std::fs::read(&body_path) {
-        Ok(b) => b,
-        Err(e) => { eprintln!("[restore] read body failed: {}", e); process::exit(1); }
+    // km#75 — cross-host fetch via the observatory's /api/snapshots/body/<name>
+    // (or any HTTP URL serving the gzipped body). Takes precedence over
+    // --from and the manifest lookup; the body lands on local disk under
+    // <data_dir>/snapshots/ so future replays can use --from.
+    let gz_bytes: Vec<u8> = if let Some(url) = from_url {
+        eprintln!("[restore] source (url): {}", url);
+        let resp = match ureq::get(&url).timeout(std::time::Duration::from_secs(120)).call() {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[restore] HTTP fetch failed: {}", e); process::exit(1); }
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(e) = resp.into_reader().read_to_end(&mut buf) {
+            eprintln!("[restore] HTTP body read failed: {}", e);
+            process::exit(1);
+        }
+        // Cache the downloaded body to <data_dir>/snapshots/ so list-snapshots
+        // can find it on subsequent runs.
+        let snapshots_dir = data_dir().join("snapshots");
+        if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
+            eprintln!("[restore] mkdir snapshots/: {}", e);
+        } else {
+            // Filename comes from the last URL segment.
+            let name = url.rsplit('/').next().unwrap_or("downloaded.hrm.gz");
+            let dst = snapshots_dir.join(name);
+            if let Err(e) = std::fs::write(&dst, &buf) {
+                eprintln!("[restore] cache body locally failed: {}", e);
+            } else {
+                eprintln!("[restore] cached body to {}", dst.display());
+            }
+        }
+        buf
+    } else {
+        eprintln!("[restore] source: {}", body_path);
+        match std::fs::read(&body_path) {
+            Ok(b) => b,
+            Err(e) => { eprintln!("[restore] read body failed: {}", e); process::exit(1); }
+        }
     };
     let mut decoder = GzDecoder::new(gz_bytes.as_slice());
     let mut decoded: Vec<u8> = Vec::with_capacity(gz_bytes.len() * 4);
