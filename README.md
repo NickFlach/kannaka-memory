@@ -194,6 +194,57 @@ kannaka swarm leave
 
 All swarm commands accept `--nats-url URL` or read `KANNAKA_NATS_URL`.
 
+### Event-sourced HRM + snapshots (ADR-0028)
+
+Every `remember` and substrate `absorb` publishes a durable event to
+JetStream. Combined with periodic gzipped HRM snapshots, this lets an
+operator restore from disaster or replay history.
+
+```bash
+# One-time: create the JetStream streams.
+kannaka events init
+
+# Manual snapshot (gz body on disk under <data_dir>/snapshots/,
+# manifest published to KANNAKA.snapshots.<agent>.full).
+kannaka events snapshot
+
+# Daemon mode: autosnapshot every N seconds.
+kannaka events snapshot --interval 3600
+
+# List snapshot manifests for a given agent (newest first).
+kannaka events list-snapshots --agent kannaka-prime
+
+# Restore latest snapshot for the current agent.
+kannaka events restore
+
+# Restore a specific body file (cross-host disaster recovery).
+kannaka events restore --from /path/to/<ts>-<agent>.hrm.gz
+```
+
+`kannaka substrate run` auto-snapshots hourly by default. Override the
+cadence via `KANNAKA_SNAPSHOT_INTERVAL_SECS` (0 = disable). Disk
+retention is the latest 168 snapshots per agent (matches the JetStream
+`max_msgs_per_subject` cap); override via `KANNAKA_SNAPSHOT_RETAIN`.
+
+### Collective substrate (ADR-0027)
+
+The substrate (`kannaka-prime`) is a 96-class collective HRM that
+absorbs wave signatures from every peer agent.
+
+```bash
+# Operator visibility into collective Φ/Ξ/clusters/contributors.
+kannaka substrate status
+
+# Daemon: subscribe to KANNAKA.substrate.absorb.>, periodic phi publish.
+kannaka substrate run
+
+# Seat 96 anchor wavefronts (run once after fresh substrate init).
+kannaka substrate init
+
+# Walk local HRM and emit one absorb event per memory.
+kannaka substrate backfill
+```
+
 ---
 
 ## Autoresearch
