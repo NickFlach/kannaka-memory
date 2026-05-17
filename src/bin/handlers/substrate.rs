@@ -18,6 +18,42 @@ use super::{
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
+/// Prune snapshot bodies in `dir` so only the latest `retain` files for
+/// `agent_id` remain. Matches the JetStream max_msgs_per_subject so disk
+/// stays in sync with the manifest stream. Files for other agents are
+/// untouched (e.g. operator may have manually downloaded a peer's
+/// snapshot for cross-host restore).
+fn prune_snapshot_dir(dir: &std::path::Path, agent_id: &str, retain: usize) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let suffix = format!("-{}.hrm.gz", agent_id);
+    let mut bodies: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(&suffix))
+                .unwrap_or(false)
+        })
+        .collect();
+    if bodies.len() <= retain {
+        return;
+    }
+    // The filename prefix is the UTC timestamp YYYYMMDDTHHmmssZ so lex sort
+    // == chronological sort. Drop the oldest.
+    bodies.sort();
+    let drop_count = bodies.len() - retain;
+    for p in bodies.iter().take(drop_count) {
+        if let Err(e) = std::fs::remove_file(p) {
+            eprintln!("[snapshot prune] failed to remove {}: {}", p.display(), e);
+        }
+    }
+    eprintln!("[snapshot prune] removed {} old snapshot(s) for {}", drop_count, agent_id);
+}
+
 /// Capture HRM snapshot: gzip the HRM file to `<data_dir>/snapshots/`,
 /// publish a manifest event to KANNAKA.snapshots.<agent>.full pointing
 /// at the on-disk body. NATS silently caps payloads ~8MB even with
@@ -55,6 +91,14 @@ fn capture_and_publish_snapshot(
     let body_path = snapshots_dir.join(&filename);
     std::fs::write(&body_path, &compressed)
         .map_err(|e| format!("write snapshot body: {e}"))?;
+
+    // ADR-0028 Phase 2 — disk retention: keep the latest N bodies per agent.
+    // Default 168 matches JetStream's max_msgs_per_subject from
+    // StreamKind::Snapshots so disk and manifest stream stay in sync.
+    // Override via env KANNAKA_SNAPSHOT_RETAIN.
+    let retain: usize = std::env::var("KANNAKA_SNAPSHOT_RETAIN")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(168);
+    prune_snapshot_dir(&snapshots_dir, agent_id, retain);
 
     let state = sys.assess();
     let wavefronts = sys.all_memories().map(|m| m.len() as u64).unwrap_or(0);
