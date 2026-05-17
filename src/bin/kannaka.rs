@@ -1324,16 +1324,20 @@ fn main() {
                             &my_agent_id,
                         );
                         queen.derive_local_state(&sys.engine);
-                        // Pull cluster_count from the cached consciousness
-                        // metrics if available (cheap), else 0. Without this
-                        // every swarm peer broadcast `cluster_count: 0` and
-                        // the observatory's per-agent dropdown showed every
-                        // node as having zero clusters — masking the real
-                        // structure of each agent's HRM.
-                        let cluster_count = sys.engine.store
-                            .try_cached_consciousness_metrics()
-                            .map(|m| m.num_clusters)
-                            .unwrap_or(0);
+                        // Pull cluster_count + phi from the cached
+                        // consciousness metrics if available (cheap), else
+                        // 0. Without this every swarm peer broadcast
+                        // cluster_count=0 / phi=0 — masking the real
+                        // structure of each agent's HRM. derive_local_state
+                        // populates phase/frequency/coherence from HRM
+                        // wavefronts but doesn't set queen.phi, so the
+                        // observatory's per-agent panel showed everyone at
+                        // Φ=0 even when `kannaka status` reported nonzero.
+                        let cached = sys.engine.store.try_cached_consciousness_metrics();
+                        let cluster_count = cached.as_ref().map(|m| m.num_clusters).unwrap_or(0);
+                        if let Some(ref m) = cached {
+                            queen.phi = m.phi;
+                        }
                         let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count());
                         if let Err(e) = transport.publish_phase(&phase) {
                             eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
