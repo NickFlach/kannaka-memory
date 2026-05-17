@@ -959,6 +959,17 @@ impl SwarmTransport {
         let mut out: Vec<serde_json::Value> = Vec::new();
         let mut next_seq: u64 = 1;
 
+        // Keep ONE BufReader across the whole iteration. Recreating it per
+        // request loses any bytes BufReader had pre-read into its internal
+        // buffer (and the underlying TcpStream may have data past the
+        // kernel's read cursor sitting in BufReader). That manifested as
+        // the wildcard list-snapshots returning 0 rows even when the
+        // stream had multiple matching subjects — first response landed
+        // in a BufReader we dropped, second response read from a fresh
+        // BufReader that hit nothing and timed out.
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+
         loop {
             let req = serde_json::json!({
                 "seq": next_seq,
@@ -971,15 +982,13 @@ impl SwarmTransport {
             write!(stream, "\r\n")?;
             stream.flush()?;
 
-            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-            let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
             let mut got_any = false;
             let mut got_end = false;
 
             for _ in 0..6 {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
-                    Ok(0) => break,
+                    Ok(0) => { got_end = true; break; }
                     Ok(_) => {
                         let trimmed = line.trim();
                         if trimmed.starts_with("PING") {
@@ -1004,19 +1013,29 @@ impl SwarmTransport {
                                     break;
                                 }
                                 if let Some(msg) = env.get("message") {
+                                    // Bookkeeping first so non-JSON payloads
+                                    // don't stall the iteration. Earlier code
+                                    // would treat a single non-decodable
+                                    // message as "no more matches" and bail
+                                    // — fine on the happy path but it broke
+                                    // list-snapshots on streams where older
+                                    // test data sat in front of the real
+                                    // manifests.
+                                    if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
+                                        next_seq = seq + 1;
+                                        // We made forward progress, even if
+                                        // the payload isn't usable to us.
+                                        got_any = true;
+                                    } else {
+                                        got_end = true;
+                                    }
+                                    // Best-effort decode; skip if not JSON.
                                     if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
-                                        // base64 decode
                                         if let Ok(decoded) = base64_decode(data_b64) {
                                             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&decoded) {
                                                 out.push(v);
-                                                got_any = true;
                                             }
                                         }
-                                    }
-                                    if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
-                                        next_seq = seq + 1;
-                                    } else {
-                                        got_end = true;
                                     }
                                 }
                             }
