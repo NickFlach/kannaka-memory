@@ -2241,6 +2241,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live NATS server with JetStream; run locally with `cargo test --ignored`"]
     fn integration_kv_put_get() {
         let transport = match connect_or_skip() {
             Some(t) => t,
@@ -2271,6 +2272,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live NATS server with JetStream; run locally with `cargo test --ignored`"]
     fn integration_kv_keys() {
         let transport = match connect_or_skip() {
             Some(t) => t,
