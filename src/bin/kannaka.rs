@@ -397,8 +397,14 @@ fn main() {
                             // to the subject — it just won't persist. Once
                             // streams exist, every remember lands durably.
                             let modality_str = format!("{}", modality);
-                            if let Err(e) = transport.publish_event_memory_remember(
-                                agent_id, &id, &text, importance.unwrap_or(0.5) as f32, &modality_str,
+                            if let Err(e) = transport.publish_event(
+                                kannaka_memory::nats::EventPayload::MemoryRemember {
+                                    agent_id,
+                                    memory_id: &id,
+                                    content: &text,
+                                    importance: importance.unwrap_or(0.5) as f32,
+                                    modality: &modality_str,
+                                },
                             ) {
                                 eprintln!("[events] Warning: event publish failed: {}", e);
                             }
@@ -447,8 +453,14 @@ fn main() {
                                 }
 
                                 // ADR-0028 Phase 1 — durable event log
-                                if let Err(e) = transport.publish_event_substrate_absorb(
-                                    agent_id, class_index, amplitude, phase, frequency,
+                                if let Err(e) = transport.publish_event(
+                                    kannaka_memory::nats::EventPayload::SubstrateAbsorb {
+                                        agent_id,
+                                        class_index,
+                                        amplitude,
+                                        phase,
+                                        frequency,
+                                    },
                                 ) {
                                     eprintln!("[events] Warning: substrate event publish failed: {}", e);
                                 }
@@ -5041,15 +5053,9 @@ fn handle_events_init(cfg: &KannakaConfig, args: &[String]) {
     };
     eprintln!("[events init] creating JetStream streams on {}", nats_url);
     let mut failed = 0;
-    for (name, ensure_fn) in &[
-        ("KANNAKA_MEMORY_EVENTS",
-            &kannaka_memory::nats::SwarmTransport::ensure_memory_events_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
-        ("KANNAKA_SUBSTRATE_EVENTS",
-            &kannaka_memory::nats::SwarmTransport::ensure_substrate_events_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
-        ("KANNAKA_SNAPSHOTS",
-            &kannaka_memory::nats::SwarmTransport::ensure_snapshots_stream as &dyn Fn(&kannaka_memory::nats::SwarmTransport) -> _),
-    ] {
-        match ensure_fn(&transport) {
+    for kind in kannaka_memory::nats::StreamKind::ALL {
+        let name = kind.spec().name;
+        match transport.ensure_event_stream(*kind) {
             Ok(()) => eprintln!("[events init]   {}  ok", name),
             Err(e) => { eprintln!("[events init]   {}  FAILED: {}", name, e); failed += 1; }
         }

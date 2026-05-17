@@ -237,6 +237,158 @@ pub struct SwarmTransport {
     publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
 }
 
+// ──────────────────────────────────────────────────────────────────
+// ADR-0028 — durable event-sourced HRM. Streams declared as data;
+// `ensure_event_stream(kind)` builds the JetStream config from the
+// spec table so adding a new stream is one variant + one arm.
+// ──────────────────────────────────────────────────────────────────
+
+/// Declarative spec for a JetStream stream. All ADR-0028 streams share
+/// `retention=limits, storage=file, discard=old, num_replicas=1`; the
+/// per-stream fields below are the only knobs that vary.
+pub struct StreamSpec {
+    pub name: &'static str,
+    pub subjects: &'static [&'static str],
+    pub max_age_days: Option<i64>,
+    pub max_msgs_per_subject: Option<i64>,
+    pub max_msg_size: Option<i64>,
+}
+
+/// The three durable streams that back ADR-0028's event-sourced HRM.
+/// Iterate via `StreamKind::ALL` for bulk operations (e.g. `events init`).
+#[derive(Clone, Copy, Debug)]
+pub enum StreamKind {
+    /// Per-agent remember/forget/dream log. 90-day window.
+    /// Subject: `KANNAKA.events.memory.<agent_id>.>`
+    MemoryEvents,
+    /// Substrate absorb/anchor/flush log. 365-day window — the substrate IS
+    /// the long memory; its event log is the constellation's diary.
+    /// Subject: `KANNAKA.events.substrate.>`
+    SubstrateEvents,
+    /// Periodic gzipped HRM snapshots. Last 168 per agent (one week of
+    /// hourly snapshots). Replay can warm-start from a snapshot instead
+    /// of from event zero. Subject: `KANNAKA.snapshots.>`
+    Snapshots,
+}
+
+impl StreamKind {
+    pub const ALL: &'static [StreamKind] = &[
+        StreamKind::MemoryEvents,
+        StreamKind::SubstrateEvents,
+        StreamKind::Snapshots,
+    ];
+
+    pub fn spec(self) -> StreamSpec {
+        match self {
+            StreamKind::MemoryEvents => StreamSpec {
+                name: "KANNAKA_MEMORY_EVENTS",
+                subjects: &["KANNAKA.events.memory.>"],
+                max_age_days: Some(90),
+                max_msgs_per_subject: None,
+                max_msg_size: None,
+            },
+            StreamKind::SubstrateEvents => StreamSpec {
+                name: "KANNAKA_SUBSTRATE_EVENTS",
+                subjects: &["KANNAKA.events.substrate.>"],
+                max_age_days: Some(365),
+                max_msgs_per_subject: None,
+                max_msg_size: None,
+            },
+            StreamKind::Snapshots => StreamSpec {
+                name: "KANNAKA_SNAPSHOTS",
+                subjects: &["KANNAKA.snapshots.>"],
+                max_age_days: None,
+                max_msgs_per_subject: Some(168),
+                max_msg_size: Some(100 * 1024 * 1024),
+            },
+        }
+    }
+}
+
+/// A durable event published to JetStream. The variant determines the
+/// subject and payload shape; every payload carries `event_id`,
+/// `schema_version`, `agent_id`, `ts` so replay is idempotent.
+///
+/// Adding a new event type = one variant + one arm in `subject()` and
+/// `payload_json()`. No surgery on the publish path.
+pub enum EventPayload<'a> {
+    /// A new memory was stored. Replay reconstructs the wavefront.
+    /// Subject: `KANNAKA.events.memory.<agent_id>.remember`
+    MemoryRemember {
+        agent_id: &'a str,
+        memory_id: &'a uuid::Uuid,
+        content: &'a str,
+        importance: f32,
+        modality: &'a str,
+    },
+    /// A memory was deleted. Replay drops the matching memory_id.
+    /// Subject: `KANNAKA.events.memory.<agent_id>.forget`
+    MemoryForget {
+        agent_id: &'a str,
+        memory_id: &'a uuid::Uuid,
+    },
+    /// Wave-signature absorbed into the substrate. No per-agent suffix —
+    /// every absorb in one stream for easier collective time-machine
+    /// reconstruction. Subject: `KANNAKA.events.substrate.absorb`
+    SubstrateAbsorb {
+        agent_id: &'a str,
+        class_index: u32,
+        amplitude: f32,
+        phase: f32,
+        frequency: f32,
+    },
+}
+
+impl<'a> EventPayload<'a> {
+    pub fn subject(&self) -> String {
+        match self {
+            EventPayload::MemoryRemember { agent_id, .. } => {
+                format!("KANNAKA.events.memory.{}.remember", agent_id)
+            }
+            EventPayload::MemoryForget { agent_id, .. } => {
+                format!("KANNAKA.events.memory.{}.forget", agent_id)
+            }
+            EventPayload::SubstrateAbsorb { .. } => {
+                "KANNAKA.events.substrate.absorb".to_string()
+            }
+        }
+    }
+
+    pub fn payload_json(&self) -> serde_json::Value {
+        let base = serde_json::json!({
+            "event_id": uuid::Uuid::new_v4(),
+            "schema_version": 1,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let mut obj = base.as_object().cloned().unwrap_or_default();
+        match self {
+            EventPayload::MemoryRemember {
+                agent_id, memory_id, content, importance, modality,
+            } => {
+                obj.insert("agent_id".into(), serde_json::json!(agent_id));
+                obj.insert("memory_id".into(), serde_json::json!(memory_id));
+                obj.insert("content".into(), serde_json::json!(content));
+                obj.insert("importance".into(), serde_json::json!(importance));
+                obj.insert("modality".into(), serde_json::json!(modality));
+            }
+            EventPayload::MemoryForget { agent_id, memory_id } => {
+                obj.insert("agent_id".into(), serde_json::json!(agent_id));
+                obj.insert("memory_id".into(), serde_json::json!(memory_id));
+            }
+            EventPayload::SubstrateAbsorb {
+                agent_id, class_index, amplitude, phase, frequency,
+            } => {
+                obj.insert("agent_id".into(), serde_json::json!(agent_id));
+                obj.insert("class_index".into(), serde_json::json!(class_index));
+                obj.insert("amplitude".into(), serde_json::json!(amplitude));
+                obj.insert("phase".into(), serde_json::json!(phase));
+                obj.insert("frequency".into(), serde_json::json!(frequency));
+            }
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
 impl SwarmTransport {
     /// Connect to a NATS server at the given URL.
     pub fn connect(url: &str) -> Result<Self, NatsError> {
@@ -878,151 +1030,48 @@ impl SwarmTransport {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // ADR-0028 — event-sourced HRM + time-machine replay. Three durable
-    // streams establish the source-of-truth event log that HRMs are
-    // projections of:
-    //   KANNAKA_MEMORY_EVENTS    — per-agent remember/forget/dream
-    //   KANNAKA_SUBSTRATE_EVENTS — substrate absorb/anchor/flush
-    //   KANNAKA_SNAPSHOTS        — periodic gzipped HRM snapshots
+    // ADR-0028 — event-sourced HRM + time-machine replay. See `StreamKind`
+    // and `EventPayload` (defined above) for the data model. Subject order
+    // puts the literal kind token (`memory` / `substrate`) at position 3
+    // so JetStream's subject-overlap check sees the streams as disjoint.
     // ──────────────────────────────────────────────────────────────────
 
-    /// Create the per-agent memory-event stream (90-day retention).
-    /// Captures `KANNAKA.events.memory.<agent_id>.>` — remember, forget,
-    /// dream-start, dream-end. Replay rebuilds an agent's HRM at any
-    /// timestamp inside the retention window.
+    /// Idempotently create the JetStream stream described by `kind`.
+    pub fn ensure_event_stream(&self, kind: StreamKind) -> Result<(), NatsError> {
+        let spec = kind.spec();
+        let mut cfg = serde_json::json!({
+            "name": spec.name,
+            "subjects": spec.subjects,
+            "retention": "limits",
+            "storage": "file",
+            "discard": "old",
+            "num_replicas": 1,
+        });
+        if let Some(days) = spec.max_age_days {
+            cfg["max_age"] = serde_json::json!(days * 24 * 3_600 * 1_000_000_000i64);
+        }
+        if let Some(n) = spec.max_msgs_per_subject {
+            cfg["max_msgs_per_subject"] = serde_json::json!(n);
+        }
+        if let Some(sz) = spec.max_msg_size {
+            cfg["max_msg_size"] = serde_json::json!(sz);
+        }
+        self.ensure_js_stream(spec.name, cfg)
+    }
+
+    /// Publish a durable event to its JetStream subject. The variant
+    /// determines both the subject and the JSON payload shape; every
+    /// event carries `event_id`, `schema_version`, `agent_id`, `ts` so
+    /// replay (ADR-0028 Phase 3) is idempotent.
     ///
-    /// Subject order chosen so the literal `memory` token sits at
-    /// position 3 (right after the `events` namespace marker). The
-    /// substrate events stream uses the literal `substrate` at the
-    /// same position so JetStream's subject-overlap check correctly
-    /// sees the two streams as disjoint.
-    pub fn ensure_memory_events_stream(&self) -> Result<(), NatsError> {
-        self.ensure_js_stream(
-            "KANNAKA_MEMORY_EVENTS",
-            serde_json::json!({
-                "name": "KANNAKA_MEMORY_EVENTS",
-                "subjects": ["KANNAKA.events.memory.>"],
-                "retention": "limits",
-                "max_age": 90i64 * 24 * 3_600 * 1_000_000_000, // 90 days in ns
-                "storage": "file",
-                "discard": "old",
-                "num_replicas": 1
-            }),
-        )
-    }
-
-    /// Create the substrate-event stream (365-day retention — the
-    /// substrate IS the long memory; its event log is the constellation's
-    /// diary). Captures `KANNAKA.events.substrate.>` — absorb, anchor
-    /// seed, flush markers.
-    pub fn ensure_substrate_events_stream(&self) -> Result<(), NatsError> {
-        self.ensure_js_stream(
-            "KANNAKA_SUBSTRATE_EVENTS",
-            serde_json::json!({
-                "name": "KANNAKA_SUBSTRATE_EVENTS",
-                "subjects": ["KANNAKA.events.substrate.>"],
-                "retention": "limits",
-                "max_age": 365i64 * 24 * 3_600 * 1_000_000_000,
-                "storage": "file",
-                "discard": "old",
-                "num_replicas": 1
-            }),
-        )
-    }
-
-    /// Create the snapshot stream (last 168 per agent — one week of hourly
-    /// snapshots). Body is gzipped HRM bytes wrapped in a manifest.
-    /// Replay can warm-start from a snapshot instead of from event zero.
-    pub fn ensure_snapshots_stream(&self) -> Result<(), NatsError> {
-        self.ensure_js_stream(
-            "KANNAKA_SNAPSHOTS",
-            serde_json::json!({
-                "name": "KANNAKA_SNAPSHOTS",
-                "subjects": ["KANNAKA.snapshots.>"],
-                "retention": "limits",
-                "max_msgs_per_subject": 168i64,
-                "max_msg_size": 100i64 * 1_024 * 1_024, // 100 MB per snapshot
-                "storage": "file",
-                "discard": "old",
-                "num_replicas": 1
-            }),
-        )
-    }
-
-    /// Publish a `remember` event to the per-agent memory-event stream.
-    /// Carries content + importance + modality + memory_id so a replay
-    /// can fully reconstruct the wavefront. Best-effort; failures don't
-    /// abort the remember.
-    pub fn publish_event_memory_remember(
-        &self,
-        agent_id: &str,
-        memory_id: &uuid::Uuid,
-        content: &str,
-        importance: f32,
-        modality: &str,
-    ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.events.memory.{}.remember", agent_id);
-        let payload = serde_json::json!({
-            "event_id": uuid::Uuid::new_v4(),
-            "schema_version": 1,
-            "agent_id": agent_id,
-            "memory_id": memory_id,
-            "content": content,
-            "importance": importance,
-            "modality": modality,
-            "ts": chrono::Utc::now().to_rfc3339(),
-        });
+    /// Best-effort: failures don't abort the originating action — the
+    /// in-memory state has already changed.
+    pub fn publish_event(&self, event: EventPayload<'_>) -> Result<(), NatsError> {
+        let subject = event.subject();
+        let payload = event.payload_json();
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
-    }
-
-    /// Publish a `forget` event. Replay drops the matching memory_id.
-    pub fn publish_event_memory_forget(
-        &self,
-        agent_id: &str,
-        memory_id: &uuid::Uuid,
-    ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.events.memory.{}.forget", agent_id);
-        let payload = serde_json::json!({
-            "event_id": uuid::Uuid::new_v4(),
-            "schema_version": 1,
-            "agent_id": agent_id,
-            "memory_id": memory_id,
-            "ts": chrono::Utc::now().to_rfc3339(),
-        });
-        let bytes = serde_json::to_vec(&payload)
-            .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw(&subject, &bytes)
-    }
-
-    /// Publish a substrate-absorb event to the durable substrate-event
-    /// stream. Same payload shape as the live KANNAKA.substrate.absorb.>
-    /// subject (ADR-0027) but with `event_id` for idempotent replay.
-    /// Receiver lands at `KANNAKA.events.substrate.absorb` (no per-agent
-    /// suffix — every absorb in one stream for easier time-machine
-    /// reconstruction of the collective).
-    pub fn publish_event_substrate_absorb(
-        &self,
-        agent_id: &str,
-        class_index: u32,
-        amplitude: f32,
-        phase: f32,
-        frequency: f32,
-    ) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
-            "event_id": uuid::Uuid::new_v4(),
-            "schema_version": 1,
-            "agent_id": agent_id,
-            "class_index": class_index,
-            "amplitude": amplitude,
-            "phase": phase,
-            "frequency": frequency,
-            "ts": chrono::Utc::now().to_rfc3339(),
-        });
-        let bytes = serde_json::to_vec(&payload)
-            .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw("KANNAKA.events.substrate.absorb", &bytes)
     }
 
     /// Read all current presence records.
