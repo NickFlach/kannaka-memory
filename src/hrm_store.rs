@@ -278,6 +278,29 @@ impl HrmStore {
         &self.medium
     }
 
+    /// ADR-0027 Phase 1.c — direct wavefront insertion with a pre-built
+    /// hypervector, bypassing the text-encoding pipeline. The substrate
+    /// uses this to seed 96 class anchors at maximally distinct points
+    /// in vector space so Kuramoto's eigenvalue clustering (which
+    /// thresholds on coherence > 0.5 to join a cluster) can actually
+    /// find multiple clusters. Text-encoded markers always produce
+    /// highly correlated vectors and collapse to a single cluster.
+    ///
+    /// `vector` must be exactly WAVEFRONT_DIM long. `content` is
+    /// human-readable text for debugging; `importance` becomes the
+    /// initial wavefront energy.
+    pub fn insert_raw_wavefront(
+        &mut self,
+        vector: Vec<f32>,
+        content: String,
+        importance: f32,
+    ) -> Result<Uuid, StoreError> {
+        let id = self.medium.add_wavefront(&vector, content, importance)
+            .map_err(|e| StoreError::Other(format!("add_wavefront failed: {}", e)))?;
+        self.mark_dirty();
+        Ok(id)
+    }
+
     /// Path to the on-disk HRM file. Used by the cluster sidecar cache to
     /// place `.clusters.json` next to it and check mtime for invalidation.
     pub fn hrm_path(&self) -> &std::path::Path {

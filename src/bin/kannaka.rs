@@ -4770,28 +4770,64 @@ fn handle_substrate_run(
             // shouldn't echo its own remembers back into itself).
             if agent_id == cfg.agent.id { continue; }
             contributors.insert(agent_id.to_string());
-            // Content is a metadata-only signature marker — NO original
-            // memory text. The substrate's HRM grows in wavefront density
-            // per class without ever holding peer content. This is the
-            // privacy boundary the ADR promises.
-            //
-            // Anchor-flow shape (Phase 1.b): the marker text is dominated
-            // by repetitions of the class anchor word. This makes the
-            // hypervector encoding land NEAR the corresponding init-seeded
-            // anchor wavefront, so Kuramoto sync places this absorb in the
-            // matching class cluster instead of synthesizing a new one.
-            // 16 anchor repetitions + 4 class tokens > a few unique tokens
-            // for agent + wave params, so encoding is dominated by the
-            // anchor signature.
-            let class_word = substrate_class_word(class_index as u32);
-            let mut anchor_block = String::with_capacity(200);
-            for _ in 0..16 { anchor_block.push_str(class_word); anchor_block.push(' '); }
-            for _ in 0..4 { anchor_block.push_str(&format!("class{} ", class_index)); }
-            let marker = format!(
-                "substrate-absorb: {}agent:{} amp={:.3} phase={:.3} freq={:.3}",
-                anchor_block, agent_id, amplitude, phase, frequency
+            // ADR-0027 Phase 1.c — direct wavefront insertion. Bypass
+            // the text encoder entirely; build a hypervector centered on
+            // the class anchor slice + perturbed by (amplitude, phase,
+            // frequency) so distinct absorbs in the same class land at
+            // distinct points within that cluster instead of stacking on
+            // the anchor itself. Privacy: content is metadata-only
+            // ("substrate-absorb[class] from agent ..."), no peer text.
+            const WAVEFRONT_DIM: usize = 10_000;
+            let slice_size = WAVEFRONT_DIM / 96;
+            let mut vector = vec![0.0f32; WAVEFRONT_DIM];
+            let start = (class_index as usize) * slice_size;
+            let end = (start + slice_size).min(WAVEFRONT_DIM);
+            // Anchor activation in the class slice, modulated by amplitude
+            // so weaker absorbs sit further from the anchor center.
+            let anchor_strength = amplitude.max(0.1);
+            for i in start..end {
+                vector[i] = anchor_strength;
+            }
+            // Phase-derived perturbation: small noise in adjacent slices,
+            // sign and magnitude derived from phase + frequency. Keeps the
+            // cosine to the anchor > 0.5 (same cluster) but distinct from
+            // other absorbs in the same class. Use a small deterministic
+            // PRNG seeded by the wave params for reproducibility.
+            let mut seed: u32 = ((phase * 1000.0) as i32 as u32)
+                .wrapping_add(((frequency * 1000.0) as i32 as u32).wrapping_mul(31))
+                .wrapping_add(class_index as u32 * 7);
+            for i in 0..WAVEFRONT_DIM {
+                // xorshift32 — fast deterministic noise
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                // Tiny perturbation: 1% of anchor strength
+                let noise = ((seed as f32 / u32::MAX as f32) - 0.5) * 0.02 * anchor_strength;
+                vector[i] += noise;
+            }
+            let norm = (vector.iter().map(|v| v * v).sum::<f32>()).sqrt();
+            if norm > 0.0 {
+                for v in vector.iter_mut() { *v /= norm; }
+            }
+            let content = format!(
+                "substrate-absorb[class={}] from {} amp={:.3} phase={:.3} freq={:.3}",
+                class_index, agent_id, amplitude, phase, frequency
             );
-            match sys.remember(&marker) {
+
+            // Need mutable HrmStore handle each iteration (re-borrowed from
+            // sys.engine.store since sys.remember would have re-borrowed
+            // the whole sys reference too).
+            let hrm = match sys.engine.store
+                .as_any_mut()
+                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+            {
+                Some(h) => h,
+                None => {
+                    eprintln!("[substrate] non-HrmStore backend — cannot direct-insert");
+                    continue;
+                }
+            };
+            match hrm.insert_raw_wavefront(vector, content, amplitude) {
                 Ok(id) => {
                     eprintln!("[substrate] absorbed from {} class {} -> {}", agent_id, class_index, id);
                 }
@@ -4975,25 +5011,48 @@ fn handle_substrate_init(
     }
 
     eprintln!("[init] seeding 96 anchor wavefronts — one per SGA class");
+    eprintln!("[init] direct hypervector insertion (bypassing text encoder) so anchors are mutually orthogonal");
+
+    // Build 96 maximally distinct hypervectors. Each anchor gets a
+    // unique 1/96 slice of the WAVEFRONT_DIM activated to +1.0; the
+    // remaining 95/96 slices are zero. This guarantees pairwise dot
+    // product = 0 across classes (cos = 0), well under the 0.5
+    // coherence threshold that compute_eigenvalue_clusters uses to
+    // merge into a single cluster. Result: 96 truly separate clusters
+    // for Kuramoto sync to find.
+    const WAVEFRONT_DIM: usize = 10_000;
+    let slice_size = WAVEFRONT_DIM / 96; // ~104 dims per class
+
+    // Grab a mutable handle to the HrmStore so we can call the new
+    // insert_raw_wavefront API (added in v0.3.16 hrm_store.rs).
+    let hrm = match sys.engine.store
+        .as_any_mut()
+        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+    {
+        Some(h) => h,
+        None => {
+            eprintln!("[init] substrate requires HRM backend; got non-HrmStore");
+            process::exit(1);
+        }
+    };
+
     let mut seeded: u32 = 0;
     let mut failed: u32 = 0;
     for class in 0u32..96 {
         let word = substrate_class_word(class);
-        // Maximally distinct content: 32 anchor-word repetitions + 16
-        // class-index tokens. The hypervector encoder is sensitive to
-        // token frequency so this scatters anchors widely in vector
-        // space. The substrate-anchor: prefix is just a tag.
-        let mut content = String::with_capacity(800);
-        content.push_str("substrate-anchor: ");
-        for _ in 0..32 {
-            content.push_str(word);
-            content.push(' ');
+        let mut vector = vec![0.0f32; WAVEFRONT_DIM];
+        let start = (class as usize) * slice_size;
+        let end = (start + slice_size).min(WAVEFRONT_DIM);
+        for i in start..end {
+            vector[i] = 1.0;
         }
-        for _ in 0..16 {
-            content.push_str(&format!("class{} ", class));
+        // Normalize to unit length so wavefront magnitudes are uniform.
+        let norm = (vector.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        for v in vector.iter_mut() {
+            *v /= norm;
         }
-        content.push_str("seed");
-        match sys.remember(&content) {
+        let content = format!("anchor[{}] {} (class-orthogonal seed)", class, word);
+        match hrm.insert_raw_wavefront(vector, content, 1.0) {
             Ok(_) => seeded += 1,
             Err(e) => {
                 failed += 1;
