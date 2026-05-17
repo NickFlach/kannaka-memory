@@ -295,8 +295,18 @@ impl HrmStore {
         content: String,
         importance: f32,
     ) -> Result<Uuid, StoreError> {
-        let id = self.medium.add_wavefront(&vector, content, importance)
+        let id = self.medium.add_wavefront(&vector, content.clone(), importance)
             .map_err(|e| StoreError::Other(format!("add_wavefront failed: {}", e)))?;
+        // The medium has the wavefront for tensor/vector math, but the
+        // higher-level `all_memories()` / `assess()` paths read from
+        // `memory_cache`. Insert a matching HyperMemory record so
+        // total_memories, cluster counts, and on-disk persistence
+        // reflect the new wavefront. Use the importance as initial
+        // amplitude so it shows up in observation tables.
+        let mut memory = crate::memory::HyperMemory::new(vector, content);
+        memory.id = id;
+        memory.amplitude = importance;
+        self.memory_cache.insert(id, memory);
         self.mark_dirty();
         Ok(id)
     }
