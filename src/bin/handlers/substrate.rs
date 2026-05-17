@@ -759,6 +759,24 @@ pub(crate) fn handle_substrate_run(
                     }
                 }
             }
+
+            // Also publish an AgentPhase under the substrate's identity so
+            // /api/swarm + the observatory's per-agent panel show the
+            // substrate as a first-class swarm peer with its real
+            // cluster_count + memory_count. Without this the substrate's
+            // 96-class HRM (and Φ ~ 0.6+) is invisible in the swarm view —
+            // only KANNAKA.substrate.phi pubsub carries it, and that's
+            // consumed by a separate observatory endpoint.
+            let mut queen = kannaka_memory::QueenSync::new(
+                kannaka_memory::QueenConfig::default(),
+                &cfg.agent.id,
+            );
+            queen.derive_local_state(&sys.engine);
+            queen.phi = state.phi;
+            let phase = queen.to_agent_phase(state.num_clusters, state.total_memories);
+            if let Err(e) = transport.publish_phase(&phase) {
+                eprintln!("[substrate] swarm phase publish failed: {}", e);
+            }
             last_phi_pub = Instant::now();
         }
         // ADR-0028 Phase 2 — periodic autosnapshot. Skip entirely if

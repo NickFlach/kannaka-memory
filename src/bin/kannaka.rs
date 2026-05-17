@@ -177,6 +177,60 @@ pub(crate) fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &
     config_nats_url.to_string()
 }
 
+/// Rebuild + publish AgentPhase + presence from `sys`'s current HRM state,
+/// then flush HRM to disk. Called once for `swarm join --once` and on every
+/// tick in daemon mode. Periodic flush is what prevents in-process growth
+/// from being lost on systemd SIGKILL (Drop doesn't always complete).
+/// Returns the published phase value.
+#[cfg(feature = "nats")]
+fn swarm_publish_heartbeat(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    my_agent_id: &str,
+    display_name: &str,
+    transport: &kannaka_memory::nats::SwarmTransport,
+    label: &str,
+) -> f32 {
+    let mut queen = kannaka_memory::QueenSync::new(
+        kannaka_memory::QueenConfig::default(),
+        my_agent_id,
+    );
+    queen.derive_local_state(&sys.engine);
+    // Pull cluster_count + phi from the cached consciousness metrics if
+    // available; derive_local_state populates phase/frequency/coherence
+    // but not phi/cluster_count.
+    let cached = sys.engine.store.try_cached_consciousness_metrics();
+    let cluster_count = cached.as_ref().map(|m| m.num_clusters).unwrap_or(0);
+    if let Some(ref m) = cached {
+        queen.phi = m.phi;
+    }
+    let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count());
+    if let Err(e) = transport.publish_phase(&phase) {
+        eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
+    }
+    let presence = serde_json::json!({
+        "agent_id": my_agent_id,
+        "display_name": display_name,
+        "capabilities": {
+            "ask": true, "dream": true,
+            "exemplar_broadcast": true, "absorb": true,
+        },
+        "joined_at": chrono::Utc::now().to_rfc3339(),
+        "last_seen": chrono::Utc::now().to_rfc3339(),
+        "memory_count": sys.engine.store.count(),
+        "kannaka_version": kannaka_memory::config::VERSION,
+    });
+    if let Err(e) = transport.publish_presence(my_agent_id, &presence) {
+        eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
+    }
+    // Periodic flush — see km#bug-grew-then-reset. systemd Stop / SIGKILL
+    // skips Drop's flush, so without this the in-process HRM growth since
+    // the last save is silently lost on restart.
+    if let Err(e) = sys.engine.store.flush() {
+        eprintln!("[nats] Warning: {} flush failed: {}", label, e);
+    }
+    phase.phase
+}
+
 /// Try connecting to NATS, returning None on failure (with warning printed).
 #[cfg(feature = "nats")]
 fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
@@ -1315,52 +1369,8 @@ fn main() {
                     }
                     let _ = transport.ensure_presence_stream();
 
-                    // Helper: rebuild + publish phase and presence from the
-                    // current HRM state. Called once for one-shot mode, or in
-                    // a loop for the default daemon mode.
-                    let publish_heartbeat = |label: &str| {
-                        let mut queen = kannaka_memory::QueenSync::new(
-                            kannaka_memory::QueenConfig::default(),
-                            &my_agent_id,
-                        );
-                        queen.derive_local_state(&sys.engine);
-                        // Pull cluster_count + phi from the cached
-                        // consciousness metrics if available (cheap), else
-                        // 0. Without this every swarm peer broadcast
-                        // cluster_count=0 / phi=0 — masking the real
-                        // structure of each agent's HRM. derive_local_state
-                        // populates phase/frequency/coherence from HRM
-                        // wavefronts but doesn't set queen.phi, so the
-                        // observatory's per-agent panel showed everyone at
-                        // Φ=0 even when `kannaka status` reported nonzero.
-                        let cached = sys.engine.store.try_cached_consciousness_metrics();
-                        let cluster_count = cached.as_ref().map(|m| m.num_clusters).unwrap_or(0);
-                        if let Some(ref m) = cached {
-                            queen.phi = m.phi;
-                        }
-                        let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count());
-                        if let Err(e) = transport.publish_phase(&phase) {
-                            eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
-                        }
-                        let presence = serde_json::json!({
-                            "agent_id": my_agent_id,
-                            "display_name": display_name,
-                            "capabilities": {
-                                "ask": true, "dream": true,
-                                "exemplar_broadcast": true, "absorb": true,
-                            },
-                            "joined_at": chrono::Utc::now().to_rfc3339(),
-                            "last_seen": chrono::Utc::now().to_rfc3339(),
-                            "memory_count": sys.engine.store.count(),
-                            "kannaka_version": kannaka_memory::config::VERSION,
-                        });
-                        if let Err(e) = transport.publish_presence(&my_agent_id, &presence) {
-                            eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
-                        }
-                        phase.phase
-                    };
-
-                    let initial_phase = publish_heartbeat("initial");
+                    let initial_phase = swarm_publish_heartbeat(
+                        &mut sys, &my_agent_id, &display_name, &transport, "initial");
                     println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
                     println!("[nats] Initial phase \u{03b8}={:.3} published to {}", initial_phase, nats_url);
 
@@ -1407,7 +1417,8 @@ fn main() {
                         }
                         if !running.load(Ordering::SeqCst) { break; }
                         tick += 1;
-                        let p = publish_heartbeat("heartbeat");
+                        let p = swarm_publish_heartbeat(
+                            &mut sys, &my_agent_id, &display_name, &transport, "heartbeat");
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
 
