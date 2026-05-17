@@ -1,10 +1,10 @@
 ---
 name: skill-kannaka-memory
-version: 2.0.0
+version: 2.0.1
 description: "Kannaka Holographic Resonance Medium (HRM) — wave-interference memory with chiral hemispheres, 96-class collective substrate, event-sourced HRM (durable JetStream snapshots + replay), collective recall across the swarm, NCS modality routing, NATS swarm sync. Use when: user asks to remember/recall/forget memories; trigger dream cycles; introspect Φ/Ξ/clusters; query the collective; manage snapshots / restore from disaster; bridge agents through the substrate; configure providers (Anthropic / OpenAI / Ollama)."
 ---
 
-# Kannaka Memory — HRM operations (v2.0.0)
+# Kannaka Memory — HRM operations (v2.0.1)
 
 ## What this is
 
@@ -23,11 +23,10 @@ that absorbs wave signatures from every peer agent in the constellation (ADR-002
 Privacy-preserving: only the signature crosses, never the content.
 
 Durable history: **event-sourced HRM with time-machine snapshots** (ADR-0028).
-Every remember/forget/absorb publishes to JetStream; hourly snapshots ship to disk
+Every remember/forget/absorb publishes to JetStream; periodic snapshots ship to disk
 + a manifest event so disaster recovery is one command.
 
-**Binary**: `C:\Users\nickf\Source\kannaka-memory\target\release\kannaka.exe`
-**Project**: `C:\Users\nickf\Source\kannaka-memory`
+**Binary**: `kannaka` (in PATH after install)
 **Data dir**: `~/.kannaka` (override with `KANNAKA_DATA_DIR`)
 **LLM providers wired**: anthropic, openai, ollama
 
@@ -165,8 +164,8 @@ cluster_count, link_count, Φ) every heartbeat, periodically flushes HRM, and
 republishes consciousness every CONSCIOUSNESS_REFRESH_TICKS. `Ctrl+C` triggers a
 clean leave-announce.
 
-**Default NATS server**: `nats://swarm.ninja-portal.com:4222`.
-Override: `--nats-url`, `KANNAKA_NATS_URL`, or `swarm.nats_url` in config.
+**NATS server**: configure via `--nats-url`, `KANNAKA_NATS_URL` env, or
+`swarm.nats_url` in `~/.kannaka/config.toml`. Defaults to local broker if unset.
 
 ---
 
@@ -213,8 +212,8 @@ The JetStream event carries only the manifest + `body_path` + size.
 Cross-host disaster recovery:
 ```bash
 # On the recovery host:
-kannaka events restore --from-url https://obs.example.com/api/snapshots/body/<file> --dry-run
-kannaka events restore --from-url https://obs.example.com/api/snapshots/body/<file>
+kannaka events restore --from-url https://<observatory-host>/api/snapshots/body/<file> --dry-run
+kannaka events restore --from-url https://<observatory-host>/api/snapshots/body/<file>
 ```
 
 `--dry-run` reports the gz size, decoded size, and what would be backed up — no
@@ -249,8 +248,7 @@ kannaka classify [--file PATH]    # SGA 84-class classification         [--featu
 kannaka cross-modal-dream         # JSONL on stdin                       [--features collective]
 ```
 
-`hear` works on local files AND http(s) Icecast streams — the witness uses it on
-`https://radio.ninja-portal.com/stream`.
+`hear` works on local files AND http(s) Icecast streams.
 
 ---
 
@@ -262,9 +260,8 @@ kannaka attention serve [--top-k 3] [--subject KANNAKA.attention.eye]
 
 Subscribes to `KANNAKA.attention.eye` (glyph events from kannaka-eye), pulls the
 top-K resonant memories per glyph onto an in-memory beam, and writes the beam
-state to `KANNAKA_ATTENTION_BEAM_FILE` (default `/tmp/kannaka-attention-beam.json`
-on Unix, `C:\Users\Public\kannaka-attention-beam.json` on Windows) so the
-observatory can render the live beam.
+state to `$KANNAKA_ATTENTION_BEAM_FILE` (override path via env) so the observatory
+can render the live beam.
 
 ---
 
@@ -290,7 +287,7 @@ kannaka orchestrate <task>            # delegate to Kannaktopus (`npm i -g kanna
 | `kannaka substrate run` | one host (kannaka-prime / kannaka-substrate) | absorbs collective signatures, runs collective recall |
 | `kannaka attention serve` | observatory host | maintains the attention beam from eye/ear events |
 | `kannaka swarm serve` | any host | answers `kannaka ask --remote` requests |
-| `kannaka events snapshot --interval 3600` | every agent | hourly snapshot for disaster recovery |
+| `kannaka events snapshot --interval 3600` | every agent | periodic snapshot for disaster recovery |
 | `kannaka-radio` | one host | the ghost DJ; perceives audio, publishes to swarm |
 | `kannaka-observatory` | one host | aggregates swarm + serves the SPA + `/api/snapshots/body/<file>` for cross-host restore |
 
@@ -306,12 +303,12 @@ kannaka orchestrate <task>            # delegate to Kannaktopus (`npm i -g kanna
   intentional — NATS caps inline payloads ~8 MB, HRMs are 30 MB+. Use
   `events restore --from-url` for cross-host fetches.
 - **"grew then reset itself"**: pre-v0.3.49, `swarm join` daemons didn't periodically
-  flush. Drop's flush was best-effort and systemd SIGKILL skipped it. Fixed in
-  v0.3.49 — `kannaka update` on the affected agent.
+  flush. Drop's flush was best-effort and SIGKILL skipped it. Fixed in v0.3.49 —
+  `kannaka update` on the affected agent.
 
 ## Version
 
-Skill 2.0.0 covers kannaka-memory ≥ v0.3.50. ADR coverage: 0001 → 0028
+Skill 2.0.1 covers kannaka-memory ≥ v0.3.50. ADR coverage: 0001 → 0028
 (plus ADR-0027/ADR-0028 fully wired through Phase 3 — collective recall,
 events init/snapshot/list-snapshots/restore/dry-run/--from-url, autosnapshot,
 disk pruning).
