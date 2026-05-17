@@ -887,15 +887,21 @@ impl SwarmTransport {
     // ──────────────────────────────────────────────────────────────────
 
     /// Create the per-agent memory-event stream (90-day retention).
-    /// Captures `KANNAKA.events.<agent_id>.memory.>` — remember, forget,
+    /// Captures `KANNAKA.events.memory.<agent_id>.>` — remember, forget,
     /// dream-start, dream-end. Replay rebuilds an agent's HRM at any
     /// timestamp inside the retention window.
+    ///
+    /// Subject order chosen so the literal `memory` token sits at
+    /// position 3 (right after the `events` namespace marker). The
+    /// substrate events stream uses the literal `substrate` at the
+    /// same position so JetStream's subject-overlap check correctly
+    /// sees the two streams as disjoint.
     pub fn ensure_memory_events_stream(&self) -> Result<(), NatsError> {
         self.ensure_js_stream(
             "KANNAKA_MEMORY_EVENTS",
             serde_json::json!({
                 "name": "KANNAKA_MEMORY_EVENTS",
-                "subjects": ["KANNAKA.events.*.memory.>"],
+                "subjects": ["KANNAKA.events.memory.>"],
                 "retention": "limits",
                 "max_age": 90i64 * 24 * 3_600 * 1_000_000_000, // 90 days in ns
                 "storage": "file",
@@ -955,7 +961,7 @@ impl SwarmTransport {
         importance: f32,
         modality: &str,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.events.{}.memory.remember", agent_id);
+        let subject = format!("KANNAKA.events.memory.{}.remember", agent_id);
         let payload = serde_json::json!({
             "event_id": uuid::Uuid::new_v4(),
             "schema_version": 1,
@@ -977,7 +983,7 @@ impl SwarmTransport {
         agent_id: &str,
         memory_id: &uuid::Uuid,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.events.{}.memory.forget", agent_id);
+        let subject = format!("KANNAKA.events.memory.{}.forget", agent_id);
         let payload = serde_json::json!({
             "event_id": uuid::Uuid::new_v4(),
             "schema_version": 1,
