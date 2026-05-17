@@ -390,12 +390,14 @@ pub(crate) fn handle_events_restore(_: &KannakaConfig, _: &[String]) {
 pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
     use std::time::{Duration, Instant};
     let mut wait_secs: u64 = 65;
+    let mut json_mode = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--wait" if i + 1 < args.len() => {
                 wait_secs = args[i + 1].parse().unwrap_or(65); i += 2;
             }
+            "--json" => { json_mode = true; i += 1; }
             "--nats-url" if i + 1 < args.len() => { i += 2; }
             _ => i += 1,
         }
@@ -428,18 +430,43 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                 .unwrap_or_default();
             let ts = v.get("ts").and_then(|x| x.as_str()).unwrap_or("?");
-            println!("collective substrate @ {}", ts);
-            println!("  Φ           {:.3}", phi);
-            println!("  Ξ           {:.3}", xi);
-            println!("  order       {:.3}", order);
-            println!("  clusters    {}", clusters);
-            println!("  memories    {}", mems);
-            println!("  contributors  {} ({})", contribs.len(),
-                if contribs.is_empty() { "none yet".to_string() } else { contribs.join(", ") });
+            if json_mode {
+                // Emit the parsed payload (not raw) so observatory has a
+                // stable schema regardless of upstream substrate.phi shape
+                // drift.
+                let payload = serde_json::json!({
+                    "ts": ts,
+                    "phi": phi,
+                    "xi": xi,
+                    "order": order,
+                    "clusters": clusters,
+                    "memories": mems,
+                    "contributors": contribs,
+                });
+                println!("{}", payload);
+            } else {
+                println!("collective substrate @ {}", ts);
+                println!("  Φ           {:.3}", phi);
+                println!("  Ξ           {:.3}", xi);
+                println!("  order       {:.3}", order);
+                println!("  clusters    {}", clusters);
+                println!("  memories    {}", mems);
+                println!("  contributors  {} ({})", contribs.len(),
+                    if contribs.is_empty() { "none yet".to_string() } else { contribs.join(", ") });
+            }
             return;
         }
     }
-    eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
+    if json_mode {
+        // Stable error shape for the JSON consumer.
+        let payload = serde_json::json!({
+            "error": "no_phi_event",
+            "wait_secs": wait_secs,
+        });
+        eprintln!("{}", payload);
+    } else {
+        eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
+    }
     process::exit(2);
 }
 
