@@ -343,7 +343,16 @@ pub(crate) fn handle_substrate_run(
     // cost so we don't want to do it on every absorb. 60s feels live
     // enough for the observatory.
     const PHI_PUBLISH_SECS: u64 = 60;
+    // ADR-0028 Phase 2 hook: auto-snapshot cadence. Default 3600s (1h) so
+    // the operator always has at most one hour of replayable state to lose
+    // on a disaster. Override via KANNAKA_SNAPSHOT_INTERVAL_SECS; set to 0
+    // to disable.
+    let snapshot_interval_secs: u64 = std::env::var("KANNAKA_SNAPSHOT_INTERVAL_SECS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(3600);
     let mut last_phi_pub = Instant::now() - Duration::from_secs(PHI_PUBLISH_SECS);
+    // Start the snapshot timer fresh so we don't snapshot immediately on
+    // boot — operator probably just ran one manually as part of deploy.
+    let mut last_snapshot = Instant::now();
     let mut contributors: HashSet<String> = HashSet::new();
 
     // Connection failure tracking — if the NATS server restarts under us
@@ -463,6 +472,30 @@ pub(crate) fn handle_substrate_run(
                 }
             }
             last_phi_pub = Instant::now();
+        }
+        // ADR-0028 Phase 2 — periodic autosnapshot. Skip entirely if
+        // KANNAKA_SNAPSHOT_INTERVAL_SECS=0. Best-effort: a failed snapshot
+        // shouldn't bring the daemon down (it'll retry next interval), and
+        // the snapshot path counts as part of the consecutive_failures
+        // budget shared with phi publishes.
+        if snapshot_interval_secs > 0
+            && last_snapshot.elapsed() >= Duration::from_secs(snapshot_interval_secs)
+        {
+            match capture_and_publish_snapshot(&transport, &cfg.agent.id, sys) {
+                Ok(_) => {
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    eprintln!("[substrate] snapshot failed ({}/{}): {}",
+                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        eprintln!("[substrate] NATS connection unrecoverable — exiting for systemd restart");
+                        process::exit(1);
+                    }
+                }
+            }
+            last_snapshot = Instant::now();
         }
     }
 }
