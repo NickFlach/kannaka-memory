@@ -38,7 +38,7 @@ pub const MAX_TOOL_ITERATIONS: usize = 12;
 pub enum AgentError {
     #[error("no LLM provider configured — run `kannaka config set llm.provider anthropic` and set llm.api_key")]
     NotConfigured,
-    #[error("unsupported provider: {0} (only 'anthropic' is wired today)")]
+    #[error("unsupported provider: {0} (supported: 'anthropic', 'openai', 'ollama')")]
     UnsupportedProvider(String),
     #[error("missing API key — set llm.api_key or KANNAKA_LLM_API_KEY")]
     MissingApiKey,
@@ -623,12 +623,103 @@ impl OllamaClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI client — for `llm.provider = "openai"`. Same shape as Ollama
+// (system + history → text), but talks to api.openai.com/v1/chat/completions
+// (or any OpenAI-compatible endpoint via base_url override). Bearer auth.
+// Tool calls aren't wired; OpenAI uses a different tool schema than Anthropic
+// and translating it cleanly is its own slice. Plain chat works.
+// ---------------------------------------------------------------------------
+
+pub struct OpenAIClient {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl OpenAIClient {
+    pub fn new(base_url: String, api_key: String, model: String) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
+        Self { base_url, api_key, model }
+    }
+
+    pub fn send(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<Value, AgentError> {
+        self.send_with_max(system, messages, tools, DEFAULT_MAX_TOKENS)
+    }
+
+    pub fn send_with_max(
+        &self,
+        system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+        max_tokens: u32,
+    ) -> Result<Value, AgentError> {
+        // Flatten Anthropic content-blocks into OpenAI's role+content strings
+        // (same pattern as the Ollama client).
+        let mut oai_messages: Vec<Value> = Vec::new();
+        oai_messages.push(json!({"role": "system", "content": system}));
+        for m in messages {
+            let text = m.content.iter().filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            if text.trim().is_empty() { continue; }
+            oai_messages.push(json!({"role": m.role, "content": text}));
+        }
+
+        let body = json!({
+            "model": self.model,
+            "messages": oai_messages,
+            "max_tokens": max_tokens,
+            "stream": false,
+        });
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let resp = ureq::post(&url)
+            .set("authorization", &format!("Bearer {}", self.api_key))
+            .set("content-type", "application/json")
+            .timeout(Duration::from_secs(300))
+            .send_json(body);
+
+        let v: Value = match resp {
+            Ok(r) => r.into_json().map_err(|e| AgentError::Malformed(e.to_string()))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(AgentError::Api { status: code, body });
+            }
+            Err(e) => return Err(AgentError::Http(e.to_string())),
+        };
+
+        // OpenAI shape: { choices: [{ message: { role, content }, finish_reason }] }
+        // → reshape into Anthropic content-block envelope.
+        let content_text = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(json!({
+            "content": [{"type": "text", "text": content_text}],
+            "stop_reason": "end_turn",
+        }))
+    }
+}
+
 /// Provider-agnostic LLM client. The agent codebase uses this everywhere
 /// instead of `AnthropicClient` so adding a third provider later is a
 /// single match-arm.
 pub enum LlmClient {
     Anthropic(AnthropicClient),
     Ollama(OllamaClient),
+    OpenAI(OpenAIClient),
 }
 
 impl LlmClient {
@@ -641,6 +732,7 @@ impl LlmClient {
         match self {
             LlmClient::Anthropic(c) => c.send(system, messages, tools),
             LlmClient::Ollama(c) => c.send(system, messages, tools),
+            LlmClient::OpenAI(c) => c.send(system, messages, tools),
         }
     }
 
@@ -657,6 +749,7 @@ impl LlmClient {
         match self {
             LlmClient::Anthropic(c) => c.send_with_max(system, messages, tools, max_tokens),
             LlmClient::Ollama(c) => c.send_with_max(system, messages, tools, max_tokens),
+            LlmClient::OpenAI(c) => c.send_with_max(system, messages, tools, max_tokens),
         }
     }
 
@@ -680,6 +773,18 @@ impl LlmClient {
                 if let Some(arr) = v["message"]["content"].as_str() {
                     on_chunk(arr);
                 } else if let Some(arr) = v["content"].as_array() {
+                    for block in arr {
+                        if let Some(t) = block["text"].as_str() { on_chunk(t); }
+                    }
+                }
+                Ok(v)
+            }
+            LlmClient::OpenAI(c) => {
+                // OpenAI streaming uses SSE just like Anthropic. For now fall
+                // back to the non-streaming call (same as Ollama) so chat
+                // works end-to-end; richer streaming is a future slice.
+                let v = c.send_with_max(system, messages, &[], max_tokens)?;
+                if let Some(arr) = v["content"].as_array() {
                     for block in arr {
                         if let Some(t) = block["text"].as_str() { on_chunk(t); }
                     }
@@ -723,6 +828,26 @@ pub fn client_from_config(cfg: &KannakaConfig) -> Result<LlmClient, AgentError> 
                 cfg.llm.model.clone()
             };
             Ok(LlmClient::Ollama(OllamaClient::new(base_url, model)))
+        }
+        "openai" => {
+            let api_key = if !cfg.llm.api_key.is_empty() {
+                cfg.llm.api_key.clone()
+            } else {
+                std::env::var("OPENAI_API_KEY")
+                    .or_else(|_| std::env::var("KANNAKA_LLM_API_KEY"))
+                    .map_err(|_| AgentError::MissingApiKey)?
+            };
+            let base_url = if cfg.llm.base_url.is_empty() {
+                "https://api.openai.com/v1".to_string()
+            } else {
+                cfg.llm.base_url.clone()
+            };
+            let model = if cfg.llm.model.is_empty() {
+                "gpt-4o-mini".to_string()
+            } else {
+                cfg.llm.model.clone()
+            };
+            Ok(LlmClient::OpenAI(OpenAIClient::new(base_url, api_key, model)))
         }
         "none" | "" => Err(AgentError::NotConfigured),
         other => Err(AgentError::UnsupportedProvider(other.to_string())),
