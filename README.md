@@ -150,11 +150,10 @@ kannaka announce-status         Publish agent status to Flux
 ### Feature-gated
 
 ```
-kannaka hear <file>             Store audio as sensory memory          [--features audio]
+kannaka hear <file>             Store audio as sensory memory          (always available)
 kannaka see <file>              Store file as glyph (visual) memory    [--features glyph]
 kannaka classify [--file PATH]  Classify data via SGA 84-class system  [--features glyph]
 kannaka cross-modal-dream       Cross-modal dream on JSONL from stdin  [--features collective]
-kannaka migrate <path-to-db>    Import from kannaka.db                 [--features sqlite-migrate]
 ```
 
 ---

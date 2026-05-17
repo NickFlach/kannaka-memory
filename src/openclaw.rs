@@ -115,6 +115,11 @@ pub struct KannakaMemorySystem {
     attention: AttentionField,
     /// ADR-0011: Flux publisher (None if FLUX_URL not configured)
     flux: Option<FluxPublisher>,
+    /// Resolved NATS URL — set by the bin via `set_nats_url` after construction
+    /// using the standard precedence (CLI flag > env > config.toml > default).
+    /// When None, the dream/consciousness publish helpers fall back to the
+    /// legacy env-only resolution. Fixes km#77.
+    nats_url: Option<String>,
 }
 
 impl KannakaMemorySystem {
@@ -175,7 +180,26 @@ impl KannakaMemorySystem {
             rhythm,
             attention,
             flux,
+            nats_url: None,
         })
+    }
+
+    /// Set the resolved NATS URL the dream/consciousness publishers should
+    /// use. Caller passes the config-aware result of `resolve_nats_url`. When
+    /// unset, publish helpers fall back to env-only resolution. Fixes km#77.
+    pub fn set_nats_url(&mut self, url: String) {
+        self.nats_url = Some(url);
+    }
+
+    /// Resolve the NATS URL for best-effort publishes. Prefers the URL
+    /// previously injected via `set_nats_url` (config-aware), else falls
+    /// back to the env/default precedence.
+    fn resolved_nats_url(&self) -> String {
+        if let Some(ref u) = self.nats_url {
+            return u.clone();
+        }
+        std::env::var("KANNAKA_NATS_URL")
+            .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string())
     }
 
     /// Initialize a new system with a custom MediumBackend.
@@ -432,8 +456,7 @@ impl KannakaMemorySystem {
             if agent_id.is_empty() {
                 return;
             }
-            let nats_url = std::env::var("KANNAKA_NATS_URL")
-                .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+            let nats_url = self.resolved_nats_url();
             let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
                 Ok(t) => t,
                 Err(_) => return,
@@ -456,8 +479,7 @@ impl KannakaMemorySystem {
         if agent_id.is_empty() {
             return;
         }
-        let nats_url = std::env::var("KANNAKA_NATS_URL")
-            .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+        let nats_url = self.resolved_nats_url();
         let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
             Ok(t) => t,
             Err(_) => return,
@@ -488,8 +510,7 @@ impl KannakaMemorySystem {
         if agent_id.is_empty() {
             return;
         }
-        let nats_url = std::env::var("KANNAKA_NATS_URL")
-            .unwrap_or_else(|_| crate::nats::DEFAULT_NATS_URL.to_string());
+        let nats_url = self.resolved_nats_url();
         let transport = match crate::nats::SwarmTransport::connect(&nats_url) {
             Ok(t) => t,
             Err(_) => return,

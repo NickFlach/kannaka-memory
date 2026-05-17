@@ -329,6 +329,11 @@ fn main() {
         }
     };
 
+    // Inject the config-aware NATS URL into the memory system so its
+    // dream/consciousness publish helpers honor cfg.swarm.nats_url instead
+    // of falling back to env-only. Fixes km#77.
+    sys.set_nats_url(resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url));
+
     match args[command_start].as_str() {
         "remember" => {
             if args.len() < command_start + 2 {
