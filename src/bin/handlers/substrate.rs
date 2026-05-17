@@ -560,13 +560,7 @@ pub(crate) fn handle_substrate_run(
     let mut consecutive_failures: u32 = 0;
 
     eprintln!("[substrate] daemon ready — Ctrl+C to stop");
-    let mut loop_count: u64 = 0;
     loop {
-        loop_count += 1;
-        if loop_count % 50 == 1 {
-            eprintln!("[substrate trace] loop iter #{}, recall_sub={}",
-                loop_count, recall_sub.is_some());
-        }
         // ADR-0027 Phase 3 — collective recall handler.
         // Payload: {"query": "...", "top_k": 8 (optional)}
         // Reply: {"from": substrate_agent_id, "query": "...", "matches":
@@ -577,26 +571,33 @@ pub(crate) fn handle_substrate_run(
         // crossed the boundary in the first place (ADR-0027 Phase 1.c
         // privacy: only wave signatures absorb into the substrate).
         if let Some(ref mut rsub) = recall_sub {
-            let msg_opt = rsub.next_message();
-            if msg_opt.is_some() && loop_count % 1 == 0 {
-                eprintln!("[substrate trace] recall msg arrived at iter #{}", loop_count);
-            }
-            if let Some(msg) = msg_opt {
+            if let Some(msg) = rsub.next_message() {
                 let reply_to = msg.reply_to.clone();
                 let req: serde_json::Value = serde_json::from_slice(&msg.payload)
                     .unwrap_or(serde_json::Value::Null);
                 let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
                 if !query.is_empty() && reply_to.is_some() {
-                    let matches: Vec<serde_json::Value> = match sys.recall(query, top_k) {
-                        Ok(rs) => rs.iter().map(|r| serde_json::json!({
-                            "memory_id": r.id.to_string(),
-                            "content": r.content,
-                            "similarity": r.similarity,
-                            "strength": r.strength,
-                            "age_hours": r.age_hours,
-                        })).collect(),
-                        Err(_) => Vec::new(),
+                    // Use the attention-beam prefilter (token-overlap → top
+                    // candidates → resonance against beam only) so the recall
+                    // is O(beam_size) instead of O(N). sys.recall on the
+                    // substrate's 750+ memory HRM with xi-rerank is 30-60s+
+                    // on ARM — way past any sensible NATS request_one timeout.
+                    let beam = kannaka_memory::agent::attention_beam_for_prompt(
+                        sys, query, kannaka_memory::agent::DEFAULT_ATTENTION_BEAM);
+                    let matches: Vec<serde_json::Value> = if beam.is_empty() {
+                        Vec::new()
+                    } else {
+                        match sys.recall_with_beam(&beam, query, top_k) {
+                            Ok(rs) => rs.iter().map(|r| serde_json::json!({
+                                "memory_id": r.id.to_string(),
+                                "content": r.content,
+                                "similarity": r.similarity,
+                                "strength": r.strength,
+                                "age_hours": r.age_hours,
+                            })).collect(),
+                            Err(_) => Vec::new(),
+                        }
                     };
                     let total = sys.all_memories().map(|m| m.len()).unwrap_or(0);
                     let reply_payload = serde_json::json!({
