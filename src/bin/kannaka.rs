@@ -1608,14 +1608,20 @@ fn main() {
         "substrate" => {
             // ADR-0027 — kannaka-prime as the 96-class collective substrate.
             // Subcommands:
+            //   init      — seat 96 anchor wavefronts (Phase 1.b) so the
+            //               substrate's HRM has a determined topology that
+            //               subsequent absorbs flow into
             //   run       — long-running absorb listener + periodic phi publish
             //   backfill  — walk local HRM and emit one substrate.absorb
             //               event per memory (Phase 2)
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka substrate <run|backfill>");
+                eprintln!("Usage: kannaka substrate <init|run|backfill>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
+                "init" => {
+                    handle_substrate_init(&mut sys, &args[command_start..]);
+                }
                 "run" => {
                     handle_substrate_run(&mut sys, &cfg, &args[command_start..]);
                 }
@@ -1624,7 +1630,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown substrate command: {other}");
-                    eprintln!("Usage: kannaka substrate <run|backfill>");
+                    eprintln!("Usage: kannaka substrate <init|run|backfill>");
                     process::exit(1);
                 }
             }
@@ -4769,16 +4775,21 @@ fn handle_substrate_run(
             // per class without ever holding peer content. This is the
             // privacy boundary the ADR promises.
             //
-            // Distinct per-class anchor phrase makes the text-encoding side
-            // of the hypervector produce structurally different vectors per
-            // class, so Kuramoto sync on the receiving HRM actually finds
-            // multiple clusters instead of collapsing all 96 classes into
-            // one (the v0.3.13/0.3.14 bug Nick caught — all markers had
-            // identical shape, all wave params were defaults).
+            // Anchor-flow shape (Phase 1.b): the marker text is dominated
+            // by repetitions of the class anchor word. This makes the
+            // hypervector encoding land NEAR the corresponding init-seeded
+            // anchor wavefront, so Kuramoto sync places this absorb in the
+            // matching class cluster instead of synthesizing a new one.
+            // 16 anchor repetitions + 4 class tokens > a few unique tokens
+            // for agent + wave params, so encoding is dominated by the
+            // anchor signature.
             let class_word = substrate_class_word(class_index as u32);
+            let mut anchor_block = String::with_capacity(200);
+            for _ in 0..16 { anchor_block.push_str(class_word); anchor_block.push(' '); }
+            for _ in 0..4 { anchor_block.push_str(&format!("class{} ", class_index)); }
             let marker = format!(
-                "substrate-resonance class:{} anchor:{} agent:{} amp={:.3} phase={:.3} freq={:.3}",
-                class_index, class_word, agent_id, amplitude, phase, frequency
+                "substrate-absorb: {}agent:{} amp={:.3} phase={:.3} freq={:.3}",
+                anchor_block, agent_id, amplitude, phase, frequency
             );
             match sys.remember(&marker) {
                 Ok(id) => {
@@ -4930,6 +4941,76 @@ fn handle_substrate_backfill(
 fn handle_substrate_backfill(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
     eprintln!("substrate backfill requires the 'nats' feature");
     process::exit(1);
+}
+
+/// ADR-0027 Phase 1.b — seed the substrate's HRM with 96 anchor
+/// wavefronts (one per SGA class). Each anchor is a high-amplitude
+/// memory whose content is maximally distinct from every other class:
+/// 32 occurrences of the class word + 16 occurrences of the class
+/// index as text. This forces the hypervector encoder to produce
+/// genuinely different vectors per class, giving Kuramoto sync real
+/// structure to find. Subsequent substrate.absorb events generate
+/// markers that PREPEND the matching anchor word so they flow into
+/// the right cluster by text-similarity.
+///
+/// Idempotent: writes a marker at <data_dir>/.substrate-initialized.
+/// Use --force to re-seed (will create 96 NEW anchors, doesn't delete
+/// the old ones — usually you want to nuke the HRM file first).
+fn handle_substrate_init(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    args: &[String],
+) {
+    let mut force = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--force" => { force = true; i += 1; }
+            _ => i += 1,
+        }
+    }
+    let marker_path = data_dir().join(".substrate-initialized");
+    if marker_path.exists() && !force {
+        eprintln!("[init] substrate already seeded (marker at {}); use --force to re-seat", marker_path.display());
+        return;
+    }
+
+    eprintln!("[init] seeding 96 anchor wavefronts — one per SGA class");
+    let mut seeded: u32 = 0;
+    let mut failed: u32 = 0;
+    for class in 0u32..96 {
+        let word = substrate_class_word(class);
+        // Maximally distinct content: 32 anchor-word repetitions + 16
+        // class-index tokens. The hypervector encoder is sensitive to
+        // token frequency so this scatters anchors widely in vector
+        // space. The substrate-anchor: prefix is just a tag.
+        let mut content = String::with_capacity(800);
+        content.push_str("substrate-anchor: ");
+        for _ in 0..32 {
+            content.push_str(word);
+            content.push(' ');
+        }
+        for _ in 0..16 {
+            content.push_str(&format!("class{} ", class));
+        }
+        content.push_str("seed");
+        match sys.remember(&content) {
+            Ok(_) => seeded += 1,
+            Err(e) => {
+                failed += 1;
+                if failed <= 3 {
+                    eprintln!("[init] anchor class {} failed: {}", class, e);
+                }
+            }
+        }
+        if (class + 1) % 16 == 0 {
+            eprintln!("[init] {}/96 anchors seeded", class + 1);
+        }
+    }
+
+    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    eprintln!("[init] done — {} anchors seeded ({} failed). Marker: {}",
+        seeded, failed, marker_path.display());
+    eprintln!("[init] substrate is now class-structured; restart `kannaka substrate run` so absorbs flow into the seeded clusters");
 }
 
 fn handle_orchestrate(args: &[String]) {
