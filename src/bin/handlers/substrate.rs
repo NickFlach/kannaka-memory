@@ -204,12 +204,14 @@ pub(crate) fn handle_events_snapshot(_: &mut kannaka_memory::openclaw::KannakaMe
 #[cfg(feature = "nats")]
 pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String]) {
     let mut agent_filter: Option<String> = None;
+    let mut json_mode = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--agent" if i + 1 < args.len() => {
                 agent_filter = Some(args[i + 1].clone()); i += 2;
             }
+            "--json" => { json_mode = true; i += 1; }
             "--nats-url" if i + 1 < args.len() => { i += 2; }
             _ => i += 1,
         }
@@ -228,7 +230,11 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         Err(e) => { eprintln!("[list-snapshots] read failed: {}", e); process::exit(1); }
     };
     if manifests.is_empty() {
-        eprintln!("[list-snapshots] no manifests found");
+        if json_mode {
+            println!("[]");
+        } else {
+            eprintln!("[list-snapshots] no manifests found");
+        }
         return;
     }
     // Sort by ts descending.
@@ -238,6 +244,21 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
         bt.cmp(at)
     });
+    if json_mode {
+        // Emit the raw manifest array — observatory + other downstream
+        // consumers parse this directly. Wire-format is the JetStream
+        // manifest shape: { ts, agent_id, manifest: { version, wavefronts,
+        // clusters, phi }, body_path, body_gz_bytes, event_id,
+        // schema_version }.
+        match serde_json::to_string(&sorted) {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("[list-snapshots] serialize: {}", e);
+                process::exit(1);
+            }
+        }
+        return;
+    }
     println!("{:<25} {:<28} {:>6} {:>4} {:>6} {:>8}  {}",
         "ts", "agent_id", "waves", "cls", "phi", "gz(KB)", "body");
     for m in sorted.iter() {
