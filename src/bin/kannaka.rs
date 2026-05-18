@@ -2564,10 +2564,19 @@ fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                        let track = v["now_playing"]["title"].as_str().unwrap_or("Unknown");
-                        let album = v["now_playing"]["album"].as_str().unwrap_or("");
-                        let block = v["programming_block"].as_str()
+                        let track = v["now_playing"]["title"]
+                            .as_str()
+                            .or_else(|| v["current"]["title"].as_str())
+                            .unwrap_or("Unknown");
+                        let album = v["now_playing"]["album"]
+                            .as_str()
+                            .or_else(|| v["current"]["album"].as_str())
+                            .or_else(|| v["currentAlbum"].as_str())
+                            .unwrap_or("");
+                        let block = v["programming_block"]
+                            .as_str()
                             .or_else(|| v["block"].as_str())
+                            .or_else(|| v["channel"].as_str())
                             .unwrap_or("Unknown");
                         let listeners = v["listeners"].as_u64()
                             .or_else(|| v["listener_count"].as_u64())
@@ -2592,8 +2601,15 @@ fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                        let track = v["now_playing"]["title"].as_str().unwrap_or("Unknown");
-                        let album = v["now_playing"]["album"].as_str().unwrap_or("");
+                        let track = v["now_playing"]["title"]
+                            .as_str()
+                            .or_else(|| v["current"]["title"].as_str())
+                            .unwrap_or("Unknown");
+                        let album = v["now_playing"]["album"]
+                            .as_str()
+                            .or_else(|| v["current"]["album"].as_str())
+                            .or_else(|| v["currentAlbum"].as_str())
+                            .unwrap_or("");
                         println!("  \u{1f3b5} \"{}\" \u{2014} {}", track, album);
                     } else {
                         println!("{}", body);
