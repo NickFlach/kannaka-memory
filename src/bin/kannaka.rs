@@ -4473,25 +4473,83 @@ fn handle_search(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: 
         }
     }
     let query = query_parts.join(" ");
+    let query_lower = query.to_lowercase();
+    let now = chrono::Utc::now();
+
+    let mut literal_matches: Vec<_> = sys
+        .engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| {
+            let content_lower = m.content.to_lowercase();
+            if !content_lower.contains(&query_lower) {
+                return None;
+            }
+            let exact = content_lower == query_lower;
+            let starts_with = content_lower.starts_with(&query_lower);
+            let age_hours = (now - m.created_at).num_seconds().max(0) as f32 / 3600.0;
+            Some((exact, starts_with, m.created_at, age_hours, m))
+        })
+        .collect();
+
+    literal_matches.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+    });
+
+    if !literal_matches.is_empty() {
+        println!(
+            "  \u{1f50d} Search: \"{}\" ({} literal matches)",
+            query,
+            literal_matches.len().min(limit)
+        );
+        println!("  {}", "\u{2500}".repeat(70));
+        for (i, (exact, starts_with, _created_at, age_hours, m)) in
+            literal_matches.into_iter().take(limit).enumerate()
+        {
+            let preview = if m.content.len() > 70 {
+                let mut end = 70;
+                while end > 0 && !m.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &m.content[..end])
+            } else {
+                m.content.clone()
+            };
+            let score = if exact { 1.0 } else if starts_with { 0.9 } else { 0.8 };
+            println!("  {:>3}. [{:.2}] {}", i + 1, score, preview);
+            println!("       id={} age={:.0}h literal=true", m.id, age_hours);
+        }
+        return;
+    }
+
     match sys.recall(&query, limit) {
         Ok(results) => {
             if results.is_empty() {
                 println!("  No results for \"{}\"", query);
                 return;
             }
-            println!("  \u{1f50d} Search: \"{}\" ({} results)", query, results.len());
+            println!(
+                "  \u{1f50d} Search: \"{}\" ({} resonance results)",
+                query,
+                results.len()
+            );
             println!("  {}", "\u{2500}".repeat(70));
             for (i, r) in results.iter().enumerate() {
                 let preview = if r.content.len() > 70 {
                     let mut end = 70;
-                    while end > 0 && !r.content.is_char_boundary(end) { end -= 1; }
+                    while end > 0 && !r.content.is_char_boundary(end) {
+                        end -= 1;
+                    }
                     format!("{}...", &r.content[..end])
                 } else {
                     r.content.clone()
                 };
                 println!("  {:>3}. [{:.2}] {}", i + 1, r.similarity, preview);
-                println!("       id={} age={:.0}h strength={:.2}",
-                    r.id, r.age_hours, r.strength);
+                println!("       id={} age={:.0}h strength={:.2}", r.id, r.age_hours, r.strength);
             }
         }
         Err(e) => {
