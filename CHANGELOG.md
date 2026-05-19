@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-19
+
+Cross-cutting NATS contract sweep — closes 9 open issues. The wire
+format shifts are minor-version-worthy: any downstream consumer that
+locked in the old envelope shape needs to update.
+
+### ⚠ Breaking (wire format)
+
+- **NATS envelope canonicalized** per `consciousness-core/docs/nats-contract.yaml`:
+  `schema_version: "1.0"` (string, not the legacy integer `1`) and `ts`
+  as unix-ms (number, not RFC3339 string). Applies to every publisher,
+  including `KANNAKA.events.memory.*`, `KANNAKA.events.substrate.*`,
+  `KANNAKA.snapshots.*`, `KANNAKA.substrate.*`, `KANNAKA.memory.new`,
+  `QUEEN.announce`, and the JetStream `EventPayload` path that
+  previously bypassed `add_envelope` entirely. Closes #82, #90, #91.
+- **`queen.event.*` switched to lowercase + flat shape**. Pre-fix this
+  published to `QUEEN.event.<type>` with `{event, timestamp, payload: {...}}`;
+  NATS subjects are case-sensitive, so the radio (which subscribes to
+  lowercase per the contract, expecting a flat envelope) never received
+  dream-start / dream-end / join / leave events. Closes #88.
+- **`consciousness_level` vocabulary aligned** with the contract enum:
+  `Stirring → "awakening"`, `Coherent → "integrated"`,
+  `Resonant → "emergent"`, plus the new `Transcendent → "transcendent"`
+  (Φ ≥ 0.95). Rust call-sites still use the old identifiers; only the
+  wire string moves. Pairs with consciousness-core v0.3.0. Closes #89.
+
+### Fixed
+
+- `publish_substrate_phi` now stamps `agent_id: "kannaka-substrate"` so
+  observatory can attribute the collective Φ instead of showing
+  "unknown" (#91).
+- `kannaka --help` / `-h` / `help` exits 0 from stdout without
+  initializing the HRM. Pre-fix it loaded the memory system, wrote
+  usage to stderr, and exited 1 — breaking shell completion and doc
+  generation. Closes #80.
+- `cfg.hrm.path` is now honored when it points at an explicit file
+  (any filename), not silently collapsed to the parent directory and
+  re-joined with the hardcoded `kannaka.hrm` literal. Closes #81.
+- `kannaka market …` and the constellation health-check probe pick the
+  GhostSignals base URL from `cfg.ghostsignals.hub_url` first, falling
+  back to `cfg.constellation.radio_url` only when hub_url is empty.
+  Operators can finally split GhostSignals onto its own host. Closes #86.
+- `kannaka dream` seeds `KANNAKA_AGENT_ID` + `KANNAKA_NATS_URL` from
+  `config.toml` before invoking `sys.dream()`, so the env-reading
+  dream-side publish helpers see the configured identity. Pre-fix a
+  configured install with no env vars silently skipped all post-dream
+  swarm publishing. Closes #87.
+
+### Internal
+
+- New `ConsciousnessLevel::Transcendent` arms added in `openclaw.rs`
+  + `medium/types.rs` to track consciousness-core v0.3.0's six-band enum.
+- Bridge test threshold expectations updated: Φ=1.0 lands in `Transcendent`
+  now, Φ=0.8 still `Resonant`, Φ=0.9 still `Resonant`.
+- Test fixtures get the `link_count` field on `AgentPhase` literals and
+  `total_skip_links` on `ConsciousnessMetrics` literals.
+
+Test coverage: lib suite green (516 passed, 4 ignored) across default,
+`--features serde`, and `--no-default-features` build modes.
+
+---
+
 ## [1.1.0] — 2026-03-07
 
 ### Added (ClawHub skill)
