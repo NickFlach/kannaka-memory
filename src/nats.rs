@@ -30,15 +30,26 @@ use crate::queen::AgentPhase;
 /// existing fields untouched; new validators see the envelope they want.
 fn add_envelope(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
+        // Per consciousness-core/docs/nats-contract.yaml:
+        //   schema_version: string ("1.0")
+        //   ts:             number (unix-ms)
+        // Pre-fix these were "1" (string but wrong value) and an RFC3339
+        // string respectively; closes #82 and the same defects #90/#91
+        // flag in the JetStream events / six bypass publishers.
         obj.entry("schema_version".to_string())
-            .or_insert_with(|| serde_json::Value::String("1".to_string()));
+            .or_insert_with(|| serde_json::Value::String("1.0".to_string()));
         if !obj.contains_key("ts") {
+            // Promote an existing RFC3339 `timestamp` field to unix-ms.
             let ts = obj
                 .get("timestamp")
-                .filter(|v| v.is_string())
-                .cloned()
-                .unwrap_or_else(|| serde_json::Value::String(Utc::now().to_rfc3339()));
-            obj.insert("ts".to_string(), ts);
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or_else(|| Utc::now().timestamp_millis());
+            obj.insert(
+                "ts".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(ts)),
+            );
         }
     }
 }
@@ -377,10 +388,14 @@ impl<'a> EventPayload<'a> {
     }
 
     pub fn payload_json(&self) -> serde_json::Value {
+        // Envelope matches the canonical contract — schema_version: "1.0"
+        // (string), ts: unix-ms (number). The bare event_id stays.
+        // Pre-fix this codepath bypassed add_envelope entirely (issue #90)
+        // and emitted schema_version as an integer + ts as RFC3339 string.
         let base = serde_json::json!({
             "event_id": uuid::Uuid::new_v4(),
-            "schema_version": 1,
-            "ts": chrono::Utc::now().to_rfc3339(),
+            "schema_version": "1.0",
+            "ts": chrono::Utc::now().timestamp_millis(),
         });
         let mut obj = base.as_object().cloned().unwrap_or_default();
         match self {
@@ -1151,14 +1166,14 @@ impl SwarmTransport {
         frequency: f32,
     ) -> Result<(), NatsError> {
         let subject = format!("KANNAKA.substrate.absorb.{}", agent_id);
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "agent_id": agent_id,
             "class_index": class_index,
             "amplitude": amplitude,
             "phase": phase,
             "frequency": frequency,
-            "ts": chrono::Utc::now().to_rfc3339(),
         });
+        add_envelope(&mut payload);
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1178,16 +1193,20 @@ impl SwarmTransport {
         total_wavefronts: usize,
         contributing_agents: &[String],
     ) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
+        // agent_id was missing pre-fix, which made observatory attribute
+        // the collective metric to "unknown". Stamping the substrate's
+        // identity here. (#91)
+        let mut payload = serde_json::json!({
+            "agent_id": "kannaka-substrate",
             "collective_phi": phi,
             "collective_xi": xi,
             "collective_order": order,
             "num_active_clusters": num_clusters,
             "total_wavefronts": total_wavefronts,
             "contributing_agents": contributing_agents,
-            "ts": chrono::Utc::now().to_rfc3339(),
             "source": "substrate",
         });
+        add_envelope(&mut payload);
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.substrate.phi", &bytes)
@@ -1208,13 +1227,13 @@ impl SwarmTransport {
         memory_count: usize,
         cluster_count: usize,
     ) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "agent_id": agent_id,
             "memory": memory,
             "memory_count": memory_count,
             "cluster_count": cluster_count,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
         });
+        add_envelope(&mut payload);
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.memory.new", &bytes)
@@ -1443,23 +1462,35 @@ impl SwarmTransport {
     // Structured event publishing
     // -----------------------------------------------------------------------
 
-    /// Publish a structured event to `QUEEN.event.<event_type>`.
+    /// Publish a structured event to `queen.event.<event_type>`.
     ///
-    /// Event types: "join", "leave", "dream.start", "dream.end", "memory.shared"
+    /// Event types: "join", "leave", "dream.start", "dream.end", "memory.shared".
     /// Events are stored in the QUEEN_EVENTS JetStream stream (if available).
+    ///
+    /// Pre-fix this published to uppercase `QUEEN.event.<type>` with a
+    /// wrapper envelope `{event, timestamp, payload}` — NATS subjects are
+    /// case-sensitive, so kannaka-radio (which subscribes to lowercase
+    /// `queen.event.<type>` per the contract, expecting a flat payload)
+    /// never received them. (#88)
     pub fn announce_event(
         &self,
         event_type: &str,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let envelope = serde_json::json!({
-            "event": event_type,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "payload": payload,
-        });
-        let bytes = serde_json::to_vec(&envelope)
+        // Flatten: merge payload fields with the envelope. The subject
+        // already names the event, so the `event` wrapper field is gone.
+        let mut flat = match payload {
+            serde_json::Value::Object(map) => serde_json::Value::Object(map.clone()),
+            _ => serde_json::json!({}),
+        };
+        if let Some(obj) = flat.as_object_mut() {
+            obj.entry("event_type".to_string())
+                .or_insert_with(|| serde_json::Value::String(event_type.to_string()));
+        }
+        add_envelope(&mut flat);
+        let bytes = serde_json::to_vec(&flat)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let subject = format!("QUEEN.event.{}", event_type);
+        let subject = format!("queen.event.{}", event_type);
         self.publish_raw(&subject, &bytes)
     }
 
@@ -1471,11 +1502,11 @@ impl SwarmTransport {
         let event_payload = serde_json::json!({ "agent_id": agent_id });
         self.announce_event("join", &event_payload)?;
 
-        let legacy = serde_json::json!({
+        let mut legacy = serde_json::json!({
             "event": "join",
             "agent_id": agent_id,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
         });
+        add_envelope(&mut legacy);
         let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("QUEEN.announce", &bytes)
@@ -1489,11 +1520,11 @@ impl SwarmTransport {
         let event_payload = serde_json::json!({ "agent_id": agent_id });
         self.announce_event("leave", &event_payload)?;
 
-        let legacy = serde_json::json!({
+        let mut legacy = serde_json::json!({
             "event": "leave",
             "agent_id": agent_id,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
         });
+        add_envelope(&mut legacy);
         let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("QUEEN.announce", &bytes)
@@ -2140,6 +2171,7 @@ mod tests {
             order_parameter: 0.9,
             cluster_count: 3,
             memory_count: 42,
+            link_count: 0,
             xi_signature: None,
             protocol_version: "1.0".to_string(),
             timestamp: Utc::now(),
@@ -2240,6 +2272,7 @@ mod tests {
             order_parameter: 0.0,
             cluster_count: 0,
             memory_count: 0,
+            link_count: 0,
             xi_signature: None,
             protocol_version: "1.0".to_string(),
             timestamp: chrono::Utc::now(),

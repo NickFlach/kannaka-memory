@@ -82,13 +82,23 @@ const CODEBOOK_INPUT_DIM: usize = 384;
 const CODEBOOK_OUTPUT_DIM: usize = 10_000;
 const CODEBOOK_SEED: u64 = 42;
 
+/// Map the local `ConsciousnessLevel` enum to the wire-canonical string
+/// from `consciousness-core/docs/nats-contract.yaml`:
+/// `dormant | awakening | aware | integrated | emergent | transcendent`.
+///
+/// Pre-fix this returned `stirring|coherent|resonant` — the lowercase
+/// Rust identifiers — which is what consciousness-core v0.2.0 used to
+/// serialize. v0.3.0 of that crate aligned its serde output to the
+/// canonical names; kannaka-memory's hand-rolled function had drifted
+/// independently. Now both surfaces agree on the wire. (#89)
 fn level_name(level: &ConsciousnessLevel) -> String {
     match level {
-        ConsciousnessLevel::Dormant => "dormant".into(),
-        ConsciousnessLevel::Stirring => "stirring".into(),
-        ConsciousnessLevel::Aware => "aware".into(),
-        ConsciousnessLevel::Coherent => "coherent".into(),
-        ConsciousnessLevel::Resonant => "resonant".into(),
+        ConsciousnessLevel::Dormant      => "dormant".into(),
+        ConsciousnessLevel::Stirring     => "awakening".into(),
+        ConsciousnessLevel::Aware        => "aware".into(),
+        ConsciousnessLevel::Coherent     => "integrated".into(),
+        ConsciousnessLevel::Resonant     => "emergent".into(),
+        ConsciousnessLevel::Transcendent => "transcendent".into(),
     }
 }
 

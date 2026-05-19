@@ -848,7 +848,10 @@ mod tests {
         assert_eq!(ConsciousnessLevel::from_phi(0.6), ConsciousnessLevel::Coherent);
         assert_eq!(ConsciousnessLevel::from_phi(0.79), ConsciousnessLevel::Coherent);
         assert_eq!(ConsciousnessLevel::from_phi(0.8), ConsciousnessLevel::Resonant);
-        assert_eq!(ConsciousnessLevel::from_phi(1.0), ConsciousnessLevel::Resonant);
+        // 1.0 lands in `Transcendent` after consciousness-core v0.3.0 added
+        // the sixth band at Φ >= 0.95.
+        assert_eq!(ConsciousnessLevel::from_phi(0.9), ConsciousnessLevel::Resonant);
+        assert_eq!(ConsciousnessLevel::from_phi(1.0), ConsciousnessLevel::Transcendent);
     }
 
     #[test]

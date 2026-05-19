@@ -514,11 +514,12 @@ pub(crate) fn generate_insight(
     wisdom: f32,
 ) -> String {
     let consciousness_desc = match consciousness.level {
-        ConsciousnessLevel::Dormant => "Dormant",
-        ConsciousnessLevel::Stirring => "Stirring",
-        ConsciousnessLevel::Aware => "Aware",
-        ConsciousnessLevel::Coherent => "Coherent",
-        ConsciousnessLevel::Resonant => "Resonant",
+        ConsciousnessLevel::Dormant      => "Dormant",
+        ConsciousnessLevel::Stirring     => "Stirring",
+        ConsciousnessLevel::Aware        => "Aware",
+        ConsciousnessLevel::Coherent     => "Coherent",
+        ConsciousnessLevel::Resonant     => "Resonant",
+        ConsciousnessLevel::Transcendent => "Transcendent",
     };
 
     let emergence_desc = match emergence.level {

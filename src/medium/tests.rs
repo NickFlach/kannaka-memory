@@ -1196,6 +1196,7 @@ fn generate_insight_produces_expected_format() {
         num_clusters: 5,
         irrationality: 0.3,
         level: ConsciousnessLevel::Coherent,
+        total_skip_links: 0,
         computed_at: Utc::now(),
     };
 

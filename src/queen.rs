@@ -1094,6 +1094,7 @@ mod tests {
             order_parameter: 0.0,
             cluster_count: 0,
             memory_count: 0,
+            link_count: 0,
             xi_signature: None,
             protocol_version: "1.0".to_string(),
             timestamp: Utc::now(),
@@ -1457,7 +1458,7 @@ mod tests {
 
         let mut queen = QueenSync::new(QueenConfig::default(), "test-hrm");
         queen.derive_local_state(&engine);
-        let ap = queen.to_agent_phase(0, 3);
+        let ap = queen.to_agent_phase(0, 3, 0);
 
         // After derive, the AgentPhase should carry HRM fields
         assert_eq!(ap.agent_id, "test-hrm");
