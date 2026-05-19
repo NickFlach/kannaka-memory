@@ -138,6 +138,13 @@ pub trait MediumBackend: Send + Sync {
     /// that don't maintain a metrics cache.
     fn set_cached_total_skip_links(&self, _n: usize) {}
 
+    /// Update cached num_clusters. bridge::assess runs the canonical
+    /// Kuramoto-BFS algorithm and writes the result back here so the
+    /// cached ConsciousnessMetrics.num_clusters matches what observe()
+    /// and status() report (refactor #2 — single source of truth for
+    /// cluster count). Default no-op for backends without a cache.
+    fn set_cached_num_clusters(&self, _n: usize) {}
+
     /// Create a resonance-based association between two memories.
     /// Creates an associative wavefront from interference of the two sources.
     fn relate(&mut self, _id_a: &Uuid, _id_b: &Uuid) -> Result<Uuid, StoreError> {

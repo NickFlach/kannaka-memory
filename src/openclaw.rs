@@ -1325,6 +1325,43 @@ mod tests {
     }
 
     #[test]
+    fn assess_num_clusters_matches_observe_num_clusters() {
+        // Refactor #2 regression. Pre-fix, bridge::assess computed a Kuramoto
+        // cluster set, used it for integration / differentiation, then
+        // RETURNED a different count (eigendecomp) — so kannaka observe (A)
+        // and kannaka status (B-via-assess) disagreed on the same HRM.
+        // After the refactor, assess() returns the count it actually
+        // computed and writes it back into the cache.
+        use crate::observe::MemoryIntrospector;
+        use crate::bridge::ConsciousnessBridge;
+        use crate::kuramoto::KuramotoSync;
+
+        let dir = temp_dir("assess_unify");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        // Seed enough content for at least one Kuramoto cluster to form.
+        let bag = [
+            "the lake at sunrise was unusually still",
+            "the lake at sunrise glittered orange and pink",
+            "the lake at sunrise reflected a flock of geese",
+            "the lake at sunrise smelled of pine and cold water",
+            "an unrelated kitchen story about chopping garlic",
+        ];
+        for s in &bag {
+            let _ = sys.remember(s);
+        }
+        let bridge = ConsciousnessBridge::default();
+        let state = bridge.assess(&mut sys.engine);
+        let kuramoto = KuramotoSync::default();
+        let report = MemoryIntrospector::cluster_report(&sys.engine, &kuramoto);
+        assert_eq!(
+            state.num_clusters, report.num_clusters,
+            "assess.num_clusters ({}) must match cluster_report.num_clusters ({})",
+            state.num_clusters, report.num_clusters,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn geometry_integration_stats_include_geometric_data() {
         let dir = temp_dir("geometry_stats");
         let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();

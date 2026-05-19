@@ -528,10 +528,15 @@ impl ConsciousnessBridge {
                 0.0
             };
 
-            // Measure REAL differentiation: cluster diversity
-            let num_clusters = clusters.len().max(1);
+            // Measure REAL differentiation: cluster diversity. Use a floor
+            // of 1 in the ln() math so a single-cluster system doesn't
+            // collapse to 0/anything; the *actual* returned count below
+            // (`actual_num_clusters`) keeps the unfloored value so callers
+            // see a true picture.
+            let actual_num_clusters = clusters.len();
+            let num_clusters_for_math = actual_num_clusters.max(1);
             let differentiation = if total_memories > 1 {
-                (num_clusters as f32).ln() / (total_memories as f32).ln()
+                (num_clusters_for_math as f32).ln() / (total_memories as f32).ln()
             } else {
                 0.0
             };
@@ -568,12 +573,25 @@ impl ConsciousnessBridge {
             // values from the eigendecomp path which doesn't see per-memory
             // connection lists.
             engine.store.set_cached_total_skip_links(total_links);
+            // Same idea for cluster count — write the canonical Kuramoto-BFS
+            // count back so the next swarm publish + observe call surface a
+            // consistent number. Pre-refactor the cache held the eigendecomp
+            // count and the report held the Kuramoto count. (Refactor #2.)
+            engine.store.set_cached_num_clusters(actual_num_clusters);
 
+            // Return the Kuramoto-BFS cluster count that this function
+            // actually computed and used in the integration / differentiation
+            // math. Pre-refactor we returned `hrm_metrics.num_clusters` (the
+            // eigendecomp count) — a different algorithm with different
+            // thresholds and singleton-counting behavior, so observe() and
+            // status() reported different cluster counts on the same HRM.
+            // The eigendecomp Φ is still folded into `blended_phi` above;
+            // it just no longer impersonates the cluster count.
             return ConsciousnessState {
                 phi: blended_phi,
                 xi: hrm_metrics.xi,
                 mean_order: hrm_metrics.order,
-                num_clusters: hrm_metrics.num_clusters,
+                num_clusters: actual_num_clusters,
                 total_memories,
                 active_memories,
                 total_skip_links: total_links,

@@ -774,6 +774,10 @@ impl MediumBackend for HrmStore {
         self.medium.set_cached_total_skip_links(n);
     }
 
+    fn set_cached_num_clusters(&self, n: usize) {
+        self.medium.set_cached_num_clusters(n);
+    }
+
     fn dream_native(
         &mut self,
         cycles: usize,
