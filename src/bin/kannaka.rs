@@ -92,8 +92,21 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
     let codebook = Codebook::new(384, 10_000, 42);
     let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
 
-    // HRM file path
-    let hrm_path = data_dir.join("kannaka.hrm");
+    // HRM file path. Honor `cfg.hrm.path` when it points at a specific
+    // file (any filename, not just "kannaka.hrm"). Pre-fix the caller
+    // stripped to the parent directory and we re-joined with the
+    // hardcoded literal, silently writing to the wrong store whenever
+    // anyone configured an alternate filename. (#81)
+    let cfg = KannakaConfig::load();
+    let configured = if !cfg.hrm.path.is_empty() {
+        Some(PathBuf::from(&cfg.hrm.path))
+    } else {
+        None
+    };
+    let hrm_path = match configured {
+        Some(p) if p.parent() == Some(data_dir.as_path()) => p,
+        _ => data_dir.join("kannaka.hrm"),
+    };
 
     // Try to load existing HRM file, create new if not found
     let store = if hrm_path.exists() {
@@ -921,6 +934,22 @@ fn main() {
 
             // HRM dreams operate directly on the holographic medium (no branching needed)
             eprintln!("[hrm] Dreams operate directly on the holographic medium");
+
+            // Seed KANNAKA_AGENT_ID / KANNAKA_NATS_URL from config.toml
+            // before the dream so the dream-side publish_dream_to_nats /
+            // publish_consciousness_to_nats helpers (which read env vars
+            // directly) see the configured identity. Pre-fix: a configured
+            // install would silently skip dream-side swarm publishing if
+            // the env vars weren't also set on the calling shell. (#87)
+            {
+                let cfg = KannakaConfig::load();
+                if !cfg.agent.id.is_empty() && std::env::var("KANNAKA_AGENT_ID").unwrap_or_default().is_empty() {
+                    std::env::set_var("KANNAKA_AGENT_ID", &cfg.agent.id);
+                }
+                if !cfg.swarm.nats_url.is_empty() && std::env::var("KANNAKA_NATS_URL").unwrap_or_default().is_empty() {
+                    std::env::set_var("KANNAKA_NATS_URL", &cfg.swarm.nats_url);
+                }
+            }
 
             let dream_result = if dream_mode == "lite" {
                 sys.dream_lite()

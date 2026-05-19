@@ -146,7 +146,16 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
 
 pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
     let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
-    let base = &cfg.constellation.radio_url;
+    // GhostSignals lives at `cfg.ghostsignals.hub_url` — falling back to
+    // `cfg.constellation.radio_url` only when hub_url is empty (legacy
+    // single-host configs). Pre-fix every market command hit radio_url
+    // and operators couldn't split GhostSignals onto a different host
+    // even though the config schema said they could. (#86)
+    let base = if cfg.ghostsignals.hub_url.is_empty() {
+        &cfg.constellation.radio_url
+    } else {
+        &cfg.ghostsignals.hub_url
+    };
     let token = &cfg.ghostsignals.token;
 
     if token.is_empty() && matches!(sub, "buy" | "create" | "portfolio") {
@@ -488,8 +497,13 @@ pub(crate) fn handle_constellation(cfg: &KannakaConfig) {
                 println!("  \u{2717} {:<16} {:<34}", "Memory", "no HRM file");
             }
 
-            // GhostSignals
-            let gs_url = format!("{}/api/markets", cfg.constellation.radio_url);
+            // GhostSignals — honor cfg.ghostsignals.hub_url first. (#86)
+            let gs_base = if cfg.ghostsignals.hub_url.is_empty() {
+                &cfg.constellation.radio_url
+            } else {
+                &cfg.ghostsignals.hub_url
+            };
+            let gs_url = format!("{}/api/markets", gs_base);
             let gs_ok = http_get(&gs_url).is_ok();
             println!("  {} {:<16} {:<34}",
                 if gs_ok { "\u{2713}" } else { "\u{2717}" },
