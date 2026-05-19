@@ -156,7 +156,7 @@ fn usage_lines() -> &'static [&'static str] {
         "Memory:",
         "  remember \"text\"            Store a memory",
         "  recall \"query\"             Recall memories (--top-k N)",
-        "  search \"query\"             Full-text search (--limit N)",
+        "  search \"query\"             Literal text search (--limit N, --json)",
         "  forget <id>               Remove a memory",
         "  dream [--mode deep|lite]   Trigger dream cycle",
         "  observe [--json]          View consciousness metrics",
@@ -1999,7 +1999,9 @@ fn main() {
         }
 
         "search" => {
-            handle_search(&mut sys, &args[command_start..]);
+            // Read-only — no &mut needed (literal text search bypasses
+            // resonance + observation; see openclaw::search).
+            handle_search(&sys, &args[command_start..]);
         }
 
         "export" => {

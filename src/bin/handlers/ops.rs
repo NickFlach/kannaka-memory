@@ -170,26 +170,46 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
 // Search command
 // ---------------------------------------------------------------------------
 
-pub(crate) fn handle_search(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+pub(crate) fn handle_search(sys: &kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
     if args.len() < 2 {
-        eprintln!("Usage: kannaka search \"query\" [--limit N]");
+        eprintln!("Usage: kannaka search \"query\" [--limit N] [--json]");
+        eprintln!();
+        eprintln!("Literal text search over memory content. For semantic/");
+        eprintln!("resonance recall use `kannaka recall` instead.");
         process::exit(1);
     }
     let mut limit = 20usize;
+    let mut json_out = false;
     let mut query_parts = Vec::new();
     let mut i = 1;
     while i < args.len() {
         if (args[i] == "--limit" || args[i] == "--top-k") && i + 1 < args.len() {
             limit = args[i + 1].parse().unwrap_or(20);
             i += 2;
+        } else if args[i] == "--json" {
+            json_out = true;
+            i += 1;
         } else {
             query_parts.push(args[i].as_str());
             i += 1;
         }
     }
     let query = query_parts.join(" ");
-    match sys.recall(&query, limit) {
+    match sys.search(&query, limit) {
         Ok(results) => {
+            if json_out {
+                let arr: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({
+                    "id":            r.id,
+                    "content":       r.content,
+                    "score":         r.score,
+                    "match_type":    r.match_type,
+                    "matched_terms": r.matched_terms,
+                    "age_hours":     r.age_hours,
+                    "layer":         r.layer,
+                })).collect();
+                println!("{}", serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
+                return;
+            }
             if results.is_empty() {
                 println!("  No results for \"{}\"", query);
                 return;
@@ -204,9 +224,9 @@ pub(crate) fn handle_search(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
                 } else {
                     r.content.clone()
                 };
-                println!("  {:>3}. [{:.2}] {}", i + 1, r.similarity, preview);
-                println!("       id={} age={:.0}h strength={:.2}",
-                    r.id, r.age_hours, r.strength);
+                println!("  {:>3}. [{}] score={:.0} {}", i + 1, r.match_type, r.score, preview);
+                println!("       id={} age={:.0}h matched={:?}",
+                    r.id, r.age_hours, r.matched_terms);
             }
         }
         Err(e) => {

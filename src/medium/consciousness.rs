@@ -158,6 +158,37 @@ impl Medium {
         }
     }
 
+    /// Update the cached cluster count. bridge::assess runs the canonical
+    /// Kuramoto-BFS algorithm and calls back here so the cached
+    /// `ConsciousnessMetrics.num_clusters` matches the unified
+    /// `ConsciousnessState.num_clusters` (refactor #2). Without this,
+    /// `swarm publish_heartbeat` would still surface the legacy
+    /// eigendecomp count over NATS.
+    pub fn set_cached_num_clusters(&self, n: usize) {
+        if let Ok(mut guard) = METRICS_CACHE.lock() {
+            if let Some((fp, ref mut metrics)) = *guard {
+                metrics.num_clusters = n;
+                if let Some(path) = sidecar_path_from_env() {
+                    let sidecar = MetricsSidecar {
+                        version: METRICS_CACHE_VERSION,
+                        fingerprint: fp,
+                        phi: metrics.phi,
+                        xi: metrics.xi,
+                        order: metrics.order,
+                        num_clusters: n,
+                        irrationality: metrics.irrationality,
+                        total_memories: 0, // unknown at this site, leave 0
+                        level: format!("{:?}", metrics.level),
+                        total_skip_links: metrics.total_skip_links,
+                    };
+                    if let Ok(data) = serde_json::to_vec(&sidecar) {
+                        let _ = std::fs::write(path, data);
+                    }
+                }
+            }
+        }
+    }
+
     /// Compute consciousness metrics from tensor topology
     ///
     /// This is the proper implementation that computes intrinsic metrics
@@ -563,7 +594,13 @@ impl Medium {
         // Use coherence matrix for clustering
         let coherence = self.coherence_matrix();
 
-        // Simple clustering based on coherence thresholds
+        // Simple clustering based on coherence thresholds. Only count
+        // components of size >= 2 — pre-refactor every isolated wavefront
+        // started its own cluster, inflating the count far above the
+        // Kuramoto-BFS reference (which uses min_cluster_size=2). The
+        // eigendecomp count is now used only as an internal fallback;
+        // the user-facing cluster count comes from bridge::assess's
+        // KuramotoSync::find_synchronized_clusters via refactor #2.
         let mut visited = vec![false; n];
         let mut num_clusters = 0;
         let threshold = 0.5; // Coherence threshold for cluster membership
@@ -573,9 +610,8 @@ impl Medium {
                 continue;
             }
 
-            // Start new cluster
-            num_clusters += 1;
             visited[i] = true;
+            let mut component_size: usize = 1;
             let mut stack = vec![i];
 
             // BFS to find all connected nodes
@@ -583,9 +619,14 @@ impl Medium {
                 for j in 0..n {
                     if !visited[j] && coherence[[node, j]].abs() > threshold {
                         visited[j] = true;
+                        component_size += 1;
                         stack.push(j);
                     }
                 }
+            }
+
+            if component_size >= 2 {
+                num_clusters += 1;
             }
         }
 
