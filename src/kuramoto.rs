@@ -46,18 +46,26 @@ struct ClusterCacheEntry {
 }
 
 fn fingerprint_memories(mems: &[&HyperMemory]) -> u64 {
+    // Order-independent XOR fingerprint over every memory's (id, updated_at).
+    //
+    // Pre-refactor this sampled only first/last/middle memories — any
+    // mutation to a memory at an unsampled index (e.g. boost to memory #200
+    // in a 600-memory HRM) left the fingerprint unchanged, so the in-process
+    // CLUSTER_CACHE returned stale clusters until the HRM file mtime
+    // happened to roll. Walking all memories is microseconds even on the
+    // 1500-memory ARM box and eliminates the silent-staleness class.
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    mems.len().hash(&mut h);
-    // First + last + middle UUIDs are a cheap stable fingerprint.
-    if let Some(m) = mems.first() { m.id.hash(&mut h); m.updated_at.hash(&mut h); }
-    if let Some(m) = mems.last() { m.id.hash(&mut h); m.updated_at.hash(&mut h); }
-    if mems.len() >= 3 {
-        let mid = &mems[mems.len() / 2];
-        mid.id.hash(&mut h);
-        mid.updated_at.hash(&mut h);
+    let mut acc: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis seed
+    for m in mems {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        m.id.hash(&mut h);
+        m.updated_at.hash(&mut h);
+        acc ^= h.finish();
     }
-    h.finish()
+    // Mix in the count so {n distinct mems} ≠ {0 mems with same XOR sum}.
+    let mut len_h = std::collections::hash_map::DefaultHasher::new();
+    mems.len().hash(&mut len_h);
+    acc.wrapping_add(len_h.finish())
 }
 
 fn hrm_mtime_secs(engine: &ResonanceEngine) -> Option<u64> {
