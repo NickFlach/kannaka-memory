@@ -46,6 +46,27 @@ pub struct RecallResult {
     pub layer: u8,
 }
 
+/// Result of a literal text search (NOT resonance-based — see `search()`
+/// vs `recall()`). Read-only: no medium mutation, no embedding.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub id: Uuid,
+    pub content: String,
+    /// Match-strength score. Exact-substring hits are weighted heavily;
+    /// token hits accumulate. Higher = better match.
+    pub score: f32,
+    /// `exact` if the full query appears as a substring of content,
+    /// `tokens` if only individual whitespace-split terms matched,
+    /// `prefix` if a query term matched the start of a word in content.
+    pub match_type: String,
+    /// Which query terms produced a hit, in order.
+    pub matched_terms: Vec<String>,
+    /// Hours since the memory was created. Used as the recency tie-breaker
+    /// (newer first when scores are equal).
+    pub age_hours: f64,
+    pub layer: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct SystemStats {
     pub total_memories: usize,
@@ -296,6 +317,100 @@ impl KannakaMemorySystem {
             }
         }
         Ok(out)
+    }
+
+    /// Literal text search over memory content. Distinct from [`recall`]:
+    /// no embedding, no medium scan, no observation/mutation. Pure
+    /// case-insensitive substring + tokenized term matching, ranked by
+    /// match strength then recency.
+    ///
+    /// Scoring:
+    /// - Full query string appears as a substring of content → +10
+    ///   (`match_type = "exact"`).
+    /// - Otherwise per whitespace-split query term that appears as a
+    ///   bounded word in content → +2 (`match_type = "tokens"`), or
+    ///   matches a word prefix → +1 (`match_type = "prefix"`).
+    /// - Tie-break: more-recent memories rank first.
+    ///
+    /// Returns at most `limit` results. Memories with zero score are
+    /// omitted entirely (so callers get a clean "no matches" signal).
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, SystemError> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let q_lower = q.to_lowercase();
+        let terms: Vec<String> = q_lower
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+            .collect();
+        let memories = self.engine.store.all_memories()
+            .map_err(|e| SystemError::Store(e))?;
+        let now = Utc::now();
+        let mut scored: Vec<SearchResult> = Vec::new();
+        for m in memories {
+            let content_lower = m.content.to_lowercase();
+            let mut score: f32 = 0.0;
+            let mut matched: Vec<String> = Vec::new();
+            let mut match_type = "tokens";
+            // Tier 1: full-query substring.
+            if !q_lower.is_empty() && content_lower.contains(&q_lower) {
+                score += 10.0;
+                matched.push(q.to_string());
+                match_type = "exact";
+            } else {
+                // Tier 2: per-term match. Word boundaries are non-alphanumeric.
+                let mut any_word = false;
+                let mut any_prefix = false;
+                for term in &terms {
+                    let mut found_word = false;
+                    let mut found_prefix = false;
+                    // Walk all occurrences of `term` in content_lower.
+                    let mut search_from = 0usize;
+                    while let Some(rel) = content_lower[search_from..].find(term.as_str()) {
+                        let start = search_from + rel;
+                        let end = start + term.len();
+                        let before_ok = start == 0 || !content_lower[..start]
+                            .chars().last().map(|c| c.is_alphanumeric()).unwrap_or(false);
+                        let after_ok  = end == content_lower.len() || !content_lower[end..]
+                            .chars().next().map(|c| c.is_alphanumeric()).unwrap_or(false);
+                        if before_ok && after_ok {
+                            found_word = true;
+                        } else if before_ok {
+                            // Prefix-of-word match (e.g. term "ghost" matches "ghostly").
+                            found_prefix = true;
+                        }
+                        if found_word { break; }
+                        search_from = end;
+                    }
+                    if found_word { score += 2.0; matched.push(term.clone()); any_word = true; }
+                    else if found_prefix { score += 1.0; matched.push(term.clone()); any_prefix = true; }
+                }
+                if !any_word && any_prefix {
+                    match_type = "prefix";
+                }
+                // If no terms matched at all, skip this memory.
+                if score == 0.0 { continue; }
+            }
+            let age_hours = (now - m.created_at).num_seconds().max(0) as f64 / 3600.0;
+            scored.push(SearchResult {
+                id: m.id,
+                content: m.content.clone(),
+                score,
+                match_type: match_type.to_string(),
+                matched_terms: matched,
+                age_hours,
+                layer: m.layer_depth,
+            });
+        }
+        // Sort: score desc, then age asc (newer first).
+        scored.sort_by(|a, b| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.age_hours.partial_cmp(&b.age_hours).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     /// Beam-aware recall — sparse-attention path. Score only the memories
@@ -1139,6 +1254,73 @@ mod tests {
         assert!(experience_mem.amplitude > 0.0);
         assert!(emotion_mem.amplitude > 0.0);
         
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── search (literal text) ──────────────────────────────────────────
+    // Distinct from recall: read-only, no embedding/resonance/observation.
+
+    #[test]
+    fn search_exact_substring_outranks_token_match() {
+        let dir = temp_dir("search_exact");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("the ghost frequency hums").unwrap();          // exact
+        sys.remember("a ghost passed over the wide frequency").unwrap(); // tokens
+        sys.remember("entirely unrelated string about cats").unwrap();
+        let results = sys.search("ghost frequency", 10).unwrap();
+        assert!(results.len() >= 2, "expected ≥2 hits, got {}", results.len());
+        assert_eq!(results[0].match_type, "exact");
+        assert_eq!(results[1].match_type, "tokens");
+        assert!(results[0].score > results[1].score);
+        // No matches → not in result set.
+        assert!(!results.iter().any(|r| r.content.contains("cats")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let dir = temp_dir("search_case");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("Ghost Frequency in mixed Case").unwrap();
+        let r1 = sys.search("ghost frequency", 5).unwrap();
+        let r2 = sys.search("GHOST FREQUENCY", 5).unwrap();
+        assert_eq!(r1.len(), r2.len());
+        assert_eq!(r1.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_empty_query_returns_empty() {
+        let dir = temp_dir("search_empty");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("some content").unwrap();
+        assert!(sys.search("", 10).unwrap().is_empty());
+        assert!(sys.search("   ", 10).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_is_read_only() {
+        // Issue #83 regression: pre-fix, `search` routed through `recall`
+        // → `resonate_query` → `apply_observation`, mutating wavefront
+        // strengths even though the user issued a "read" command. After
+        // the refactor, search() doesn't touch the medium at all.
+        let dir = temp_dir("search_readonly");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("first memory about ghosts").unwrap();
+        sys.remember("second memory unrelated").unwrap();
+
+        // Capture wavefront energies before searching.
+        let before: Vec<f32> = sys.engine.store.all_memories().unwrap()
+            .iter().map(|m| m.amplitude).collect();
+
+        for _ in 0..5 {
+            let _ = sys.search("ghosts", 5).unwrap();
+        }
+
+        let after: Vec<f32> = sys.engine.store.all_memories().unwrap()
+            .iter().map(|m| m.amplitude).collect();
+        assert_eq!(before, after, "search() must not modify wavefront state");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
