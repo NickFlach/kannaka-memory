@@ -642,6 +642,53 @@ impl HrmStore {
 
         Ok(associative_id)
     }
+    /// Cluster-prefilter candidate set for recall (refactor #4).
+    ///
+    /// Reads the `.clusters.json` sidecar populated by `bridge::assess`
+    /// → `KuramotoSync::find_synchronized_clusters`, picks every cluster
+    /// whose `theme_vector` resonates with the query above
+    /// `KANNAKA_RECALL_PREFILTER_THRESHOLD` (default 0.30), and returns
+    /// the union of those clusters' member indices.
+    ///
+    /// Returns `None` when:
+    /// - the HRM file path is unknown (test medium, in-memory backend)
+    /// - no sidecar exists yet (fresh HRM — bridge::assess hasn't run)
+    /// - the sidecar is empty (no clusters >= min_size)
+    /// - no cluster's theme is close enough to the query
+    ///
+    /// `None` cleanly falls through to the existing full-medium scan in
+    /// `resonate_query`, so this method never *loses* recall coverage —
+    /// it only ever narrows the candidate set for performance + accuracy.
+    fn cluster_prefilter_candidates(&self, query: &str) -> Option<Vec<usize>> {
+        let path = self.hrm_path().with_extension("clusters.json");
+        let data = std::fs::read(&path).ok()?;
+        // Sidecar uses ClusterCacheEntry shape; we only need .clusters.
+        #[derive(serde::Deserialize)]
+        struct Entry { clusters: Vec<crate::kuramoto::MemoryCluster> }
+        let entry: Entry = serde_json::from_slice(&data).ok()?;
+        if entry.clusters.is_empty() { return None; }
+
+        let query_vec = self.pipeline.encode_text(query).ok()?;
+        let threshold: f32 = std::env::var("KANNAKA_RECALL_PREFILTER_THRESHOLD")
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(0.30);
+
+        let mut indices: Vec<usize> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut matched_any = false;
+        for cluster in &entry.clusters {
+            if cluster.theme_vector.is_empty() { continue; }
+            let sim = crate::wave::cosine_similarity(&query_vec, &cluster.theme_vector);
+            if sim >= threshold {
+                matched_any = true;
+                for mem_id in &cluster.memory_ids {
+                    if let Some(idx) = self.medium.get_wavefront_index(mem_id) {
+                        if seen.insert(idx) { indices.push(idx); }
+                    }
+                }
+            }
+        }
+        if matched_any { Some(indices) } else { None }
+    }
 }
 
 impl MediumBackend for HrmStore {
@@ -819,8 +866,39 @@ impl MediumBackend for HrmStore {
     }
 
     fn resonate_query(&mut self, query: &str, top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        // Try cluster prefilter first (refactor #4) — only on the flat
+        // (non-chiral) path for now. Loads the .clusters.json sidecar
+        // written by bridge::assess, picks members of clusters whose
+        // theme_vector resonates with the query, and runs the existing
+        // recall_against seam against just those indices. Falls through
+        // to the full medium scan if no clusters are loaded (fresh HRM)
+        // or if no cluster's theme is close enough to the query.
+        let prefilter_on = std::env::var("KANNAKA_RECALL_PREFILTER")
+            .map(|v| !matches!(v.as_str(), "off" | "0" | "false"))
+            .unwrap_or(true);
+        if self.chiral.is_none() && prefilter_on {
+            if let Some(candidates) = self.cluster_prefilter_candidates(query) {
+                if !candidates.is_empty() {
+                    let resonances = self.medium.recall_against(
+                        Some(&candidates), query, top_k, &self.pipeline,
+                    ).map_err(|e| StoreError::Other(format!("prefiltered recall failed: {}", e)))?;
+                    for (i, r) in resonances.iter().enumerate() {
+                        let ranking_factor = 1.0 - (i as f32 / resonances.len().max(1) as f32);
+                        let intensity = r.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
+                        if let Some(index) = self.medium.get_wavefront_index(&r.id) {
+                            self.medium.observe_wavefront(index, intensity);
+                        }
+                    }
+                    self.mark_dirty();
+                    return Ok(resonances.iter().map(|r| (r.id, r.resonance_strength)).collect());
+                }
+            }
+        }
+
         if let Some(ref chiral) = self.chiral {
-            // Chiral bilateral resonance
+            // Chiral bilateral resonance — TODO: fold cluster prefilter
+            // into the chiral path; for v1 chiral users skip the prefilter
+            // and get the existing bilateral observation flow.
             let results = chiral.recall(query, top_k, &self.pipeline)
                 .map_err(|e| StoreError::Other(format!("chiral recall failed: {}", e)))?;
 

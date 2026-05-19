@@ -1362,6 +1362,21 @@ mod tests {
     }
 
     #[test]
+    fn recall_falls_through_on_fresh_hrm_no_sidecar() {
+        // Refactor #4 regression: cluster prefilter must NOT break recall
+        // on a fresh HRM that has no .clusters.json sidecar yet (bridge::assess
+        // hasn't run). The helper returns None, the existing full-medium
+        // scan fires, recall keeps working.
+        let dir = temp_dir("prefilter_fresh");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("the quick brown fox jumps over the lazy dog").unwrap();
+        sys.remember("the rain in spain falls mainly on the plain").unwrap();
+        let results = sys.recall("quick brown fox", 5).unwrap();
+        assert!(!results.is_empty(), "recall should work even with no clusters sidecar");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn geometry_integration_stats_include_geometric_data() {
         let dir = temp_dir("geometry_stats");
         let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
