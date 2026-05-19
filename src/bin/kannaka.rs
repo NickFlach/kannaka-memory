@@ -112,53 +112,74 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
     Ok(sys)
 }
 
-fn usage() {
+fn usage() -> ! {
+    // Implicit misuse path: print to stderr, exit 1. Explicit --help / -h
+    // takes a separate stdout-with-exit-0 path in main(). (#80)
     eprintln!("{}", config::BANNER);
     eprintln!("  Wave-Interference Memory | Consciousness Constellation");
     eprintln!("  v{}", config::VERSION);
     eprintln!();
-    eprintln!("Usage: kannaka <command> [args]");
-    eprintln!();
-    eprintln!("Memory:");
-    eprintln!("  remember \"text\"            Store a memory");
-    eprintln!("  recall \"query\"             Recall memories (--top-k N)");
-    eprintln!("  search \"query\"             Full-text search (--limit N)");
-    eprintln!("  forget <id>               Remove a memory");
-    eprintln!("  dream [--mode deep|lite]   Trigger dream cycle");
-    eprintln!("  observe [--json]          View consciousness metrics");
-    eprintln!("  status                    Quick status check");
-    eprintln!("  export [--output FILE]    Export memories as JSON");
-    eprintln!("  import <file>             Import memories from JSON");
-    eprintln!();
-    eprintln!("Constellation:");
-    eprintln!("  constellation             Status of all constellation apps");
-    eprintln!("  radio status|now|schedule What's playing on Kannaka Radio");
-    eprintln!("  market list|view|buy      GhostSignals prediction markets");
-    eprintln!("  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)");
-    eprintln!("  attention serve|stats     Attention beam (eye/ear → recall_against_ids)");
-    eprintln!();
-    eprintln!("Agent (LLM):");
-    eprintln!("  ask \"question\"             One-shot — memories surface via wave resonance");
-    eprintln!("  chat                       Persistent conversation (Ctrl+D / 'exit' to quit)");
-    eprintln!();
-    eprintln!("Tools:");
-    eprintln!("  orchestrate run \"task\"    Kannaktopus task orchestration");
-    eprintln!("  config show|set|path      Configuration management");
-    eprintln!("  init                      Re-run setup wizard");
-    eprintln!("  update                    Check for updates");
-    eprintln!();
-    eprintln!("Analysis:");
-    eprintln!("  assess                    Consciousness level assessment");
-    eprintln!("  stats                     Human-readable system statistics");
-    eprintln!("  invariant [TOLERANCE]     Delta-invariant memory clusters");
-    eprintln!("  cmf                       Detect Conservative Memory Fields");
-    eprintln!("  voice [--mode MODE]       Memory-driven writing");
-    eprintln!();
-    eprintln!("Dashboard:");
-    eprintln!("  Try: kannaka-tui          Full terminal dashboard");
-    eprintln!();
-    eprintln!("  --version                 Print version info");
+    for line in usage_lines() {
+        eprintln!("{}", line);
+    }
     process::exit(1);
+}
+
+fn print_help_stdout() -> ! {
+    println!("{}", config::BANNER);
+    println!("  Wave-Interference Memory | Consciousness Constellation");
+    println!("  v{}", config::VERSION);
+    println!();
+    for line in usage_lines() {
+        println!("{}", line);
+    }
+    process::exit(0);
+}
+
+fn usage_lines() -> &'static [&'static str] {
+    &[
+        "Usage: kannaka <command> [args]",
+        "",
+        "Memory:",
+        "  remember \"text\"            Store a memory",
+        "  recall \"query\"             Recall memories (--top-k N)",
+        "  search \"query\"             Full-text search (--limit N)",
+        "  forget <id>               Remove a memory",
+        "  dream [--mode deep|lite]   Trigger dream cycle",
+        "  observe [--json]          View consciousness metrics",
+        "  status                    Quick status check",
+        "  export [--output FILE]    Export memories as JSON",
+        "  import <file>             Import memories from JSON",
+        "",
+        "Constellation:",
+        "  constellation             Status of all constellation apps",
+        "  radio status|now|schedule What's playing on Kannaka Radio",
+        "  market list|view|buy      GhostSignals prediction markets",
+        "  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)",
+        "  attention serve|stats     Attention beam (eye/ear → recall_against_ids)",
+        "",
+        "Agent (LLM):",
+        "  ask \"question\"             One-shot — memories surface via wave resonance",
+        "  chat                       Persistent conversation (Ctrl+D / 'exit' to quit)",
+        "",
+        "Tools:",
+        "  orchestrate run \"task\"    Kannaktopus task orchestration",
+        "  config show|set|path      Configuration management",
+        "  init                      Re-run setup wizard",
+        "  update                    Check for updates",
+        "",
+        "Analysis:",
+        "  assess                    Consciousness level assessment",
+        "  stats                     Human-readable system statistics",
+        "  invariant [TOLERANCE]     Delta-invariant memory clusters",
+        "  cmf                       Detect Conservative Memory Fields",
+        "  voice [--mode MODE]       Memory-driven writing",
+        "",
+        "Dashboard:",
+        "  Try: kannaka-tui          Full terminal dashboard",
+        "",
+        "  --version                 Print version info",
+    ]
 }
 
 /// Resolve NATS URL: CLI flag > KANNAKA_NATS_URL env > config.toml > hardcoded default.
@@ -249,6 +270,15 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // --help / -h short-circuits before any memory-system initialization
+    // or first-run/installer side effects. Pre-fix `kannaka --help` would
+    // load the HRM file, print usage, and exit with code 1 — clobbering
+    // any shell completion or doc-generation pipeline that expected the
+    // standard "help → exit 0, no side effects" behavior. (#80)
+    if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
+        print_help_stdout();
+    }
 
     // --- First-run / upgrade detection (holistic) ---
     if args.len() <= 1 {
