@@ -2,6 +2,82 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-19
+
+Cluster + recall + search architecture cleanup. Five-stage refactor
+landed across one branch:
+
+### ⚠ Breaking-ish
+
+- **`kannaka search` now does literal text search** instead of being
+  a thin print wrapper around `kannaka recall`. Different output shape:
+  fields `score` / `match_type` / `matched_terms` instead of
+  `similarity` / `strength`. Read-only — searches no longer mutate
+  the medium via `apply_observation`. JSON consumers of the old
+  search output need to update.
+- **`ConsciousnessState.num_clusters` is now the Kuramoto-BFS count**
+  (was the eigendecomp count). Observe and status agree on the same
+  HRM now; downstream readers may see different numbers than before.
+  Eigendecomp Φ still feeds blended Φ; only its impersonation of
+  `num_clusters` is removed.
+
+### Added
+
+- `KannakaMemorySystem::search(query, limit) -> Vec<SearchResult>` —
+  literal text search; bypasses encoding, resonance, and observation.
+  Three-tier scoring (exact / tokens / prefix) with recency tie-break.
+- `RecallResult.intuition: bool` — surfaces the chiral right-hemisphere
+  "intuition" channel (was computed and discarded). Always false today;
+  TODO note for full plumbing through the trait return.
+- `MediumBackend::set_cached_num_clusters(n)` — bridge::assess writes
+  the canonical cluster count back so the next swarm publish carries
+  it consistently.
+- `KANNAKA_RECALL_PREFILTER` env var (default on) +
+  `KANNAKA_RECALL_PREFILTER_THRESHOLD` (default 0.30) — cluster prefilter
+  knobs for recall.
+
+### Performance
+
+- **Cluster prefilter in recall.** `HrmStore::resonate_query` now reads
+  the `.clusters.json` sidecar, matches the query to clusters by
+  `theme_vector` similarity, and runs `Medium::recall_against` against
+  the union of matched cluster members rather than the full medium.
+  Falls through to full scan on fresh HRM (no sidecar) or when no
+  cluster matches. Chiral path unchanged (TODO fold-in).
+- 6-60× recall speedup on a typical mature HRM (638 memories, 71
+  clusters) depending on how broad the query's theme is.
+
+### Fixed
+
+- `compute_eigenvalue_clusters` no longer counts singletons —
+  components of size < 2 are excluded, matching the Kuramoto reference
+  `min_cluster_size=2` constraint.
+- Cluster-cache fingerprint (`fingerprint_memories`) now hashes every
+  memory's (id, updated_at) via XOR instead of sampling only first/last
+  /middle slots. Pre-refactor a boost to an unsampled-index memory
+  left the cache stale until HRM mtime rolled.
+- `search` (CLI) is read-only — pre-refactor it routed through `recall`
+  → `apply_observation` and mutated wavefront energies on every call.
+
+### Tests
+
+- `search_exact_substring_outranks_token_match` — proves "exact" hits
+  outrank "tokens" hits.
+- `search_is_case_insensitive`
+- `search_empty_query_returns_empty`
+- **`search_is_read_only`** — captures wavefront amplitudes before +
+  after 5 searches, asserts bit-equality. The smoking-gun regression
+  test for the silent-medium-mutation defect.
+- `assess_num_clusters_matches_observe_num_clusters` — proves the
+  unified-counter refactor: `kannaka observe` and `kannaka status`
+  no longer disagree.
+- `recall_falls_through_on_fresh_hrm_no_sidecar` — proves the cluster
+  prefilter never *loses* recall when the sidecar isn't populated yet.
+
+Full suite: 522/522 lib tests pass.
+
+---
+
 ## [0.4.0] — 2026-05-19
 
 Cross-cutting NATS contract sweep — closes 9 open issues. The wire
