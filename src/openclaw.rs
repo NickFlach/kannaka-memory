@@ -40,8 +40,20 @@ pub enum SystemError {
 pub struct RecallResult {
     pub id: Uuid,
     pub content: String,
+    /// Resonance score from the medium's wave-interference scoring.
+    /// Equal to `strength` today (both come from the same upstream
+    /// `Resonance.resonance_strength`); kept as separate fields so a
+    /// future split into pre-rerank cosine vs post-rerank resonance
+    /// doesn't require a breaking API change.
     pub similarity: f32,
     pub strength: f32,
+    /// True when the chiral right-hemisphere surfaced this memory
+    /// without a left-hemisphere match — the "intuition" channel from
+    /// `medium::chiral::recall`. Pre-refactor this flag was computed
+    /// at the chiral seam, then dropped at the trait boundary; now it
+    /// flows through to the CLI so callers can distinguish analytical
+    /// recall (left) from associative recall (right).
+    pub intuition: bool,
     pub age_hours: f64,
     pub layer: u8,
 }
@@ -311,6 +323,10 @@ impl KannakaMemorySystem {
                     content: m.content.clone(),
                     similarity: resonance_strength,
                     strength: resonance_strength,
+                    // TODO(refactor#5 follow-up): plumb is_intuition through
+                    // resonate_query's trait return so chiral right-hemisphere
+                    // hits surface this flag instead of always false here.
+                    intuition: false,
                     age_hours,
                     layer: m.layer_depth,
                 });
@@ -436,6 +452,9 @@ impl KannakaMemorySystem {
                     content: m.content.clone(),
                     similarity: strength,
                     strength,
+                    // Beam path bypasses chiral (see recall_resonance_with_beam),
+                    // so intuition is always false here by construction.
+                    intuition: false,
                     age_hours,
                     layer: m.layer_depth,
                 });
