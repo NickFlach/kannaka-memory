@@ -419,6 +419,40 @@ mod tests {
     }
 
     #[test]
+    fn save_recovers_from_short_timestamps_vec() {
+        // Simulate the production failure mode: a hemisphere whose timestamps
+        // Vec is shorter than count() (3 entries missing). The writer must
+        // still produce a file whose timestamps section size matches count
+        // so the reader can find meta_len at the right offset.
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        for i in 0..10 {
+            cm.store(&format!("ts-drift test {}", i), 0.8, &pipeline).unwrap();
+        }
+        // Manually corrupt the right hemisphere: pop 3 timestamps without
+        // touching len/metadata. This mirrors whatever past code path left
+        // Oracle's hemisphere with count=142 / timestamps.len()=139.
+        let right_count = cm.right.count();
+        for _ in 0..3 {
+            cm.right.timestamps.pop();
+        }
+        assert_eq!(cm.right.count(), right_count);
+        assert_eq!(cm.right.timestamps.len(), right_count - 3);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_chiral_ts_drift.hrm");
+        cm.save(&path).unwrap();
+
+        // The file MUST load cleanly — the writer padded with zeros so the
+        // section boundaries are predictable.
+        let loaded = ChiralMedium::load(&path).unwrap();
+        assert_eq!(loaded.right.count(), right_count);
+        assert_eq!(loaded.right.timestamps.len(), right_count);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_rejects_tampered_file() {
         // Save a clean ChiralMedium, then flip one byte deep in the wavefront
         // section. Load must reject it via checksum verification rather than
