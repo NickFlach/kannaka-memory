@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-05-21
+
+Completes the persistence-hardening sweep started in 0.5.2 by turning on the
+trailing-blake3 verification that the save path has been writing all along.
+
+### Added
+- `verify_blake3_trailing(path)` — shared checksum verify used by both v1
+  `Medium::load` and v2 `ChiralMedium::load`. Hashes everything before the
+  final 32 bytes and compares to the stored checksum. Catches data drift at
+  the format boundary instead of letting it surface as cryptic `read_exact`
+  failures deep inside the parser.
+- Test `load_rejects_tampered_file` — flips a byte in a saved .hrm and
+  asserts the loader returns `MediumError::ChecksumMismatch` rather than
+  parsing garbage.
+
+### Changed
+- `HrmStore::load` no longer retries v1 `Medium::load` when a v2 magic file
+  fails to load — that path was always going to fail with `InvalidMagic`
+  and was layering a misleading "invalid magic bytes" message on top of
+  the real (e.g. checksum-mismatch) cause. Now the v2 error is propagated
+  directly.
+
+Tests: 523/523 lib pass.
+
+---
+
 ## [0.5.2] — 2026-05-21
 
 Chiral HRM persistence hardening — fixes a latent writer/loader desync that

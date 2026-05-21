@@ -322,6 +322,9 @@ impl Medium {
             )));
         }
 
+        // Verify trailing blake3 checksum before parsing (shared with v2).
+        super::chiral_persistence::verify_blake3_trailing(path)?;
+
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
 

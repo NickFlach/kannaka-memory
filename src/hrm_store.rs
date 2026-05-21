@@ -86,7 +86,16 @@ impl HrmStore {
             }
             Err(chiral_err) => {
                 eprintln!("[hrm] ChiralMedium::load failed: {}", chiral_err);
-                // Fallback: try loading as plain v1 Medium
+                if is_v2 {
+                    // For v2 files the v1 fallback would always fail with
+                    // InvalidMagic — report the real error instead of layering
+                    // a misleading magic-bytes message on top.
+                    return Err(StoreError::Other(format!(
+                        "Failed to load HRM file: {}",
+                        chiral_err
+                    )));
+                }
+                // Legacy v1 path: re-try as plain Medium
                 let medium = Medium::load(&hrm_path)
                     .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {}", e)))?;
                 let mut store = Self {

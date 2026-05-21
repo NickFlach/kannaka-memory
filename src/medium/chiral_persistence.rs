@@ -50,6 +50,41 @@ impl From<WavefrontMetaLegacy> for WavefrontMeta {
     }
 }
 
+/// Verify the trailing 32-byte blake3 checksum on a .hrm file.
+///
+/// Both v1 and v2 save paths append `blake3(file[0..size-32])` as the final
+/// 32 bytes before the atomic rename. Verifying on load catches data drift
+/// that would otherwise crash deep inside the parser with a confusing error.
+pub(crate) fn verify_blake3_trailing<P: AsRef<Path>>(path: P) -> Result<(), MediumError> {
+    let path = path.as_ref();
+    let size = std::fs::metadata(path)?.len();
+    if size < 32 + 8 {
+        // Too small to contain a header + checksum; let parse fail with its
+        // own error rather than mis-reporting as checksum mismatch.
+        return Ok(());
+    }
+    let mut f = File::open(path)?;
+    let body_len = size - 32;
+    let mut hasher = blake3::Hasher::new();
+    // Stream body into the hasher
+    let mut remaining = body_len;
+    let mut buf = [0u8; 65536];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = std::io::Read::read(&mut f, &mut buf[..want])?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+        remaining -= n as u64;
+    }
+    let expected = hasher.finalize();
+    let mut actual = [0u8; 32];
+    std::io::Read::read_exact(&mut f, &mut actual)?;
+    if expected.as_bytes() != &actual {
+        return Err(MediumError::ChecksumMismatch);
+    }
+    Ok(())
+}
+
 impl ChiralMedium {
     /// Save the chiral medium to a .hrm v2 file.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
@@ -119,6 +154,11 @@ impl ChiralMedium {
     /// - v2: loads native chiral format
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, MediumError> {
         let path_ref = path.as_ref();
+
+        // Verify trailing blake3 checksum before parsing. Catches the kind of
+        // mid-stream drift that previously surfaced as `failed to fill whole
+        // buffer` somewhere deep inside `read_hemisphere`.
+        verify_blake3_trailing(path_ref)?;
 
         let file = File::open(path_ref)?;
         let mut reader = BufReader::new(file);
@@ -376,6 +416,37 @@ mod tests {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(encoder, codebook)
+    }
+
+    #[test]
+    fn load_rejects_tampered_file() {
+        // Save a clean ChiralMedium, then flip one byte deep in the wavefront
+        // section. Load must reject it via checksum verification rather than
+        // crash mid-parse in `read_hemisphere`.
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        cm.store("checksum guard 1", 0.9, &pipeline).unwrap();
+        cm.store("checksum guard 2", 0.5, &pipeline).unwrap();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_chiral_checksum_tampered.hrm");
+        cm.save(&path).unwrap();
+
+        // Sanity: clean file loads fine
+        ChiralMedium::load(&path).unwrap();
+
+        // Flip a byte in the middle of the file (not in the trailing checksum)
+        let mut buf = std::fs::read(&path).unwrap();
+        let flip_at = buf.len() / 2;
+        buf[flip_at] ^= 0xff;
+        std::fs::write(&path, &buf).unwrap();
+
+        match ChiralMedium::load(&path) {
+            Err(MediumError::ChecksumMismatch) => {}
+            other => panic!("expected ChecksumMismatch, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
