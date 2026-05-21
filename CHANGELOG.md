@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-05-21
+
+Config-surface cleanup — closes 4 small but real defects in `kannaka config`.
+
+### Fixed
+- `config set` boolean parsing accepts `true/false, 1/0, yes/no, on/off`
+  (case-insensitive). Invalid values now error instead of silently mapping
+  to `false`. Applies to `swarm.enabled`, `ghostsignals.enabled`,
+  `updates.auto_check`. (#96)
+- `config set` now exposes `hrm.path`, `hrm.wavefront_dim`, and
+  `ghostsignals.hub_url`. `hrm.wavefront_dim` is parsed as a positive
+  integer; help text updated. (#94)
+- `hrm.wavefront_dim` runtime now emits a `[config]` warning at init
+  when the configured value differs from the hardcoded 10000. The
+  codebook + HRM file format share the dimension, so a live change
+  would require re-encoding every wavefront — but the value is no
+  longer silently ignored. (#93)
+- `register_ghostsignals` (init/registration flow) prefers
+  `cfg.ghostsignals.hub_url`, falling back to `constellation.radio_url`
+  only when `hub_url` is empty. Completes the #86 sweep where the
+  CLI `handle_market` was already routed correctly. (#97)
+
+Tests: 522/522 lib pass.
+
+---
+
 ## [0.5.0] — 2026-05-19
 
 Cluster + recall + search architecture cleanup. Five-stage refactor
