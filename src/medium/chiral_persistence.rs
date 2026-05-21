@@ -235,8 +235,14 @@ impl ChiralMedium {
             w.write_all(&h.phase[i].to_le_bytes())?;
         }
 
-        // Timestamps
-        for &ts in &h.timestamps {
+        // Timestamps — write exactly `active` entries.
+        //
+        // Earlier revisions wrote the full Vec, which crashed the loader if
+        // `h.timestamps.len()` ever drifted from `h.count()`. Pad with 0 if
+        // the Vec is short so the writer stays self-consistent under any
+        // upstream desync.
+        for i in 0..active {
+            let ts = h.timestamps.get(i).copied().unwrap_or(0);
             w.write_all(&ts.to_le_bytes())?;
         }
 
@@ -315,6 +321,16 @@ impl ChiralMedium {
         let mut len_bytes = [0u8; 4];
         r.read_exact(&mut len_bytes)?;
         let meta_len = u32::from_le_bytes(len_bytes) as usize;
+        // Sanity cap: 256 MiB. Anything larger means we walked off the rails
+        // (the count/timestamps section above was misaligned) — report it
+        // before we try to allocate gigabytes and crash on read_exact.
+        const MAX_META_BYTES: usize = 256 * 1024 * 1024;
+        if meta_len > MAX_META_BYTES {
+            return Err(MediumError::CorruptHrm(format!(
+                "implausible meta_len={} (max {}) — file layout desync at hemisphere {:?}",
+                meta_len, MAX_META_BYTES, hand
+            )));
+        }
         let mut meta_bytes = vec![0u8; meta_len];
         r.read_exact(&mut meta_bytes)?;
         let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&meta_bytes) {

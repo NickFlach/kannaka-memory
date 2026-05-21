@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-05-21
+
+Chiral HRM persistence hardening — fixes a latent writer/loader desync that
+left an Oracle agent unable to bootstrap (`ChiralMedium::load failed: IO
+error: failed to fill whole buffer`).
+
+### Fixed
+- `write_hemisphere` (chiral v2) and `Medium::save` (v1) now emit exactly
+  `active` timestamp entries instead of iterating the entire `timestamps`
+  Vec. If the Vec ever drifted from `count()` — and at least one production
+  file ended up in that state — the loader read past the timestamp block
+  into the metadata-length field and tried to allocate gigabytes for the
+  garbage value. Pads with `0` when the Vec is short so writes are
+  self-consistent even under upstream desync.
+- `read_hemisphere` and the v1 medium loader now reject implausible
+  metadata lengths (>256 MiB) with a `MediumError::CorruptHrm(...)` that
+  identifies which hemisphere failed and why. Replaces the generic
+  "failed to fill whole buffer" io error with an actionable diagnostic.
+
+### Notes
+- Pre-existing corrupted files can be byte-patched: insert
+  `(count - timestamps.len()) * 8` zero bytes immediately before the
+  metadata-length field of the affected hemisphere. The Oracle agent's
+  `kannaka.hrm` was repaired this way (3 missing right-hemisphere
+  timestamps padded with `0`); `kannaka status` then loaded all 123/123
+  memories cleanly.
+
+Tests: 522/522 lib pass.
+
+---
+
 ## [0.5.1] — 2026-05-21
 
 Config-surface cleanup — closes 4 small but real defects in `kannaka config`.

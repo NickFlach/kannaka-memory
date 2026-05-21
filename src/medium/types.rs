@@ -50,6 +50,8 @@ pub enum MediumError {
     UnsupportedVersion(u32),
     #[error("checksum mismatch - file may be corrupted")]
     ChecksumMismatch,
+    #[error("corrupt HRM: {0}")]
+    CorruptHrm(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]

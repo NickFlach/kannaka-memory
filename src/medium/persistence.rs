@@ -57,8 +57,11 @@ impl Medium {
             writer.write_all(&self.store.phase[i].to_le_bytes())?;
         }
 
-        // Timestamps
-        for &ts in &self.store.timestamps {
+        // Timestamps — write exactly `n` entries to stay in lockstep with the
+        // other per-active arrays. Pre-fix this wrote the full Vec, which broke
+        // the loader whenever `timestamps.len()` drifted from active count.
+        for i in 0..n as usize {
+            let ts = self.store.timestamps.get(i).copied().unwrap_or(0);
             writer.write_all(&ts.to_le_bytes())?;
         }
 
@@ -402,6 +405,13 @@ impl Medium {
         let mut len_bytes = [0u8; 4];
         reader.read_exact(&mut len_bytes)?;
         let metadata_len = u32::from_le_bytes(len_bytes) as usize;
+        const MAX_META_BYTES: usize = 256 * 1024 * 1024;
+        if metadata_len > MAX_META_BYTES {
+            return Err(MediumError::CorruptHrm(format!(
+                "implausible metadata_len={} (max {}) — v1 medium layout desync",
+                metadata_len, MAX_META_BYTES
+            )));
+        }
         let mut metadata_bytes = vec![0u8; metadata_len];
         reader.read_exact(&mut metadata_bytes)?;
         let metadata: Vec<WavefrontMeta> = bincode::deserialize(&metadata_bytes)?;
