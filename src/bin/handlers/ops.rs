@@ -114,9 +114,11 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     eprintln!();
                     eprintln!("Keys: agent.id, agent.display_name, llm.provider, llm.model,");
                     eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url,");
-                    eprintln!("      ghostsignals.enabled, ghostsignals.token,");
+                    eprintln!("      ghostsignals.enabled, ghostsignals.token, ghostsignals.hub_url,");
                     eprintln!("      constellation.radio_url, constellation.observatory_url,");
-                    eprintln!("      updates.auto_check");
+                    eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check");
+                    eprintln!();
+                    eprintln!("Booleans accept: true/false, 1/0, yes/no, on/off (case-insensitive).");
                     process::exit(1);
                 }
             };
@@ -128,6 +130,15 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                 }
             };
 
+            // Parse booleans with a normalized set so users don't silently
+            // get `false` for "True", "1", "yes", "TRUE", etc. (#96)
+            let parse_bool = |v: &str| -> Result<bool, ()> {
+                match v.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on"  => Ok(true),
+                    "false" | "0" | "no" | "off" => Ok(false),
+                    _ => Err(()),
+                }
+            };
             let mut new_cfg = cfg.clone();
             match key.as_str() {
                 "agent.id" => new_cfg.agent.id = value.clone(),
@@ -136,13 +147,51 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                 "llm.model" => new_cfg.llm.model = value.clone(),
                 "llm.api_key" => new_cfg.llm.api_key = value.clone(),
                 "llm.base_url" => new_cfg.llm.base_url = value.clone(),
-                "swarm.enabled" => new_cfg.swarm.enabled = value == "true",
+                "swarm.enabled" => {
+                    match parse_bool(value) {
+                        Ok(b) => new_cfg.swarm.enabled = b,
+                        Err(()) => {
+                            eprintln!("swarm.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            process::exit(1);
+                        }
+                    }
+                }
                 "swarm.nats_url" => new_cfg.swarm.nats_url = value.clone(),
-                "ghostsignals.enabled" => new_cfg.ghostsignals.enabled = value == "true",
-                "ghostsignals.token" => new_cfg.ghostsignals.token = value.clone(),
+                "ghostsignals.enabled" => {
+                    match parse_bool(value) {
+                        Ok(b) => new_cfg.ghostsignals.enabled = b,
+                        Err(()) => {
+                            eprintln!("ghostsignals.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            process::exit(1);
+                        }
+                    }
+                }
+                "ghostsignals.token"   => new_cfg.ghostsignals.token = value.clone(),
+                "ghostsignals.hub_url" => new_cfg.ghostsignals.hub_url = value.clone(),
                 "constellation.radio_url" => new_cfg.constellation.radio_url = value.clone(),
                 "constellation.observatory_url" => new_cfg.constellation.observatory_url = value.clone(),
-                "updates.auto_check" => new_cfg.updates.auto_check = value == "true",
+                "updates.auto_check" => {
+                    match parse_bool(value) {
+                        Ok(b) => new_cfg.updates.auto_check = b,
+                        Err(()) => {
+                            eprintln!("updates.auto_check expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            process::exit(1);
+                        }
+                    }
+                }
+                // #94: hrm.path and hrm.wavefront_dim are now writable.
+                // hrm.wavefront_dim is parsed as an integer; #93 still
+                // tracks whether the runtime actually honors changes here.
+                "hrm.path" => new_cfg.hrm.path = value.clone(),
+                "hrm.wavefront_dim" => {
+                    match value.parse::<u32>() {
+                        Ok(n) if n > 0 => new_cfg.hrm.wavefront_dim = n,
+                        _ => {
+                            eprintln!("hrm.wavefront_dim expects a positive integer, got: {}", value);
+                            process::exit(1);
+                        }
+                    }
+                }
                 other => {
                     eprintln!("Unknown config key: {}", other);
                     process::exit(1);

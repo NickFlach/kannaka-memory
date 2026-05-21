@@ -1127,7 +1127,13 @@ pub fn run_init_wizard(overrides: InitOverrides) -> Result<KannakaConfig, String
 
     if register_gs {
         config.ghostsignals.enabled = true;
-        let hub = &config.constellation.radio_url;
+        // Prefer the explicit GhostSignals hub URL; fall back to the radio
+        // URL only when hub_url is empty (legacy single-host configs). (#97)
+        let hub = if config.ghostsignals.hub_url.is_empty() {
+            &config.constellation.radio_url
+        } else {
+            &config.ghostsignals.hub_url
+        };
         match register_ghostsignals(hub, &config.agent.id, &config.agent.display_name, &config.agent.kind) {
             Ok(token) => {
                 config.ghostsignals.token = token;
@@ -1992,7 +1998,13 @@ fn run_init_wizard_with_installer_ui(overrides: InitOverrides, a: &Ansi, total_s
 
     if register_gs {
         config.ghostsignals.enabled = true;
-        let hub = &config.constellation.radio_url;
+        // Prefer the explicit GhostSignals hub URL; fall back to the radio
+        // URL only when hub_url is empty (legacy single-host configs). (#97)
+        let hub = if config.ghostsignals.hub_url.is_empty() {
+            &config.constellation.radio_url
+        } else {
+            &config.ghostsignals.hub_url
+        };
         match register_ghostsignals(hub, &config.agent.id, &config.agent.display_name, &config.agent.kind) {
             Ok(token) => {
                 config.ghostsignals.token = token;
@@ -2644,7 +2656,13 @@ pub fn run_upgrade_installer() {
 
     if register_gs {
         config.ghostsignals.enabled = true;
-        let hub = &config.constellation.radio_url;
+        // Prefer the explicit GhostSignals hub URL; fall back to the radio
+        // URL only when hub_url is empty (legacy single-host configs). (#97)
+        let hub = if config.ghostsignals.hub_url.is_empty() {
+            &config.constellation.radio_url
+        } else {
+            &config.ghostsignals.hub_url
+        };
         match register_ghostsignals(hub, &config.agent.id, &config.agent.display_name, &config.agent.kind) {
             Ok(token) => {
                 config.ghostsignals.token = token;

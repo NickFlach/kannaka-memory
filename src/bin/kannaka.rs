@@ -89,6 +89,21 @@ fn dirs_or_default() -> PathBuf {
 fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
     // Setup encoding pipeline for HRM
     let encoder = SimpleHashEncoder::new(384, 42);
+    // wavefront_dim is currently hardcoded to 10_000 — the Codebook +
+    // HRM file format share the dimension, so changing it on a populated
+    // HRM would require re-encoding every wavefront (destructive).
+    // The config field exists for future variable-dim support; if a
+    // user sets a non-default value, warn them that the runtime ignored
+    // it rather than silently disregarding the setting. (#93)
+    {
+        let cfg = KannakaConfig::load();
+        if cfg.hrm.wavefront_dim != 10_000 && !quiet {
+            eprintln!(
+                "[config] hrm.wavefront_dim = {} but runtime uses 10000 (variable-dim HRM not yet supported)",
+                cfg.hrm.wavefront_dim,
+            );
+        }
+    }
     let codebook = Codebook::new(384, 10_000, 42);
     let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
 
