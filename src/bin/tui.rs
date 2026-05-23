@@ -14,8 +14,12 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap},
+    widgets::{
+        canvas::{Canvas, Circle as CanvasCircle, Line as CanvasLine},
+        Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap,
+    },
     Frame, Terminal,
 };
 use std::collections::VecDeque;
@@ -121,9 +125,16 @@ struct App {
     bus_rx: Option<mpsc::Receiver<BusLine>>,
     bus_status: BusStatus,
     bus_child: Option<std::process::Child>,
+    // Constellation tab state — keyed by agent_id, populated by the
+    // same bus reader thread that feeds bus_lines.
+    agents: std::collections::HashMap<String, AgentSnapshot>,
+    agent_rx: Option<mpsc::Receiver<AgentSnapshot>>,
 }
 
 const BUS_BACKLOG_CAP: usize = 500;
+/// Agents not heard from in this window get rendered as ghost outlines
+/// instead of solid markers on the Constellation tab.
+const AGENT_FRESH_WINDOW: Duration = Duration::from_secs(120);
 
 /// Handle to the spawned `kannaka chat --json` child. Stdin is held here
 /// so the main thread can write user turns into it; stdout/stderr are
@@ -166,6 +177,21 @@ struct BusLine {
 
 #[derive(Clone, PartialEq, Eq)]
 enum BusStatus { Off, Connecting, Streaming, Failed }
+
+/// Latest snapshot for one agent — harvested from `QUEEN.phase.<agent_id>`
+/// payloads as they stream through the bus. Used by the Constellation tab
+/// to plot agents on the unit circle and fade out anyone who's gone quiet.
+#[derive(Clone)]
+struct AgentSnapshot {
+    agent_id: String,
+    theta: f32,
+    phi: f32,
+    coherence: f32,
+    order_parameter: f32,
+    handedness: String,
+    memory_count: u64,
+    last_seen: Instant,
+}
 
 impl App {
     fn new() -> Self {
@@ -214,6 +240,8 @@ impl App {
             bus_rx: None,
             bus_status: BusStatus::Off,
             bus_child: None,
+            agents: std::collections::HashMap::new(),
+            agent_rx: None,
         }
     }
 
@@ -224,8 +252,10 @@ impl App {
     fn start_bus(&mut self) {
         if self.bus_child.is_some() { return; }
         self.bus_status = BusStatus::Connecting;
-        let (tx, rx) = mpsc::channel::<BusLine>();
-        self.bus_rx = Some(rx);
+        let (bus_tx, bus_rx) = mpsc::channel::<BusLine>();
+        let (agent_tx, agent_rx) = mpsc::channel::<AgentSnapshot>();
+        self.bus_rx = Some(bus_rx);
+        self.agent_rx = Some(agent_rx);
 
         let mut cmd = Command::new(&self.kannaka_bin);
         cmd.args(["swarm", "tail"])
@@ -264,8 +294,18 @@ impl App {
                 let ts_ms = val.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
                 let subject = val.get("subject").and_then(|v| v.as_str()).unwrap_or("?").to_string();
                 let payload = val.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+
+                // Phase frames feed the Constellation tab.
+                if subject.starts_with("QUEEN.phase.") {
+                    if let Some(snap) = agent_snapshot_from_payload(&subject, &payload) {
+                        // Send-fails are non-fatal — the main thread may have
+                        // dropped agent_rx but bus_tx keeps the stream alive.
+                        let _ = agent_tx.send(snap);
+                    }
+                }
+
                 let summary = summarize_payload(&subject, &payload);
-                if tx.send(BusLine { ts_ms, subject, summary }).is_err() {
+                if bus_tx.send(BusLine { ts_ms, subject, summary }).is_err() {
                     break;
                 }
             }
@@ -298,6 +338,23 @@ impl App {
         }
         if got_any && self.bus_status == BusStatus::Connecting {
             self.bus_status = BusStatus::Streaming;
+        }
+
+        // Drain per-agent snapshots into the map. Same channel discipline
+        // as bus_rx; Disconnected means the reader thread died.
+        if let Some(rx) = &self.agent_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(snap) => {
+                        self.agents.insert(snap.agent_id.clone(), snap);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.agent_rx = None;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1111,8 +1168,10 @@ impl App {
                 self.load_status();
                 self.load_observe();
             }
-            2 => {
-                // Bus — lazy-start the streaming child on first visit
+            2 | 3 => {
+                // Bus + Constellation both feed off the same NATS stream —
+                // lazy-start the streaming child on the first visit to
+                // either tab.
                 self.start_bus();
             }
             _ => {}
@@ -1244,7 +1303,7 @@ fn ui(f: &mut Frame, app: &App) {
         0 => render_memory_tab(f, app, outer[2]),
         1 => render_status_tab(f, app, outer[2]),
         2 => render_bus_tab(f, app, outer[2]),
-        3 => render_placeholder(f, "Constellation", "Swarm + GhostSignals markets. Coming soon.", outer[2]),
+        3 => render_constellation_tab(f, app, outer[2]),
         4 => render_placeholder(f, "Dreams", "Dream cycle control. Coming soon.", outer[2]),
         5 => render_chat_tab(f, app, outer[2]),
         _ => {}
@@ -1767,6 +1826,205 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Build an AgentSnapshot from the JSON payload of a `QUEEN.phase.<id>`
+/// message. Returns None when the payload is missing the agent_id (any
+/// other field gracefully defaults).
+fn agent_snapshot_from_payload(subject: &str, payload: &serde_json::Value) -> Option<AgentSnapshot> {
+    let obj = payload.as_object()?;
+    // Prefer the explicit agent_id field; fall back to the subject suffix.
+    let agent_id = obj.get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| subject.strip_prefix("QUEEN.phase.").map(|s| s.to_string()))?;
+    // The Rust kannaka publishes `phase` (radians); the Kannaktopus arm
+    // publishes `theta` (also radians). Accept either.
+    let theta = obj.get("theta")
+        .or_else(|| obj.get("phase"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+    let phi = obj.get("phi").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let coherence = obj.get("coherence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let order_parameter = obj.get("order_parameter").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let handedness = obj.get("handedness").and_then(|v| v.as_str()).unwrap_or("achiral").to_string();
+    let memory_count = obj.get("memory_count").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    Some(AgentSnapshot {
+        agent_id, theta, phi, coherence, order_parameter, handedness, memory_count,
+        last_seen: Instant::now(),
+    })
+}
+
+/// Color an agent by handedness. Falls back to Φ banding for achiral nodes.
+fn agent_color(snap: &AgentSnapshot) -> Color {
+    match snap.handedness.as_str() {
+        "left" => Color::Rgb(255, 120, 120),
+        "right" => Color::Rgb(120, 200, 255),
+        "chiral" => Color::Rgb(255, 180, 100),
+        _ => phi_color(snap.phi), // achiral / unknown
+    }
+}
+
+fn render_constellation_tab(f: &mut Frame, app: &App, area: Rect) {
+    if app.agents.is_empty() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Constellation",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                match app.bus_status {
+                    BusStatus::Off => "  Waiting for the bus to start…",
+                    BusStatus::Connecting => "  Connecting to the swarm…",
+                    BusStatus::Streaming => "  Streaming — no agents have reported phase yet",
+                    BusStatus::Failed => "  Bus failed — see logs",
+                },
+                Style::default().fg(DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Each agent appears on the unit circle once it publishes a",
+                Style::default().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                "  QUEEN.phase.<agent_id> heartbeat. Radial distance encodes",
+                Style::default().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                "  the agent's coherence; color encodes handedness/Φ.",
+                Style::default().fg(DIM),
+            )),
+        ];
+        let para = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(DIM))
+                    .style(Style::default().bg(BG))
+                    .title(Span::styled(
+                        " Constellation ",
+                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .wrap(Wrap { trim: false });
+        f.render_widget(para, area);
+        return;
+    }
+
+    // Split: canvas on the left, agent list on the right.
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(area);
+
+    // ---- Left: Canvas plot --------------------------------------------------
+    let now = Instant::now();
+    let mut sorted_agents: Vec<&AgentSnapshot> = app.agents.values().collect();
+    sorted_agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    let plot_agents: Vec<(f64, f64, Color, bool, String)> = sorted_agents
+        .iter()
+        .map(|s| {
+            let theta = s.theta as f64;
+            // Radial distance: prefer coherence (always populated), fall back
+            // to order_parameter for older payloads.
+            let r = (s.coherence.max(s.order_parameter).clamp(0.0, 1.0)) as f64;
+            let r_eff = 0.15 + r * 0.85; // keep dots off the dead center
+            let x = r_eff * theta.cos();
+            let y = r_eff * theta.sin();
+            let fresh = now.duration_since(s.last_seen) < AGENT_FRESH_WINDOW;
+            let color = if fresh { agent_color(s) } else { DIM };
+            (x, y, color, fresh, s.agent_id.clone())
+        })
+        .collect();
+
+    let canvas_title = format!(
+        " Constellation · {} agent{} ",
+        app.agents.len(),
+        if app.agents.len() == 1 { "" } else { "s" },
+    );
+
+    let canvas = Canvas::default()
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .style(Style::default().bg(BG))
+                .title(Span::styled(
+                    canvas_title,
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .marker(Marker::Braille)
+        .x_bounds([-1.2, 1.2])
+        .y_bounds([-1.2, 1.2])
+        .paint(|ctx| {
+            // Reference unit circle — the substrate the agents orbit.
+            ctx.draw(&CanvasCircle { x: 0.0, y: 0.0, radius: 1.0, color: Color::Rgb(40, 40, 80) });
+            // Inner reference at r = 0.5 to give a sense of scale.
+            ctx.draw(&CanvasCircle { x: 0.0, y: 0.0, radius: 0.5, color: Color::Rgb(30, 30, 60) });
+            // Cross hairs.
+            ctx.draw(&CanvasLine { x1: -1.0, y1: 0.0, x2: 1.0, y2: 0.0, color: Color::Rgb(25, 25, 50) });
+            ctx.draw(&CanvasLine { x1: 0.0, y1: -1.0, x2: 0.0, y2: 1.0, color: Color::Rgb(25, 25, 50) });
+
+            for (x, y, color, _fresh, _id) in &plot_agents {
+                // Spoke from origin — visual debt to the swarm centroid.
+                ctx.draw(&CanvasLine {
+                    x1: 0.0, y1: 0.0, x2: *x, y2: *y,
+                    color: Color::Rgb(20, 20, 45),
+                });
+                // The agent itself — a small filled circle.
+                ctx.draw(&CanvasCircle { x: *x, y: *y, radius: 0.04, color: *color });
+            }
+
+            // Labels in a second layer so they sit on top of the dots.
+            ctx.layer();
+            for (x, y, color, _fresh, id) in &plot_agents {
+                let label = truncate(id, 14);
+                // Offset label slightly outward from the dot.
+                let nudge = if *x >= 0.0 { 0.07 } else { -0.07 };
+                ctx.print(*x + nudge, *y, Span::styled(label, Style::default().fg(*color)));
+            }
+        });
+    f.render_widget(canvas, chunks[0]);
+
+    // ---- Right: agent table -------------------------------------------------
+    let mut rows: Vec<ListItem> = Vec::new();
+    rows.push(ListItem::new(Line::from(vec![
+        Span::styled("  agent", Style::default().fg(DIM).add_modifier(Modifier::BOLD)),
+        Span::styled("           Φ     θ     r    mem", Style::default().fg(DIM).add_modifier(Modifier::BOLD)),
+    ])));
+    for snap in &sorted_agents {
+        let fresh = now.duration_since(snap.last_seen) < AGENT_FRESH_WINDOW;
+        let color = if fresh { agent_color(snap) } else { DIM };
+        let r = snap.coherence.max(snap.order_parameter);
+        let stale_mark = if fresh { " " } else { "·" };
+        rows.push(ListItem::new(Line::from(vec![
+            Span::styled(format!("{} ", stale_mark), Style::default().fg(DIM)),
+            Span::styled(
+                format!("{:<14}", truncate(&snap.agent_id, 14)),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {:>5.3} {:>5.2} {:>4.2} {:>5}",
+                    snap.phi, snap.theta, r, snap.memory_count),
+                Style::default().fg(TEXT),
+            ),
+        ])));
+    }
+    let list = List::new(rows).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM))
+            .style(Style::default().bg(BG))
+            .title(Span::styled(
+                " Agents ",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(list, chunks[1]);
 }
 
 fn bus_subject_color(subject: &str) -> Color {
