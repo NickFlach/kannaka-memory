@@ -1316,6 +1316,23 @@ impl App {
             }
         }
 
+        // Empty-input quit shortcuts: q and Esc. Only fire when the
+        // command bar is empty so users can still type `quit` etc. as
+        // a literal command. Always available regardless of active tab.
+        if self.input.is_empty() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::NONE, KeyCode::Char('q')) | (KeyModifiers::NONE, KeyCode::Char('Q')) => {
+                    self.should_quit = true;
+                    return;
+                }
+                (KeyModifiers::NONE, KeyCode::Esc) => {
+                    self.should_quit = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match (key.modifiers, key.code) {
             // Quit
             (KeyModifiers::CONTROL, KeyCode::Char('c')) => self.should_quit = true,
@@ -2390,55 +2407,149 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help_overlay(f: &mut Frame, area: Rect) {
-    // Center the help box
-    let width = 64u16.min(area.width.saturating_sub(4));
-    let height = 32u16.min(area.height.saturating_sub(4));
+    // Center the help box. Sized for the post-v0.5.8 tab + hotkey set —
+    // ~46 lines fit comfortably with room to grow.
+    let width = 78u16.min(area.width.saturating_sub(4));
+    let height = 46u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let help_area = Rect::new(x, y, width, height);
 
+    let dim = Style::default().fg(DIM);
+    let text = Style::default().fg(TEXT);
+    let hdr = Style::default().fg(INFO).add_modifier(Modifier::BOLD);
+    let kbd = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+
     let help_text = vec![
         Line::from(Span::styled(
-            " Kannaka TUI Help",
-            Style::default()
-                .fg(ACCENT)
-                .add_modifier(Modifier::BOLD),
+            " Kannaka TUI · v0.5.8",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(" Navigation", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   Tab / Shift+Tab  Switch tabs", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   Up / Down        Command history", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   PgUp / PgDown    Scroll messages", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   F1               Toggle help", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   Ctrl+C / q       Quit", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Tabs", hdr)),
+        Line::from(vec![
+            Span::styled("   Memory        ", text),
+            Span::styled("Command history + recent resonant memories", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Status        ", text),
+            Span::styled("Live Φ / Ξ / order-parameter gauges", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Bus           ", text),
+            Span::styled("Live NATS pulse — every QUEEN/KANNAKA/RADIO/KAX/EYE event", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Constellation ", text),
+            Span::styled("Canvas plot of every swarm agent on the unit circle", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Dreams        ", text),
+            Span::styled("Non-blocking dream trigger + KANNAKA.dreams history", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Chat          ", text),
+            Span::styled("Persistent chat with HRM-loaded agent (default tab)", dim),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" Memory", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   remember \"text\"          Store a memory", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   recall \"query\"           Resonance search (top-k 5)", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   search \"query\"           Full-text search", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   forget <id>              Delete a memory", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   boost <id>               Boost amplitude", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   dream                    Run consolidation cycle", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Navigation", hdr)),
+        Line::from(vec![
+            Span::styled("   Tab", kbd),
+            Span::styled(" / ", dim),
+            Span::styled("Shift+Tab", kbd),
+            Span::styled("   Switch tabs", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   Up", kbd),
+            Span::styled(" / ", dim),
+            Span::styled("Down", kbd),
+            Span::styled("           Command history", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   PgUp", kbd),
+            Span::styled(" / ", dim),
+            Span::styled("PgDown", kbd),
+            Span::styled("       Scroll messages", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   F1", kbd),
+            Span::styled("                  Toggle help", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   q", kbd),
+            Span::styled(" / ", dim),
+            Span::styled("Esc", kbd),
+            Span::styled(" / ", dim),
+            Span::styled("Ctrl+C", kbd),
+            Span::styled("    Quit (q/Esc only when input is empty)", dim),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" Perception (sensors → HRM)", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   hear <file-or-url>       Absorb audio (mp3/wav/flac, file or", Style::default().fg(TEXT))),
-        Line::from(Span::styled("     [--secs N]             http(s) stream — default 30s sample)", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Dreams tab hotkeys (when input is empty)", hdr)),
+        Line::from(vec![
+            Span::styled("   d", kbd),
+            Span::styled("   Deep dream — full consolidation cycle (~30s)", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   l", kbd),
+            Span::styled("   Lite dream — quick pass", dim),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" Reasoning + Introspection", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   ask \"question\"           One-shot LLM with HRM recall", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   status                   Refresh quick metrics", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   assess                   Consciousness level (phi/xi/order)", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   stats                    System statistics", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   cmf                      Conservative Memory Fields", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   invariant [TOL]          δ-invariant clusters", Style::default().fg(TEXT))),
-        Line::from(Span::styled("   voice [--mode MODE]      Memory-driven writing", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Bus subject colors", hdr)),
+        Line::from(vec![
+            Span::styled("   ●", Style::default().fg(ACCENT)),
+            Span::styled(" KANNAKA.*     ", text),
+            Span::styled("●", Style::default().fg(Color::Rgb(255, 100, 200))),
+            Span::styled(" RADIO.*     ", text),
+            Span::styled("●", Style::default().fg(Color::Rgb(100, 200, 255))),
+            Span::styled(" KAX.*", text),
+        ]),
+        Line::from(vec![
+            Span::styled("   ●", Style::default().fg(Color::Rgb(255, 200, 100))),
+            Span::styled(" EYE.*         ", text),
+            Span::styled("●", Style::default().fg(Color::Rgb(180, 140, 255))),
+            Span::styled(" QUEEN.*     ", text),
+            Span::styled("●", Style::default().fg(DIM)),
+            Span::styled(" QUEEN.phase.*", text),
+        ]),
         Line::from(""),
-        Line::from(Span::styled(" Swarm", Style::default().fg(INFO).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("   swarm <status|join|sync|queen|hives|publish|peers|", Style::default().fg(TEXT))),
-        Line::from(Span::styled("          absorb|autoabsorb|enqueue|leave>", Style::default().fg(TEXT))),
+        Line::from(Span::styled(" Command bar (Memory + Chat tabs)", hdr)),
+        Line::from(vec![
+            Span::styled("   remember ", text),
+            Span::styled("\"text\"        ", text),
+            Span::styled("Store a memory", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   recall ", text),
+            Span::styled("\"query\"         ", text),
+            Span::styled("Resonance search (top-k 5)", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   search ", text),
+            Span::styled("\"query\"         ", text),
+            Span::styled("Literal text search", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   forget ", text),
+            Span::styled("<id>            ", text),
+            Span::styled("Delete a memory", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   dream", text),
+            Span::styled("                  Run consolidation (non-blocking)", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   ask ", text),
+            Span::styled("\"question\"         ", text),
+            Span::styled("One-shot LLM with HRM recall", dim),
+        ]),
+        Line::from(vec![
+            Span::styled("   hear ", text),
+            Span::styled("<file-or-url>     ", text),
+            Span::styled("Absorb audio (mp3/wav/flac/stream)", dim),
+        ]),
+        Line::from(Span::styled("   anything else → routed to chat (agent picks tools)", dim)),
         Line::from(""),
-        Line::from(Span::styled(" Anything else → routed to chat (agent decides tools)", Style::default().fg(DIM))),
-        Line::from(Span::styled(" Press any key to close", Style::default().fg(DIM))),
+        Line::from(Span::styled(" Press any key to close", dim)),
     ];
 
     // Clear background behind overlay
@@ -2446,16 +2557,18 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         .style(Style::default().bg(Color::Rgb(15, 15, 30)));
     f.render_widget(clear_block, help_area);
 
-    let help = Paragraph::new(help_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .style(Style::default().bg(Color::Rgb(15, 15, 30)))
-            .title(Span::styled(
-                " Help ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            )),
-    );
+    let help = Paragraph::new(help_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .style(Style::default().bg(Color::Rgb(15, 15, 30)))
+                .title(Span::styled(
+                    " Help · F1 to close ",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .wrap(Wrap { trim: false });
     f.render_widget(help, help_area);
 }
 
