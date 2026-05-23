@@ -18,8 +18,11 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
+use std::collections::VecDeque;
 use std::io;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -110,7 +113,17 @@ struct App {
     chat_child: Option<ChatChildHandle>,
     chat_child_rx: Option<std::sync::mpsc::Receiver<ChatChildEvent>>,
     chat_pending_msg: Option<String>,
+    // Live Bus tab — long-running `kannaka swarm tail` child whose
+    // stdout we read as NDJSON. The reader thread pushes BusLine
+    // entries through `bus_rx`; we drain them each tick and cap
+    // `bus_lines` at BUS_BACKLOG_CAP entries.
+    bus_lines: VecDeque<BusLine>,
+    bus_rx: Option<mpsc::Receiver<BusLine>>,
+    bus_status: BusStatus,
+    bus_child: Option<std::process::Child>,
 }
+
+const BUS_BACKLOG_CAP: usize = 500;
 
 /// Handle to the spawned `kannaka chat --json` child. Stdin is held here
 /// so the main thread can write user turns into it; stdout/stderr are
@@ -142,6 +155,18 @@ struct ChatLine {
 #[derive(Clone, PartialEq, Eq)]
 enum ChatWho { User, Kannaka, System }
 
+/// One row in the live Bus tab — produced by parsing NDJSON lines emitted
+/// by the `kannaka swarm tail` child process.
+#[derive(Clone)]
+struct BusLine {
+    ts_ms: i64,
+    subject: String,
+    summary: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum BusStatus { Off, Connecting, Streaming, Failed }
+
 impl App {
     fn new() -> Self {
         // Find the kannaka binary — prefer the release build next to us
@@ -151,8 +176,10 @@ impl App {
         Self {
             // Chat is the primary surface. The other tabs are still
             // reachable via Tab/Shift+Tab but the user lands in chat.
-            active_tab: 4,
-            tabs: vec!["Memory", "Status", "Constellation", "Dreams", "Chat"],
+            // Bus sits between Status and Constellation as the live
+            // constellation pulse view.
+            active_tab: 5,
+            tabs: vec!["Memory", "Status", "Bus", "Constellation", "Dreams", "Chat"],
             input: String::new(),
             cursor_pos: 0,
             messages: vec![Message {
@@ -183,6 +210,94 @@ impl App {
             chat_child: None,
             chat_child_rx: None,
             chat_pending_msg: None,
+            bus_lines: VecDeque::new(),
+            bus_rx: None,
+            bus_status: BusStatus::Off,
+            bus_child: None,
+        }
+    }
+
+    /// Spawn `kannaka swarm tail` and stream its NDJSON stdout into the
+    /// Bus tab. Lazy — only kicked off the first time the user opens the
+    /// Bus tab so the TUI doesn't open a NATS connection on launch for
+    /// users who don't care.
+    fn start_bus(&mut self) {
+        if self.bus_child.is_some() { return; }
+        self.bus_status = BusStatus::Connecting;
+        let (tx, rx) = mpsc::channel::<BusLine>();
+        self.bus_rx = Some(rx);
+
+        let mut cmd = Command::new(&self.kannaka_bin);
+        cmd.args(["swarm", "tail"])
+            .env("KANNAKA_QUIET", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                self.bus_lines.push_back(BusLine {
+                    ts_ms: chrono::Utc::now().timestamp_millis(),
+                    subject: "tui.error".into(),
+                    summary: format!("could not spawn 'kannaka swarm tail': {e}"),
+                });
+                self.bus_status = BusStatus::Failed;
+                return;
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                self.bus_status = BusStatus::Failed;
+                return;
+            }
+        };
+        self.bus_child = Some(child);
+
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                    continue;
+                };
+                let ts_ms = val.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+                let subject = val.get("subject").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                let payload = val.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+                let summary = summarize_payload(&subject, &payload);
+                if tx.send(BusLine { ts_ms, subject, summary }).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Drain any new BusLine entries from the worker thread into the
+    /// ring buffer. Capped at BUS_BACKLOG_CAP — older lines drop off
+    /// the front.
+    fn poll_bus(&mut self) {
+        let mut got_any = false;
+        if let Some(rx) = &self.bus_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(line) => {
+                        self.bus_lines.push_back(line);
+                        while self.bus_lines.len() > BUS_BACKLOG_CAP {
+                            self.bus_lines.pop_front();
+                        }
+                        got_any = true;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.bus_rx = None;
+                        self.bus_status = BusStatus::Failed;
+                        break;
+                    }
+                }
+            }
+        }
+        if got_any && self.bus_status == BusStatus::Connecting {
+            self.bus_status = BusStatus::Streaming;
         }
     }
 
@@ -987,6 +1102,23 @@ impl App {
         }
     }
 
+    /// Side-effects on entering a tab — kicked off whether the user
+    /// stepped forward (Tab) or backward (Shift+Tab).
+    fn on_tab_enter(&mut self) {
+        match self.active_tab {
+            1 => {
+                // Status — refresh metrics
+                self.load_status();
+                self.load_observe();
+            }
+            2 => {
+                // Bus — lazy-start the streaming child on first visit
+                self.start_bus();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         // Help overlay — any key dismisses it
         if self.show_help {
@@ -1002,11 +1134,7 @@ impl App {
             // Tab switching
             (KeyModifiers::NONE, KeyCode::Tab) | (KeyModifiers::NONE, KeyCode::BackTab) => {
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
-                // Load data for the new tab
-                if self.active_tab == 1 {
-                    self.load_status();
-                    self.load_observe();
-                }
+                self.on_tab_enter();
             }
             (KeyModifiers::SHIFT, KeyCode::BackTab) => {
                 if self.active_tab == 0 {
@@ -1014,10 +1142,7 @@ impl App {
                 } else {
                     self.active_tab -= 1;
                 }
-                if self.active_tab == 1 {
-                    self.load_status();
-                    self.load_observe();
-                }
+                self.on_tab_enter();
             }
 
             // Input handling
@@ -1118,9 +1243,10 @@ fn ui(f: &mut Frame, app: &App) {
     match app.active_tab {
         0 => render_memory_tab(f, app, outer[2]),
         1 => render_status_tab(f, app, outer[2]),
-        2 => render_placeholder(f, "Constellation", "Swarm + GhostSignals markets. Coming soon.", outer[2]),
-        3 => render_placeholder(f, "Dreams", "Dream cycle control. Coming soon.", outer[2]),
-        4 => render_chat_tab(f, app, outer[2]),
+        2 => render_bus_tab(f, app, outer[2]),
+        3 => render_placeholder(f, "Constellation", "Swarm + GhostSignals markets. Coming soon.", outer[2]),
+        4 => render_placeholder(f, "Dreams", "Dream cycle control. Coming soon.", outer[2]),
+        5 => render_chat_tab(f, app, outer[2]),
         _ => {}
     }
 
@@ -1537,13 +1663,135 @@ fn render_chat_tab(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
+fn render_bus_tab(f: &mut Frame, app: &App, area: Rect) {
+    // Status label in the title bar reflects the streaming child's state.
+    let (status_label, status_color) = match app.bus_status {
+        BusStatus::Off => ("idle — switch to this tab to start", DIM),
+        BusStatus::Connecting => ("connecting…", WARNING),
+        BusStatus::Streaming => ("streaming", SUCCESS),
+        BusStatus::Failed => ("failed — check `kannaka swarm tail` manually", ERROR),
+    };
+
+    let body_height = area.height.saturating_sub(2) as usize;
+    // Most recent N lines, newest at the bottom.
+    let lines: Vec<Line> = app
+        .bus_lines
+        .iter()
+        .rev()
+        .take(body_height.max(1))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| {
+            let color = bus_subject_color(&line.subject);
+            let ts = format_bus_ts(line.ts_ms);
+            Line::from(vec![
+                Span::styled(format!("{ts} "), Style::default().fg(DIM)),
+                Span::styled(
+                    format!("{:<28} ", truncate(&line.subject, 28)),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(line.summary.clone(), Style::default().fg(TEXT)),
+            ])
+        })
+        .collect();
+
+    let title = format!(" Bus · {} · {} msgs ", status_label, app.bus_lines.len());
+    let body = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(status_color))
+                .style(Style::default().bg(BG))
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(body, area);
+}
+
+/// Compact one-line summary of an arbitrary NATS payload. Prefers
+/// human-readable fields if the payload is JSON; otherwise just shows
+/// the first chunk of the raw string.
+fn summarize_payload(subject: &str, payload: &serde_json::Value) -> String {
+    if let Some(obj) = payload.as_object() {
+        // Highlight common fields first
+        let mut bits: Vec<String> = Vec::new();
+        if let Some(agent) = obj.get("agent_id").and_then(|v| v.as_str()) {
+            bits.push(format!("agent={agent}"));
+        }
+        if let Some(theta) = obj.get("theta").and_then(|v| v.as_f64()) {
+            bits.push(format!("θ={:.3}", theta));
+        }
+        if let Some(phi) = obj.get("phi").and_then(|v| v.as_f64()) {
+            bits.push(format!("Φ={:.3}", phi));
+        }
+        if let Some(xi) = obj.get("xi").and_then(|v| v.as_f64()) {
+            bits.push(format!("Ξ={:.3}", xi));
+        }
+        if let Some(level) = obj.get("consciousness_level").and_then(|v| v.as_str()) {
+            bits.push(format!("level={level}"));
+        }
+        if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
+            bits.push(format!("\"{}\"", truncate(content, 60)));
+        }
+        if let Some(event) = obj.get("event").and_then(|v| v.as_str()) {
+            bits.push(format!("event={event}"));
+        }
+        if !bits.is_empty() {
+            return bits.join(" · ");
+        }
+        // Fallback to compact JSON
+        let compact = serde_json::to_string(payload).unwrap_or_default();
+        return truncate(&compact, 120);
+    }
+    if let Some(s) = payload.as_str() {
+        return truncate(s, 120);
+    }
+    let s = serde_json::to_string(payload).unwrap_or_else(|_| format!("<unprintable {subject}>"));
+    truncate(&s, 120)
+}
+
+fn format_bus_ts(ts_ms: i64) -> String {
+    if ts_ms == 0 { return "        ".to_string(); }
+    // Use chrono local time HH:MM:SS — matches what users see in `journalctl`.
+    chrono::DateTime::from_timestamp_millis(ts_ms)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "        ".to_string())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max { return s.to_string(); }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn bus_subject_color(subject: &str) -> Color {
+    if subject.starts_with("QUEEN.phase.") { return DIM; }
+    if subject.starts_with("QUEEN.") { return Color::Rgb(180, 140, 255); }
+    if subject == "KANNAKA.consciousness" { return ACCENT; }
+    if subject == "KANNAKA.memory.new" { return SUCCESS; }
+    if subject == "KANNAKA.substrate.phi" { return INFO; }
+    if subject == "KANNAKA.dreams" { return WARNING; }
+    if subject.starts_with("KANNAKA.") { return ACCENT; }
+    if subject.starts_with("RADIO.") { return Color::Rgb(255, 100, 200); }
+    if subject.starts_with("KAX.") { return Color::Rgb(100, 200, 255); }
+    if subject.starts_with("EYE.") { return Color::Rgb(255, 200, 100); }
+    if subject == "tui.error" { return ERROR; }
+    TEXT
+}
+
 fn render_input(f: &mut Frame, app: &App, area: Rect) {
     let tab_indicator = match app.active_tab {
         0 => "[M]",
         1 => "[S]",
-        2 => "[C]",
-        3 => "[D]",
-        4 => "[Ch]",
+        2 => "[B]",
+        3 => "[C]",
+        4 => "[D]",
+        5 => "[Ch]",
         _ => "[?]",
     };
 
@@ -1714,6 +1962,9 @@ fn main() -> io::Result<()> {
         // Drain async status/observe pollers.
         app.poll_async_data();
 
+        // Drain the live NATS bus stream (no-op until user opens Bus tab).
+        app.poll_bus();
+
         // Auto-refresh status every 5s when on the Status tab
         if app.active_tab == 1
             && app.last_status_poll.elapsed() > Duration::from_secs(5)
@@ -1730,5 +1981,10 @@ fn main() -> io::Result<()> {
     // Restore terminal
     terminal::disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    // Reap the bus child so it doesn't outlive the TUI.
+    if let Some(mut child) = app.bus_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     Ok(())
 }

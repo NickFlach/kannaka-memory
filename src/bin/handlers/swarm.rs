@@ -843,3 +843,94 @@ pub(crate) fn handle_swarm_worker(_: &mut kannaka_memory::openclaw::KannakaMemor
     eprintln!("swarm worker requires the 'nats' feature"); process::exit(1);
 }
 
+/// `kannaka swarm tail` — subscribe to the constellation pulse and emit
+/// one NDJSON line per inbound NATS message. The default subject set is
+/// `QUEEN.>`, `KANNAKA.>`, `RADIO.>`, `KAX.>`, `EYE.>` — the prefixes any
+/// constellation node publishes on. `--subject` repeats override the set.
+///
+/// Output format (one line per message):
+///   {"ts": <unix-ms>, "subject": "<subj>", "payload": <json-or-string>}
+///
+/// This is the streaming source the TUI Bus tab consumes — running it
+/// from a shell is also useful: `kannaka swarm tail | grep consciousness`.
+#[cfg(feature = "nats")]
+pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
+    use std::io::Write;
+
+    let mut subjects: Vec<String> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--subject" if i + 1 < args.len() => { subjects.push(args[i + 1].clone()); i += 2; }
+            "--nats-url" if i + 1 < args.len() => { i += 2; }
+            _ => i += 1,
+        }
+    }
+    if subjects.is_empty() {
+        for s in ["QUEEN.>", "KANNAKA.>", "RADIO.>", "KAX.>", "EYE.>"] {
+            subjects.push(s.to_string());
+        }
+    }
+
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    eprintln!("[tail] connecting to {} — subjects: {:?}", nats_url, subjects);
+
+    // One dedicated transport per subject. SwarmTransport::subscribe hard-codes
+    // sid 95 and a single subscription per connection — the cleanest way to
+    // multiplex is one TCP socket per wildcard. Five sockets is cheap.
+    let stdout_mu = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let mut handles = Vec::new();
+    for subj in subjects {
+        let url = nats_url.clone();
+        let mu = std::sync::Arc::clone(&stdout_mu);
+        handles.push(std::thread::spawn(move || loop {
+            let transport = match kannaka_memory::nats::SwarmTransport::connect(&url) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "[tail] {} connect failed: {} (retry 5s)", subj, e);
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+            };
+            let mut sub = match transport.subscribe(&subj) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "[tail] {} subscribe failed: {} (retry 5s)", subj, e);
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+            };
+            // Block indefinitely; Ctrl+C terminates the process.
+            let _ = sub.set_timeout(None);
+            eprintln!("[tail] {} subscribed", subj);
+            while let Some(msg) = sub.next_message() {
+                let payload_str = std::str::from_utf8(&msg.payload).unwrap_or("<binary>");
+                let payload_json: serde_json::Value = serde_json::from_str(payload_str)
+                    .unwrap_or_else(|_| serde_json::Value::String(payload_str.to_string()));
+                let line = serde_json::json!({
+                    "ts": chrono::Utc::now().timestamp_millis(),
+                    "subject": msg.subject,
+                    "payload": payload_json,
+                });
+                let _guard = mu.lock();
+                println!("{}", line);
+                let _ = std::io::stdout().flush();
+            }
+            // Connection closed — reconnect.
+            let _ = writeln!(std::io::stderr(), "[tail] {} disconnected — reconnecting in 2s", subj);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }));
+    }
+
+    // Block forever — Ctrl+C kills the process. Joining the threads would
+    // hang the same way, so just sleep the main thread.
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_swarm_tail(_: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm tail requires the 'nats' feature"); std::process::exit(1);
+}
+

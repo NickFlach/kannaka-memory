@@ -50,7 +50,7 @@ mod handlers_swarm;
 use handlers_swarm::{
     handle_swarm_serve, handle_swarm_exemplars, handle_swarm_absorb,
     handle_swarm_peers, handle_swarm_autoabsorb, handle_swarm_enqueue,
-    handle_swarm_worker,
+    handle_swarm_worker, handle_swarm_tail,
 };
 
 #[path = "handlers/services.rs"]
@@ -1386,7 +1386,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail>");
                 process::exit(1);
             }
 
@@ -1816,9 +1816,12 @@ fn main() {
                     // reply-to subject.
                     handle_swarm_serve(&mut sys, &cfg, &args[command_start..]);
                 }
+                "tail" => {
+                    handle_swarm_tail(&cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail>");
                     process::exit(1);
                 }
             }
