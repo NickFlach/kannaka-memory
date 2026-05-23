@@ -129,9 +129,16 @@ struct App {
     // same bus reader thread that feeds bus_lines.
     agents: std::collections::HashMap<String, AgentSnapshot>,
     agent_rx: Option<mpsc::Receiver<AgentSnapshot>>,
+    // Dreams tab — rolling history of KANNAKA.dreams events harvested
+    // from the same bus stream, plus the local trigger state machine.
+    dream_history: VecDeque<DreamEvent>,
+    dream_rx: Option<mpsc::Receiver<DreamEvent>>,
+    dream_run: DreamRunState,
+    dream_trigger_rx: Option<mpsc::Receiver<Result<String, String>>>,
 }
 
 const BUS_BACKLOG_CAP: usize = 500;
+const DREAM_HISTORY_CAP: usize = 30;
 /// Agents not heard from in this window get rendered as ghost outlines
 /// instead of solid markers on the Constellation tab.
 const AGENT_FRESH_WINDOW: Duration = Duration::from_secs(120);
@@ -177,6 +184,34 @@ struct BusLine {
 
 #[derive(Clone, PartialEq, Eq)]
 enum BusStatus { Off, Connecting, Streaming, Failed }
+
+/// One KANNAKA.dreams report observed on the bus. The Dreams tab keeps
+/// a rolling backlog of these so users can see what consolidation
+/// activity has been happening across the constellation.
+#[derive(Clone)]
+struct DreamEvent {
+    ts_ms: i64,
+    agent_id: String,
+    cycles: u64,
+    strengthened: u64,
+    pruned: u64,
+    new_connections: u64,
+    hallucinations: u64,
+    consciousness_before: f32,
+    consciousness_after: f32,
+    emerged: bool,
+}
+
+/// Status of the most recent locally-triggered dream cycle. The TUI
+/// dispatches `kannaka dream` in a worker thread so the event loop
+/// stays responsive during the 30+ second consolidation pass.
+#[derive(Clone)]
+enum DreamRunState {
+    Idle,
+    Running { mode: String, started: Instant },
+    Done { mode: String, took: Duration, summary: String },
+    Failed { mode: String, error: String },
+}
 
 /// Latest snapshot for one agent — harvested from `QUEEN.phase.<agent_id>`
 /// payloads as they stream through the bus. Used by the Constellation tab
@@ -242,6 +277,10 @@ impl App {
             bus_child: None,
             agents: std::collections::HashMap::new(),
             agent_rx: None,
+            dream_history: VecDeque::new(),
+            dream_rx: None,
+            dream_run: DreamRunState::Idle,
+            dream_trigger_rx: None,
         }
     }
 
@@ -254,8 +293,10 @@ impl App {
         self.bus_status = BusStatus::Connecting;
         let (bus_tx, bus_rx) = mpsc::channel::<BusLine>();
         let (agent_tx, agent_rx) = mpsc::channel::<AgentSnapshot>();
+        let (dream_tx, dream_rx) = mpsc::channel::<DreamEvent>();
         self.bus_rx = Some(bus_rx);
         self.agent_rx = Some(agent_rx);
+        self.dream_rx = Some(dream_rx);
 
         let mut cmd = Command::new(&self.kannaka_bin);
         cmd.args(["swarm", "tail"])
@@ -301,6 +342,12 @@ impl App {
                         // Send-fails are non-fatal — the main thread may have
                         // dropped agent_rx but bus_tx keeps the stream alive.
                         let _ = agent_tx.send(snap);
+                    }
+                }
+                // Dream completion reports feed the Dreams tab.
+                if subject == "KANNAKA.dreams" {
+                    if let Some(ev) = dream_event_from_payload(ts_ms, &payload) {
+                        let _ = dream_tx.send(ev);
                     }
                 }
 
@@ -356,6 +403,91 @@ impl App {
                 }
             }
         }
+
+        // Drain dream events into the rolling history.
+        if let Some(rx) = &self.dream_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => {
+                        self.dream_history.push_front(ev);
+                        while self.dream_history.len() > DREAM_HISTORY_CAP {
+                            self.dream_history.pop_back();
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.dream_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Drain the local dream-trigger worker (if one is running).
+        if let Some(rx) = &self.dream_trigger_rx {
+            match rx.try_recv() {
+                Ok(Ok(summary)) => {
+                    if let DreamRunState::Running { mode, started } = &self.dream_run {
+                        let took = started.elapsed();
+                        self.dream_run = DreamRunState::Done {
+                            mode: mode.clone(),
+                            took,
+                            summary,
+                        };
+                    }
+                    self.dream_trigger_rx = None;
+                    // Refresh metrics — dream just changed memory state.
+                    self.load_status();
+                    self.load_observe();
+                }
+                Ok(Err(err)) => {
+                    if let DreamRunState::Running { mode, .. } = &self.dream_run {
+                        self.dream_run = DreamRunState::Failed {
+                            mode: mode.clone(),
+                            error: err,
+                        };
+                    }
+                    self.dream_trigger_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.dream_trigger_rx = None;
+                }
+            }
+        }
+    }
+
+    /// Trigger a non-blocking dream cycle. Returns immediately; the
+    /// `dream_trigger_rx` Receiver fires when the child exits and
+    /// `poll_bus` transitions DreamRunState to Done/Failed.
+    fn start_dream(&mut self, mode: &str) {
+        if self.dream_trigger_rx.is_some() { return; }
+        let mode = mode.to_string();
+        self.dream_run = DreamRunState::Running {
+            mode: mode.clone(),
+            started: Instant::now(),
+        };
+        let (tx, rx) = mpsc::channel::<Result<String, String>>();
+        self.dream_trigger_rx = Some(rx);
+        let bin = self.kannaka_bin.clone();
+        let mode_for_thread = mode.clone();
+        std::thread::spawn(move || {
+            let output = Command::new(&bin)
+                .args(["dream", "--mode", &mode_for_thread])
+                .env("KANNAKA_QUIET", "1")
+                .output();
+            let result = match output {
+                Ok(out) if out.status.success() => {
+                    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    Err(stderr.trim().to_string())
+                }
+                Err(e) => Err(format!("spawn failed: {e}")),
+            };
+            let _ = tx.send(result);
+        });
     }
 
     fn find_kannaka_binary() -> String {
@@ -615,47 +747,30 @@ impl App {
         }
     }
 
+    /// Kick off a dream from the command bar (`dream` or `dream lite`).
+    /// Always non-blocking — the worker thread reports back via
+    /// dream_trigger_rx. Was blocking pre-v0.5.8 and froze the TUI for
+    /// the duration of consolidation (~30s).
     fn execute_dream(&mut self) {
+        if self.dream_trigger_rx.is_some() {
+            self.messages.push(Message {
+                role: Role::System,
+                content: "A dream is already running — wait for it to finish.".into(),
+            });
+            return;
+        }
         self.messages.push(Message {
             role: Role::User,
             content: "dream --mode deep".to_string(),
         });
         self.messages.push(Message {
             role: Role::System,
-            content: "Starting dream cycle...".to_string(),
+            content: "Dream cycle started in background — Dreams tab for progress.".to_string(),
         });
-
-        let output = Command::new(&self.kannaka_bin)
-            .args(["dream", "--mode", "deep"])
-            .env("KANNAKA_QUIET", "1")
-            .output();
-
-        match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                if out.status.success() {
-                    self.messages.push(Message {
-                        role: Role::Result,
-                        content: format!("Dream complete. {}", stdout.trim()),
-                    });
-                } else {
-                    self.messages.push(Message {
-                        role: Role::Error,
-                        content: format!("Dream failed: {}", stderr.trim()),
-                    });
-                }
-                // Refresh status after dream
-                self.load_status();
-                self.load_observe();
-            }
-            Err(e) => {
-                self.messages.push(Message {
-                    role: Role::Error,
-                    content: format!("Failed: {}", e),
-                });
-            }
-        }
+        // Make sure the bus is on so the post-dream KANNAKA.dreams event
+        // shows up in the history list.
+        self.start_bus();
+        self.start_dream("deep");
     }
 
     fn execute_forget(&mut self, query: &str) {
@@ -1168,10 +1283,9 @@ impl App {
                 self.load_status();
                 self.load_observe();
             }
-            2 | 3 => {
-                // Bus + Constellation both feed off the same NATS stream —
-                // lazy-start the streaming child on the first visit to
-                // either tab.
+            2 | 3 | 4 => {
+                // Bus, Constellation, and Dreams all feed off the same
+                // NATS stream (Dreams listens for KANNAKA.dreams events).
                 self.start_bus();
             }
             _ => {}
@@ -1183,6 +1297,23 @@ impl App {
         if self.show_help {
             self.show_help = false;
             return;
+        }
+
+        // Dreams tab: empty-input single-letter hotkeys trigger a dream
+        // without going through the command bar. Only fire when the input
+        // is empty so users can still type commands like `dream lite`.
+        if self.active_tab == 4 && self.input.is_empty() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::NONE, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::Char('D')) => {
+                    self.start_dream("deep");
+                    return;
+                }
+                (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Char('L')) => {
+                    self.start_dream("lite");
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match (key.modifiers, key.code) {
@@ -1304,7 +1435,7 @@ fn ui(f: &mut Frame, app: &App) {
         1 => render_status_tab(f, app, outer[2]),
         2 => render_bus_tab(f, app, outer[2]),
         3 => render_constellation_tab(f, app, outer[2]),
-        4 => render_placeholder(f, "Dreams", "Dream cycle control. Coming soon.", outer[2]),
+        4 => render_dreams_tab(f, app, outer[2]),
         5 => render_chat_tab(f, app, outer[2]),
         _ => {}
     }
@@ -1677,6 +1808,190 @@ fn render_placeholder(f: &mut Frame, title: &str, message: &str, area: Rect) {
         )
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);
+}
+
+/// Parse a KANNAKA.dreams payload into a structured DreamEvent.
+fn dream_event_from_payload(ts_ms: i64, payload: &serde_json::Value) -> Option<DreamEvent> {
+    let obj = payload.as_object()?;
+    Some(DreamEvent {
+        ts_ms,
+        agent_id: obj.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        cycles: obj.get("cycles").and_then(|v| v.as_u64()).unwrap_or(0),
+        strengthened: obj.get("memories_strengthened").and_then(|v| v.as_u64()).unwrap_or(0),
+        pruned: obj.get("memories_pruned").and_then(|v| v.as_u64()).unwrap_or(0),
+        new_connections: obj.get("new_connections").and_then(|v| v.as_u64()).unwrap_or(0),
+        hallucinations: obj.get("hallucinations_created").and_then(|v| v.as_u64()).unwrap_or(0),
+        consciousness_before: obj.get("consciousness_before").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        consciousness_after: obj.get("consciousness_after").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        emerged: obj.get("emerged").and_then(|v| v.as_bool()).unwrap_or(false),
+    })
+}
+
+fn render_dreams_tab(f: &mut Frame, app: &App, area: Rect) {
+    // Top: current state of any locally-triggered dream
+    // Middle: recent dream events from across the constellation
+    // Bottom: hint bar
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),  // current run state
+            Constraint::Min(6),     // history list
+            Constraint::Length(3),  // hint bar
+        ])
+        .split(area);
+
+    // ----- Current run -----
+    let (run_title, run_color, run_lines) = match &app.dream_run {
+        DreamRunState::Idle => (
+            " Local Dream · idle ",
+            DIM,
+            vec![
+                Line::from(Span::styled(
+                    "  Press 'd' for deep, 'l' for lite — or type `dream` in the bar.",
+                    Style::default().fg(DIM),
+                )),
+            ],
+        ),
+        DreamRunState::Running { mode, started } => {
+            let secs = started.elapsed().as_secs();
+            (
+                " Local Dream · running ",
+                WARNING,
+                vec![
+                    Line::from(vec![
+                        Span::styled("  Mode: ", Style::default().fg(DIM)),
+                        Span::styled(mode.clone(), Style::default().fg(WARNING).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("    elapsed: {}s", secs), Style::default().fg(DIM)),
+                    ]),
+                    Line::from(Span::styled(
+                        "  Consolidating the medium — TUI stays responsive while this runs.",
+                        Style::default().fg(DIM),
+                    )),
+                ],
+            )
+        }
+        DreamRunState::Done { mode, took, summary } => (
+            " Local Dream · complete ",
+            SUCCESS,
+            vec![
+                Line::from(vec![
+                    Span::styled("  Mode: ", Style::default().fg(DIM)),
+                    Span::styled(mode.clone(), Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("    took: {:.1}s", took.as_secs_f64()), Style::default().fg(DIM)),
+                ]),
+                Line::from(Span::styled(
+                    format!("  {}", truncate(&summary.replace('\n', " · "), 200)),
+                    Style::default().fg(TEXT),
+                )),
+            ],
+        ),
+        DreamRunState::Failed { mode, error } => (
+            " Local Dream · failed ",
+            ERROR,
+            vec![
+                Line::from(vec![
+                    Span::styled("  Mode: ", Style::default().fg(DIM)),
+                    Span::styled(mode.clone(), Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(Span::styled(
+                    format!("  {}", truncate(error, 200)),
+                    Style::default().fg(ERROR),
+                )),
+            ],
+        ),
+    };
+    let run_block = Paragraph::new(run_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(run_color))
+                .style(Style::default().bg(BG))
+                .title(Span::styled(
+                    run_title,
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(run_block, chunks[0]);
+
+    // ----- History (drained from KANNAKA.dreams via the bus) -----
+    let body_height = chunks[1].height.saturating_sub(3) as usize;
+    let mut hist_lines: Vec<Line> = Vec::new();
+    hist_lines.push(Line::from(vec![
+        Span::styled(
+            "  time     agent           cycles  +Φ    Δstr  Δprn  Δnew  halluc",
+            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    hist_lines.push(Line::from(""));
+    for ev in app.dream_history.iter().take(body_height.max(1)) {
+        let delta_phi = ev.consciousness_after - ev.consciousness_before;
+        let phi_color = if delta_phi > 0.001 { SUCCESS }
+            else if delta_phi < -0.001 { ERROR }
+            else { DIM };
+        let emerged_mark = if ev.emerged { "★ " } else { "  " };
+        hist_lines.push(Line::from(vec![
+            Span::styled(emerged_mark, Style::default().fg(ACCENT)),
+            Span::styled(
+                format!("{} ", format_bus_ts(ev.ts_ms)),
+                Style::default().fg(DIM),
+            ),
+            Span::styled(
+                format!("{:<14} ", truncate(&ev.agent_id, 14)),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{:>6}  ", ev.cycles), Style::default().fg(TEXT)),
+            Span::styled(
+                format!("{:>+5.3} ", delta_phi),
+                Style::default().fg(phi_color),
+            ),
+            Span::styled(
+                format!("{:>5}  {:>5}  {:>5}  {:>5}",
+                    ev.strengthened, ev.pruned, ev.new_connections, ev.hallucinations),
+                Style::default().fg(TEXT),
+            ),
+        ]));
+    }
+    if app.dream_history.is_empty() {
+        hist_lines.push(Line::from(Span::styled(
+            "  No KANNAKA.dreams events on the bus yet — once any constellation node",
+            Style::default().fg(DIM),
+        )));
+        hist_lines.push(Line::from(Span::styled(
+            "  finishes a dream cycle, the report shows up here.",
+            Style::default().fg(DIM),
+        )));
+    }
+    let history = Paragraph::new(hist_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(DIM))
+                .style(Style::default().bg(BG))
+                .title(Span::styled(
+                    format!(" Recent Dreams · {} ", app.dream_history.len()),
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(history, chunks[1]);
+
+    // ----- Hint bar -----
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(" d ", Style::default().fg(BG).bg(SUCCESS).add_modifier(Modifier::BOLD)),
+        Span::styled(" deep dream  ", Style::default().fg(DIM)),
+        Span::styled(" l ", Style::default().fg(BG).bg(INFO).add_modifier(Modifier::BOLD)),
+        Span::styled(" lite dream  ", Style::default().fg(DIM)),
+        Span::styled(" ★ ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(" emergence detected ", Style::default().fg(DIM)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM))
+            .style(Style::default().bg(BG)),
+    );
+    f.render_widget(hints, chunks[2]);
 }
 
 fn render_chat_tab(f: &mut Frame, app: &App, area: Rect) {
