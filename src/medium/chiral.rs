@@ -278,7 +278,10 @@ impl ChiralMedium {
         // 2. Search right hemisphere (holistic - deep, associative)
         let right_matches = self.right.resonate(vector, top_k * 2);
 
-        // 3. Identify intuitions: right matches not paired with left matches
+        // 3. Identify intuitions: right matches not paired with left matches.
+        //    Left matches carry hemisphere-local UUIDs; paired_right_ids is
+        //    computed BEFORE translation because the left_to_right lookup
+        //    needs the local IDs.
         let left_ids: std::collections::HashSet<Uuid> =
             left_matches.iter().map(|r| r.id).collect();
         let paired_right_ids: std::collections::HashSet<Uuid> =
@@ -287,9 +290,27 @@ impl ChiralMedium {
                 .copied()
                 .collect();
 
-        let mut results = left_matches;
+        // 4. Translate left matches' local UUIDs → canonical (right) UUIDs
+        //    so the caller's store.get(id) can actually resolve them
+        //    (kannaka-memory#83). Pre-fix, left matches were emitted with
+        //    their hemisphere-local IDs and silently dropped in openclaw's
+        //    recall lookup because the canonical store keys on right IDs.
+        //    Any left wavefront without a left_to_right mapping is an
+        //    orphan (its right counterpart was pruned) — drop it rather
+        //    than emit an unresolvable ID.
+        let mut results: Vec<ChiralResonance> = left_matches
+            .into_iter()
+            .filter_map(|mut r| {
+                if let Some(&canonical) = self.left_to_right.get(&r.id) {
+                    r.id = canonical;
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        // Add right-hemisphere matches that aren't already paired with left matches
+        // 5. Add right-hemisphere matches that aren't already paired with left matches
         for mut r in right_matches {
             if !paired_right_ids.contains(&r.id) {
                 r.is_intuition = true;
@@ -297,7 +318,7 @@ impl ChiralMedium {
             }
         }
 
-        // Sort by resonance strength and take top_k
+        // 6. Sort by resonance strength and take top_k
         results.sort_by(|a, b| {
             b.resonance_strength
                 .partial_cmp(&a.resonance_strength)

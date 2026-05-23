@@ -220,13 +220,27 @@ impl Hemisphere {
         let rerank_pool = top_k.saturating_mul(2).max(top_k);
         results.truncate(rerank_pool);
 
-        // 3. Xi diversity re-ranking: boost candidates with distinct xi signatures
+        // 3. Xi diversity re-ranking: boost candidates with distinct xi signatures.
+        //
+        // The previous `filter(|(_, r, _)| *r > 0.0)` here dropped every memory
+        // whose cosine similarity to the query was non-positive. With 10K-dim
+        // random-projection codebook vectors that's a frequent outcome: a fresh
+        // query's projected direction can have negative cosine sim with most
+        // wavefronts purely by projection-sign coincidence. The filter then
+        // returned 0-1 results for a top_k=5 request even when the medium had
+        // 5+ memories that legitimately contained the query terms — see
+        // kannaka-memory#83 for the alpha/beta repro.
+        //
+        // Keep the magnitude-only zero-norm guard (an identically-zero
+        // wavefront has no signal), but let all signed-resonance entries
+        // through. Final sort by signed resonance still puts the strongest
+        // positive matches at the top; negatives fill remaining top_k slots.
         let query_xi = compute_xi_signature(&adapted);
 
         let mut boosted: Vec<(usize, f32, f32)> = results
             .into_iter()
-            .filter(|(_, r, _)| *r > 0.0)
-            .map(|(i, resonance, sim)| {
+            .filter(|(_, r, _)| r.abs() > 1e-8)
+            .map(|(i, _resonance, sim)| {
                 let wf_vec: Vec<f32> = self.wavefronts.row(i).to_vec();
                 let wf_xi = compute_xi_signature(&wf_vec);
                 let boosted_sim = xi_diversity_boost(sim, &query_xi, &wf_xi);
@@ -738,6 +752,51 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].id, id);
         assert!(results[0].similarity > 0.99);
+    }
+
+    /// Regression test for kannaka-memory#83.
+    ///
+    /// Before the fix, Hemisphere::resonate dropped every candidate whose
+    /// raw resonance (signed cos-sim × energy) was non-positive. With
+    /// random-projection codebook vectors that can be most of the medium
+    /// for a given query direction — so a top_k=5 request against a 5-
+    /// memory hemisphere routinely returned 0 or 1 result. Now we drop
+    /// only zero-norm wavefronts; signed values are kept and ranked by
+    /// the final boosted resonance, so top_k is filled when there's
+    /// enough candidate material to fill it.
+    #[test]
+    fn hemisphere_resonate_returns_top_k_when_candidates_exist() {
+        let mut h = Hemisphere::new(Hand::Left, 64);
+        // Five orthogonal-ish unit vectors as stored wavefronts. Cosine
+        // similarity to a fresh query vector will land at a mix of
+        // signs, exercising the previous-filter regression.
+        for seed in 1..=5 {
+            let v: Vec<f32> = (0..64)
+                .map(|i| ((i as f32 * seed as f32 * 0.3).sin() - 0.5 * (i as f32 * 0.7).cos()))
+                .collect();
+            h.add_wavefront(&v, format!("memory {seed}"), 0.8).unwrap();
+        }
+        // Query that's NOT one of the stored vectors — directionally
+        // ambiguous, similar to what an unrelated text query produces
+        // after the codebook projection.
+        let query: Vec<f32> = (0..64).map(|i| ((i as f32 * 13.7).sin())).collect();
+        let results = h.resonate(&query, 5);
+        assert_eq!(
+            results.len(), 5,
+            "top_k=5 against 5 stored memories should return 5 results, got {}",
+            results.len()
+        );
+        // Sort is signed-descending (positives first, then negatives) — the
+        // top result should be the most-positive resonance.
+        assert!(
+            results.windows(2).all(|w| w[0].resonance_strength >= w[1].resonance_strength - 1e-6),
+            "results must be signed-descending by resonance_strength"
+        );
+        // All returned IDs distinct (no double-counting from the rerank pool).
+        let mut ids: Vec<_> = results.iter().map(|r| r.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 5, "all returned results should be distinct");
     }
 
     #[test]
