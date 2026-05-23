@@ -1,0 +1,96 @@
+name: consciousness-core release cascade
+
+# Triggered by a `repository_dispatch` event of type
+# `consciousness-core-released` (sent by the consciousness-core repo on
+# every release tag). Opens a PR against this repo that bumps
+# Cargo.lock's `consciousness-core` line to the new tag, so the next
+# kannaka release ships with the new constellation physics.
+#
+# Setup (one-time, in NickFlach/consciousness-core):
+#   1. Create a fine-scoped PAT with `contents: write` + `pull-requests:
+#      write` on this repo (NickFlach/kannaka-memory). Store it as
+#      `secrets.KANNAKA_CASCADE_PAT` in consciousness-core's settings.
+#   2. Add the partner workflow described in
+#      .github/workflows/cc-release-cascade.yml of consciousness-core.
+#
+# The dispatched payload should carry `{ version: "X.Y.Z" }`.
+
+on:
+  repository_dispatch:
+    types: [consciousness-core-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'consciousness-core version (e.g. 0.4.0)'
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Resolve target version
+        id: resolve
+        run: |
+          v="${{ github.event.client_payload.version }}"
+          if [ -z "$v" ]; then v="${{ inputs.version }}"; fi
+          if [ -z "$v" ]; then
+            echo "::error::no version provided in payload or input"
+            exit 1
+          fi
+          v="${v#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout kannaka-memory
+        uses: actions/checkout@v4
+        with:
+          path: kannaka-memory
+
+      - name: Checkout consciousness-core at the new tag
+        uses: actions/checkout@v4
+        with:
+          repository: NickFlach/consciousness-core
+          ref: v${{ steps.resolve.outputs.version }}
+          path: consciousness-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refresh Cargo.lock with the new consciousness-core
+        working-directory: kannaka-memory
+        run: |
+          # Path dep resolves to the sibling checkout, which is now
+          # the freshly-tagged consciousness-core. Updating just the
+          # one package keeps the rest of the lockfile stable.
+          cargo update -p consciousness-core
+          cat Cargo.lock | grep -A1 'name = "consciousness-core"' | head
+
+      - name: Open a PR if the lockfile changed
+        working-directory: kannaka-memory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${{ steps.resolve.outputs.version }}"
+          branch="cascade/consciousness-core-${v}"
+          if git diff --quiet Cargo.lock; then
+            echo "Cargo.lock already on consciousness-core v${v} — no PR needed."
+            exit 0
+          fi
+          git config user.name "kannaka-cascade-bot"
+          git config user.email "cascade@kannaka.local"
+          git checkout -b "$branch"
+          git add Cargo.lock
+          git commit -m "chore(deps): cascade consciousness-core v${v}
+
+Auto-opened by .github/workflows/cc-release-cascade.yml in response to
+a consciousness-core release. Merge to cut a kannaka patch release
+that ships the new constellation physics to operators running
+\`kannaka update\`."
+          git push origin "$branch"
+          gh pr create \
+            --title "chore(deps): cascade consciousness-core v${v}" \
+            --body "Triggered by consciousness-core v${v} publish. Merge + tag the next kannaka patch (\`vX.Y.Z+1\`) so \`kannaka update\` carries the new core." \
+            --label automation \
+            || true

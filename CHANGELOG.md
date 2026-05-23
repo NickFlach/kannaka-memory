@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-05-23
+
+`kannaka update` now surfaces the bundled `consciousness-core` version
+and warns when upstream has moved ahead. New release-cascade workflow
+auto-opens a kannaka PR whenever consciousness-core publishes a tag,
+so operators running `kannaka update` reliably pick up new
+constellation physics through the normal release channel.
+
+### Added
+- `build.rs` reads `Cargo.lock` at compile time and emits the resolved
+  `consciousness-core` version as `KANNAKA_CONSCIOUSNESS_CORE_VERSION`,
+  captured into the binary via `env!()`. Surfaces as
+  `config::CONSCIOUSNESS_CORE_VERSION`.
+- `kannaka --version` now reports both: `kannaka 0.5.5
+  (consciousness-core 0.4.0)`. Previously the consciousness-core slot
+  was a copy of the kannaka version — visually present but wrong.
+- `kannaka update` opens with `Checking for updates (current: v0.5.5
+  · consciousness-core v0.4.0)` and, after probing the
+  `NickFlach/consciousness-core` releases endpoint, prints either:
+  - `consciousness-core: bundled vX, up to date.` when in sync, or
+  - a hint that upstream is newer and a fresh kannaka release is
+    needed to carry it.
+- `.github/workflows/cc-release-cascade.yml` — listens for a
+  `consciousness-core-released` `repository_dispatch` event,
+  re-checks out consciousness-core at the new tag, runs
+  `cargo update -p consciousness-core`, opens a chore PR. Companion
+  `.github/workflows/release-cascade.yml` lives in consciousness-core
+  to fire the dispatch on every tag push. Needs a one-time PAT
+  (`KANNAKA_CASCADE_PAT`) wired in consciousness-core's repo
+  secrets; documented inline in both workflows.
+
+### Fixed
+- `kannaka-tui` is already updated alongside `kannaka` by
+  `update_sibling_tui` (was correct since 0.3.x); paired with the new
+  drift-check this closes the loop on "what does `kannaka update` ship
+  for me" — both binaries and the bundled core's version are now
+  visible from one command.
+
+---
+
 ## [0.5.4] — 2026-05-23
 
 Closes the four open config-surface issues filed against 0.5.3

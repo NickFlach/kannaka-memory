@@ -347,9 +347,12 @@ fn main() {
 
     let command_start = 1;
 
-    // --version flag (can appear anywhere)
+    // --version flag (can appear anywhere). The consciousness-core
+    // version is captured into the binary by build.rs from Cargo.lock,
+    // so operators can tell which constellation physics they're running
+    // without re-reading the manifest.
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("kannaka {} (consciousness-core {})", config::VERSION, config::VERSION);
+        println!("kannaka {} (consciousness-core {})", config::VERSION, config::CONSCIOUSNESS_CORE_VERSION);
         println!("Wave-Interference Memory System");
         println!("https://github.com/NickFlach/kannaka-memory");
         return;

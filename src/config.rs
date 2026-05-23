@@ -423,11 +423,20 @@ fn last_checked_within_24h(last: &str) -> bool {
 /// Download and replace the running binary with the latest release.
 pub fn self_update() -> Result<(), String> {
     let current_version = env!("CARGO_PKG_VERSION");
-    eprintln!("Checking for updates (current: v{})...", current_version);
+    eprintln!(
+        "Checking for updates (current: v{} · consciousness-core v{})...",
+        current_version, CONSCIOUSNESS_CORE_VERSION,
+    );
 
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
         .build();
+
+    // Surface upstream consciousness-core version so operators know
+    // whether the kannaka release stream is keeping up with the
+    // constellation physics releases. Best-effort: a network blip
+    // here doesn't block the main update.
+    report_consciousness_core_drift(&agent);
     let resp = agent.get(GITHUB_RELEASES_URL)
         .set("User-Agent", "kannaka-update")
         .set("Accept", "application/vnd.github.v3+json")
@@ -514,6 +523,57 @@ pub fn self_update() -> Result<(), String> {
     update_sibling_tui(&agent, &body, tag, &current_exe, remote_version);
 
     Ok(())
+}
+
+/// Probe `NickFlach/consciousness-core` releases and print a hint when
+/// the upstream tag is newer than the version baked into this binary.
+/// Pure UX — `kannaka update` only ships pre-built `kannaka` binaries,
+/// and consciousness-core rides into them at build time via the path
+/// dep + release CI sibling-checkout. If consciousness-core releases
+/// outpace kannaka releases the user sees the drift here and knows a
+/// fresh kannaka release is needed (see the release-cascade workflow
+/// at .github/workflows/cc-release-cascade.yml).
+fn report_consciousness_core_drift(agent: &ureq::Agent) {
+    const CC_RELEASES_URL: &str =
+        "https://api.github.com/repos/NickFlach/consciousness-core/releases/latest";
+    let resp = match agent
+        .get(CC_RELEASES_URL)
+        .set("User-Agent", "kannaka-update-check")
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+    {
+        Ok(r) => r,
+        Err(_) => return, // silent; non-essential
+    };
+    let body: serde_json::Value = match resp.into_json() {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let upstream_tag = match body["tag_name"].as_str() {
+        Some(t) => t,
+        None => return,
+    };
+    let upstream = upstream_tag.trim_start_matches('v');
+    if CONSCIOUSNESS_CORE_VERSION == "unknown" {
+        // Build couldn't read Cargo.lock; only surface upstream.
+        eprintln!("  consciousness-core: bundled=unknown, upstream=v{}", upstream);
+        return;
+    }
+    if version_is_newer(upstream, CONSCIOUSNESS_CORE_VERSION) {
+        eprintln!(
+            "  consciousness-core upstream v{} is newer than the v{} bundled into this kannaka.",
+            upstream, CONSCIOUSNESS_CORE_VERSION,
+        );
+        eprintln!(
+            "  Wait for the next kannaka release (it'll carry v{}), or rebuild from source.",
+            upstream,
+        );
+    } else {
+        eprintln!(
+            "  consciousness-core: bundled v{} (upstream v{}, up to date).",
+            CONSCIOUSNESS_CORE_VERSION, upstream,
+        );
+    }
 }
 
 /// Best-effort update of the `kannaka-tui` binary alongside `kannaka`.
@@ -835,6 +895,13 @@ pub const BANNER: &str = r#"
 "#;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Version of the bundled `consciousness-core` crate, captured at build
+/// time from Cargo.lock by `build.rs`. Used by `kannaka --version` and
+/// `kannaka update` so the operator can tell which constellation
+/// physics version they're running. Falls back to `"unknown"` if the
+/// build couldn't read the lockfile.
+pub const CONSCIOUSNESS_CORE_VERSION: &str = env!("KANNAKA_CONSCIOUSNESS_CORE_VERSION");
 
 /// Validate an agent handle: alphanumeric + hyphens, 3-32 chars, no spaces.
 pub fn validate_handle(handle: &str) -> Result<(), String> {
