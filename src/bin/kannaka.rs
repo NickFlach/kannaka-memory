@@ -107,20 +107,23 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
     let codebook = Codebook::new(384, 10_000, 42);
     let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
 
-    // HRM file path. Honor `cfg.hrm.path` when it points at a specific
-    // file (any filename, not just "kannaka.hrm"). Pre-fix the caller
-    // stripped to the parent directory and we re-joined with the
-    // hardcoded literal, silently writing to the wrong store whenever
-    // anyone configured an alternate filename. (#81)
+    // HRM file path. Honor `cfg.hrm.path` when it's set — full path with
+    // filename is used verbatim; relative paths resolve against
+    // `data_dir`. Pre-fix #100, a configured nested filename like
+    // `~/.kannaka/nested/custom-store.hrm` collapsed to the default
+    // `kannaka.hrm` because the parent-match guard from #81 only let
+    // through paths whose parent literally equaled `data_dir`.
     let cfg = KannakaConfig::load();
-    let configured = if !cfg.hrm.path.is_empty() {
-        Some(PathBuf::from(&cfg.hrm.path))
+    let hrm_path = if !cfg.hrm.path.is_empty() {
+        let p = PathBuf::from(&cfg.hrm.path);
+        if p.file_name().is_some() {
+            if p.is_absolute() { p } else { data_dir.join(p) }
+        } else {
+            // Bare directory or empty filename — fall back to default.
+            data_dir.join("kannaka.hrm")
+        }
     } else {
-        None
-    };
-    let hrm_path = match configured {
-        Some(p) if p.parent() == Some(data_dir.as_path()) => p,
-        _ => data_dir.join("kannaka.hrm"),
+        data_dir.join("kannaka.hrm")
     };
 
     // Try to load existing HRM file, create new if not found

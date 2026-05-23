@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-05-23
+
+Closes the four open config-surface issues filed against 0.5.3
+(#98, #99, #100, #101). Same family as the 0.5.1 sweep — making
+the documented env-var precedence + first-class config fields
+actually take effect.
+
+### Fixed
+- `apply_env_overrides` now honors the constellation + GhostSignals
+  endpoint env vars the config module advertises (#98):
+    KANNAKA_RADIO_URL          → constellation.radio_url
+    KANNAKA_OBSERVATORY_URL    → constellation.observatory_url
+    KANNAKA_GHOSTSIGNALS_HUB_URL → ghostsignals.hub_url
+    KANNAKA_GHOSTSIGNALS_TOKEN → ghostsignals.token
+  Previously only agent / LLM / NATS vars actually took effect; the
+  rest documented in the precedence chain were silently ignored.
+- `kannaka config set` reads `config.toml` *unmodified* before
+  applying the requested change (#99). New `KannakaConfig::
+  load_unmodified()` helper. Pre-fix, the handler started from
+  `KannakaConfig::load()` (which already merged env precedence)
+  and saved the whole thing back to disk — so writing one key
+  could silently leak `KANNAKA_AGENT_ID` / `KANNAKA_NATS_URL` /
+  similar env-only values from the operator's shell into the
+  persistent file.
+- `init_with_hrm` now honors `cfg.hrm.path` whenever it carries
+  a filename, including for nested or alternate-name HRM stores
+  (#100). The previous parent-must-equal-data_dir guard added
+  for #81 was too tight — it silently collapsed any other
+  configured path to the hardcoded `kannaka.hrm`.
+- (Already shipped: register_ghostsignals in the three onboarding
+  flows already preferred `ghostsignals.hub_url` over
+  `constellation.radio_url` per the 0.5.1 sweep; #101 closed as
+  confirmed.)
+
+### Tests
+- Existing 522 lib tests still pass; no new regression surface
+  introduced.
+
+
 ## [0.5.3] — 2026-05-21
 
 Completes the persistence-hardening sweep started in 0.5.2 by turning on the

@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "consciousness-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libm",
  "serde",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "kannaka-memory"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "bincode",
  "blake3",

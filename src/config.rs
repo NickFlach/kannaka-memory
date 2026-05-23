@@ -286,7 +286,10 @@ impl KannakaConfig {
         Self::config_path().exists()
     }
 
-    /// Apply environment variable overrides.
+    /// Apply environment variable overrides. Used by `load()` so the
+    /// in-memory config sees the documented precedence (env > file >
+    /// default). Code paths that need to PERSIST a setting must NOT
+    /// start from this enriched view — see `load_unmodified()`.
     fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("KANNAKA_AGENT_ID") { self.agent.id = v; }
         if let Ok(v) = std::env::var("KANNAKA_LLM_PROVIDER") { self.llm.provider = v; }
@@ -295,6 +298,29 @@ impl KannakaConfig {
         if let Ok(v) = std::env::var("KANNAKA_LLM_BASE_URL") { self.llm.base_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_NATS_URL") { self.swarm.nats_url = v; }
         if let Ok(v) = std::env::var("OLLAMA_URL") { self.llm.base_url = v; }
+        // Constellation + GhostSignals endpoint overrides (#98). The
+        // config module advertises env-var precedence for these and
+        // production deployments rely on it; previously only agent/LLM
+        // /swarm vars actually took effect.
+        if let Ok(v) = std::env::var("KANNAKA_RADIO_URL") { self.constellation.radio_url = v; }
+        if let Ok(v) = std::env::var("KANNAKA_OBSERVATORY_URL") { self.constellation.observatory_url = v; }
+        if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_HUB_URL") { self.ghostsignals.hub_url = v; }
+        if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_TOKEN") { self.ghostsignals.token = v; }
+    }
+
+    /// Load the on-disk config WITHOUT applying environment overrides.
+    /// `config set` uses this so that writing one key doesn't silently
+    /// persist unrelated env-only values (`KANNAKA_AGENT_ID`,
+    /// `KANNAKA_NATS_URL`, etc.) back into the file (#99). Everything
+    /// else should keep using `load()`.
+    pub fn load_unmodified() -> Self {
+        let path = Self::config_path();
+        if !path.exists() { return Self::default(); }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Self::default(),
+        };
+        toml::from_str(&content).unwrap_or_default()
     }
 
     /// Backward-compatible helper: persist `agent_id` to `~/.kannaka/agent_id`

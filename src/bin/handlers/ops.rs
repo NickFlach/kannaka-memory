@@ -139,7 +139,14 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     _ => Err(()),
                 }
             };
-            let mut new_cfg = cfg.clone();
+            // Critical: re-read the file WITHOUT env overrides so writing
+            // one key doesn't silently persist `KANNAKA_AGENT_ID` /
+            // `KANNAKA_NATS_URL` / etc. that only exist in the current
+            // shell (#99). The caller's `cfg` was loaded through
+            // KannakaConfig::load() which applies env precedence, so
+            // saving that value back to disk would leak the env into
+            // the file.
+            let mut new_cfg = KannakaConfig::load_unmodified();
             match key.as_str() {
                 "agent.id" => new_cfg.agent.id = value.clone(),
                 "agent.display_name" => new_cfg.agent.display_name = value.clone(),
