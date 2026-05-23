@@ -43,6 +43,17 @@ impl SimpleHashEncoder {
     }
 
     /// Deterministic hash-based vector for a single token.
+    ///
+    /// One-line subtle bug fixed under #106: the shift used to be `>> 33`,
+    /// which keeps only the high 31 bits of `h`. After `as f32 / u32::MAX`
+    /// that's range [0, 0.5), then `* 2 - 1` → [-1, 0) — **every
+    /// per-dimension value was always negative**, so every text projected
+    /// into the same all-negative hyperoctant of 384-dim space. Pairwise
+    /// cosine similarity across distinct texts measured 0.93 instead of
+    /// ~0, which is why recall ranking was biased toward the first-stored
+    /// memory regardless of query content (#106). The correct shift is
+    /// `>> 32` — keep the high 32 bits and reinterpret as u32, giving
+    /// [0, u32::MAX] → [0, 1] → [-1, 1].
     fn token_vector(&self, token: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; self.dim];
         // Use a simple hash mixing scheme
@@ -53,8 +64,8 @@ impl SimpleHashEncoder {
         for i in 0..self.dim {
             // Derive per-dimension value from hash
             h = h.wrapping_mul(6364136223846793005).wrapping_add(i as u64);
-            // Map to [-1, 1] range
-            v[i] = ((h >> 33) as f32 / (u32::MAX as f32)) * 2.0 - 1.0;
+            // Map to [-1, 1] range. High 32 bits → u32 → [0, 1] → [-1, 1].
+            v[i] = ((h >> 32) as u32 as f32 / (u32::MAX as f32)) * 2.0 - 1.0;
         }
         v
     }
