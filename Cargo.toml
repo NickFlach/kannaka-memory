@@ -1,6 +1,6 @@
 [package]
 name = "kannaka-memory"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 description = "Hypervector memory system for Kannaka — wave-modulated holographic memory with skip links"
 license = "MIT"
@@ -22,8 +22,11 @@ clap = { version = "4.0", features = ["derive"], optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 toml = "0.8"
-ratatui = { version = "0.29", optional = true }
-crossterm = { version = "0.28", optional = true }
+# ratatui + crossterm removed in v0.5.13 — the TUI was peeled out to
+# its own repo NickFlach/kannaka-tui. The new crate is the canonical
+# home for the terminal dashboard. Install via:
+#   cargo install kannaka-tui
+# or download a release binary from the kannaka-tui releases page.
 # tokio + async-trait removed (were only used by MCP server)
 lazy_static = "1.4"
 consciousness-core = { path = "../consciousness-core", features = ["serde"] }
@@ -63,7 +66,7 @@ video = ["image"]
 glyph = []
 collective = []  # rayon is now unconditional
 hrm = ["ndarray", "blake3"]
-tui = ["ratatui", "crossterm"]
+# tui feature removed in v0.5.13 — see NickFlach/kannaka-tui
 # sqlite-migrate feature removed
 
 [[bin]]
@@ -84,11 +87,9 @@ path = "src/bin/recompute_geometry.rs"
 name = "dump_xi_pairs"
 path = "src/bin/dump_xi_pairs.rs"
 
-[[bin]]
-name = "kannaka-tui"
-path = "src/bin/tui.rs"
-required-features = ["tui"]
-
+# kannaka-tui binary moved to its own repo: NickFlach/kannaka-tui
+# (extracted at parent v0.5.12 → standalone v0.1.0).
+#
 # hrm-migrate is obsolete (was Dolt→HRM migration); kept for reference
 # [[bin]]
 # name = "hrm-migrate"
