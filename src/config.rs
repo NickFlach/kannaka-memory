@@ -578,16 +578,23 @@ fn report_consciousness_core_drift(agent: &ureq::Agent) {
 
 /// Best-effort update of the `kannaka-tui` binary alongside `kannaka`.
 /// Looks for a `kannaka-tui[.exe]` in the same directory as the current
-/// binary; if found, downloads the matching tui artifact from the same
-/// release and atomically replaces it (Windows: rename old to .exe.old,
-/// new into place; Unix: chmod + rename). Silent no-op if the TUI isn't
-/// installed; warning on download failure so the user knows to retry.
+/// binary; if found, downloads the matching tui artifact and atomically
+/// replaces it (Windows: rename old to .exe.old, new into place; Unix:
+/// chmod + rename). Silent no-op if the TUI isn't installed; warning on
+/// download failure so the user knows to retry.
+///
+/// As of kannaka-memory v0.5.13 the TUI lives in its own repo
+/// (NickFlach/kannaka-tui) with its own release cadence — the sibling
+/// asset lookup hits THAT repo's latest release, not the kannaka-memory
+/// release the caller is currently updating to. The two version streams
+/// don't have to stay aligned; this just keeps an installed TUI binary
+/// up-to-date alongside `kannaka update`.
 fn update_sibling_tui(
     agent: &ureq::Agent,
-    release_body: &serde_json::Value,
-    tag: &str,
+    _release_body: &serde_json::Value,
+    _tag: &str,
     current_exe: &std::path::Path,
-    remote_version: &str,
+    _remote_version: &str,
 ) {
     let dir = match current_exe.parent() {
         Some(d) => d,
@@ -601,16 +608,35 @@ fn update_sibling_tui(
         return;
     }
 
+    // Hit the kannaka-tui repo's latest release directly.
+    const TUI_RELEASES_URL: &str =
+        "https://api.github.com/repos/NickFlach/kannaka-tui/releases/latest";
+    let tui_release: serde_json::Value = match agent
+        .get(TUI_RELEASES_URL)
+        .set("User-Agent", "kannaka-update")
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+        .and_then(|r| r.into_json().map_err(Into::into))
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Note: could not fetch kannaka-tui releases: {e}");
+            return;
+        }
+    };
+    let tui_tag = tui_release["tag_name"].as_str().unwrap_or("unknown");
+    let tui_version = tui_tag.trim_start_matches('v');
+
     let asset_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
-    let download_url = match release_body["assets"].as_array()
+    let download_url = match tui_release["assets"].as_array()
         .and_then(|assets| {
-            assets.iter().find(|a| a["name"].as_str().map_or(false, |n| n == asset_name))
+            assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n == asset_name))
         })
         .and_then(|a| a["browser_download_url"].as_str())
     {
         Some(u) => u.to_string(),
         None => {
-            eprintln!("Note: tui artifact `{}` not found in release {} — skipping TUI update.", asset_name, tag);
+            eprintln!("Note: tui artifact `{}` not found in kannaka-tui release {} — skipping TUI update.", asset_name, tui_tag);
             return;
         }
     };
@@ -661,7 +687,7 @@ fn update_sibling_tui(
             return;
         }
     }
-    eprintln!("kannaka-tui also updated to v{}.", remote_version);
+    eprintln!("kannaka-tui also updated to v{}.", tui_version);
 }
 
 fn platform_triple() -> (&'static str, &'static str, &'static str) {
