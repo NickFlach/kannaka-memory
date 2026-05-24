@@ -96,6 +96,13 @@ pub struct AgentPhase {
     /// Domain role for domain-aware hive detection (e.g. "memory", "perception").
     #[serde(default)]
     pub role: Option<String>,
+    /// Operator-set display label. Optional in the wire schema for backward
+    /// compatibility with pre-v0.5.12 publishers; when present, consumers
+    /// (radio, observatory, TUI) should prefer this over `agent_id` for
+    /// any user-facing label. Reads `kannaka swarm join --display-name`
+    /// on the publisher side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 fn default_trust() -> f32 {
@@ -733,6 +740,19 @@ impl QueenSync {
     /// is the real cross-memory connection count (typically from
     /// ConsciousnessMetrics.total_skip_links). Pass 0 when unknown.
     pub fn to_agent_phase(&self, cluster_count: usize, memory_count: usize, link_count: usize) -> AgentPhase {
+        self.to_agent_phase_with_display(cluster_count, memory_count, link_count, None)
+    }
+
+    /// Like `to_agent_phase` but also stamps an operator-set display name
+    /// into the published payload — so the radio/observatory/TUI can show
+    /// e.g. "Kannaka Prime" instead of falling back to the agent_id slug.
+    pub fn to_agent_phase_with_display(
+        &self,
+        cluster_count: usize,
+        memory_count: usize,
+        link_count: usize,
+        display_name: Option<String>,
+    ) -> AgentPhase {
         AgentPhase {
             id: Uuid::new_v4().to_string(),
             agent_id: self.agent_id.clone(),
@@ -754,6 +774,7 @@ impl QueenSync {
             bridge_activity: self.bridge_activity,
             dream_state: self.dream_state.clone(),
             role: None,
+            display_name,
         }
     }
 
@@ -1105,6 +1126,7 @@ mod tests {
             bridge_activity: 0.0,
             dream_state: None,
             role: None,
+            display_name: None,
         }
     }
 

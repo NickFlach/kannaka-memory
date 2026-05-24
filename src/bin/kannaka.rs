@@ -256,7 +256,19 @@ fn swarm_publish_heartbeat(
         queen.phi = m.phi;
     }
     let link_count = cached.as_ref().map(|m| m.total_skip_links).unwrap_or(0);
-    let phase = queen.to_agent_phase(cluster_count, sys.engine.store.count(), link_count);
+    // Use the display variant so the radio/observatory/TUI render the
+    // operator-set label instead of falling back to agent_id. Empty
+    // display_name (the default when --display-name not given) goes out
+    // as None so consumers fall through to their own agent_id-derived
+    // label without seeing an empty string.
+    let display = if display_name.is_empty() || display_name == my_agent_id {
+        None
+    } else {
+        Some(display_name.to_string())
+    };
+    let phase = queen.to_agent_phase_with_display(
+        cluster_count, sys.engine.store.count(), link_count, display,
+    );
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
     }

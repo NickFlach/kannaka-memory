@@ -2182,6 +2182,7 @@ mod tests {
             bridge_activity: 0.0,
             dream_state: None,
             role: None,
+            display_name: None,
         };
         let bytes = serde_json::to_vec(&phase).unwrap();
         let decoded: AgentPhase = serde_json::from_slice(&bytes).unwrap();
@@ -2283,6 +2284,7 @@ mod tests {
             bridge_activity: 0.0,
             dream_state: None,
             role: None,
+            display_name: None,
         };
 
         transport.publish_phase(&phase).expect("publish should work");
