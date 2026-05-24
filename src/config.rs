@@ -603,8 +603,18 @@ fn update_sibling_tui(
     let (os, arch, ext) = platform_triple();
     let tui_name = if cfg!(windows) { "kannaka-tui.exe" } else { "kannaka-tui" };
     let tui_path = dir.join(tui_name);
+    let asset_name_hint = format!("kannaka-tui-{}-{}{}", os, arch, ext);
     if !tui_path.exists() {
-        // Sibling not installed — nothing to do.
+        // Sibling not installed — print a discoverable install hint so
+        // users know the TUI exists and how to get it. Pre-v0.5.15 this
+        // was a silent no-op which left operators on fresh machines
+        // wondering why `kannaka-tui` didn't appear after `kannaka update`.
+        eprintln!();
+        eprintln!("Tip: kannaka-tui isn't installed alongside kannaka.");
+        eprintln!("     Install with one of:");
+        eprintln!("       cargo install --git https://github.com/NickFlach/kannaka-tui");
+        eprintln!("       curl -L -o {tui_name} \\");
+        eprintln!("         https://github.com/NickFlach/kannaka-tui/releases/latest/download/{asset_name_hint}");
         return;
     }
 
@@ -627,7 +637,7 @@ fn update_sibling_tui(
     let tui_tag = tui_release["tag_name"].as_str().unwrap_or("unknown");
     let tui_version = tui_tag.trim_start_matches('v');
 
-    let asset_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
+    let asset_name = asset_name_hint;
     let download_url = match tui_release["assets"].as_array()
         .and_then(|assets| {
             assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n == asset_name))
