@@ -1006,7 +1006,18 @@ fn main() {
             }
 
             output["field_mode"] = serde_json::json!("HRM");
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+
+            // ADR-0029 Phase 4b — opt-in JSON envelope.
+            // `--envelope` wraps the existing payload in the standard
+            // {schema_version, command, data, errors} shape. Without
+            // the flag, output is the legacy flat object so existing
+            // downstream consumers (radio, observatory, TUI) still
+            // parse it. Migrate to --envelope at your own pace.
+            if args[command_start..].iter().any(|a| a == "--envelope") {
+                kannaka_memory::cli::print_envelope("status", output);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            }
         }
         "bias" => {
             // Reset all wavefront energies to a target value (restore bias voltage)
@@ -1152,16 +1163,23 @@ fn main() {
                     _ => i += 1,
                 }
             }
+            let envelope = args[command_start..].iter().any(|a| a == "--envelope");
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();
             if !with_members {
                 for c in &mut clusters { c.member_ids.clear(); }
             }
-            if let Some(id) = cluster_id_filter {
-                let single = clusters.into_iter().find(|c| c.cluster_id == id);
-                println!("{}", serde_json::to_string_pretty(&single).unwrap_or_else(|_| "null".to_string()));
+            let payload = if let Some(id) = cluster_id_filter {
+                serde_json::to_value(clusters.into_iter().find(|c| c.cluster_id == id))
+                    .unwrap_or(serde_json::Value::Null)
             } else {
-                println!("{}", serde_json::to_string_pretty(&clusters).unwrap());
+                serde_json::to_value(&clusters).unwrap_or(serde_json::Value::Null)
+            };
+            // ADR-0029 Phase 4b — opt-in envelope. See `status` arm above.
+            if envelope {
+                kannaka_memory::cli::print_envelope("clusters", payload);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&payload).unwrap());
             }
         }
         "neighbors" => {

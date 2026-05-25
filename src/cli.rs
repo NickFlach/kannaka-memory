@@ -557,6 +557,61 @@ fn install_completion(
     Ok(path)
 }
 
+// ── ADR-0029 Phase 4b — JSON envelope contract ──────────────────────
+//
+// Every `--envelope`-aware command emits a single JSON object with
+// this shape:
+//
+//   {
+//     "schema_version": "1.0",
+//     "command": "status",
+//     "data": { ... },           // command-specific payload
+//     "errors": []               // empty on success; populated + non-zero exit on error
+//   }
+//
+// NDJSON streaming commands (`kannaka swarm tail`, `kannaka chat
+// --json`) use a per-line variant where `data` is replaced by the
+// stream-specific event fields directly (no outer wrap, because each
+// line is already its own envelope).
+//
+// Per-handler `--envelope` migration is opt-in across v0.6.x patches
+// so downstream consumers (radio, observatory, TUI) have a window to
+// adopt the new shape without breaking on the day v0.6.3 ships.
+
+/// Schema version stamped into every envelope. Bump on incompatible
+/// changes; downstream consumers can branch on it during migration.
+pub const JSON_ENVELOPE_SCHEMA_VERSION: &str = "1.0";
+
+/// Wrap a command's structured output in the standard envelope and
+/// print it as a single JSON object to stdout. Use this from any
+/// handler that takes `--envelope`. The `data` payload can be any
+/// `serde_json::Value` — strings, arrays, nested objects are all fine.
+pub fn print_envelope(command: &str, data: serde_json::Value) {
+    let env = serde_json::json!({
+        "schema_version": JSON_ENVELOPE_SCHEMA_VERSION,
+        "command": command,
+        "data": data,
+        "errors": [],
+    });
+    println!("{}", env);
+}
+
+/// Same as `print_envelope` but with a single error attached.
+/// `data` is `null` so the field is always present (consumers can
+/// expect `.data` to exist; checking `.errors.length === 0` is the
+/// "did this succeed?" predicate). Callers should also `exit(1)`
+/// after this prints — the function does NOT exit on its own so
+/// callers can clean up first.
+pub fn print_envelope_error(command: &str, error_message: impl Into<String>) {
+    let env = serde_json::json!({
+        "schema_version": JSON_ENVELOPE_SCHEMA_VERSION,
+        "command": command,
+        "data": serde_json::Value::Null,
+        "errors": [error_message.into()],
+    });
+    println!("{}", env);
+}
+
 /// Exec the plugin binary, inheriting stdio so the operator sees the
 /// plugin's output directly. On Unix this is a true `execvp` — kannaka
 /// is replaced by the plugin. On Windows we spawn + wait + propagate
