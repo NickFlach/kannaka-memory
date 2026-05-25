@@ -215,7 +215,9 @@ pub fn build_cli() -> Command {
         .subcommand(passthrough("export-json", "Stream every wavefront as NDJSON to stdout (heavy)"))
         .subcommand(passthrough("import", "Import memories from a JSON file"))
         .subcommand(passthrough("import-json", "Import NDJSON wavefronts"))
-        .subcommand(passthrough("migrate", "Run any pending HRM format migration"))
+        // `migrate` was the Dolt→HRM path; removed in v0.6.5 along
+        // with the dead handler arm. Add a new migrate subcommand
+        // here when a new format-migration path is needed.
         .subcommand(passthrough("announce-status", "Publish a one-shot status to QUEEN.announce"))
         // ── Optional / feature-gated ───────────────────────────────────
         .subcommand(passthrough("classify", "[glyph feature] Classify input into an SGA glyph"))

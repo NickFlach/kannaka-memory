@@ -955,8 +955,6 @@ pub fn install_tui_binary(install_dir: &std::path::Path) {
     }
 }
 
-use std::io::Read as _;
-
 // ---------------------------------------------------------------------------
 // Existing-user update detection
 // ---------------------------------------------------------------------------
@@ -1864,8 +1862,6 @@ fn binary_already_in_path() -> bool {
 /// Self-install: copy the binary to the install dir, add to PATH.
 /// Returns Ok(true) if installed, Ok(false) if skipped.
 fn self_install_to_path(a: &Ansi) -> Result<bool, String> {
-    use std::io::Write;
-
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("cannot determine current exe path: {e}"))?;
     let target = install_binary_path();

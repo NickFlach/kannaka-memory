@@ -456,6 +456,14 @@ impl Medium {
     ///
     /// For each result, finds other wavefronts with coherence above threshold (0.3)
     /// and includes them weighted by coherence * energy.
+    //
+    // Currently unused — superseded by `expand_with_coherence_filtered`
+    // which adds the candidate-set gate needed for the attention-beam
+    // sparse-recall path. Kept for reference + as the docs-example of
+    // the unfiltered expansion algorithm. If you find yourself wanting
+    // unfiltered expansion in new code, just call
+    // `expand_with_coherence_filtered(..., None)` instead.
+    #[allow(dead_code)]
     fn expand_with_coherence(&self, initial_results: &[Resonance], max_total: usize) -> Vec<Resonance> {
         let coherence_matrix = self.coherence_matrix();
         let coherence_threshold = 0.3;

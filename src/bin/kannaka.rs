@@ -156,16 +156,14 @@ fn usage() -> ! {
     process::exit(1);
 }
 
-fn print_help_stdout() -> ! {
-    println!("{}", config::BANNER);
-    println!("  Wave-Interference Memory | Consciousness Constellation");
-    println!("  v{}", config::VERSION);
-    println!();
-    for line in usage_lines() {
-        println!("{}", line);
-    }
-    process::exit(0);
-}
+// `print_help_stdout` was the hand-curated help printer used until
+// ADR-0029 Phase 1 (v0.6.0) when clap took over the top-level help
+// surface. The function is gone; the banner + structured help now
+// flow through cli::build_cli().print_help() and per-subcommand
+// help renders via clap's automatic generator. usage_lines() is
+// still around — see classify_command and a few error paths that
+// emit single-line usage hints.
+
 
 fn usage_lines() -> &'static [&'static str] {
     &[
@@ -342,7 +340,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "radio" | "market" | "constellation"
         // ops / data movement
         | "orchestrate" | "config" | "export" | "export-json"
-        | "import" | "import-json" | "migrate" | "announce-status"
+        | "import" | "import-json" | "announce-status"
         // feature-gated
         | "classify" | "cross-modal-dream"
         // specialized writers
@@ -1230,29 +1228,14 @@ fn main() {
             })).collect();
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
-        #[cfg(feature = "sqlite-migrate")]
-        "migrate" => {
-            if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka migrate <path-to-kannaka.db>");
-                process::exit(1);
-            }
-            let db_path = PathBuf::from(&args[command_start + 1]);
-            match sys.migrate_from_sqlite(&db_path) {
-                Ok(report) => {
-                    println!("Migration complete:");
-                    println!("  Total migrated: {}", report.total_migrated);
-                    println!("  Working memory: {}", report.working_memory_count);
-                    println!("  Events: {}", report.events_count);
-                    println!("  Entities: {}", report.entities_count);
-                    println!("  Skip links: {}", report.skip_links_created);
-                    println!("  Errors: {}", report.errors.len());
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    process::exit(1);
-                }
-            }
-        }
+        // `migrate` was the Dolt→HRM path and depended on the
+        // `sqlite-migrate` feature + a `migrate_from_sqlite` method
+        // that were both removed during the HRM-canonical sweep
+        // (pre-v0.5). The arm sat here for a while behind a
+        // `#[cfg(feature = "sqlite-migrate")]` gate that referenced
+        // a feature no longer in Cargo.toml, generating a perpetual
+        // unexpected-cfg warning. Removed in v0.6.5; if a new
+        // migration path is needed, ship it as a dedicated handler.
         "announce-status" => {
             sys.announce_status();
             println!("Status announced to Flux.");
