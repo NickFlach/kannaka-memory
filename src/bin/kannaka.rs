@@ -469,6 +469,22 @@ fn main() {
         _ => {}
     }
 
+    // ADR-0029 Phase 4a follow-up — `kannaka swarm tail` only opens a
+    // NATS subscription and streams NDJSON. It does NOT need the HRM.
+    // Before this guard, the dispatch fell through to init_with_hrm
+    // and every `kannaka swarm tail` paid 30+ seconds of cold-start +
+    // 157 MB RAM AND became a third writer in the HRM-flush race.
+    // That was the smoking gun for the TUI Bus tab's slow open + the
+    // "memory count stuck" symptom (chat-child absorbs were getting
+    // clobbered by an HRM-loaded swarm-tail's flush on shutdown).
+    if args.len() >= 3 && args[command_start] == "swarm" && args[command_start + 1] == "tail" {
+        // Load config without the memory system so resolve_nats_url
+        // still honors config.toml.
+        let cfg = KannakaConfig::load();
+        handle_swarm_tail(&cfg, &args[command_start..]);
+        return;
+    }
+
     // Load config once: env vars > config.toml > built-in defaults.
     // All subsequent code uses `cfg` instead of raw env::var lookups.
     let cfg = KannakaConfig::load();
