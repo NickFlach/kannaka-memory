@@ -483,6 +483,28 @@ pub fn self_update() -> Result<(), String> {
     resp.into_reader().read_to_end(&mut bytes)
         .map_err(|e| format!("failed to read download: {e}"))?;
 
+    // ADR-0029 Phase 4a — verify SHA-256 sidecar before atomic rename.
+    // The release workflow writes a `<asset>.sha256` next to every
+    // binary in v0.6.2+. Older releases don't have the sidecar; we
+    // warn but proceed in that case so an operator on v0.6.1 can still
+    // pull v0.6.2+ without a flag-day.
+    match fetch_and_verify_sha256(&agent, &body, &asset_name, &bytes) {
+        Ok(()) => eprintln!("SHA-256 verified."),
+        Err(VerifyError::SidecarMissing) => {
+            eprintln!("Note: no SHA-256 sidecar in this release (pre-v0.6.2). Skipping verification.");
+        }
+        Err(VerifyError::Mismatch { expected, actual }) => {
+            return Err(format!(
+                "SHA-256 mismatch — refusing to replace running binary.\n  \
+                 expected: {expected}\n  \
+                 actual:   {actual}"
+            ));
+        }
+        Err(VerifyError::Other(e)) => {
+            eprintln!("Note: SHA-256 fetch failed ({e}). Skipping verification.");
+        }
+    }
+
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("cannot determine current exe path: {e}"))?;
 
@@ -698,6 +720,171 @@ fn update_sibling_tui(
         }
     }
     eprintln!("kannaka-tui also updated to v{}.", tui_version);
+}
+
+/// ADR-0029 Phase 4a — error variants for the SHA-256 verification path.
+/// Distinguishes "no sidecar" (skip with note) from "mismatch" (refuse
+/// to install, abort with error) so callers can pick the right UX.
+pub enum VerifyError {
+    /// The release doesn't ship a .sha256 sidecar. Pre-v0.6.2 releases
+    /// don't have these — caller warns but proceeds.
+    SidecarMissing,
+    /// Digest mismatch — refuse to install.
+    Mismatch { expected: String, actual: String },
+    /// Network / parse error fetching the sidecar.
+    Other(String),
+}
+
+/// Fetch the `<asset>.sha256` sidecar from `release_body`'s asset list
+/// and verify the local `bytes` digest against it. Sidecar format is
+/// the standard `sha256sum` output: `<hex>  <filename>`.
+pub fn fetch_and_verify_sha256(
+    agent: &ureq::Agent,
+    release_body: &serde_json::Value,
+    asset_name: &str,
+    bytes: &[u8],
+) -> Result<(), VerifyError> {
+    use sha2::{Digest, Sha256};
+
+    let sidecar_name = format!("{}.sha256", asset_name);
+    let sidecar_url = release_body["assets"].as_array()
+        .and_then(|assets| {
+            assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n == sidecar_name))
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or(VerifyError::SidecarMissing)?
+        .to_string();
+
+    let resp = agent.get(&sidecar_url)
+        .set("User-Agent", "kannaka-update")
+        .call()
+        .map_err(|e| VerifyError::Other(format!("sidecar fetch: {e}")))?;
+    let sidecar_body = resp.into_string()
+        .map_err(|e| VerifyError::Other(format!("sidecar read: {e}")))?;
+
+    // First whitespace-delimited token is the digest. Tolerate either
+    // `sha256sum`'s `<hex>  <filename>\n` or just the hex digest alone.
+    let expected = sidecar_body.split_whitespace().next()
+        .ok_or_else(|| VerifyError::Other("sidecar empty".to_string()))?
+        .to_lowercase();
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let actual = format!("{:x}", hasher.finalize());
+
+    if expected != actual {
+        return Err(VerifyError::Mismatch { expected, actual });
+    }
+    Ok(())
+}
+
+/// ADR-0029 Phase 4a — `kannaka update --check`. Compare the running
+/// version against the latest release. Returns `Some(remote)` if a
+/// newer version exists, `None` if up-to-date. Does NOT download.
+pub fn check_update_available() -> Result<Option<String>, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(15))
+        .build();
+    let resp = agent.get(GITHUB_RELEASES_URL)
+        .set("User-Agent", "kannaka-update-check")
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+        .map_err(|e| format!("releases fetch: {e}"))?;
+    let body: serde_json::Value = resp.into_json()
+        .map_err(|e| format!("releases parse: {e}"))?;
+    let tag = body["tag_name"].as_str()
+        .ok_or("no tag_name in release")?;
+    let remote = tag.trim_start_matches('v');
+    if version_is_newer(remote, VERSION) {
+        Ok(Some(remote.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// ADR-0029 Phase 4a — `kannaka update --bootstrap-tui`. Install the
+/// kannaka-tui sibling alongside the current kannaka binary even when
+/// no existing tui sits there. Downloads the latest kannaka-tui release
+/// for this platform and verifies its SHA-256.
+pub fn bootstrap_install_tui() -> Result<std::path::PathBuf, String> {
+    use std::io::Read;
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("current_exe: {e}"))?;
+    let dir = current_exe.parent()
+        .ok_or("current_exe has no parent directory")?;
+    let tui_name = if cfg!(windows) { "kannaka-tui.exe" } else { "kannaka-tui" };
+    let tui_path = dir.join(tui_name);
+    if tui_path.exists() {
+        return Err(format!(
+            "kannaka-tui already exists at {} — use `kannaka update` to refresh it",
+            tui_path.display()
+        ));
+    }
+
+    // Fetch kannaka-tui's latest release.
+    let resp = agent.get("https://api.github.com/repos/NickFlach/kannaka-tui/releases/latest")
+        .set("User-Agent", "kannaka-bootstrap-tui")
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+        .map_err(|e| format!("kannaka-tui releases fetch: {e}"))?;
+    let release: serde_json::Value = resp.into_json()
+        .map_err(|e| format!("kannaka-tui release parse: {e}"))?;
+    let tui_tag = release["tag_name"].as_str().unwrap_or("unknown");
+
+    let (os, arch, ext) = platform_triple();
+    let asset_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
+    let download_url = release["assets"].as_array()
+        .and_then(|assets| {
+            assets.iter().find(|a| a["name"].as_str().is_some_and(|n| n == asset_name))
+        })
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or_else(|| format!("no kannaka-tui asset '{}' in release {}", asset_name, tui_tag))?
+        .to_string();
+
+    eprintln!("Downloading {} from kannaka-tui {}...", asset_name, tui_tag);
+    let resp = agent.get(&download_url)
+        .set("User-Agent", "kannaka-bootstrap-tui")
+        .call()
+        .map_err(|e| format!("download: {e}"))?;
+    let mut bytes = Vec::new();
+    resp.into_reader().read_to_end(&mut bytes)
+        .map_err(|e| format!("read: {e}"))?;
+
+    // SHA-256 verification — same posture as self_update: warn on
+    // sidecar missing (older releases), abort on mismatch.
+    match fetch_and_verify_sha256(&agent, &release, &asset_name, &bytes) {
+        Ok(()) => eprintln!("SHA-256 verified."),
+        Err(VerifyError::SidecarMissing) => {
+            eprintln!("Note: no SHA-256 sidecar in kannaka-tui {}. Skipping verification.", tui_tag);
+        }
+        Err(VerifyError::Mismatch { expected, actual }) => {
+            return Err(format!(
+                "SHA-256 mismatch — refusing to install.\n  \
+                 expected: {expected}\n  \
+                 actual:   {actual}"
+            ));
+        }
+        Err(VerifyError::Other(e)) => {
+            eprintln!("Note: SHA-256 fetch failed ({e}). Skipping verification.");
+        }
+    }
+
+    std::fs::write(&tui_path, &bytes)
+        .map_err(|e| format!("write {}: {e}", tui_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tui_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e}"))?;
+    }
+
+    Ok(tui_path)
 }
 
 fn platform_triple() -> (&'static str, &'static str, &'static str) {

@@ -66,18 +66,34 @@ jobs:
         working-directory: kannaka-memory
         run: cargo build --release --target ${{ matrix.target }} --bin kannaka
 
-      - name: Rename artifact
+      - name: Rename artifact + emit SHA-256 sidecar (ADR-0029 Phase 4a)
         shell: bash
+        # The sidecar is a `<artifact>.sha256` file in the same release
+        # so `kannaka update` can verify the download before atomically
+        # replacing the running binary. Format matches `sha256sum`:
+        #   <hex-digest>  <filename>
         run: |
           cli="kannaka-memory/target/${{ matrix.target }}/release/kannaka"
           [[ "${{ matrix.target }}" == *windows* ]] && cli="${cli}.exe"
           cp "$cli" "${{ matrix.artifact }}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          else
+            # macOS shipped without sha256sum until very recent versions
+            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          fi
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+
+      - name: Upload SHA-256 sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}.sha256
+          path: ${{ matrix.artifact }}.sha256
 
   release:
     needs: build
@@ -93,8 +109,13 @@ jobs:
         with:
           files: |
             kannaka-windows-x86_64.exe/kannaka-windows-x86_64.exe
+            kannaka-windows-x86_64.exe.sha256/kannaka-windows-x86_64.exe.sha256
             kannaka-linux-x86_64/kannaka-linux-x86_64
+            kannaka-linux-x86_64.sha256/kannaka-linux-x86_64.sha256
             kannaka-linux-aarch64/kannaka-linux-aarch64
+            kannaka-linux-aarch64.sha256/kannaka-linux-aarch64.sha256
             kannaka-macos-x86_64/kannaka-macos-x86_64
+            kannaka-macos-x86_64.sha256/kannaka-macos-x86_64.sha256
             kannaka-macos-aarch64/kannaka-macos-aarch64
+            kannaka-macos-aarch64.sha256/kannaka-macos-aarch64.sha256
           generate_release_notes: true

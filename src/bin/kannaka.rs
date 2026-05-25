@@ -319,12 +319,13 @@ fn is_builtin_subcommand(verb: &str) -> bool {
     matches!(verb,
         // setup / lifecycle
         //
-        // Note: `completions` is intentionally NOT here — it's handled
-        // inside the clap layer (cli::handle_completions) and must go
-        // through cli::parse() to reach the dispatch. Including it in
-        // the fast-path would route it to the legacy match, which has
-        // no arm for it.
-        "init" | "update"
+        // Note: `completions` and `update` are intentionally NOT here —
+        // they're handled inside the clap layer (cli::handle_completions
+        // and cli::handle_update respectively) and must go through
+        // cli::parse() to reach the new flag-aware dispatch. Including
+        // them in the fast-path would route them to the legacy match,
+        // which ignores --check / --bootstrap-tui / --install flags.
+        "init"
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
         | "boost" | "relate"
@@ -372,9 +373,11 @@ fn main() {
     if args.len() >= 2 {
         let first = args[1].as_str();
         // Skip the clap layer for these — they run BEFORE the memory
-        // system initializes and have their own input handling.
+        // system initializes and have their own input handling. `update`
+        // used to be in this bypass list but moved into the clap layer
+        // for Phase 4a so the new --check / --bootstrap-tui flags parse.
         let bypass = matches!(first, "--help" | "-h" | "help" | "--version" | "-V")
-            || (args.len() == 2 && matches!(first, "init" | "update"));
+            || (args.len() == 2 && matches!(first, "init"));
         if !bypass {
             // Skip clap if first arg already looks like a known top-level
             // built-in we want to fall through fast (avoids double-parsing
@@ -469,13 +472,9 @@ fn main() {
             }
             return;
         }
-        "update" => {
-            if let Err(e) = config::self_update() {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-            return;
-        }
+        // `update` moved into the clap layer in v0.6.2 (ADR-0029 Phase
+        // 4a) so --check / --bootstrap-tui parse. cli::parse routes it
+        // to cli::handle_update and never falls through to here.
         _ => {}
     }
 

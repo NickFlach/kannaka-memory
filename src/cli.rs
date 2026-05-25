@@ -75,7 +75,37 @@ pub fn build_cli() -> Command {
         )
         // ── Setup / lifecycle ───────────────────────────────────────────
         .subcommand(passthrough("init", "First-time installer / config wizard"))
-        .subcommand(passthrough("update", "Self-update from GitHub releases (also updates kannaka-tui sibling if installed)"))
+        // ADR-0029 Phase 4a — `update` is now a real subcommand (not a
+        // passthrough) so `--check` and `--bootstrap-tui` parse via clap
+        // and route through cli::handle_update instead of the legacy
+        // self_update() one-shot.
+        .subcommand(
+            Command::new("update")
+                .about("Self-update kannaka from GitHub releases (verifies SHA-256 sidecar)")
+                .long_about(
+                    "Download the latest kannaka release for this platform, verify\n\
+                     its SHA-256 against the sidecar published alongside the release,\n\
+                     and atomically replace the running binary. Also updates the\n\
+                     kannaka-tui sibling binary if it's installed in the same\n\
+                     directory (or use --bootstrap-tui to install it for the\n\
+                     first time).\n\n\
+                     Flags:\n  \
+                     --check          exit 0 if up-to-date, 1 if an update exists\n  \
+                     --bootstrap-tui  install kannaka-tui even if no sibling exists",
+                )
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .help("Don't download — just check if an update is available (exit 1 if newer release exists)")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("bootstrap-tui")
+                        .long("bootstrap-tui")
+                        .help("Install kannaka-tui from its release page even if no sibling exists in the kannaka binary's directory")
+                        .action(ArgAction::SetTrue),
+                ),
+        )
         // ── ADR-0029 Phase 3 — shell completions ────────────────────────
         // Real (non-passthrough) subcommand because clap_complete needs
         // a typed Shell value. Has its own --install flag that writes
@@ -241,6 +271,16 @@ pub fn parse(argv: &[String]) -> Dispatch {
         return handle_completions(shell, install);
     }
 
+    // ADR-0029 Phase 4a: update is now a real subcommand with --check
+    // and --bootstrap-tui flags, handled inside the CLI module so the
+    // flags actually get parsed (the legacy match in main() ignored
+    // anything after `update`).
+    if name == "update" {
+        let check = sub_matches.get_flag("check");
+        let bootstrap_tui = sub_matches.get_flag("bootstrap-tui");
+        return handle_update(check, bootstrap_tui);
+    }
+
     // Built-in subcommands: caller already has the args, just hand back.
     // We test by whether the matched name appears in our subcommand list.
     // Bind the rebuilt Command tree to a local so the borrow of subcommand
@@ -357,6 +397,57 @@ fn print_plugins() {
     for (verb, path) in rows {
         println!("  {:<28} {}", verb, path);
     }
+}
+
+/// ADR-0029 Phase 4a — dispatch `kannaka update` with the new flags.
+///
+/// - `check`: compare versions only, exit 1 if a newer release exists
+///   (useful for cron health checks). No download.
+/// - `bootstrap_tui`: install kannaka-tui from its release page even
+///   when no sibling kannaka-tui binary exists alongside kannaka.
+/// - default: existing self_update() behavior — download, verify
+///   SHA-256 sidecar (NEW in v0.6.2), atomic rename, update sibling
+///   kannaka-tui if installed.
+fn handle_update(check: bool, bootstrap_tui: bool) -> Dispatch {
+    if check {
+        match crate::config::check_update_available() {
+            Ok(Some(remote)) => {
+                println!(
+                    "update available: v{} (current: v{})",
+                    remote,
+                    crate::config::VERSION
+                );
+                std::process::exit(1);
+            }
+            Ok(None) => {
+                println!("up to date: v{}", crate::config::VERSION);
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("error checking for updates: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    if bootstrap_tui {
+        match crate::config::bootstrap_install_tui() {
+            Ok(path) => {
+                eprintln!("Installed kannaka-tui to {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("error: bootstrap-tui failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Dispatch::Handled;
+    }
+
+    if let Err(e) = crate::config::self_update() {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+    Dispatch::Handled
 }
 
 /// ADR-0029 Phase 3 — emit shell completion script for `shell`, either
