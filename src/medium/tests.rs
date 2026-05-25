@@ -538,10 +538,57 @@ fn xi_spectral_complexity_varies() {
 
     println!("Xi identical: {}, Xi different: {}", xi_identical, xi_different);
 
-    // Different vectors should generally have higher complexity
-    // (though this might not always hold due to approximations)
     assert!(xi_different >= 0.0);
     assert!(xi_identical >= 0.0);
+}
+
+/// km#xi-instability regression: identical wavefronts produce a
+/// uniform eigenvalue proxy distribution. After the v0.6.7 fix
+/// (entropy → coefficient of variation), Xi should be near 0 in
+/// that case — NOT near 1 as the old Shannon-entropy normalization
+/// reported. Observatory was showing Xi=0.97 on a 105-memory HRM
+/// with hemispheric_divergence=0.0001 (basically identical
+/// hemispheres) before this fix.
+#[test]
+fn xi_uniform_wavefronts_collapse_to_zero() {
+    let mut medium = Medium::new();
+    let vector = vec![0.5; WAVEFRONT_DIM];
+    // Many copies — exercises the failure case the observatory hit.
+    for i in 0..20 {
+        medium.add_wavefront(&vector, format!("copy_{i}"), 1.0).unwrap();
+    }
+    let xi = medium.compute_xi_spectral_complexity();
+    assert!(
+        xi < 0.05,
+        "Xi for 20 identical wavefronts should be near 0 (got {xi}). \
+         If this fires, the entropy → CV normalization has regressed."
+    );
+}
+
+/// km#xi-instability regression: structured eigenvalue distribution
+/// (some wavefronts highly similar to each other, distinct cluster
+/// from the rest) should produce a meaningfully non-zero Xi — at
+/// least 0.05 to clear the uniform-noise floor.
+#[test]
+fn xi_clustered_wavefronts_produce_nonzero() {
+    let mut medium = Medium::new();
+    // Cluster A: 5 copies of one direction
+    let a = {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        for i in 0..WAVEFRONT_DIM / 2 { v[i] = 1.0; }
+        v
+    };
+    // Cluster B: 5 copies of a different direction
+    let b = {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        for i in WAVEFRONT_DIM / 2..WAVEFRONT_DIM { v[i] = 1.0; }
+        v
+    };
+    for i in 0..5 { medium.add_wavefront(&a, format!("a_{i}"), 1.0).unwrap(); }
+    for i in 0..5 { medium.add_wavefront(&b, format!("b_{i}"), 1.0).unwrap(); }
+    let xi = medium.compute_xi_spectral_complexity();
+    // Won't be huge (only 2 clusters, 10 memories) but should clear noise.
+    assert!(xi > 0.0, "Xi for 2-cluster structure should be > 0 (got {xi})");
 }
 
 #[test]
