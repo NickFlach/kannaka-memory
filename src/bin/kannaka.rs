@@ -318,6 +318,12 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
 fn is_builtin_subcommand(verb: &str) -> bool {
     matches!(verb,
         // setup / lifecycle
+        //
+        // Note: `completions` is intentionally NOT here — it's handled
+        // inside the clap layer (cli::handle_completions) and must go
+        // through cli::parse() to reach the dispatch. Including it in
+        // the fast-path would route it to the legacy match, which has
+        // no arm for it.
         "init" | "update"
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"

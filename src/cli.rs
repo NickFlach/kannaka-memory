@@ -26,6 +26,7 @@
 //!   `$PATH` plus any aliased binary.
 
 use clap::{Arg, ArgAction, Command};
+use clap_complete::Shell;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
@@ -75,6 +76,37 @@ pub fn build_cli() -> Command {
         // ── Setup / lifecycle ───────────────────────────────────────────
         .subcommand(passthrough("init", "First-time installer / config wizard"))
         .subcommand(passthrough("update", "Self-update from GitHub releases (also updates kannaka-tui sibling if installed)"))
+        // ── ADR-0029 Phase 3 — shell completions ────────────────────────
+        // Real (non-passthrough) subcommand because clap_complete needs
+        // a typed Shell value. Has its own --install flag that writes
+        // the generated script to the conventional location per shell.
+        .subcommand(
+            Command::new("completions")
+                .about("Generate shell completion scripts (bash/zsh/fish/powershell/elvish)")
+                .long_about(
+                    "Generate a shell completion script for kannaka and emit it to\n\
+                     stdout (default), or install it to the conventional location for\n\
+                     your shell with --install.\n\n\
+                     Examples:\n  \
+                     kannaka completions bash > ~/.local/share/bash-completion/completions/kannaka\n  \
+                     kannaka completions zsh > ~/.zsh/completions/_kannaka\n  \
+                     kannaka completions fish > ~/.config/fish/completions/kannaka.fish\n  \
+                     kannaka completions powershell >> $PROFILE\n  \
+                     kannaka completions bash --install   (writes to the right place)",
+                )
+                .arg(
+                    Arg::new("shell")
+                        .help("Shell to generate completions for")
+                        .required(true)
+                        .value_parser(clap::builder::EnumValueParser::<Shell>::new()),
+                )
+                .arg(
+                    Arg::new("install")
+                        .long("install")
+                        .help("Write the script to the conventional install path for the chosen shell")
+                        .action(ArgAction::SetTrue),
+                ),
+        )
         // ── Memory primitives ───────────────────────────────────────────
         .subcommand(passthrough("remember", "Store a memory in the holographic medium"))
         .subcommand(passthrough("recall", "Resonance recall — bilateral search across both hemispheres"))
@@ -195,6 +227,20 @@ pub fn parse(argv: &[String]) -> Dispatch {
         }
     };
 
+    // ADR-0029 Phase 3: completions is a real built-in (not a passthrough),
+    // handled entirely within the CLI module so the legacy match in main()
+    // never sees it. This keeps the completions subcommand from accidentally
+    // initializing the HRM (which would slow `kannaka completions bash` to
+    // 30s for no reason).
+    if name == "completions" {
+        let shell = sub_matches
+            .get_one::<Shell>("shell")
+            .copied()
+            .expect("clap required(true)");
+        let install = sub_matches.get_flag("install");
+        return handle_completions(shell, install);
+    }
+
     // Built-in subcommands: caller already has the args, just hand back.
     // We test by whether the matched name appears in our subcommand list.
     // Bind the rebuilt Command tree to a local so the borrow of subcommand
@@ -311,6 +357,113 @@ fn print_plugins() {
     for (verb, path) in rows {
         println!("  {:<28} {}", verb, path);
     }
+}
+
+/// ADR-0029 Phase 3 — emit shell completion script for `shell`, either
+/// to stdout (default) or to the conventional install path for that
+/// shell when `install` is true. Built from `build_cli()` so the
+/// completion is always in sync with the actual command tree.
+fn handle_completions(shell: Shell, install: bool) -> Dispatch {
+    let mut app = build_cli();
+    let bin_name = app.get_name().to_string();
+
+    if install {
+        match install_completion(shell, &bin_name, &mut app) {
+            Ok(path) => {
+                eprintln!("Installed {shell} completions to {}", path.display());
+                match shell {
+                    Shell::Bash => eprintln!(
+                        "Reload your shell or run: source {}", path.display()
+                    ),
+                    Shell::Zsh => eprintln!(
+                        "Make sure the directory is in your $fpath, then \
+                         run: compinit"
+                    ),
+                    Shell::Fish => eprintln!(
+                        "Fish auto-loads completions from this directory \
+                         on next shell start"
+                    ),
+                    Shell::PowerShell => eprintln!(
+                        "Restart PowerShell or `. $PROFILE` to load the \
+                         completions"
+                    ),
+                    _ => {}
+                }
+            }
+            Err(e) => {
+                eprintln!("error installing {shell} completions: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        clap_complete::generate(shell, &mut app, bin_name, &mut std::io::stdout());
+    }
+    Dispatch::Handled
+}
+
+/// Resolve the conventional completion-install path for `shell` + write
+/// the script there. Paths chosen to match each shell's documented
+/// loading convention; on Linux we prefer user-local paths under $HOME
+/// so the install never needs sudo.
+fn install_completion(
+    shell: Shell,
+    bin_name: &str,
+    app: &mut Command,
+) -> std::io::Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::other("could not resolve $HOME"))?;
+
+    let path = match shell {
+        // bash: XDG-conformant per-user directory, auto-loaded by
+        // bash-completion@2.x on modern distros.
+        Shell::Bash => home
+            .join(".local")
+            .join("share")
+            .join("bash-completion")
+            .join("completions")
+            .join(bin_name),
+        // zsh: standard per-user fpath location. User still needs to
+        // ensure ~/.zsh/completions is in $fpath in their .zshrc.
+        Shell::Zsh => home
+            .join(".zsh")
+            .join("completions")
+            .join(format!("_{bin_name}")),
+        // fish: auto-loaded from this exact directory.
+        Shell::Fish => home
+            .join(".config")
+            .join("fish")
+            .join("completions")
+            .join(format!("{bin_name}.fish")),
+        // PowerShell: doesn't have a per-user completions directory in
+        // the same sense — completions are usually dotsourced from
+        // $PROFILE. Write to a sibling file the user can dot-source.
+        Shell::PowerShell => {
+            let dir = if cfg!(windows) {
+                home.join("Documents").join("PowerShell")
+            } else {
+                home.join(".config").join("powershell")
+            };
+            dir.join(format!("{bin_name}-completions.ps1"))
+        }
+        Shell::Elvish => home
+            .join(".config")
+            .join("elvish")
+            .join("lib")
+            .join(format!("{bin_name}.elv")),
+        _ => {
+            return Err(std::io::Error::other(format!(
+                "no known install path for shell {shell:?}; emit to stdout \
+                 with `kannaka completions {shell} > <path>` instead"
+            )));
+        }
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(&path)?;
+    clap_complete::generate(shell, app, bin_name.to_string(), &mut file);
+    Ok(path)
 }
 
 /// Exec the plugin binary, inheriting stdio so the operator sees the
