@@ -1,6 +1,6 @@
 [package]
 name = "kannaka-memory"
-version = "0.5.15"
+version = "0.6.0"
 edition = "2021"
 description = "Hypervector memory system for Kannaka — wave-modulated holographic memory with skip links"
 license = "MIT"
@@ -18,7 +18,11 @@ bincode = "1"
 ndarray = { version = "0.15", optional = true }
 blake3 = { version = "1.5", optional = true }
 rayon = "1"
-clap = { version = "4.0", features = ["derive"], optional = true }
+clap = { version = "4.0", features = ["derive"] }
+# `which` powers the Phase 2 plugin discovery: when `kannaka <verb>` isn't
+# a built-in subcommand, we look for `kannaka-<verb>` on $PATH and exec it.
+# Pure Rust, no system deps.
+which = "7"
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 toml = "0.8"

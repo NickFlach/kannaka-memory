@@ -52,6 +52,9 @@ pub mod hrm_store;
 
 pub mod config;
 
+// ADR-0029 Phase 1+2: clap-based CLI dispatch + plugin discovery.
+pub mod cli;
+
 pub mod agent;
 
 // Re-export canonical consciousness types

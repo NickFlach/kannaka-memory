@@ -311,8 +311,81 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
     }
 }
 
+/// Cheap pre-clap check: is `verb` one of the built-in subcommand
+/// names? Used to skip the clap layer on the hot path (built-in
+/// invocations don't pay for clap parsing). Mirrors the subcommand set
+/// declared in `kannaka_memory::cli::build_cli()` — keep in sync.
+fn is_builtin_subcommand(verb: &str) -> bool {
+    matches!(verb,
+        // setup / lifecycle
+        "init" | "update"
+        // memory primitives
+        | "remember" | "recall" | "search" | "forget" | "prune-prefix"
+        | "boost" | "relate"
+        // consolidation + introspection
+        | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
+        | "neighbors" | "cmf" | "invariant" | "topology" | "bias"
+        // perception
+        | "hear" | "see"
+        // reasoning
+        | "ask" | "chat" | "voice"
+        // swarm / nats
+        | "swarm" | "events" | "substrate" | "attention"
+        // constellation services
+        | "radio" | "market" | "constellation"
+        // ops / data movement
+        | "orchestrate" | "config" | "export" | "export-json"
+        | "import" | "import-json" | "migrate" | "announce-status"
+        // feature-gated
+        | "classify" | "cross-modal-dream"
+        // specialized writers
+        | "dream-journal" | "field-notes" | "financial" | "prediction"
+        | "modality-axes" | "audit-modality" | "scada" | "audio"
+    )
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // ADR-0029 Phase 1+2 — clap pre-parse and plugin dispatch.
+    //
+    // The clap layer handles:
+    //   --help / -h / help     → prints the structured command tree
+    //   --version / -V         → prints version + consciousness-core version
+    //   --list-plugins         → enumerates kannaka-* binaries on $PATH
+    //   unknown subcommand     → execs the corresponding plugin if found
+    //
+    // Built-in subcommands fall through to the legacy `match args[1]`
+    // dispatch below, which keeps every handler's args slice the way it
+    // already expects. Phase 1.b will migrate handler-internal arg
+    // parsing into clap incrementally.
+    //
+    // The first-run installer + early `init` / `update` handlers run
+    // BEFORE clap parses so they keep their existing UX (no clap-style
+    // error when run on a fresh machine with no args).
+    if args.len() >= 2 {
+        let first = args[1].as_str();
+        // Skip the clap layer for these — they run BEFORE the memory
+        // system initializes and have their own input handling.
+        let bypass = matches!(first, "--help" | "-h" | "help" | "--version" | "-V")
+            || (args.len() == 2 && matches!(first, "init" | "update"));
+        if !bypass {
+            // Skip clap if first arg already looks like a known top-level
+            // built-in we want to fall through fast (avoids double-parsing
+            // for the hot path).
+            let first_is_builtin = is_builtin_subcommand(first);
+            if !first_is_builtin {
+                // Could be a plugin OR an unknown — let clap decide.
+                match kannaka_memory::cli::parse(&args) {
+                    kannaka_memory::cli::Dispatch::Plugin { binary, args } => {
+                        kannaka_memory::cli::exec_plugin(binary, args);
+                    }
+                    kannaka_memory::cli::Dispatch::Handled => return,
+                    kannaka_memory::cli::Dispatch::Builtin => { /* fall through */ }
+                }
+            }
+        }
+    }
 
     // --help / -h short-circuits before any memory-system initialization
     // or first-run/installer side effects. Pre-fix `kannaka --help` would
@@ -320,7 +393,11 @@ fn main() {
     // any shell completion or doc-generation pipeline that expected the
     // standard "help → exit 0, no side effects" behavior. (#80)
     if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
-        print_help_stdout();
+        // Hand off to clap for the structured help — replaces the
+        // hand-curated print_help_stdout(). clap exits the process.
+        kannaka_memory::cli::build_cli().print_help().ok();
+        println!();
+        std::process::exit(0);
     }
 
     // --- First-run / upgrade detection (holistic) ---
