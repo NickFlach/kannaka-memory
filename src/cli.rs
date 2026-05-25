@@ -139,7 +139,26 @@ pub fn build_cli() -> Command {
         )
         // ── Memory primitives ───────────────────────────────────────────
         .subcommand(passthrough("remember", "Store a memory in the holographic medium"))
-        .subcommand(passthrough("recall", "Resonance recall — bilateral search across both hemispheres"))
+        // ADR-0029 Phase 1.b — recall declares its flags so
+        // `kannaka recall --help` shows them. The handler still parses
+        // its own args internally (passthrough-style) so behavior is
+        // unchanged; the clap declaration is purely for help text +
+        // completion generation. Per-handler typed-args migration
+        // comes when each handler is opened for real change.
+        .subcommand(
+            Command::new("recall")
+                .about("Resonance recall — bilateral search across both hemispheres")
+                .arg(Arg::new("query").help("Query text").num_args(1..).required(true))
+                .arg(Arg::new("top-k").long("top-k").alias("limit").value_name("N")
+                    .help("Number of results to return (default 5)"))
+                .arg(Arg::new("collective").long("collective").action(ArgAction::SetTrue)
+                    .help("Route via NATS to the kannaka-prime substrate for swarm-wide recall"))
+                .arg(Arg::new("timeout").long("timeout").value_name("SECS")
+                    .help("Timeout for --collective (default 8)"))
+                .arg(Arg::new("envelope").long("envelope").action(ArgAction::SetTrue)
+                    .help("Wrap output in the standard JSON envelope (ADR-0029 Phase 4b)"))
+                .arg(Arg::new("__raw").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
         .subcommand(passthrough("search", "Literal text search (substring + tokenized)"))
         .subcommand(passthrough("forget", "Remove a memory by UUID"))
         .subcommand(passthrough("prune-prefix", "Bulk-forget every memory whose content starts with a prefix"))

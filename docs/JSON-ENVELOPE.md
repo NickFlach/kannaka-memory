@@ -58,7 +58,7 @@ payload size without delivering new semantics.
 |---|---|
 | `status` | ✓ v0.6.3 |
 | `clusters` | ✓ v0.6.3 |
-| `recall` | pending |
+| `recall` | ✓ v0.6.4 |
 | `search` | pending |
 | `observe` | pending |
 | `neighbors` | pending |

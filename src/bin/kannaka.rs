@@ -372,19 +372,25 @@ fn main() {
     // error when run on a fresh machine with no args).
     if args.len() >= 2 {
         let first = args[1].as_str();
-        // Skip the clap layer for these — they run BEFORE the memory
-        // system initializes and have their own input handling. `update`
-        // used to be in this bypass list but moved into the clap layer
-        // for Phase 4a so the new --check / --bootstrap-tui flags parse.
-        let bypass = matches!(first, "--help" | "-h" | "help" | "--version" | "-V")
-            || (args.len() == 2 && matches!(first, "init"));
+        // If --help or -h appears ANYWHERE in args, always route through
+        // clap so per-subcommand help (e.g. `kannaka recall --help`)
+        // prints the right thing instead of the top-level summary.
+        let asking_for_help = args.iter().any(|a| a == "--help" || a == "-h" || a == "help");
+        // Bypass clap for the bare top-level only when no help/version
+        // is being requested AND it's not a subcommand that wants flag
+        // parsing. `init` short-circuits because it has its own wizard.
+        let bypass = !asking_for_help
+            && (matches!(first, "--version" | "-V")
+                || (args.len() == 2 && matches!(first, "init")));
         if !bypass {
-            // Skip clap if first arg already looks like a known top-level
-            // built-in we want to fall through fast (avoids double-parsing
-            // for the hot path).
+            // Skip clap fast-path only if first arg is a built-in we
+            // know how to dispatch via the legacy match — AND no --help
+            // is being requested (because clap owns per-subcommand help).
             let first_is_builtin = is_builtin_subcommand(first);
-            if !first_is_builtin {
-                // Could be a plugin OR an unknown — let clap decide.
+            if asking_for_help || !first_is_builtin {
+                // clap parses, handles --help/--version internally
+                // (exits the process), routes plugin externals, or
+                // hands back Dispatch::Builtin for the legacy match.
                 match kannaka_memory::cli::parse(&args) {
                     kannaka_memory::cli::Dispatch::Plugin { binary, args } => {
                         kannaka_memory::cli::exec_plugin(binary, args);
@@ -394,19 +400,6 @@ fn main() {
                 }
             }
         }
-    }
-
-    // --help / -h short-circuits before any memory-system initialization
-    // or first-run/installer side effects. Pre-fix `kannaka --help` would
-    // load the HRM file, print usage, and exit with code 1 — clobbering
-    // any shell completion or doc-generation pipeline that expected the
-    // standard "help → exit 0, no side effects" behavior. (#80)
-    if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
-        // Hand off to clap for the structured help — replaces the
-        // hand-curated print_help_stdout(). clap exits the process.
-        kannaka_memory::cli::build_cli().print_help().ok();
-        println!();
-        std::process::exit(0);
     }
 
     // --- First-run / upgrade detection (holistic) ---
@@ -797,10 +790,13 @@ fn main() {
                 process::exit(1);
             }
 
+            // ADR-0029 Phase 4b — opt into the envelope. Default still
+            // emits the legacy array shape so existing consumers (radio
+            // hub, observatory tangle fallback) keep working unchanged.
+            let envelope = args[command_start..].iter().any(|a| a == "--envelope");
             match sys.recall(&query, top_k) {
                 Ok(results) => {
-                    // Output as JSON for machine consumption
-                    let json_results: Vec<serde_json::Value> = results.iter().map(|r| {
+                    let json_results: serde_json::Value = results.iter().map(|r| {
                         serde_json::json!({
                             "id": r.id.to_string(),
                             "content": r.content,
@@ -809,10 +805,18 @@ fn main() {
                             "age_hours": r.age_hours,
                             "layer": r.layer,
                         })
-                    }).collect();
-                    println!("{}", serde_json::to_string(&json_results).unwrap());
+                    }).collect::<Vec<_>>().into();
+                    if envelope {
+                        kannaka_memory::cli::print_envelope("recall", json_results);
+                    } else {
+                        println!("{}", serde_json::to_string(&json_results).unwrap());
+                    }
                 }
                 Err(e) => {
+                    if envelope {
+                        kannaka_memory::cli::print_envelope_error("recall", e.to_string());
+                        process::exit(1);
+                    }
                     eprintln!("Error: {e}");
                     process::exit(1);
                 }
