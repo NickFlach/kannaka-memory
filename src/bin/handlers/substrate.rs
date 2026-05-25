@@ -93,11 +93,22 @@ fn capture_and_publish_snapshot(
         .map_err(|e| format!("write snapshot body: {e}"))?;
 
     // ADR-0028 Phase 2 — disk retention: keep the latest N bodies per agent.
-    // Default 168 matches JetStream's max_msgs_per_subject from
-    // StreamKind::Snapshots so disk and manifest stream stay in sync.
-    // Override via env KANNAKA_SNAPSHOT_RETAIN.
+    //
+    // Default tier (km#109): substrate snapshots are ~45 MB compressed
+    // (15× the size of a typical kannaka HRM at ~3 MB) because the
+    // substrate seats 96 anchor wavefronts + all cross-agent absorbs.
+    // The historical default of 168 (matching JetStream's
+    // max_msgs_per_subject for a one-week hourly cadence) sized that
+    // at ~7.5 GB per substrate, which filled the Oracle root disk on
+    // 2026-05-24 and crash-looped the radio. Substrate now defaults
+    // to 24 (one day hourly = ~1.1 GB ceiling). Other agents continue
+    // to use the original 168 default (~500 MB at typical 3 MB sizes).
+    //
+    // KANNAKA_SNAPSHOT_RETAIN env still overrides either tier when an
+    // operator wants a custom budget.
+    let default_retain = if agent_id == "kannaka-substrate" { 24 } else { 168 };
     let retain: usize = std::env::var("KANNAKA_SNAPSHOT_RETAIN")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(168);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(default_retain);
     prune_snapshot_dir(&snapshots_dir, agent_id, retain);
 
     let state = sys.assess();
