@@ -82,12 +82,8 @@ jobs:
           git config user.email "cascade@kannaka.local"
           git checkout -b "$branch"
           git add Cargo.lock
-          git commit -m "chore(deps): cascade consciousness-core v${v}
-
-Auto-opened by .github/workflows/cc-release-cascade.yml in response to
-a consciousness-core release. Merge to cut a kannaka patch release
-that ships the new constellation physics to operators running
-\`kannaka update\`."
+          git commit -m "chore(deps): cascade consciousness-core v${v}" \
+                     -m "Auto-opened by .github/workflows/cc-release-cascade.yml in response to a consciousness-core release. Merge to cut a kannaka patch release that ships the new constellation physics to operators running \`kannaka update\`."
           git push origin "$branch"
           gh pr create \
             --title "chore(deps): cascade consciousness-core v${v}" \
