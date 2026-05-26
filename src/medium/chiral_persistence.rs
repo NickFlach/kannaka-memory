@@ -89,7 +89,22 @@ impl ChiralMedium {
     /// Save the chiral medium to a .hrm v2 file.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
         let path_ref = path.as_ref();
-        let tmp_path = path_ref.with_extension("hrm.tmp");
+        // Unique tmp path per save. Concurrent kannaka processes (substrate
+        // run / swarm join / swarm serve / attention serve / ad-hoc ask)
+        // all hit the same .hrm file; if two of them tried to write to
+        // `kannaka.hrm.tmp` simultaneously the second File::create
+        // truncated the first mid-stream, the blake3 was computed over
+        // the interleaved bytes, and rename() landed a checksum-valid
+        // but semantically corrupt file. Observed on Oracle 2026-05-26 —
+        // `kannaka.hrm` failed ChiralMedium::load with "checksum mismatch"
+        // on every load. Tagging the tmp with pid + nanos makes each
+        // writer's tmp file private; rename is still atomic.
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{}.{}", pid, nanos));
         let file = File::create(&tmp_path)?;
         let mut w = BufWriter::new(file);
 
