@@ -1,0 +1,40 @@
+# Example ~/.kannaka/inbox-handlers.toml for `kannaka inbox serve`.
+#
+# Each [handler.<verb>] table registers ONE verb the inbox listener
+# will accept. Messages whose verb is not in this table are rejected
+# with `status = "unknown_verb"`. There is no eval — the listener
+# substitutes `{{args.<key>}}` and `{{from}}` into `cmd`, then runs
+# it via `sh -c`. The operator is responsible for any shell-safety
+# in the cmd string (single-quote any arg references that could
+# contain spaces or shell metacharacters).
+#
+# Field reference:
+#   cmd           required — command line to run after substitution
+#   args          required arg keys; missing → status = "arg_missing"
+#   timeout_secs  soft timeout via /usr/bin/timeout (default 60)
+#
+# Subject space:
+#   send  → KANNAKA.inbox.<to_agent_id>
+#   audit → KANNAKA.inbox.audit  (every send + every received result)
+#
+# Operate:
+#   kannaka inbox serve --agent-id kannaka-prime
+#   kannaka inbox send kannaka-prime greet --arg name=Witness
+#   kannaka inbox tail --agent-id kannaka-prime
+
+[handler.greet]
+cmd = "echo 'Hello {{args.name}} from {{from}}'"
+args = ["name"]
+timeout_secs = 5
+
+[handler.recall]
+cmd = "kannaka recall '{{args.query}}' --top-k 3"
+args = ["query"]
+timeout_secs = 30
+
+[handler.ping]
+# No args required. Returns the agent's hostname so the sender knows
+# which physical node answered.
+cmd = "hostname"
+args = []
+timeout_secs = 5

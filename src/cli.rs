@@ -204,6 +204,11 @@ pub fn build_cli() -> Command {
                 .about("Sparse-attention beam over HRM: serve, stats")
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
+        .subcommand(
+            Command::new("inbox")
+                .about("Agent-to-agent declarative messaging: send, serve, tail")
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
         // ── Constellation services (HTTP) ──────────────────────────────
         .subcommand(passthrough("radio", "Query kannaka-radio (now-playing, schedule)"))
         .subcommand(passthrough("market", "GhostSignals prediction markets"))
