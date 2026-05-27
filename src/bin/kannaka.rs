@@ -53,6 +53,10 @@ use handlers_swarm::{
     handle_swarm_worker, handle_swarm_tail,
 };
 
+#[path = "handlers/inbox.rs"]
+mod handlers_inbox;
+use handlers_inbox::{handle_inbox_send, handle_inbox_serve, handle_inbox_tail};
+
 #[path = "handlers/services.rs"]
 mod handlers_services;
 use handlers_services::{handle_radio, handle_market, handle_constellation};
@@ -335,7 +339,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         // reasoning
         | "ask" | "chat" | "voice"
         // swarm / nats
-        | "swarm" | "events" | "substrate" | "attention"
+        | "swarm" | "events" | "substrate" | "attention" | "inbox"
         // constellation services
         | "radio" | "market" | "constellation"
         // ops / data movement
@@ -2033,6 +2037,29 @@ fn main() {
                     process::exit(1);
                 }
             }
+        }
+
+        #[cfg(feature = "nats")]
+        "inbox" => {
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka inbox <send|serve|tail> [args...]");
+                process::exit(1);
+            }
+            match args[command_start + 1].as_str() {
+                "send" => handle_inbox_send(&cfg, &args[command_start..]),
+                "serve" => handle_inbox_serve(&cfg, &args[command_start..]),
+                "tail" => handle_inbox_tail(&cfg, &args[command_start..]),
+                other => {
+                    eprintln!("Unknown inbox command: {other}");
+                    eprintln!("Usage: kannaka inbox <send|serve|tail> [args...]");
+                    process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "nats"))]
+        "inbox" => {
+            eprintln!("kannaka inbox requires the `nats` feature");
+            process::exit(1);
         }
 
         "voice" => {

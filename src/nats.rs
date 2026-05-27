@@ -855,6 +855,14 @@ impl SwarmTransport {
         result
     }
 
+    /// Public façade over the raw PUB. Use this for ad-hoc subjects
+    /// (e.g. the inbox prototype) that don't have a typed publish_X
+    /// method. The disconnect-buffering behavior of publish_raw is
+    /// preserved.
+    pub fn publish(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+        self.publish_raw(subject, payload)
+    }
+
     /// Publish a raw message to a subject, buffering on disconnect.
     fn publish_raw(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
         let mut stream = self.stream.lock().map_err(|e| {
