@@ -333,6 +333,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "boost" | "relate"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
+        | "kannaktopus"
         | "neighbors" | "cmf" | "invariant" | "topology" | "bias"
         // perception
         | "hear" | "see"
@@ -546,7 +547,7 @@ fn main() {
     let quiet = std::env::var("KANNAKA_QUIET").is_ok();
     let mut sys = {
         if !quiet { eprintln!("Using HRM backend (Holographic Resonance Medium)"); }
-        match init_with_hrm(dir, quiet) {
+        match init_with_hrm(dir.clone(), quiet) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to initialize with HRM: {e}");
@@ -1138,6 +1139,47 @@ fn main() {
                 println!("  Field mode: HRM (tensor interference)");
             } else {
                 // total_skip_links removed
+            }
+        }
+        "kannaktopus" => {
+            // ADR-0030: Kannaktopus — resident octopus. `observe` (read-only)
+            // resolves arms→clusters and aggregates; `step` grows/crawls one arm
+            // and persists the arm sidecar (never touches the .hrm).
+            use kannaka_memory::kannaktopus::Kannaktopus;
+            let json = args[command_start..].iter().any(|a| a == "--json");
+            let members = args[command_start..].iter().any(|a| a == "--members");
+            let sub = args.get(command_start + 1).map(|s| s.as_str()).unwrap_or("observe");
+            let mut topus = Kannaktopus::load(&dir);
+            let view = if sub == "step" {
+                let v = topus.step(&sys.engine, members);
+                if let Err(e) = topus.save(&dir) {
+                    eprintln!("[kannaktopus] failed to save arm state: {e}");
+                }
+                v
+            } else {
+                topus.observe(&sys.engine, members)
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view).unwrap_or_default());
+            } else {
+                println!("Kannaktopus ({})", view.agent_id);
+                println!("  Alive:     {}", view.alive);
+                println!("  Arms:      {}/{}  (HRM clusters: {})", view.num_arms, view.max_arms, view.num_clusters);
+                println!("  Memory:    {} memories across {} clusters", view.memory_count, view.clusters_occupied.len());
+                println!("  Coherence: {:.4}   mean-amp {:.3}   mean-freq {:.3}",
+                    view.characteristics.coherence,
+                    view.characteristics.mean_amplitude,
+                    view.characteristics.mean_frequency);
+                if !view.characteristics.modality_distribution.is_empty() {
+                    let mods: Vec<String> = view.characteristics.modality_distribution
+                        .iter().map(|(k, v)| format!("{k}:{v}")).collect();
+                    println!("  Modality:  {}", mods.join("  "));
+                }
+                for a in &view.arms {
+                    let g = if a.grip.len() >= 8 { &a.grip[..8] } else { a.grip.as_str() };
+                    println!("    arm {} → cluster {} ({} mems)  {}  {}",
+                        a.id, a.cluster, a.cluster_size, g, a.grip_preview);
+                }
             }
         }
         "stats" => {

@@ -11,6 +11,7 @@ pub mod observe;
 pub mod openclaw;
 pub mod codebook;
 pub mod consolidation;
+pub mod kannaktopus;
 pub mod rhythm;
 pub mod encoding;
 pub mod kuramoto;

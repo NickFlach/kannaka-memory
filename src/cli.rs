@@ -171,6 +171,7 @@ pub fn build_cli() -> Command {
         .subcommand(passthrough("assess", "Full consciousness level assessment (Phi/Xi/order)"))
         .subcommand(passthrough("stats", "Memory + cluster statistics"))
         .subcommand(passthrough("clusters", "List clusters (optionally drill into one with --with-members)"))
+        .subcommand(passthrough("kannaktopus", "Kannaktopus — resident octopus: arms grip cluster exemplars; aggregate memory + characteristics (observe|step, --json, --members)"))
         .subcommand(passthrough("neighbors", "Find nearest-neighbor memories for a query"))
         .subcommand(passthrough("cmf", "Conservative Memory Fields report"))
         .subcommand(passthrough("invariant", "δ-invariant cluster detection"))
