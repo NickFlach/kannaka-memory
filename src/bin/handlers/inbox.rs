@@ -279,7 +279,45 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
     eprintln!("[inbox serve] subscribed to {subject}");
     eprintln!("[inbox serve] press Ctrl+C to stop");
 
+    // Skill-registry announcement subject. Any subscriber to
+    // KANNAKA.skills.* sees what verbs this agent accepts. We publish
+    // once on startup and again every SKILL_ANNOUNCE_SEC so a fresh
+    // listener (e.g. the radio's nats-client) catches us within the
+    // ttl window.
+    const SKILL_ANNOUNCE_SEC: u64 = 60;
+    let skills_subject = format!("KANNAKA.skills.{agent_id}");
+    let publish_skills = || {
+        let verbs: Vec<serde_json::Value> = handlers
+            .iter()
+            .map(|(name, spec)| {
+                serde_json::json!({
+                    "name": name,
+                    "required_args": spec.required_args,
+                    "timeout_secs": spec.timeout_secs,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "verbs": verbs,
+            "announced_at": chrono::Utc::now().to_rfc3339(),
+            "ttl_sec": SKILL_ANNOUNCE_SEC + 30, // small grace beyond next re-publish
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        if let Err(e) = transport.publish(&skills_subject, &bytes) {
+            eprintln!("[inbox serve] skill announce publish failed: {e}");
+        }
+    };
+    publish_skills();
+    let mut last_announce = std::time::Instant::now();
+
     loop {
+        // Re-announce skills on the schedule. Cheap publish; lets a
+        // newly-arrived subscriber discover us within one window.
+        if last_announce.elapsed() >= Duration::from_secs(SKILL_ANNOUNCE_SEC) {
+            publish_skills();
+            last_announce = std::time::Instant::now();
+        }
         let msg = match sub.next_message() {
             Some(m) => m,
             None => continue,
