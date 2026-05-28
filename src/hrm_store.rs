@@ -31,9 +31,31 @@ pub struct HrmStore {
     memory_cache: HashMap<Uuid, HyperMemory>,
     /// Dirty flag to track when the medium needs saving
     dirty: bool,
+    /// When true, `save_medium` is a no-op — the process loads and mutates
+    /// in RAM but never persists. Set via `KANNAKA_READONLY` so the long-
+    /// running reader services (swarm serve / inbox serve / attention serve)
+    /// can share one HRM with the sole writer (swarm join) without the
+    /// last-writer-wins clobbering that silently drops absorbed memories.
+    readonly: bool,
 }
 
 impl HrmStore {
+    /// Whether `KANNAKA_READONLY` requests read-only (no-persist) mode.
+    /// Any non-empty value other than "0"/"false" enables it.
+    fn env_readonly() -> bool {
+        match std::env::var("KANNAKA_READONLY") {
+            Ok(v) => !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"),
+            Err(_) => false,
+        }
+    }
+
+    /// Force read-only mode on this store regardless of env. Used by the
+    /// OpenClaw fallback so a failed load can never overwrite (and thus
+    /// destroy) a corrupt-but-recoverable .hrm file.
+    pub fn set_readonly(&mut self, ro: bool) {
+        self.readonly = ro;
+    }
+
     /// Create a new HRM store with the given encoding pipeline and file path.
     pub fn new(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Self {
         Self {
@@ -43,6 +65,7 @@ impl HrmStore {
             hrm_path,
             memory_cache: HashMap::new(),
             dirty: false,
+            readonly: Self::env_readonly(),
         }
     }
 
@@ -77,6 +100,7 @@ impl HrmStore {
                     hrm_path,
                     memory_cache: HashMap::new(),
                     dirty: false,
+                    readonly: Self::env_readonly(),
                 };
                 // Populate flat medium view for backward compat (observe, coherence matrix, etc.)
                 store.sync_medium_from_chiral();
@@ -105,6 +129,7 @@ impl HrmStore {
                     hrm_path,
                     memory_cache: HashMap::new(),
                     dirty: false,
+                    readonly: Self::env_readonly(),
                 };
                 store.rebuild_cache()?;
                 store.load_link_graph();
@@ -214,6 +239,15 @@ impl HrmStore {
 
     /// Save the medium to the .hrm file.
     fn save_medium(&mut self) -> Result<(), StoreError> {
+        // Read-only processes mutate in RAM but never persist. This is how
+        // single-writer is enforced: only the sole writer (swarm join /
+        // dream / ad-hoc remember) flushes to disk; the long-running reader
+        // services hold KANNAKA_READONLY and drop their dirty flag silently.
+        if self.readonly {
+            self.dirty = false;
+            return Ok(());
+        }
+
         if !self.dirty {
             return Ok(());
         }

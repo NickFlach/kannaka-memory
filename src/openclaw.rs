@@ -178,9 +178,23 @@ impl KannakaMemorySystem {
             match crate::hrm_store::HrmStore::load(pipeline, hrm_path) {
                 Ok(s) => Box::new(s),
                 Err(e) => {
-                    eprintln!("[init] Failed to load HRM: {}. Starting fresh.", e);
+                    // A failed load here previously started a FRESH empty store
+                    // that would then save itself over the unreadable file —
+                    // silently converting a corrupt-but-recoverable .hrm into
+                    // permanent data loss (this is how Oracle's store got gutted
+                    // to ~74 memories). Start fresh in READ-ONLY mode so the
+                    // existing file is preserved for offline recovery and never
+                    // overwritten by an empty medium.
+                    eprintln!(
+                        "[init] Failed to load HRM: {}. Starting fresh in READ-ONLY mode \
+                         (existing file preserved, NOT overwritten). Move it aside and \
+                         restart to begin a clean store.",
+                        e
+                    );
                     let pipeline = make_pipeline();
-                    Box::new(crate::hrm_store::HrmStore::new(pipeline, data_dir.join("kannaka.hrm")))
+                    let mut fresh = crate::hrm_store::HrmStore::new(pipeline, data_dir.join("kannaka.hrm"));
+                    fresh.set_readonly(true);
+                    Box::new(fresh)
                 }
             }
         } else {
