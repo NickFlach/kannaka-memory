@@ -151,18 +151,25 @@ fn render_cmd(
 }
 
 /// ----------------------------------------------------------------------
-/// `kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>]`
+/// `kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>] [--wait [secs]]`
 /// ----------------------------------------------------------------------
+///
+/// With `--wait` the sender subscribes to a unique reply subject BEFORE
+/// publishing, then blocks until the handler's response (or timeout)
+/// arrives there. Without `--wait` the send is fire-and-forget — the
+/// only visibility is the audit subject.
 #[cfg(feature = "nats")]
 pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
+    use std::time::Duration;
     if args.len() < 4 {
-        eprintln!("Usage: kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>]");
+        eprintln!("Usage: kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>] [--wait [secs]]");
         process::exit(1);
     }
     let to = args[2].clone();
     let verb = args[3].clone();
     let mut from = cfg.agent.id.clone();
     let mut arg_map = serde_json::Map::new();
+    let mut wait_secs: Option<u64> = None;
     let mut i = 4;
     while i < args.len() {
         match args[i].as_str() {
@@ -182,6 +189,18 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
                 }
                 i += 2;
             }
+            "--wait" => {
+                // Optional next-arg is the timeout; default 30s.
+                if i + 1 < args.len() {
+                    if let Ok(n) = args[i + 1].parse::<u64>() {
+                        wait_secs = Some(n.max(1).min(600));
+                        i += 2;
+                        continue;
+                    }
+                }
+                wait_secs = Some(30);
+                i += 1;
+            }
             "--nats-url" if i + 1 < args.len() => i += 2,
             _ => {
                 eprintln!("unknown flag: {}", args[i]);
@@ -199,7 +218,27 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
     };
     let msg_id = uuid::Uuid::new_v4().to_string();
     let ts = chrono::Utc::now().to_rfc3339();
-    let payload = serde_json::json!({
+
+    // When --wait is set, prepare a reply subject and subscribe BEFORE
+    // publishing. NATS auto-cleans subscriptions on disconnect, so the
+    // reply sub lifetime is naturally bounded by this command's run.
+    let reply_subject: Option<String> = wait_secs.map(|_| format!("KANNAKA.inbox.reply.{msg_id}"));
+    let reply_sub = if let Some(subj) = &reply_subject {
+        match transport.subscribe(subj) {
+            Ok(s) => {
+                let _ = s.set_timeout(Some(Duration::from_secs(2)));
+                Some(s)
+            }
+            Err(e) => {
+                eprintln!("subscribe reply {subj}: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut payload_obj = serde_json::json!({
         "msg_id": msg_id,
         "from": from,
         "to": to,
@@ -207,15 +246,16 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
         "args": arg_map,
         "ts": ts,
     });
-    let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    if let Some(subj) = &reply_subject {
+        payload_obj["reply_to"] = serde_json::Value::String(subj.clone());
+    }
+    let payload_bytes = serde_json::to_vec(&payload_obj).unwrap_or_default();
     let directed_subject = format!("KANNAKA.inbox.{to}");
     if let Err(e) = transport.publish(&directed_subject, &payload_bytes) {
         eprintln!("publish {directed_subject}: {e}");
         process::exit(1);
     }
-    // Also fan out a "sent" notice to audit so tail-watchers see the
-    // outbound. The receiver-side handler will publish a "received" /
-    // "ok" / "fail" follow-up.
+    // Audit fan-out (so tail watchers see the outbound).
     let audit = serde_json::json!({
         "ts": ts,
         "phase": "sent",
@@ -227,7 +267,23 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
     });
     let audit_bytes = serde_json::to_vec(&audit).unwrap_or_default();
     let _ = transport.publish("KANNAKA.inbox.audit", &audit_bytes);
-    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+
+    if let (Some(mut sub), Some(secs)) = (reply_sub, wait_secs) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        while std::time::Instant::now() < deadline {
+            if let Some(msg) = sub.next_message() {
+                // Reply payload mirrors the audit "received" envelope,
+                // so callers parse a known shape.
+                std::io::Write::write_all(&mut std::io::stdout(), &msg.payload).ok();
+                println!();
+                return;
+            }
+        }
+        eprintln!("[inbox send] no reply within {secs}s — handler may still run async");
+        process::exit(2);
+    }
+
+    println!("{}", serde_json::to_string(&payload_obj).unwrap_or_default());
 }
 
 /// ----------------------------------------------------------------------
@@ -342,6 +398,7 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
         let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?").to_string();
         let verb = parsed.get("verb").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let msg_id = parsed.get("msg_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let reply_to = parsed.get("reply_to").and_then(|v| v.as_str()).map(String::from);
         let args_obj = parsed
             .get("args")
             .and_then(|v| v.as_object())
@@ -352,7 +409,7 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
         let (status, response) = run_one(&handlers, &agent_id, &from, &verb, &args_obj);
         eprintln!("[inbox serve] from={from} verb={verb} status={status}");
 
-        let audit = serde_json::json!({
+        let envelope = serde_json::json!({
             "ts": ts_recv,
             "phase": "received",
             "msg_id": msg_id,
@@ -363,8 +420,13 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
             "status": status,
             "response": response,
         });
-        let audit_bytes = serde_json::to_vec(&audit).unwrap_or_default();
-        let _ = transport.publish("KANNAKA.inbox.audit", &audit_bytes);
+        let envelope_bytes = serde_json::to_vec(&envelope).unwrap_or_default();
+        let _ = transport.publish("KANNAKA.inbox.audit", &envelope_bytes);
+        // Direct reply to the sender if they asked. Same envelope as the
+        // audit fan-out — sender's --wait loop expects this shape.
+        if let Some(rt) = reply_to {
+            let _ = transport.publish(&rt, &envelope_bytes);
+        }
     }
 }
 
