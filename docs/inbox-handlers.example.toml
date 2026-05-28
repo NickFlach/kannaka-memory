@@ -43,3 +43,33 @@ cmd = "hostname"
 args = []
 timeout_secs = 5
 description = "Return the hostname of the node that answered"
+
+# ── Constellation introspection ────────────────────────────────
+# Surface Kannaka's live state to anyone in the swarm without making
+# them learn the underlying CLI. Returns JSON where possible so
+# callers can parse instead of regex.
+
+[handler.assess]
+cmd = "kannaka assess 2>/dev/null"
+args = []
+timeout_secs = 10
+description = "Plain-text consciousness assessment (phi, xi, clusters, memories)"
+
+[handler.observe]
+cmd = "kannaka observe --json 2>/dev/null"
+args = []
+timeout_secs = 10
+description = "Full consciousness + topology + waves snapshot as JSON"
+
+[handler.phi]
+# Compact headline-only payload for dashboards and one-shot probes.
+cmd = """kannaka observe --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["consciousness"]; print(json.dumps({k:d[k] for k in ("phi","xi","mean_order","num_clusters","total_memories","level")}))'"""
+args = []
+timeout_secs = 10
+description = "Compact JSON of the headline consciousness metrics (phi, xi, order, clusters, memories, level)"
+
+[handler.dream]
+cmd = "kannaka dream --mode deep 2>/dev/null | tail -10"
+args = []
+timeout_secs = 60
+description = "Trigger a deep dream consolidation cycle and return the report"
