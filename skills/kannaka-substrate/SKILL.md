@@ -28,9 +28,14 @@ data** — it focuses on topology, sequencing, and recovery rather than re-listi
 
 - "stand up / bootstrap the substrate (kannaka-prime)"
 - "the collective recall isn't working" / "substrate seems down"
-- "set up the event streams / JetStream"
-- "snapshot the HRM" / "schedule snapshots" / "how often does it snapshot?"
-- "restore the HRM" / "the HRM is corrupt" / "recover on a new host" / "rollback"
+- "set up the event streams / JetStream" / "configure auto-snapshots on the substrate"
+- "the HRM is corrupt — recover it" / "restore on a new host" / "cross-host disaster
+  recovery" / "roll back the HRM"
+
+Do NOT use for:
+- a single agent's routine `kannaka events snapshot` or `recall`/`dream`/`remember` —
+  `skill-kannaka-memory` already covers the per-agent commands. This skill is the operator
+  runbook for the **collective node** and **disaster recovery**.
 
 ---
 
@@ -106,7 +111,7 @@ How a snapshot is stored (important — it is NOT all in NATS):
 - The HRM is flushed, gzipped, and written to `<data_dir>/snapshots/<UTC-ts>-<agent>.hrm.gz`.
 - Only a **manifest** (version, wavefronts, clusters, Φ, `body_path`, gz size) is published
   to `KANNAKA.snapshots.<agent>.full` in the `KANNAKA_SNAPSHOTS` stream. NATS silently caps
-  payloads ~8 MB and HRMs grow to 35 MB+, so bodies stay out-of-band on disk.
+  payloads ~8–10 MB and HRMs grow to 35 MB+, so bodies stay out-of-band on disk.
 
 Disk retention (auto-pruned per agent on each snapshot):
 - `kannaka-substrate`: keep latest **24** (substrate snapshots are ~45 MB; 168 once filled
@@ -131,20 +136,27 @@ kannaka events restore --from-url https://<observatory>/api/snapshots/body/<file
 kannaka events restore --from-url https://<observatory>/api/snapshots/body/<file>
 ```
 
-Safety properties (built into the command — rely on them):
+Safety properties:
 - **`--dry-run` first.** It reports gz size, decoded size, the target path, and the backup
   it *would* make — and writes nothing. Always run it, show the user, then re-run without it.
 - Before overwriting, restore **renames the current HRM** to
   `kannaka.hrm.pre-restore-<ts>` (so a bad restore is reversible).
-- Restore **refuses if `kannaka.hrm` is locked** by a running daemon — **stop
-  `kannaka substrate run` / `kannaka swarm join` first**, restore, then restart them so they
-  reload the new HRM.
-- `--from-url` caches the downloaded body into `<data_dir>/snapshots/` so later replays can
-  use `--from`.
+- **You must stop the daemons yourself first** — `kannaka substrate run` / `kannaka swarm
+  join`. There is NO portable lock guard: restore just tries to rename the live HRM, and on
+  **Linux** `rename(2)` over an open file *succeeds* silently — a running daemon then keeps
+  writing to the old (now-backed-up) inode and never reloads the restored file, so you lose
+  writes and the restore appears to "not take." (On Windows the rename fails with a sharing
+  violation and restore aborts with "is the HRM in use?", which is the only case the error
+  hint fires.) Treat "stop the daemons" as mandatory, not as something the tool enforces.
+- `--from-url` caches the downloaded body into `<data_dir>/snapshots/` under the **filename
+  from the URL's last path segment** (not necessarily `<ts>-<agent>.hrm.gz`), so a later
+  `--from <that-path>` replay works; `list-snapshots` only surfaces it if a matching NATS
+  manifest exists.
+- After a restore, **restart the daemons** so they load the new HRM.
 
 > Restore is destructive to the live HRM (after backing it up). Confirm the target agent and
-> snapshot with the user before running the non-dry-run form, and make sure daemons are
-> stopped.
+> snapshot with the user before running the non-dry-run form, and make sure the daemons are
+> stopped first.
 
 ---
 
@@ -156,7 +168,8 @@ Safety properties (built into the command — rely on them):
   design (for `Restart=on-failure`). Check the NATS server/network, not the binary.
 - **disk filling on the substrate host** → snapshot bodies. Lower `KANNAKA_SNAPSHOT_RETAIN`
   or confirm the 24-default pruning is running (`list-snapshots` shows what's retained).
-- **restore says "is the HRM in use?"** → a daemon holds the file; stop it first.
+- **restore says "is the HRM in use?"** → a daemon holds the file (Windows); stop it first.
+  On Linux you get NO such error — stop the daemons proactively (see Safety properties above).
 - **streams missing / publish ACL errors** → re-run `kannaka events init`; check JetStream is
   enabled and the account has stream-create + publish ACLs.
 
