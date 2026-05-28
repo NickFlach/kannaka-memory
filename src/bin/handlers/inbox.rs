@@ -66,6 +66,11 @@ struct HandlerSpec {
     cmd_template: String,
     required_args: Vec<String>,
     timeout_secs: u64,
+    /// Optional human-readable description from the toml `description`
+    /// key. Surfaces in the radio's Constellation Skills panel so a
+    /// caller knows what a verb does without reading the operator's
+    /// handlers.toml.
+    description: Option<String>,
 }
 
 /// Verb → spec.
@@ -97,9 +102,13 @@ fn load_handlers(path: &PathBuf) -> Result<HandlerTable, String> {
             .and_then(|v| v.as_integer())
             .map(|n| n.max(1) as u64)
             .unwrap_or(60);
+        let description = tbl
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         out.insert(
             verb.clone(),
-            HandlerSpec { cmd_template, required_args, timeout_secs },
+            HandlerSpec { cmd_template, required_args, timeout_secs, description },
         );
     }
     Ok(out)
@@ -294,6 +303,7 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
                     "name": name,
                     "required_args": spec.required_args,
                     "timeout_secs": spec.timeout_secs,
+                    "description": spec.description,
                 })
             })
             .collect();

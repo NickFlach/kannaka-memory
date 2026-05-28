@@ -12,6 +12,8 @@
 #   cmd           required — command line to run after substitution
 #   args          required arg keys; missing → status = "arg_missing"
 #   timeout_secs  soft timeout via /usr/bin/timeout (default 60)
+#   description   optional one-line summary surfaced in the radio's
+#                 Constellation Skills panel
 #
 # Subject space:
 #   send  → KANNAKA.inbox.<to_agent_id>
@@ -26,11 +28,13 @@
 cmd = "echo 'Hello {{args.name}} from {{from}}'"
 args = ["name"]
 timeout_secs = 5
+description = "Echo a friendly greeting to {{args.name}}"
 
 [handler.recall]
 cmd = "kannaka recall '{{args.query}}' --top-k 3"
 args = ["query"]
 timeout_secs = 30
+description = "Recall the top 3 memories that resonate with the query"
 
 [handler.ping]
 # No args required. Returns the agent's hostname so the sender knows
@@ -38,3 +42,4 @@ timeout_secs = 30
 cmd = "hostname"
 args = []
 timeout_secs = 5
+description = "Return the hostname of the node that answered"
