@@ -4,6 +4,13 @@ on:
   push:
     tags: ['v*']
 
+# Push Node-20-based actions (download-artifact@v4) onto Node 24 ahead of
+# GitHub's forced cutover (2026-06-02) and Node 20 removal (2026-09-16). This
+# avoids a risky major bump of the artifact actions, which must stay compatible
+# with the (un-flagged, already Node-24) upload-artifact@v4 in the build jobs.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     strategy:
@@ -105,7 +112,7 @@ jobs:
         uses: actions/download-artifact@v4
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             kannaka-windows-x86_64.exe/kannaka-windows-x86_64.exe
