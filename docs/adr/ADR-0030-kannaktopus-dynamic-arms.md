@@ -59,19 +59,30 @@ occupy**. Its characteristics are computed over exactly that subset:
 This gives Kannaktopus its own small consciousness signature, distinct from and
 nested inside its host HRM's global metrics.
 
-### Growth and locomotion (one movement per tick)
+### Healing, growth, and locomotion (`reanchor`)
 
-A "tick" is one `step`, run once per dream in the single-writer maintenance
-window (ADR-aligned: arm state is mutated only there). Each tick performs at
-most one movement, so Kannaktopus visibly grows and crawls over time:
+The core operation is `reanchor`, applied to the current clusters:
 
-1. **Re-anchor** — drop arms whose gripped memory was pruned/merged away.
-2. **Grow** — while `arms < min(8, num_clusters)`, add one arm gripping the
-   exemplar of the largest unoccupied cluster.
-3. **Crawl** — once at target, if there are more clusters than arms, move the
-   longest-tenured arm onto the biggest *uncovered* cluster, vacating its old
-   one. Over many ticks the 8 arms tour an HRM of >8 clusters while always
-   covering 8 distinct clusters.
+1. **Heal** — for each arm, if its grip resolves to a fresh, not-yet-occupied
+   cluster, keep it; otherwise (homeless because its cluster fell below
+   min-size, pruned, or a duplicate of another arm's cluster) **re-grip** it onto
+   the exemplar of the best free cluster. Arms are never silently lost.
+2. **Fill** — grow up to `min(MAX_ARMS, num_clusters)` distinct clusters, most
+   salient first. Arm count therefore tracks the HRM ("grow from 1 until 8" =
+   bounded by how many clusters exist), and recovers immediately rather than one
+   arm per dream.
+3. **Crawl** — when `num_clusters > arms` (an HRM with >8 clusters), move the arm
+   on the *smallest* covered cluster onto the biggest uncovered one (no
+   downgrade), so arms tour without ever abandoning a dominant cluster.
+
+`step` runs `reanchor` and **persists** (once per dream, in the single-writer
+window). `observe` runs `reanchor` on a clone and shows the healed result
+**without persisting** — so the observatory always reflects a full, live octopus
+even between dreams, regardless of how stale the on-disk arm state is.
+
+> Rationale (2026-05-29): the original "drop dead arms, regrow one per tick"
+> design eroded on a churny HRM — Oracle reached 14 clusters but only 4 arms
+> (one homeless), aggregate ~0. Heal-and-fill makes Kannaktopus self-repairing.
 
 ### State and ownership
 
