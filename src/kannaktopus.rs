@@ -184,60 +184,98 @@ impl Kannaktopus {
             })
     }
 
-    /// Read-only: resolve arms against the current clusters and aggregate.
+    /// Read-only: show a HEALED view — homeless/pruned arms are re-anchored and
+    /// arms filled to `min(8, clusters)` — WITHOUT persisting, so the observatory
+    /// always reflects a live octopus even between `step`s. `step` makes the same
+    /// result durable.
     pub fn observe(&self, engine: &ResonanceEngine, include_memories: bool) -> KannaktopusView {
         let (clusters, mem) = Self::snapshot(engine);
+        let mut view_state = self.clone();
+        view_state.reanchor(&clusters, &mem);
+        view_state.view(&clusters, &mem, include_memories)
+    }
+
+    /// Advance + persist: re-anchor, fill to `min(8, clusters)`, and crawl one arm
+    /// when the HRM has more clusters than arms. Mutates only arm state (never the
+    /// .hrm). Caller persists via `save`.
+    pub fn step(&mut self, engine: &ResonanceEngine, include_memories: bool) -> KannaktopusView {
+        let (clusters, mem) = Self::snapshot(engine);
+        self.reanchor(&clusters, &mem);
+        self.updated = Utc::now();
         self.view(&clusters, &mem, include_memories)
     }
 
-    /// Advance Kannaktopus one tick: re-anchor, then grow OR crawl one arm.
-    /// Mutates only the arm state (never the .hrm). Caller persists via `save`.
-    pub fn step(&mut self, engine: &ResonanceEngine, include_memories: bool) -> KannaktopusView {
-        let (clusters, mem) = Self::snapshot(engine);
+    /// Heal + fill + tour. Arms grip exemplar memories; this keeps every arm on a
+    /// LIVE cluster, fills up to `min(MAX_ARMS, num_clusters)` distinct clusters,
+    /// and (when clusters outnumber arms) moves the least-valuable arm to tour.
+    /// Idempotent given the same clusters, so calling it for a read-only view and
+    /// for a persisted step produce the same result.
+    fn reanchor(&mut self, clusters: &[MemoryCluster], mem: &HashMap<Uuid, HyperMemory>) {
         let num_clusters = clusters.len();
+        if num_clusters == 0 {
+            return; // HRM too small to form clusters — nothing to grip yet
+        }
+        let target = self.max_arms.min(num_clusters);
 
-        // 1. Re-anchor: drop arms whose gripped memory was pruned/merged away.
-        self.arms.retain(|a| mem.contains_key(&a.grip));
+        // Clusters ranked by salience (largest first) for choosing grips.
+        let mut by_salience: Vec<usize> = (0..num_clusters).collect();
+        by_salience.sort_by_key(|&i| std::cmp::Reverse(clusters[i].memory_ids.len()));
 
-        // Which clusters are currently occupied (by grip resolution).
-        let mut occupied: HashSet<usize> = self
-            .arms
-            .iter()
-            .filter_map(|a| Self::cluster_of(&a.grip, &clusters))
-            .collect();
-
-        let target = self.max_arms.min(num_clusters.max(1));
+        let mut occupied: HashSet<usize> = HashSet::new();
         let mut next_id = self.arms.iter().map(|a| a.id).max().map(|m| m + 1).unwrap_or(0);
 
-        if num_clusters == 0 {
-            // Nothing to grip yet (HRM too small to form clusters).
-        } else if self.arms.len() < target {
-            // 2. GROW one arm onto the most salient unoccupied cluster.
-            if let Some(ci) = (0..num_clusters)
-                .filter(|i| !occupied.contains(i))
-                .max_by_key(|&i| clusters[i].memory_ids.len())
-            {
-                if let Some(ex) = Self::exemplar(&clusters[ci], &mem) {
+        // 1. Keep arms that resolve to a fresh, not-yet-occupied cluster; re-grip
+        //    the rest (homeless / pruned / duplicate) onto the best free cluster.
+        let mut healed: Vec<Arm> = Vec::new();
+        for mut arm in std::mem::take(&mut self.arms) {
+            match Self::cluster_of(&arm.grip, clusters) {
+                Some(c) if !occupied.contains(&c) => {
+                    occupied.insert(c);
+                    arm.cluster = c as i64;
+                    healed.push(arm);
+                }
+                _ => {
+                    if let Some(&c) = by_salience.iter().find(|&&c| !occupied.contains(&c)) {
+                        if let Some(ex) = Self::exemplar(&clusters[c], mem) {
+                            occupied.insert(c);
+                            arm.grip = ex;
+                            arm.cluster = c as i64;
+                            arm.since = Utc::now();
+                            healed.push(arm);
+                        }
+                    }
+                    // else: more arms than clusters → drop this arm
+                }
+            }
+        }
+        self.arms = healed;
+
+        // 2. Grow up to target on the most salient free clusters.
+        while self.arms.len() < target {
+            let next_free = by_salience.iter().copied().find(|c| !occupied.contains(c));
+            let c = match next_free {
+                Some(c) => c,
+                None => break,
+            };
+            match Self::exemplar(&clusters[c], mem) {
+                Some(ex) => {
+                    occupied.insert(c);
                     self.arms.push(Arm {
                         id: next_id,
                         grip: ex,
-                        cluster: ci as i64,
+                        cluster: c as i64,
                         since: Utc::now(),
                     });
                     next_id += 1;
-                    occupied.insert(ci);
                 }
+                None => break,
             }
-        } else if num_clusters > self.arms.len() {
-            // 3. CRAWL: tour an HRM that has more clusters than arms. Move the arm
-            //    on the SMALLEST covered cluster (least to lose) onto the biggest
-            //    uncovered cluster — tie-break by longest tenure so arms rotate.
-            //    Guard: only move when it does not DOWNGRADE coverage, so a
-            //    dominant cluster is never abandoned for a tiny one (otherwise the
-            //    aggregate thrashes when cluster sizes are very uneven). On an HRM
-            //    of comparably-sized clusters this is always a lateral move, so
-            //    the arms genuinely tour; on a lopsided HRM Kannaktopus settles on
-            //    the most significant clusters.
+        }
+
+        // 3. Crawl: more clusters than arms → move the arm on the SMALLEST covered
+        //    cluster (least to lose) onto the biggest uncovered one, no downgrade,
+        //    so arms tour without ever abandoning a dominant cluster.
+        if num_clusters > self.arms.len() {
             let target_ci = (0..num_clusters)
                 .filter(|i| !occupied.contains(i))
                 .max_by_key(|&i| clusters[i].memory_ids.len());
@@ -248,13 +286,13 @@ impl Kannaktopus {
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, a)| {
-                        Self::cluster_of(&a.grip, &clusters)
+                        Self::cluster_of(&a.grip, clusters)
                             .map(|cci| (idx, clusters[cci].memory_ids.len(), a.since))
                     })
                     .min_by(|x, y| x.1.cmp(&y.1).then(x.2.cmp(&y.2)));
                 if let Some((arm_idx, vacated_size, _)) = crawler {
                     if target_size >= vacated_size {
-                        if let Some(ex) = Self::exemplar(&clusters[ci], &mem) {
+                        if let Some(ex) = Self::exemplar(&clusters[ci], mem) {
                             self.arms[arm_idx].grip = ex;
                             self.arms[arm_idx].cluster = ci as i64;
                             self.arms[arm_idx].since = Utc::now();
@@ -263,17 +301,6 @@ impl Kannaktopus {
                 }
             }
         }
-
-        // Refresh cached cluster hints + bump timestamp.
-        let _ = &mut next_id;
-        for a in &mut self.arms {
-            a.cluster = Self::cluster_of(&a.grip, &clusters)
-                .map(|i| i as i64)
-                .unwrap_or(-1);
-        }
-        self.updated = Utc::now();
-
-        self.view(&clusters, &mem, include_memories)
     }
 
     fn view(
