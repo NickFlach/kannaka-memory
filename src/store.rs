@@ -473,16 +473,13 @@ impl ResonanceEngine {
                     .map(|m| m.phase)
                     .collect();
                 let n = phases.len() as f32;
-                let mean_phase = if n > 0.0 {
+                let (mean_phase, order) = if n > 0.0 {
                     let sc: f32 = phases.iter().map(|p| p.cos()).sum::<f32>() / n;
                     let ss: f32 = phases.iter().map(|p| p.sin()).sum::<f32>() / n;
-                    ss.atan2(sc)
-                } else { 0.0 };
-                let order = if n > 0.0 {
-                    let sc: f32 = phases.iter().map(|p| p.cos()).sum::<f32>() / n;
-                    let ss: f32 = phases.iter().map(|p| p.sin()).sum::<f32>() / n;
-                    (sc * sc + ss * ss).sqrt()
-                } else { 0.0 };
+                    (ss.atan2(sc), (sc * sc + ss * ss).sqrt())
+                } else {
+                    (0.0, 0.0)
+                };
                 MemoryCluster {
                     memory_ids: ids,
                     order_parameter: order,
