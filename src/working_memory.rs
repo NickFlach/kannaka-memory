@@ -224,7 +224,7 @@ impl AttentionField {
         // Reverse so oldest-first
         for turn in recent.into_iter().rev() {
             let preview = if turn.content.len() > 200 {
-                format!("{}…", &turn.content[..turn.content.floor_char_boundary(200)])
+                format!("{}\u{2026}", &turn.content[..turn.content.floor_char_boundary(200)])
             } else {
                 turn.content.clone()
             };
@@ -286,6 +286,7 @@ impl AttentionField {
     /// as structured data instead of formatted markdown.
     pub fn project_attention(&self, store: &dyn crate::store::MediumBackend) -> AttentionProjection {
         let mut wavefronts = Vec::new();
+        let mut modality_counts: std::collections::HashMap<Modality, u32> = std::collections::HashMap::new();
 
         if let Ok(all) = store.all_memories() {
             // Sort by amplitude (energy) descending, take top N
@@ -299,23 +300,15 @@ impl AttentionField {
                     mem.content.clone()
                 };
                 wavefronts.push((mem.id, mem.amplitude, preview));
+                *modality_counts.entry(mem.modality).or_insert(0u32) += 1;
             }
         }
 
-        // Determine dominant modality from top wavefronts
+        // Determine dominant modality from the already-collected top wavefronts
         let dominant_modality = if wavefronts.is_empty() {
             Modality::Unknown
         } else {
-            // Count modalities in top wavefronts
-            let mut counts = std::collections::HashMap::new();
-            if let Ok(all) = store.all_memories() {
-                let mut sorted: Vec<&crate::memory::HyperMemory> = all.into_iter().collect();
-                sorted.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
-                for mem in sorted.into_iter().take(10) {
-                    *counts.entry(mem.modality).or_insert(0u32) += 1;
-                }
-            }
-            counts.into_iter()
+            modality_counts.into_iter()
                 .max_by_key(|(_, c)| *c)
                 .map(|(m, _)| m)
                 .unwrap_or(Modality::Unknown)
