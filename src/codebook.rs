@@ -15,6 +15,14 @@ pub struct Codebook {
     seed: u64,
 }
 
+/// Draw one sample from N(0, 1) using the Box-Muller transform.
+/// Guards u1 against log(0) by clamping to 1e-10.
+fn box_muller(rng: &mut impl Rng) -> f32 {
+    let u1: f32 = rng.gen::<f32>().max(1e-10);
+    let u2: f32 = rng.gen();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+}
+
 impl Codebook {
     /// Create a new codebook with a seeded random projection matrix.
     /// Each element is drawn from N(0, 1/sqrt(output_dim)) for variance preservation.
@@ -24,11 +32,7 @@ impl Codebook {
         let len = input_dim * output_dim;
         let mut matrix = Vec::with_capacity(len);
         for _ in 0..len {
-            // Box-Muller for normal distribution
-            let u1: f32 = rng.gen::<f32>().max(1e-10);
-            let u2: f32 = rng.gen();
-            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-            matrix.push(z * scale);
+            matrix.push(box_muller(&mut rng) * scale);
         }
         Self { matrix, input_dim, output_dim, seed }
     }
@@ -56,11 +60,7 @@ impl Codebook {
     pub fn random_vector(&self) -> Vec<f32> {
         // Use a derived seed so it's deterministic but different from matrix generation
         let mut rng = ChaCha8Rng::seed_from_u64(self.seed.wrapping_add(0xCAFE));
-        let mut v: Vec<f32> = (0..self.output_dim).map(|_| {
-            let u1: f32 = rng.gen::<f32>().max(1e-10);
-            let u2: f32 = rng.gen();
-            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
-        }).collect();
+        let mut v: Vec<f32> = (0..self.output_dim).map(|_| box_muller(&mut rng)).collect();
         normalize(&mut v);
         v
     }
