@@ -40,6 +40,14 @@ adaptability).
 4. Plot against the HRM's own R distribution over an equivalent observation
    window.
 
+**Methodology constraint** (per Sánchez-Fuenzalida, Jungerius, Fleming, van Gaal
+& Fahrenfort, *Nature Communications* 2026, `s41467-026-73289-5`): keep R
+**continuous** — never bucket into "coherent/incoherent" before measurement.
+That paper demonstrates that thresholded detect/non-detect classification
+introduces perceptual and response biases that contaminate consciousness
+measurement; the same logic applies to coherence measurement on HRV data.
+Continuous reproduction (the dial, not the button) is the correct readout.
+
 ## Next action
 
 Source one HRV dataset; write `kannaka-cardiac/` skeleton crate or Python module

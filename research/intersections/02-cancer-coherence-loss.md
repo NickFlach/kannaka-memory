@@ -40,6 +40,12 @@ correlate it with prognosis better than HRV variance alone.
 3. Where multi-modal data is available (HRV + EEG + GSR), compute cross-system
    Ξ (off-diagonal asymmetry) and test as a prognostic.
 
+**Methodology constraint:** treat all coherence/decoupling measures as
+**continuous**. Per Sánchez-Fuenzalida et al (*Nature Communications* 2026,
+`s41467-026-73289-5`), thresholding to discrete categories introduces biases
+that contaminate the readout. Hazard-ratio analysis on R as a continuous
+covariate; survival curves stratified only by quantile if at all.
+
 ## Next action
 
 Identify one published HRV/cancer dataset with raw RR-intervals + survival
