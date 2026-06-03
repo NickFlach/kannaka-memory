@@ -21,6 +21,17 @@ signatures that the wave-interference math can extract?
   on cardiac mitochondrial network synchronization):** mitochondria behave as
   coupled oscillators at the cellular level; cancer cells show reprogrammed
   mitochondrial dynamics.
+- **Costa, Tuszynski, Iemma, Trevizan, Wiedenmann, Schöll (2025)**, *Frontiers
+  in Network Physiology* — DOI `10.3389/fnetp.2024.1525135` — applied low-energy
+  modulated EM fields (27.12 MHz carrier, 10–100 Hz envelope) to 22
+  hepatocellular carcinoma patients; **logistic-map parameter `a` from
+  R–R-interval modulation stratified survival** (a > 1.1758 → 21.5-month
+  median; a ≤ 1.1758 → 7.9 months; p < 0.0001) and outperformed standard HRV
+  metrics in ROC analysis. The model is FitzHugh-Nagumo with amplitude-
+  modulated carrier; effective slow-timescale current `I_eff ∝ −A²(τ)V(τ)`.
+  This is the clinical proof-of-concept that an EM-driven continuous cardiac
+  metric reads cancer prognosis better than discrete HRV summaries — exactly
+  the framing this card predicted.
 
 ## Prediction (wave-interference framing)
 
