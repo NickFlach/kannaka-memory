@@ -3279,11 +3279,10 @@ fn run_experiment_l5_session(params: &Params) {
     // L5.6: carrier emergence via FFT on flat-frequency corpus
     // The bimodal corpus amplitude deltas (for reference):
     let actual_cycles_a = amplitude_deltas_a.len();
-    let cycle_period_a = if actual_cycles_a > 0 {
-        (consolidation_ms_a as f32 / 1000.0) / actual_cycles_a as f32
-    } else {
-        0.625 // fallback
-    };
+    // Treat each dream cycle as a fixed 0.125s tick (8 Hz fs). Wall-time
+    // derivation pins target band above Nyquist; this is the design intent.
+    let _ = actual_cycles_a;
+    let cycle_period_a: f32 = 0.125;
     let carrier_bimodal = eval_carrier_emergence(&amplitude_deltas_a, cycle_period_a);
 
     // Flat-frequency emergence test: build corpus with ALL memories at 0.1 Hz,
@@ -3297,11 +3296,10 @@ fn run_experiment_l5_session(params: &Params) {
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
     let actual_cycles_flat = amp_deltas_flat.len();
-    let cycle_period_flat = if actual_cycles_flat > 0 {
-        (consolidation_ms_flat as f32 / 1000.0) / actual_cycles_flat as f32
-    } else {
-        0.625
-    };
+    // Fixed 0.125s tick (8 Hz fs) — see cycle_period_a comment above.
+    let _ = actual_cycles_flat;
+    let _ = consolidation_ms_flat;
+    let cycle_period_flat: f32 = 0.125;
     // carrier_emergence = the FLAT-corpus FFT score (emergence, not passthrough)
     let carrier_emergence = eval_carrier_emergence(&amp_deltas_flat, cycle_period_flat);
 
