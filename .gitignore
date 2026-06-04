@@ -14,3 +14,9 @@ CLAUDE.md
 # Local data files
 .kannaka/
 kannaka.hrm
+
+# Sibling path-dependencies cloned locally for builds (not part of this repo)
+../consciousness-core/
+../kannaka-attention/
+kannaka-attention/
+consciousness-core/
