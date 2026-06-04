@@ -3064,6 +3064,48 @@ fn run_l5_dream_chain(
             .map(|m| (m.id, m.amplitude))
             .collect();
 
+        // Hyp3c: env-driven selective multiplicative attention drive.
+        //   DRIVE_A         = amplitude (0.0 disables, default 0.0)
+        //   DRIVE_TOP_FRAC  = fraction of top-amplitude memories to modulate
+        //                     (1.0 = all, 0.25 = top 25%, default 1.0)
+        //   DRIVE_FREQ_HZ   = drive frequency (default 2.0)
+        {
+            let drive_amp: f32 = std::env::var("DRIVE_A")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            if drive_amp.abs() > 1e-9 {
+                let drive_freq_hz: f32 = std::env::var("DRIVE_FREQ_HZ")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(2.0);
+                let top_frac: f32 = std::env::var("DRIVE_TOP_FRAC")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1.0);
+                let dt_per_cycle: f32 = 0.125;
+                let t = cycle_idx as f32 * dt_per_cycle;
+                let drive_factor = 1.0
+                    + drive_amp
+                        * (2.0 * std::f32::consts::PI * drive_freq_hz * t).sin();
+
+                let all = engine.store.all_memories().unwrap_or_default();
+                let mut sorted: Vec<(uuid::Uuid, f32)> =
+                    all.iter().map(|m| (m.id, m.amplitude)).collect();
+                sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let n_target = (
+                    (sorted.len() as f32 * top_frac.clamp(0.0, 1.0)).round() as usize
+                ).max(1);
+
+                for (id, _) in sorted.iter().take(n_target) {
+                    if let Ok(Some(m)) = engine.store.get_mut(id) {
+                        m.amplitude = (m.amplitude * drive_factor).max(0.0);
+                    }
+                }
+            }
+        }
+
+
         let threshold_scale = if cycle_idx == 0 {
             1.0
         } else {
