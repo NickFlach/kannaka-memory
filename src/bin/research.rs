@@ -3096,6 +3096,13 @@ fn run_l5_dream_chain(
                     drive_context != "engine_b_primed"
                         && drive_context != "engine_b_naive"
                 }
+                // Drive only the xi measurement engines + flat corpus.
+                // Excludes engine_a to avoid the ~0.4 xi penalty from engine_a drive.
+                "xi_and_flat" => {
+                    drive_context == "engine_clean"
+                        || drive_context == "engine_adv"
+                        || drive_context == "engine_flat"
+                }
                 _ => true,
             };
             if drive_amp.abs() > 1e-9 && scope_allows {
@@ -3514,9 +3521,12 @@ fn run_experiment_l5_session(params: &Params) {
                 "run\tfitness\tnoise_removal\tsignal_preservation\tphase_coherence\tspeed\tconsciousness\tencoding_entropy\ttransfer_score\tfrequency_transfer\tonline_retention\tcatastrophic_forgetting\ttemporal_separation\tcarrier_emergence\txi_robustness_v2\ttotal_ms"
             );
         }
+        let run_label = std::env::var("RESEARCH_RUN")
+            .unwrap_or_else(|_| "L5".to_string());
         let _ = writeln!(
             f,
-            "L5.9-stub\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
+            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
+            run_label,
             fitness,
             noise_removal,
             signal_preservation,
