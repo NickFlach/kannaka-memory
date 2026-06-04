@@ -2780,9 +2780,11 @@ fn eval_xi_robustness_v2(
 ) -> f32 {
     // Clean pass
     let mut engine_clean = build_l5_engine(corpus_a, params, dim);
+    std::env::set_var("DRIVE_CONTEXT", "engine_clean");
     let (cs_clean, phi_clean, _totals_clean, _q_clean, _ad_clean,
          _inj_clean, _orig_clean, _iamp_clean) =
         run_l5_dream_chain(params, &mut engine_clean);
+    std::env::remove_var("DRIVE_CONTEXT");
     let fitness_clean = eval_l5_placeholder_fitness(&engine_clean, params, &cs_clean, &phi_clean);
 
     // Adversarial pass: same corpus + 30 adversarial memories
@@ -2792,9 +2794,11 @@ fn eval_xi_robustness_v2(
         mem.decay_rate = params.decay_rate;
         let _ = engine_adv.store.insert(mem);
     }
+    std::env::set_var("DRIVE_CONTEXT", "engine_adv");
     let (cs_adv, phi_adv, _totals_adv, _q_adv, _ad_adv,
          _inj_adv, _orig_adv, _iamp_adv) =
         run_l5_dream_chain(params, &mut engine_adv);
+    std::env::remove_var("DRIVE_CONTEXT");
     let fitness_adv = eval_l5_placeholder_fitness(&engine_adv, params, &cs_adv, &phi_adv);
 
     let divergence = (fitness_clean - fitness_adv).abs();
@@ -3074,7 +3078,27 @@ fn run_l5_dream_chain(
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
-            if drive_amp.abs() > 1e-9 {
+            // Scope filter: only apply if current engine context is in DRIVE_SCOPE.
+            //   DRIVE_SCOPE = "all" (default) | "flat_only" | "no_transfer" |
+            //                  "a_only" | "a_and_flat"
+            // DRIVE_CONTEXT is set by callers around each run_l5_dream_chain call.
+            let drive_context = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
+            let drive_scope = std::env::var("DRIVE_SCOPE")
+                .unwrap_or_else(|_| "all".to_string());
+            let scope_allows = match drive_scope.as_str() {
+                "all" => true,
+                "flat_only" => drive_context == "engine_flat",
+                "a_only" => drive_context == "engine_a",
+                "a_and_flat" => {
+                    drive_context == "engine_a" || drive_context == "engine_flat"
+                }
+                "no_transfer" => {
+                    drive_context != "engine_b_primed"
+                        && drive_context != "engine_b_naive"
+                }
+                _ => true,
+            };
+            if drive_amp.abs() > 1e-9 && scope_allows {
                 let drive_freq_hz: f32 = std::env::var("DRIVE_FREQ_HZ")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -3212,9 +3236,11 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_a = build_l5_engine(&corpus_a, params, dim);
 
     let start = Instant::now();
+    std::env::set_var("DRIVE_CONTEXT", "engine_a");
     let (chain_seeds, phi_history, chain_totals, quiescence_a, amplitude_deltas_a,
          injected_ids_a, original_ids_a, initial_mean_amp_a) =
         run_l5_dream_chain(params, &mut engine_a);
+    std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_a = start.elapsed().as_millis() as u64;
 
     // Build Corpus B
@@ -3255,9 +3281,11 @@ fn run_experiment_l5_session(params: &Params) {
     }
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
+    std::env::set_var("DRIVE_CONTEXT", "engine_b_primed");
     let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
          _injected_bp, _orig_bp, _init_amp_bp) =
         run_l5_dream_chain(params, &mut engine_b_primed);
+    std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
     // Evaluate B-primed using L4 evaluators as placeholder.
@@ -3269,9 +3297,11 @@ fn run_experiment_l5_session(params: &Params) {
     // --- "Naive" pass: dream on B from scratch ---
     let mut engine_b_naive = build_l5_engine(&corpus_b, params, dim);
     let start_b_naive = Instant::now();
+    std::env::set_var("DRIVE_CONTEXT", "engine_b_naive");
     let (chain_seeds_bn, phi_history_bn, _chain_totals_bn, quiescence_bn, _amp_deltas_bn,
          _injected_bn, _orig_bn, _init_amp_bn) =
         run_l5_dream_chain(params, &mut engine_b_naive);
+    std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_naive = start_b_naive.elapsed().as_millis() as u64;
 
     let fitness_b_naive = eval_l5_placeholder_fitness(&engine_b_naive, params, &chain_seeds_bn, &phi_history_bn);
@@ -3332,9 +3362,11 @@ fn run_experiment_l5_session(params: &Params) {
     let corpus_flat = build_corpus_l5_a_flat(dim, 2, params.encoder_seed);
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
     let start_flat = Instant::now();
+    std::env::set_var("DRIVE_CONTEXT", "engine_flat");
     let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, amp_deltas_flat,
          _inj_flat, _orig_flat, _init_amp_flat) =
         run_l5_dream_chain(params, &mut engine_flat);
+    std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
     let actual_cycles_flat = amp_deltas_flat.len();
