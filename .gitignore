@@ -14,3 +14,7 @@ CLAUDE.md
 # Local data files
 .kannaka/
 kannaka.hrm
+
+# Sibling crates cloned to satisfy path dependencies in remote build environments
+kannaka-attention/
+consciousness-core/
