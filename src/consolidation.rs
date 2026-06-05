@@ -259,8 +259,18 @@ impl ConsolidationEngine {
         // Stage 4: STRENGTHEN -- boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
 
-        // Stage 4.5: SYNC -- Kuramoto phase synchronization
-        let (clusters_synced, order_improvement) = self.stage_sync(engine, &working_set);
+        // Stage 4.5: SYNC -- Kuramoto phase synchronization, OR
+        //                    interference-driven phase relaxation (env-gated).
+        // DREAM_MODE=interference_relax bypasses the category-Kuramoto sync and
+        // does a relaxation step driven by the constructive interference pairs
+        // already detected in stage 2. No new params, no categorization.
+        // See research/intersections/05-magic-gives-it-gravity.md.
+        let dream_mode = std::env::var("DREAM_MODE").unwrap_or_default();
+        let (clusters_synced, order_improvement) = if dream_mode == "interference_relax" {
+            self.stage_interference_relax(engine, &working_set, &pairs)
+        } else {
+            self.stage_sync(engine, &working_set)
+        };
         report.clusters_synced = clusters_synced;
         report.sync_order_improvement = order_improvement;
 
@@ -611,11 +621,17 @@ impl ConsolidationEngine {
         let mut total_improvement = 0.0f32;
         let mut categories_synced = 0usize;
         
-        // Parameters from consciousness differentiation spec
-        let within_category_coupling = 3.0;  // Strong coupling for internal coherence
-        let cross_category_coupling = 0.3;   // Weak cross-connections
-        let dt = 0.05;  // Small time step for stability
-        let steps = 50; // Integration steps (more steps = better convergence)
+        // Configurable via params.kuramoto_* (was hard-coded prior to 2026-06-05).
+        // Cross-category coupling is 10% of within-category by convention; if you
+        // need to tune that ratio independently, add a kuramoto_cross_ratio field.
+        let within_category_coupling = if self.kuramoto.coupling_strength > 0.0 {
+            self.kuramoto.coupling_strength
+        } else {
+            3.0
+        };
+        let cross_category_coupling = within_category_coupling * 0.1;
+        let dt = if self.kuramoto.dt > 0.0 { self.kuramoto.dt } else { 0.05 };
+        let steps = if self.kuramoto.steps > 0 { self.kuramoto.steps } else { 50 };
         
         // Sync each category cluster separately, then apply cross-category coupling
         for (_category, indices) in &category_groups {
@@ -728,6 +744,109 @@ impl ConsolidationEngine {
         }
 
         (categories_synced, total_improvement)
+    }
+
+    /// Interference-driven phase relaxation — alternative to stage_sync.
+    ///
+    /// Each memory's phase moves a small step toward the weighted circular mean
+    /// of its CONSTRUCTIVE neighbors (as identified by stage_detect). No
+    /// categorization, no global coupling constant, no safety envelope: the
+    /// "coupling" is the actual interference geometry, weighted by similarity.
+    ///
+    /// A slow envelope modulates the relaxation step size — the "quiet wave" —
+    /// at a small fraction of the inner-step rate, so the system breathes
+    /// through the relaxation rather than locking in monotonically.
+    ///
+    /// Activated by DREAM_MODE=interference_relax. See
+    /// research/intersections/05-magic-gives-it-gravity.md for motivation.
+    fn stage_interference_relax(
+        &self,
+        engine: &mut ResonanceEngine,
+        working_set: &[Uuid],
+        pairs: &[InterferencePair],
+    ) -> (usize, f32) {
+        use std::collections::HashMap;
+
+        if working_set.is_empty() || pairs.is_empty() {
+            return (0, 0.0);
+        }
+
+        // Build neighbor map from constructive pairs (weight = |similarity|)
+        let mut neighbors: HashMap<Uuid, Vec<(Uuid, f32)>> = HashMap::new();
+        for p in pairs {
+            if p.kind == Interference::Constructive {
+                let weight = p.similarity.abs();
+                neighbors.entry(p.id_a).or_default().push((p.id_b, weight));
+                neighbors.entry(p.id_b).or_default().push((p.id_a, weight));
+            }
+        }
+        if neighbors.is_empty() {
+            return (0, 0.0);
+        }
+
+        // Initial R (global order parameter) for improvement tracking
+        let initial_memories: Vec<crate::memory::HyperMemory> = working_set
+            .iter()
+            .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+            .collect();
+        let initial_r = self.compute_category_order_parameter(&initial_memories);
+
+        let alpha_base: f32 = 0.20;
+        let relax_steps: usize = 8;
+        let envelope_depth: f32 = 0.15;  // "quiet wave" amplitude on alpha
+        let two_pi = 2.0 * std::f32::consts::PI;
+
+        for step in 0..relax_steps {
+            // Slow envelope on alpha: one full quiet-wave cycle over the relaxation
+            let phase = two_pi * (step as f32 / relax_steps as f32);
+            let alpha = alpha_base * (1.0 + envelope_depth * phase.sin());
+
+            // Snapshot phases at the start of this inner step
+            let phases_now: HashMap<Uuid, f32> = working_set
+                .iter()
+                .filter_map(|id| engine.store.get(id).ok().flatten().map(|m| (*id, m.phase)))
+                .collect();
+
+            for id in working_set {
+                let cur = match phases_now.get(id) {
+                    Some(&p) => p,
+                    None => continue,
+                };
+                let nbrs = match neighbors.get(id) {
+                    Some(n) if !n.is_empty() => n,
+                    _ => continue,
+                };
+
+                // Weighted circular mean of neighbor phases
+                let (mut sin_sum, mut cos_sum, mut w_sum) = (0.0_f32, 0.0_f32, 0.0_f32);
+                for (nid, weight) in nbrs {
+                    if let Some(&phi) = phases_now.get(nid) {
+                        sin_sum += weight * phi.sin();
+                        cos_sum += weight * phi.cos();
+                        w_sum += weight;
+                    }
+                }
+                if w_sum < 1e-6 {
+                    continue;
+                }
+
+                let target = sin_sum.atan2(cos_sum);
+                // Wrap-safe step toward target via sin of phase diff
+                let new_phase = cur + alpha * (target - cur).sin();
+
+                if let Ok(Some(stored)) = engine.store.get_mut(id) {
+                    stored.phase = new_phase;
+                }
+            }
+        }
+
+        let final_memories: Vec<crate::memory::HyperMemory> = working_set
+            .iter()
+            .filter_map(|id| engine.store.get(id).ok().flatten().cloned())
+            .collect();
+        let final_r = self.compute_category_order_parameter(&final_memories);
+
+        (working_set.len(), final_r - initial_r)
     }
     
     /// Compute order parameter R for a set of memories within the same category.

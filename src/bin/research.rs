@@ -42,10 +42,13 @@ fn experiment_params() -> Params {
         constructive_boost: 0.45,
         destructive_penalty: 0.35,
 
-        // Kuramoto synchronization
-        kuramoto_coupling: 0.8,
-        kuramoto_dt: 0.15,
-        kuramoto_steps: 20,
+        // Kuramoto synchronization. Values updated 2026-06-05 to match the
+        // (previously hard-coded) operating point inside stage_sync. Changing
+        // these now actually affects the dream's phase dynamics — see commit
+        // that introduced DREAM_MODE.
+        kuramoto_coupling: 3.0,
+        kuramoto_dt: 0.05,
+        kuramoto_steps: 50,
         kuramoto_threshold: 0.35,
 
         // Multi-cycle
