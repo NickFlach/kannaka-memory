@@ -30,6 +30,17 @@ Kannaktopus's memory is the **aggregate of its arms** — if each occupied clust
 holds ~10 memories, an 8-arm Kannaktopus knows ~80 memories, and its
 characteristics are those of exactly that set.
 
+There is a deeper reason this works at all. Per `research/intersections/05-magic-gives-it-gravity.md`,
+the Kuramoto-coupled dream is the non-Clifford-like operation in the HRM
+— it is what gives clusters inertia, instead of leaving them as linear
+superpositions of their members. Arms are *gravitational responses* to
+that inertia. In a stabilizer-only HRM the clusters would be just
+centroids and arms would be a static map with nothing to grip. This is
+the same shape of constraint as the 2026 result that Cao's
+first-generation holographic codes produced an *inert* space-time
+because they were stabilizer-only; non-Clifford content is what makes
+geometry react.
+
 ## Decision
 
 Model Kannaktopus as a **persistent view over the host HRM**, not a store.
