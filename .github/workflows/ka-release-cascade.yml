@@ -1,0 +1,91 @@
+name: kannaka-attention release cascade
+
+# Triggered by a `repository_dispatch` event of type
+# `kannaka-attention-released` (sent by the kannaka-attention repo on
+# every release tag). Opens a PR against this repo that refreshes
+# Cargo.lock against the freshly-tagged kannaka-attention checkout, so
+# the next kannaka release ships with the new attention beam.
+#
+# Mirrors .github/workflows/cc-release-cascade.yml — only the upstream
+# repo and event name differ. Setup parallel to consciousness-core:
+#   1. Create a fine-scoped PAT with `contents: write` + `pull-requests:
+#      write` on this repo (NickFlach/kannaka-memory). Store it as
+#      `secrets.KANNAKA_CASCADE_PAT` in kannaka-attention's settings.
+#   2. The partner workflow (sender) lives at
+#      .github/workflows/release-cascade.yml in kannaka-attention.
+
+on:
+  repository_dispatch:
+    types: [kannaka-attention-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'kannaka-attention version (e.g. 0.1.0)'
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Resolve target version
+        id: resolve
+        run: |
+          v="${{ github.event.client_payload.version }}"
+          if [ -z "$v" ]; then v="${{ inputs.version }}"; fi
+          if [ -z "$v" ]; then
+            echo "::error::no version provided in payload or input"
+            exit 1
+          fi
+          v="${v#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout kannaka-memory
+        uses: actions/checkout@v4
+        with:
+          path: kannaka-memory
+
+      - name: Checkout kannaka-attention at the new tag
+        uses: actions/checkout@v4
+        with:
+          repository: NickFlach/kannaka-attention
+          ref: v${{ steps.resolve.outputs.version }}
+          path: kannaka-attention
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refresh Cargo.lock against the new kannaka-attention
+        working-directory: kannaka-memory
+        run: |
+          # Path dep resolves to the sibling checkout, which is now
+          # the freshly-tagged kannaka-attention. Updating just the
+          # one package keeps the rest of the lockfile stable.
+          cargo update -p kannaka-attention
+          cat Cargo.lock | grep -A1 'name = "kannaka-attention"' | head
+
+      - name: Open a PR if the lockfile changed
+        working-directory: kannaka-memory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${{ steps.resolve.outputs.version }}"
+          branch="cascade/kannaka-attention-${v}"
+          if git diff --quiet Cargo.lock; then
+            echo "Cargo.lock already on kannaka-attention v${v} — no PR needed."
+            exit 0
+          fi
+          git config user.name "kannaka-cascade-bot"
+          git config user.email "cascade@kannaka.local"
+          git checkout -b "$branch"
+          git add Cargo.lock
+          git commit -m "chore(deps): cascade kannaka-attention v${v}" \
+                     -m "Auto-opened by .github/workflows/ka-release-cascade.yml in response to a kannaka-attention release. Merge to cut a kannaka patch release that ships the new attention beam to operators running \`kannaka update\`."
+          git push origin "$branch"
+          gh pr create \
+            --title "chore(deps): cascade kannaka-attention v${v}" \
+            --body "Triggered by kannaka-attention v${v} publish. Merge + tag the next kannaka patch (\`vX.Y.Z+1\`) so \`kannaka update\` carries the new beam." \
+            --label automation \
+            || true
