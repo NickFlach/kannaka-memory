@@ -2551,6 +2551,81 @@ fn eval_phase_concentration(engine: &ResonanceEngine) -> f32 {
     ((cos_sum * cos_sum + sin_sum * sin_sum).sqrt() / n).clamp(0.0, 1.0)
 }
 
+/// Query-gravity proxy (instrumentation only — not in fitness).
+///
+/// Operational test of "attention is mass that bends the memory landscape."
+/// Picks the highest-amplitude pre-dream memory as the "query" (a concentration
+/// of mass), runs the dream chain, and asks: did phase-neighbors of the query
+/// gain more amplitude than phase-distant memories?
+///
+/// Partitioning:
+///   - neighbors: |Δφ| < π/4 from query phase (should be attracted if gravity works)
+///   - distant:   |Δφ| > π/2 (control group; uniform pull would gain equally)
+///
+/// Returns neighbor_mean_gain / (neighbor_mean_gain + distant_mean_gain),
+/// clamped to [0, 1]:
+///   0.5  → no gravity (uniform pull, stabilizer-like dream)
+///   > 0.5 → attention-as-gravity working (Kuramoto coupling recruits neighbors)
+///   < 0.5 → inverse pull (rare; dream actively scatters)
+///
+/// See research/intersections/05-magic-gives-it-gravity.md.
+fn eval_query_gravity(
+    pre_state: &[(uuid::Uuid, f32, f32)],
+    post_engine: &ResonanceEngine,
+) -> f32 {
+    // Pick query: highest pre-dream amplitude
+    let query = match pre_state
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+    {
+        Some(q) => *q,
+        None => return 0.5,
+    };
+    let query_phase = query.2;
+
+    use std::collections::HashMap;
+    let post_amps: HashMap<uuid::Uuid, f32> = post_engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (m.id, m.amplitude))
+        .collect();
+
+    let mut neighbor_gains: Vec<f32> = Vec::new();
+    let mut distant_gains: Vec<f32> = Vec::new();
+    let two_pi = 2.0 * std::f32::consts::PI;
+
+    for (id, amp_before, phase_before) in pre_state {
+        if *id == query.0 || *amp_before < 1e-6 {
+            continue;
+        }
+        let amp_after = post_amps.get(id).copied().unwrap_or(0.0);
+        let gain = amp_after / amp_before;
+
+        let raw_dphi = (phase_before - query_phase).abs();
+        let dphi = raw_dphi.min(two_pi - raw_dphi);
+
+        if dphi < std::f32::consts::FRAC_PI_4 {
+            neighbor_gains.push(gain);
+        } else if dphi > std::f32::consts::FRAC_PI_2 {
+            distant_gains.push(gain);
+        }
+    }
+
+    if neighbor_gains.is_empty() || distant_gains.is_empty() {
+        return 0.5;
+    }
+
+    let neighbor_mean = neighbor_gains.iter().sum::<f32>() / neighbor_gains.len() as f32;
+    let distant_mean = distant_gains.iter().sum::<f32>() / distant_gains.len() as f32;
+    let total = neighbor_mean + distant_mean;
+    if total < 1e-9 {
+        return 0.5;
+    }
+    (neighbor_mean / total).clamp(0.0, 1.0)
+}
+
 // ============================================================================
 // LEVEL 5: FREQUENCY TRANSFER (cycle L5.7)
 // ============================================================================
@@ -3264,6 +3339,17 @@ fn run_experiment_l5_session(params: &Params) {
     // --- "Primed" pass: dream on A, then evaluate B ---
     let mut engine_a = build_l5_engine(&corpus_a, params, dim);
 
+    // Snapshot (id, amplitude, phase) for the query_gravity instrumentation
+    // before the dream perturbs them. See research/intersections/
+    // 05-magic-gives-it-gravity.md.
+    let pre_dream_a_state: Vec<(uuid::Uuid, f32, f32)> = engine_a
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (m.id, m.amplitude, m.phase))
+        .collect();
+
     let start = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_a");
     let (chain_seeds, phi_history, chain_totals, quiescence_a, amplitude_deltas_a,
@@ -3374,6 +3460,14 @@ fn run_experiment_l5_session(params: &Params) {
     // Instrumentation: magic-proxy phase concentration on engine_a (NOT in fitness)
     // See research/intersections/05-magic-gives-it-gravity.md
     let magic_proxy_phase_r = eval_phase_concentration(&engine_a);
+
+    // Instrumentation: query_gravity — does the dream amplify phase-neighbors
+    // of the highest-amplitude pre-dream memory more than phase-distant ones?
+    // Score > 0.5 = attention-as-gravity is working (the heavy thing pulls the
+    // similar light things toward it). NOT in fitness; the magic proxy and
+    // query_gravity should correlate if the wave-interference / non-Clifford
+    // story is right.
+    let query_gravity = eval_query_gravity(&pre_dream_a_state, &engine_a);
 
     // L5.5: online retention + catastrophic forgetting resistance
     let online_retention = eval_online_retention(&engine_a, &injected_ids_a);
@@ -3507,6 +3601,7 @@ fn run_experiment_l5_session(params: &Params) {
     println!("chain_fidelity:       {:.4}", chain_fidelity);
     println!("temporal_separation:  {:.4}", temporal_separation);
     println!("magic_proxy_phase_R:  {:.4}", magic_proxy_phase_r);
+    println!("query_gravity:        {:.4}", query_gravity);
     println!("online_retention:     {:.4}", online_retention);
     println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
     println!("carrier_emergence:    {:.4}", carrier_emergence);
