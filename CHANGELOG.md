@@ -2,6 +2,88 @@
 
 ## [Unreleased]
 
+## [0.6.12] — 2026-06-05
+
+Research-arc release: the L5 autoresearch metric set was extended, a class
+of long-standing measurement and plumbing bugs in the dream-consolidation
+pipeline was fixed, and a second dream mechanism was added behind an env
+flag so the curiosity loop can A/B it against the existing one.
+
+### Fixed
+- `carrier_emergence` was structurally pinned at 0 because
+  `cycle_period_s` was derived from wall-clock consolidation time
+  (~7 s/cycle on ARM), giving a Nyquist frequency of ~0.067 Hz —
+  entirely below the metric's [0.5, 4.0] Hz target band. The L5
+  evaluator now uses a fixed 0.125 s cycle (8 Hz fs), matching the
+  design intent. Same dream dynamics, baseline carrier_emergence
+  reading goes from 0.0000 to ~0.31 (up to ~0.56 with the attention
+  drive enabled).
+- `params.kuramoto_coupling`, `.kuramoto_dt`, `.kuramoto_steps` were
+  ignored by `stage_sync` inside the dream consolidator. The stage
+  used hard-coded constants (`within_category_coupling = 3.0`,
+  `dt = 0.05`, `steps = 50`); the configurable struct field was
+  threaded into the consolidator but never read. Every prior K-sweep
+  was therefore measuring noise. The stage now reads those params
+  with fall-back defaults equal to the previous hard-coded values, so
+  default behaviour is preserved.
+
+### Added
+- **Env-gated multiplicative attention drive.** When `DRIVE_A` is set,
+  each dream cycle multiplies memory amplitudes by
+  `(1 + DRIVE_A · sin(2π · DRIVE_FREQ_HZ · t))` before consolidation.
+  `DRIVE_A` defaults to 0 (off). `DRIVE_FREQ_HZ` defaults to 2.0 Hz
+  (Amichay et al PLOS Bio Apr 2026 attention pulse). `DRIVE_TOP_FRAC`
+  scopes the drive to the top-N amplitude memories (default 1.0 = all).
+  `DRIVE_SCOPE` further scopes the drive to a subset of the six
+  engine dream chains the L5 experiment runs: `all` (default),
+  `flat_only`, `a_only`, `a_and_flat`, `no_transfer`. Empirical L5
+  optimum at the time of release: `DRIVE_A=0.1 DRIVE_TOP_FRAC=1.0
+  DRIVE_SCOPE=all`.
+- **`DREAM_MODE=interference_relax`** — alternative to the existing
+  category-Kuramoto sync stage. Constructive-pair-driven phase
+  relaxation: each memory's phase moves toward the weighted circular
+  mean of its constructive neighbours (as detected in stage 2), no
+  global coupling constant. A slow "quiet wave" envelope modulates
+  the relaxation step size across the eight inner iterations, so the
+  dynamics breathe rather than locking monotonically. Default
+  behaviour (env var unset) is unchanged; `DREAM_MODE=interference_relax`
+  switches the dream's sync stage to the new path for A/B comparison.
+- **`magic_proxy_phase_R`** in L5 output — global Kuramoto order
+  parameter `R = |Σ exp(i·φⱼ)| / N` on memory phases at end of
+  dream. Pure instrumentation; not in the fitness sum. Baseline
+  ≈ 0.355 at the L5 optimum under the default dream mode, ≈ 0.612
+  under `interference_relax`. Background:
+  `research/intersections/05-magic-gives-it-gravity.md`.
+- **`query_gravity`** in L5 output — operational test of "attention is
+  mass that bends the memory landscape": picks the highest-amplitude
+  pre-dream memory as the focal mass, runs the dream chain, reports
+  neighbour-mean-gain / (neighbour + distant) where partitioning is
+  by phase distance from the focal memory. 0.5 = uniform pull;
+  > 0.5 = the dream is doing attention-as-gravity. Baseline ≈ 0.460.
+  Not in the fitness sum.
+
+### Changed
+- L5 Params defaults bumped to match the previously hard-coded
+  operating point inside `stage_sync`: `kuramoto_coupling: 3.0`
+  (was 0.8), `kuramoto_dt: 0.05` (was 0.15), `kuramoto_steps: 50`
+  (was 20). This is a no-op for the dream's actual phase dynamics —
+  the prior values were never reaching the consolidator — but the
+  reported defaults now reflect reality.
+- Three internal refactors fold redundant Kuramoto passes and store
+  scans into single-pass variants. No behavioural change; the
+  geometry-recompute path is faster on large HRMs.
+
+### Docs
+- ADR-0030 motivation paragraph added linking the Kannaktopus
+  arm-as-gravity-anchor design to the magic-gives-it-gravity
+  framework. Without the dream's non-linear lock-in, clusters would
+  be linear centroids and arms would have nothing to grip.
+- `research/intersections/05-magic-gives-it-gravity.md` — new card
+  motivating the magic-proxy and query_gravity metrics, mapping
+  Kannaka's recall/dream split onto the stabilizer/non-Clifford
+  distinction from Cao, Czech, Preskill, Swingle et al (Quanta,
+  2026-06-03).
+
 ## [0.5.5] — 2026-05-23
 
 `kannaka update` now surfaces the bundled `consciousness-core` version
