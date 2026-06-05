@@ -2529,6 +2529,28 @@ fn eval_temporal_separation(engine: &ResonanceEngine) -> f32 {
     (bimodality / 0.555).min(1.0)
 }
 
+/// Magic proxy (instrumentation only — not in fitness).
+///
+/// Global Kuramoto order parameter R = |Σ exp(i·φⱼ)| / N on memory phases at
+/// the end of the dream chain. R near 1 indicates strong phase-locked
+/// structure (non-linear lock-in, "magic-like" in the non-stabilizer sense).
+/// R near 0 indicates uniform phase distribution (stabilizer-equivalent —
+/// dynamics could be reproduced by a classical linear approximation).
+///
+/// See research/intersections/05-magic-gives-it-gravity.md for motivation.
+/// Hypothesis: phase concentration correlates with xi_robustness_v2 because
+/// adversarial perturbations off the phase lock can't be cheaply simulated.
+fn eval_phase_concentration(engine: &ResonanceEngine) -> f32 {
+    let all = engine.store.all_memories().unwrap_or_default();
+    if all.is_empty() {
+        return 0.0;
+    }
+    let n = all.len() as f32;
+    let cos_sum: f32 = all.iter().map(|m| m.phase.cos()).sum();
+    let sin_sum: f32 = all.iter().map(|m| m.phase.sin()).sum();
+    ((cos_sum * cos_sum + sin_sum * sin_sum).sqrt() / n).clamp(0.0, 1.0)
+}
+
 // ============================================================================
 // LEVEL 5: FREQUENCY TRANSFER (cycle L5.7)
 // ============================================================================
@@ -3349,6 +3371,10 @@ fn run_experiment_l5_session(params: &Params) {
     // L5.4: temporal separation (frequency band bimodality)
     let temporal_separation = eval_temporal_separation(&engine_a);
 
+    // Instrumentation: magic-proxy phase concentration on engine_a (NOT in fitness)
+    // See research/intersections/05-magic-gives-it-gravity.md
+    let magic_proxy_phase_r = eval_phase_concentration(&engine_a);
+
     // L5.5: online retention + catastrophic forgetting resistance
     let online_retention = eval_online_retention(&engine_a, &injected_ids_a);
     let catastrophic_forgetting = eval_catastrophic_forgetting(
@@ -3480,6 +3506,7 @@ fn run_experiment_l5_session(params: &Params) {
     println!("encoding_entropy:     {:.4}", encoding_entropy);
     println!("chain_fidelity:       {:.4}", chain_fidelity);
     println!("temporal_separation:  {:.4}", temporal_separation);
+    println!("magic_proxy_phase_R:  {:.4}", magic_proxy_phase_r);
     println!("online_retention:     {:.4}", online_retention);
     println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
     println!("carrier_emergence:    {:.4}", carrier_emergence);
