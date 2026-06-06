@@ -1030,3 +1030,131 @@ pub(crate) fn handle_substrate_init(
         seeded, failed, marker_path.display());
     eprintln!("[init] substrate is now class-structured; restart `kannaka substrate run` so absorbs flow into the seeded clusters");
 }
+
+/// #116 — `kannaka events gc [--corrupt-backs] [--older-than DAYS] [--dry-run]`.
+///
+/// When a `.hrm` fails to load, defensive recovery leaves `*.corrupt-bak-*`
+/// (and `*.v2-backup*`) sidecars next to it — ~10 MB each. Nothing ever
+/// reclaims them, so on small boxes (Oracle root is 30 GB) they accumulate
+/// into real disk pressure. This sweeps backup sidecars older than N days
+/// (default 7) from the HRM directory. Recent backups are retained so an
+/// operator can still attempt salvage after a fresh corruption.
+pub(crate) fn handle_events_gc(cfg: &KannakaConfig, args: &[String]) {
+    let mut older_than_days: u64 = 7;
+    let mut dry_run = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            // --corrupt-backs is the (only, default) category today; accepted
+            // explicitly so the documented invocation works and to leave room
+            // for future categories without a breaking flag change.
+            "--corrupt-backs" => i += 1,
+            "--older-than" if i + 1 < args.len() => {
+                match args[i + 1].parse::<u64>() {
+                    Ok(d) => older_than_days = d,
+                    Err(_) => {
+                        eprintln!("--older-than expects a whole number of days, got: {}", args[i + 1]);
+                        process::exit(1);
+                    }
+                }
+                i += 2;
+            }
+            "--dry-run" => { dry_run = true; i += 1; }
+            other => { eprintln!("[gc] ignoring unknown flag: {other}"); i += 1; }
+        }
+    }
+
+    // Resolve the HRM directory the same way the main CLI resolves the store
+    // (cfg.hrm.path's parent when set, else the data dir).
+    let dd = data_dir();
+    let hrm_dir = if !cfg.hrm.path.is_empty() {
+        let p = std::path::PathBuf::from(&cfg.hrm.path);
+        let full = if p.file_name().is_some() {
+            if p.is_absolute() { p } else { dd.join(p) }
+        } else {
+            dd.join("kannaka.hrm")
+        };
+        full.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dd.clone())
+    } else {
+        dd.clone()
+    };
+
+    let entries = match std::fs::read_dir(&hrm_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[gc] cannot read HRM dir {}: {}", hrm_dir.display(), e);
+            process::exit(1);
+        }
+    };
+
+    // A backup sidecar carries `.corrupt-bak` or `.v2-backup` in its name —
+    // never the live `kannaka.hrm` itself.
+    let is_backup = |name: &str| name.contains(".corrupt-bak") || name.contains(".v2-backup");
+
+    let cutoff = std::time::Duration::from_secs(older_than_days.saturating_mul(86_400));
+    let now = std::time::SystemTime::now();
+
+    let mut candidates: Vec<(std::path::PathBuf, u64)> = Vec::new(); // (path, bytes)
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !is_backup(&name) {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let age_ok = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age >= cutoff)
+            .unwrap_or(false);
+        if age_ok {
+            candidates.push((path, meta.len()));
+        }
+    }
+
+    if candidates.is_empty() {
+        eprintln!(
+            "[gc] no backup sidecars older than {} day(s) in {}",
+            older_than_days, hrm_dir.display()
+        );
+        return;
+    }
+
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut reclaimed: u64 = 0;
+    let mut removed = 0usize;
+    for (path, bytes) in &candidates {
+        if dry_run {
+            println!("[gc] would delete {} ({:.1} MB)", path.display(), *bytes as f64 / 1.0e6);
+        } else {
+            match std::fs::remove_file(path) {
+                Ok(()) => {
+                    println!("[gc] deleted {} ({:.1} MB)", path.display(), *bytes as f64 / 1.0e6);
+                    reclaimed += bytes;
+                    removed += 1;
+                }
+                Err(e) => eprintln!("[gc] failed to delete {}: {}", path.display(), e),
+            }
+        }
+    }
+
+    if dry_run {
+        let total: u64 = candidates.iter().map(|(_, b)| *b).sum();
+        eprintln!(
+            "[gc] dry-run: {} file(s), {:.1} MB reclaimable (re-run without --dry-run to delete)",
+            candidates.len(), total as f64 / 1.0e6
+        );
+    } else {
+        eprintln!("[gc] done — removed {} file(s), reclaimed {:.1} MB", removed, reclaimed as f64 / 1.0e6);
+    }
+}

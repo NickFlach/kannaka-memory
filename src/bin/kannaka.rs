@@ -30,6 +30,7 @@ use handlers_substrate::{
     handle_substrate_init, handle_substrate_status,
     handle_events_init, handle_events_snapshot,
     handle_events_list_snapshots, handle_events_restore,
+    handle_events_gc,
 };
 
 #[path = "handlers/chat.rs"]
@@ -1997,7 +1998,7 @@ fn main() {
             //   snapshot  — capture + publish a gzipped HRM snapshot (Phase 2).
             //               --interval N runs as a daemon at N-second cadence.
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH|--from-url URL] [--dry-run]>");
+                eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH|--from-url URL] [--dry-run]|gc [--corrupt-backs] [--older-than DAYS] [--dry-run]>");
                 process::exit(1);
             }
             match args[command_start + 1].as_str() {
@@ -2013,9 +2014,12 @@ fn main() {
                 "restore" => {
                     handle_events_restore(&cfg, &args[command_start..]);
                 }
+                "gc" => {
+                    handle_events_gc(&cfg, &args[command_start..]);
+                }
                 other => {
                     eprintln!("Unknown events command: {other}");
-                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH|--from-url URL] [--dry-run]>");
+                    eprintln!("Usage: kannaka events <init|snapshot [--interval SECS]|list-snapshots [--agent ID] [--json]|restore [--agent ID] [--from PATH|--from-url URL] [--dry-run]|gc [--corrupt-backs] [--older-than DAYS] [--dry-run]>");
                     process::exit(1);
                 }
             }
@@ -2067,11 +2071,54 @@ fn main() {
                     handle_attention_serve(&mut sys, &cfg, &args[command_start..]);
                 }
                 "stats" => {
-                    // One-shot stats — the serve loop holds the live beam in
-                    // memory, so this mostly prints zeros unless the daemon is
-                    // co-located. Reserved for the future shared-memory or
-                    // file-handoff path.
-                    println!("{{\"beam_size\":0,\"recency_len\":0,\"lookback_len\":0,\"landmarks_len\":0,\"observations\":0,\"note\":\"stats are live only inside the serve process; this CLI is a stub for now\"}}");
+                    // #114: real cross-process stats. The serve loop dumps live
+                    // beam state to KANNAKA_ATTENTION_BEAM_FILE every iteration;
+                    // read+reflect it here instead of a hardcoded zero stub. If
+                    // no serve process has written the file, say so plainly
+                    // (exit 0 — "offline" is a truthful answer) rather than
+                    // reporting fake zeroes as if a live beam existed.
+                    let dump_path = std::env::var("KANNAKA_ATTENTION_BEAM_FILE")
+                        .unwrap_or_else(|_| {
+                            if cfg!(windows) {
+                                "C:\\Users\\Public\\kannaka-attention-beam.json".to_string()
+                            } else {
+                                "/tmp/kannaka-attention-beam.json".to_string()
+                            }
+                        });
+                    match std::fs::read_to_string(&dump_path) {
+                        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                            Ok(dump) => {
+                                let st = dump.get("stats").cloned().unwrap_or_else(|| serde_json::json!({}));
+                                let u = |k: &str| st.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                                let out = serde_json::json!({
+                                    "beam_size": u("beam_size"),
+                                    "recency_len": u("recency_len"),
+                                    "lookback_len": u("lookback_len"),
+                                    "landmarks_len": u("landmarks_len"),
+                                    "observations": u("observations"),
+                                    "candidates": dump.get("candidates").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                                    "ts": dump.get("ts").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "source": dump_path,
+                                });
+                                println!("{}", out);
+                            }
+                            Err(e) => {
+                                let out = serde_json::json!({
+                                    "error": format!("failed to parse beam dump: {e}"),
+                                    "source": dump_path,
+                                });
+                                println!("{}", out);
+                            }
+                        },
+                        Err(_) => {
+                            let out = serde_json::json!({
+                                "beam_size": 0, "recency_len": 0, "lookback_len": 0,
+                                "landmarks_len": 0, "observations": 0,
+                                "note": format!("no attention serve process has written {dump_path} — beam offline"),
+                            });
+                            println!("{}", out);
+                        }
+                    }
                 }
                 other => {
                     eprintln!("Unknown attention command: {other}");
