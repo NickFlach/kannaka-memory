@@ -3206,10 +3206,14 @@ fn run_l5_dream_chain(
                 _ => true,
             };
             if drive_amp.abs() > 1e-9 && scope_allows {
+                // 0.5 Hz confirmed optimal (2026-06-06): the half-cycle arc
+                // (positive drive cycles 0-8, gentle suppression 9-16) amplifies
+                // carrier structure far more coherently than 2.0 Hz oscillations,
+                // lifting carrier_emergence 0.497→0.935 and avg fitness 0.149→0.099.
                 let drive_freq_hz: f32 = std::env::var("DRIVE_FREQ_HZ")
                     .ok()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(2.0);
+                    .unwrap_or(0.5);
                 let top_frac: f32 = std::env::var("DRIVE_TOP_FRAC")
                     .ok()
                     .and_then(|s| s.parse().ok())
