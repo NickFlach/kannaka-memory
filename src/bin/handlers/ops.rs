@@ -113,7 +113,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     eprintln!("Usage: kannaka config set <key> <value>");
                     eprintln!();
                     eprintln!("Keys: agent.id, agent.display_name, llm.provider, llm.model,");
-                    eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url,");
+                    eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url, swarm.role,");
                     eprintln!("      ghostsignals.enabled, ghostsignals.token, ghostsignals.hub_url,");
                     eprintln!("      constellation.radio_url, constellation.observatory_url,");
                     eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check");
@@ -164,6 +164,17 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     }
                 }
                 "swarm.nats_url" => new_cfg.swarm.nats_url = value.clone(),
+                // #112: swarm.role was a settable-looking but unsettable field.
+                // It is read at swarm-connect time (announced to the constellation,
+                // see config.rs swarm connect log), so make it a real knob.
+                "swarm.role" => {
+                    let v = value.trim();
+                    if v.is_empty() {
+                        eprintln!("swarm.role must be a non-empty role label (e.g. queen, worker, witness)");
+                        process::exit(1);
+                    }
+                    new_cfg.swarm.role = v.to_string();
+                }
                 "ghostsignals.enabled" => {
                     match parse_bool(value) {
                         Ok(b) => new_cfg.ghostsignals.enabled = b,
