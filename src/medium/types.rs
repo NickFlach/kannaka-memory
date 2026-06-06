@@ -86,6 +86,36 @@ impl Default for Modality {
     }
 }
 
+/// Retention tier of a wavefront (ADR-0031 memory triage).
+///
+/// `LongTerm` is the default for every existing/back-loaded memory so the
+/// format change is non-destructive — nothing becomes eviction-eligible on
+/// upgrade. `ShortTerm` is eviction-eligible by `kannaka triage`; `Pinned` is
+/// never evicted and never demoted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tier {
+    ShortTerm,
+    LongTerm,
+    Pinned,
+}
+
+impl Default for Tier {
+    fn default() -> Self {
+        Tier::LongTerm
+    }
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Tier::ShortTerm => "short-term",
+            Tier::LongTerm => "long-term",
+            Tier::Pinned => "pinned",
+        };
+        f.write_str(s)
+    }
+}
+
 impl Modality {
     /// All concrete (non-Mixed, non-Unknown) modality variants.
     pub fn all_concrete() -> &'static [Modality] {
@@ -320,6 +350,12 @@ pub struct WavefrontMeta {
     /// Sensory modality of this wavefront (NCS Phase 1.1)
     #[serde(default)]
     pub modality: Modality,
+    /// Retention tier (ADR-0031). MUST stay the last serialized field — the
+    /// bincode back-compat fallback in chiral_persistence/persistence relies on
+    /// `tier` being appended after `modality`, so older files (which lack these
+    /// trailing bytes) fail the new-struct deserialize and hit the legacy path.
+    #[serde(default)]
+    pub tier: Tier,
 }
 
 impl WavefrontMeta {
@@ -335,6 +371,7 @@ impl WavefrontMeta {
             fano_group: None,
             category: None,
             modality: Modality::Unknown,
+            tier: Tier::default(),
         }
     }
 

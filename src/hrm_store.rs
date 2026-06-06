@@ -177,6 +177,7 @@ impl HrmStore {
                     updated_at: Some(meta.created_at),
                     retrieval_count: 0,
                     modality: meta.modality,
+                    tier: meta.tier,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -207,6 +208,7 @@ impl HrmStore {
                     updated_at: Some(meta.created_at),
                     retrieval_count: 0,
                     modality: meta.modality,
+                    tier: meta.tier,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -624,6 +626,36 @@ impl HrmStore {
             mem.modality = modality;
         }
         self.mark_dirty();
+    }
+
+    /// Set the retention tier of a memory (ADR-0031). Tags the flat medium,
+    /// both chiral hemispheres, and the cache, then marks the store dirty so
+    /// the next save persists it. Returns false if the id is unknown.
+    pub fn set_tier(&mut self, id: &Uuid, tier: crate::medium::types::Tier) -> bool {
+        let mut found = false;
+        if let Some(&idx) = self.medium.store.id_to_index.get(id) {
+            self.medium.store.metadata[idx].tier = tier;
+            found = true;
+        }
+        if let Some(ref mut chiral) = self.chiral {
+            if let Some(&idx) = chiral.right.id_to_index.get(id) {
+                chiral.right.metadata[idx].tier = tier;
+                found = true;
+            }
+            if let Some(left_id) = chiral.right_to_left.get(id).copied() {
+                if let Some(&idx) = chiral.left.id_to_index.get(&left_id) {
+                    chiral.left.metadata[idx].tier = tier;
+                }
+            }
+        }
+        if let Some(mem) = self.memory_cache.get_mut(id) {
+            mem.tier = tier;
+            found = true;
+        }
+        if found {
+            self.mark_dirty();
+        }
+        found
     }
 
     /// Classify a wavefront with SGA coordinates (called after insert to tag the memory).

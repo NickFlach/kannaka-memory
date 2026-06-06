@@ -179,7 +179,8 @@ fn usage_lines() -> &'static [&'static str] {
         "  recall \"query\"             Recall memories (--top-k N)",
         "  search \"query\"             Literal text search (--limit N, --json)",
         "  forget <id>               Remove a memory",
-        "  triage [--apply]          Prune redundant low-value memories (Ξ-preserving; dry-run default)",
+        "  triage [--apply]          Prune redundant short-term memories (Ξ-preserving; dry-run default)",
+        "  promote|pin|demote <id>   Set memory tier (long-term / never-evict / short-term)",
         "  dream [--mode deep|lite]   Trigger dream cycle",
         "  observe [--json]          View consciousness metrics",
         "  status                    Quick status check",
@@ -332,7 +333,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         "init"
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
-        | "boost" | "relate" | "triage"
+        | "boost" | "relate" | "triage" | "promote" | "pin" | "demote"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
@@ -931,12 +932,18 @@ fn main() {
             let mut min_amplitude: f32 = 0.75;
             let mut min_age_hours: i64 = 24;
             let mut max_evict: usize = 100;
+            // ADR-0031 Phase 2: by default only ShortTerm memories are
+            // eviction-eligible (safe to run continuously). --include-long-term
+            // restores the Phase-1 behavior for one-off legacy cleanup. Pinned
+            // memories are NEVER evicted under either mode.
+            let mut include_long_term = false;
             {
                 let mut i = command_start + 1;
                 while i < args.len() {
                     match args[i].as_str() {
                         "--apply" => { apply = true; i += 1; }
                         "--dry-run" => { apply = false; i += 1; }
+                        "--include-long-term" => { include_long_term = true; i += 1; }
                         "--redundancy" if i + 1 < args.len() => {
                             redundancy = args[i + 1].parse().unwrap_or(redundancy); i += 2;
                         }
@@ -986,12 +993,20 @@ fn main() {
                             retained.push(m);
                             continue;
                         }
+                        // Tier gate (ADR-0031 Phase 2): never evict Pinned;
+                        // only ShortTerm unless --include-long-term is set.
+                        use kannaka_memory::medium::types::Tier;
+                        let tier_evictable = match m.tier {
+                            Tier::Pinned => false,
+                            Tier::ShortTerm => true,
+                            Tier::LongTerm => include_long_term,
+                        };
                         let age_hours = now.signed_duration_since(m.created_at).num_hours();
                         let old_enough = age_hours >= min_age_hours;
                         let low_value = m.amplitude < min_amplitude;
                         // Redundant only against already-RETAINED same-modality
                         // memories — guarantees at least one representative survives.
-                        let redundant = old_enough && low_value && retained.iter().any(|r| {
+                        let redundant = tier_evictable && old_enough && low_value && retained.iter().any(|r| {
                             kannaka_memory::wave::cosine_similarity(&m.vector, &r.vector) >= redundancy
                         });
                         if redundant {
@@ -1009,7 +1024,8 @@ fn main() {
                 (to_forget, total, per_mod)
             };
 
-            println!("[triage] policy: redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
+            println!("[triage] policy: tier={} redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
+                if include_long_term { "short+long (pinned protected)" } else { "short-term only" },
                 redundancy, min_amplitude, min_age_hours, max_evict);
             println!("[triage] {} of {} memories are redundant low-value extras{}",
                 to_forget.len(), total,
@@ -1034,6 +1050,44 @@ fn main() {
                 process::exit(1);
             }
             println!("[triage] evicted={ok} (Ξ-preserving; representatives retained)");
+        }
+        cmd @ ("promote" | "pin" | "demote") => {
+            // ADR-0031 Phase 2 — explicit tier control.
+            //   promote <id> → long-term (protected from triage)
+            //   pin     <id> → pinned (never evicted, never demoted)
+            //   demote  <id> → short-term (eviction-eligible by `triage`)
+            use kannaka_memory::medium::types::Tier;
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka {cmd} <id>");
+                process::exit(1);
+            }
+            let id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
+                eprintln!("Invalid UUID: {e}");
+                process::exit(1);
+            });
+            let tier = match cmd {
+                "promote" => Tier::LongTerm,
+                "pin" => Tier::Pinned,
+                _ => Tier::ShortTerm,
+            };
+            let ok = match sys.engine.store.as_any_mut()
+                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+            {
+                Some(hrm) => hrm.set_tier(&id, tier),
+                None => {
+                    eprintln!("{cmd}: requires the HRM backend");
+                    process::exit(1);
+                }
+            };
+            if !ok {
+                eprintln!("Memory not found: {id}");
+                process::exit(1);
+            }
+            if let Err(e) = sys.save() {
+                eprintln!("Failed to persist HRM after {cmd}: {e}");
+                process::exit(1);
+            }
+            println!("{id} → {tier}");
         }
         "boost" => {
             if args.len() < command_start + 2 {
