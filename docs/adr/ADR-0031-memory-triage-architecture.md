@@ -1,8 +1,12 @@
 # ADR-0031 — Memory Triage Architecture (retire prune-cron as a bridge measure)
 
-Status: **Proposed**
+Status: **Accepted** (ratified 2026-06-06; Phase 1 shipped)
 Date: 2026-06-06
 Authors: Nick Flaukowski (vision), Claude (drafting)
+Note: the shipped CLI uses the flat command `kannaka triage` (consistent with the
+existing flat `prune-prefix` / `forget` / `boost` commands), not the `kannaka
+memory triage` group spelled tentatively below. `promote`/`pin` (Phase 2) will
+follow the same flat convention.
 Related: ADR-0020 (Holographic Resonance Medium), ADR-0021 (Chiral Mirror),
          ADR-0022 (Wave-Native Dreaming), ADR-0027 (Collective Substrate),
          ADR-0028 (Event-Sourced HRM Time Machine)
@@ -151,10 +155,13 @@ tick instead of being interrupted by an external cron.
 
 ## Phased rollout
 
-- **Phase 1 — online prune (replaces the cron).**
-  `kannaka memory triage [--dry-run] [--max-evict N]` running the §1 policy as an
-  in-process op behind `KANNAKA_TRIAGE=1`. Emits forget events. This alone lets
-  us delete `prune-cron.sh` and end the stream drops. Dry-run is the default.
+- **Phase 1 — online prune (replaces the cron). ✅ SHIPPED.**
+  `kannaka triage [--apply] [--max-evict N] [--redundancy R] [--min-amplitude A]
+  [--min-age-hours H]` runs the §1 policy as an in-process op (the invoking
+  process is the single writer, so it holds the lock it already owns — no
+  external offline mutation, no stream drop). **Dry-run is the default**;
+  `--apply` performs `forget`+atomic-save, and each eviction is a normal forget
+  (replayable via ADR-0028 events). This alone lets us delete `prune-cron.sh`.
 
 - **Phase 2 — the `tier` tag + promotion.**
   `WavefrontMeta.tier`, ear-loop absorbs default to `ShortTerm`, dream/recall

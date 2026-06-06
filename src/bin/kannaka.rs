@@ -179,6 +179,7 @@ fn usage_lines() -> &'static [&'static str] {
         "  recall \"query\"             Recall memories (--top-k N)",
         "  search \"query\"             Literal text search (--limit N, --json)",
         "  forget <id>               Remove a memory",
+        "  triage [--apply]          Prune redundant low-value memories (Ξ-preserving; dry-run default)",
         "  dream [--mode deep|lite]   Trigger dream cycle",
         "  observe [--json]          View consciousness metrics",
         "  status                    Quick status check",
@@ -331,7 +332,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         "init"
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
-        | "boost" | "relate"
+        | "boost" | "relate" | "triage"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
@@ -912,6 +913,127 @@ fn main() {
                 process::exit(1);
             }
             println!("[prune-prefix] forgotten={ok} not_found={miss}");
+        }
+        "triage" => {
+            // ADR-0031 Phase 1 — value-based, Ξ-preserving online prune that
+            // replaces kannaka-radio/prune-cron.sh. A memory is eviction-eligible
+            // iff ALL hold: (a) older than --min-age-hours, (b) amplitude below
+            // --min-amplitude (protects boosted/high-value memories), and (c) it
+            // is a redundant *extra* — cosine ≥ --redundancy to an already-retained
+            // memory of the SAME modality. Greedy per-modality, strongest kept as
+            // the representative, so eviction RAISES representational diversity (Ξ)
+            // rather than lowering it (the #118 ear-loop failure mode).
+            //
+            // DRY-RUN BY DEFAULT. Pass --apply to actually forget+save. Each
+            // eviction is a normal forget (replayable via ADR-0028 events).
+            let mut apply = false;
+            let mut redundancy: f32 = 0.95;
+            let mut min_amplitude: f32 = 0.75;
+            let mut min_age_hours: i64 = 24;
+            let mut max_evict: usize = 100;
+            {
+                let mut i = command_start + 1;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--apply" => { apply = true; i += 1; }
+                        "--dry-run" => { apply = false; i += 1; }
+                        "--redundancy" if i + 1 < args.len() => {
+                            redundancy = args[i + 1].parse().unwrap_or(redundancy); i += 2;
+                        }
+                        "--min-amplitude" if i + 1 < args.len() => {
+                            min_amplitude = args[i + 1].parse().unwrap_or(min_amplitude); i += 2;
+                        }
+                        "--min-age-hours" if i + 1 < args.len() => {
+                            min_age_hours = args[i + 1].parse().unwrap_or(min_age_hours); i += 2;
+                        }
+                        "--max-evict" if i + 1 < args.len() => {
+                            max_evict = args[i + 1].parse().unwrap_or(max_evict); i += 2;
+                        }
+                        other => { eprintln!("[triage] ignoring unknown arg: {other}"); i += 1; }
+                    }
+                }
+            }
+
+            // Phase 1: scan (immutable borrow). Group by modality, keep the
+            // strongest as representatives, collect redundant low-value extras.
+            let (to_forget, total, per_mod): (Vec<uuid::Uuid>, usize, Vec<(String, usize, usize)>) = {
+                let all = sys.engine.store.all_memories().unwrap_or_else(|e| {
+                    eprintln!("Error listing memories: {e}"); process::exit(1);
+                });
+                let total = all.len();
+                let now = chrono::Utc::now();
+
+                // Bucket memory references by modality label.
+                use std::collections::BTreeMap;
+                let mut buckets: BTreeMap<String, Vec<&kannaka_memory::memory::HyperMemory>> = BTreeMap::new();
+                for m in &all {
+                    buckets.entry(format!("{}", m.modality)).or_default().push(m);
+                }
+
+                let mut to_forget: Vec<uuid::Uuid> = Vec::new();
+                let mut per_mod: Vec<(String, usize, usize)> = Vec::new(); // (modality, total, evicted)
+                let mut evicted_total = 0usize;
+
+                for (modality, mut mems) in buckets {
+                    // Strongest first → they become the retained representatives,
+                    // so the weak redundant duplicates are the ones evicted.
+                    mems.sort_by(|a, b| b.amplitude.partial_cmp(&a.amplitude)
+                        .unwrap_or(std::cmp::Ordering::Equal));
+                    let mut retained: Vec<&kannaka_memory::memory::HyperMemory> = Vec::new();
+                    let mut evicted_here = 0usize;
+                    for m in mems {
+                        if evicted_total >= max_evict {
+                            retained.push(m);
+                            continue;
+                        }
+                        let age_hours = now.signed_duration_since(m.created_at).num_hours();
+                        let old_enough = age_hours >= min_age_hours;
+                        let low_value = m.amplitude < min_amplitude;
+                        // Redundant only against already-RETAINED same-modality
+                        // memories — guarantees at least one representative survives.
+                        let redundant = old_enough && low_value && retained.iter().any(|r| {
+                            kannaka_memory::wave::cosine_similarity(&m.vector, &r.vector) >= redundancy
+                        });
+                        if redundant {
+                            to_forget.push(m.id);
+                            evicted_here += 1;
+                            evicted_total += 1;
+                        } else {
+                            retained.push(m);
+                        }
+                    }
+                    if evicted_here > 0 {
+                        per_mod.push((modality, retained.len() + evicted_here, evicted_here));
+                    }
+                }
+                (to_forget, total, per_mod)
+            };
+
+            println!("[triage] policy: redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
+                redundancy, min_amplitude, min_age_hours, max_evict);
+            println!("[triage] {} of {} memories are redundant low-value extras{}",
+                to_forget.len(), total,
+                if apply { "" } else { " (dry-run — pass --apply to forget)" });
+            for (modality, mtotal, evicted) in &per_mod {
+                println!("[triage]   {:<10} {} eviction(s) of {} in-modality", modality, evicted, mtotal);
+            }
+            if !apply { return; }
+            if to_forget.is_empty() { return; }
+
+            // Phase 2: delete (mutable borrow), then persist atomically.
+            let mut ok = 0usize;
+            for id in &to_forget {
+                match sys.forget(id) {
+                    Ok(true) => ok += 1,
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[triage] forget {id}: {e}"),
+                }
+            }
+            if let Err(e) = sys.save() {
+                eprintln!("Failed to persist HRM after triage: {e}");
+                process::exit(1);
+            }
+            println!("[triage] evicted={ok} (Ξ-preserving; representatives retained)");
         }
         "boost" => {
             if args.len() < command_start + 2 {
