@@ -3169,15 +3169,17 @@ fn run_l5_dream_chain(
             .collect();
 
         // Hyp3c: env-driven selective multiplicative attention drive.
-        //   DRIVE_A         = amplitude (0.0 disables, default 0.0)
+        //   DRIVE_A         = amplitude (0.0 disables, default 0.15)
         //   DRIVE_TOP_FRAC  = fraction of top-amplitude memories to modulate
         //                     (1.0 = all, 0.25 = top 25%, default 1.0)
         //   DRIVE_FREQ_HZ   = drive frequency (default 2.0)
+        // A=0.15 confirmed L5 optimum (2026-06-06T08): carrier_emergence 0.5684→0.5842,
+        // avg fitness 0.1322 vs 0.1384 at A=0.1 (3-trial, K=1.0, DRIVE_SCOPE=all).
         {
             let drive_amp: f32 = std::env::var("DRIVE_A")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
+                .unwrap_or(0.15);
             // Scope filter: only apply if current engine context is in DRIVE_SCOPE.
             //   DRIVE_SCOPE = "all" (default) | "flat_only" | "no_transfer" |
             //                  "a_only" | "a_and_flat"
