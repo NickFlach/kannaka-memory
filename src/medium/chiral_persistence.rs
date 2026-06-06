@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// Pre-NCS WavefrontMeta (before modality field was added).
 /// Used for backward-compatible deserialization of old .hrm files.
 #[derive(Deserialize)]
-struct WavefrontMetaLegacy {
+pub(crate) struct WavefrontMetaLegacy {
     pub id: Uuid,
     pub content: String,
     pub tags: Vec<String>,
@@ -46,6 +46,41 @@ impl From<WavefrontMetaLegacy> for WavefrontMeta {
             fano_group: None,
             category: None,
             modality: Modality::Unknown,
+            tier: crate::medium::types::Tier::default(),
+        }
+    }
+}
+
+/// Pre-tier WavefrontMeta (after modality was added, before ADR-0031 tier).
+/// Matches the on-disk layout of .hrm files written between the modality
+/// addition and the tier addition. Used as the middle step in the
+/// new → pre-tier → legacy deserialize fallback.
+#[derive(Deserialize)]
+pub(crate) struct WavefrontMetaPreTier {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub hallucinated: bool,
+    pub is_self_referential: bool,
+    #[serde(default)]
+    pub modality: Modality,
+}
+
+impl From<WavefrontMetaPreTier> for WavefrontMeta {
+    fn from(p: WavefrontMetaPreTier) -> Self {
+        WavefrontMeta {
+            id: p.id,
+            content: p.content,
+            tags: p.tags,
+            created_at: p.created_at,
+            hallucinated: p.hallucinated,
+            is_self_referential: p.is_self_referential,
+            sga_class: None,
+            fano_group: None,
+            category: None,
+            modality: p.modality,
+            tier: crate::medium::types::Tier::default(),
         }
     }
 }
@@ -391,10 +426,17 @@ impl ChiralMedium {
         let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&meta_bytes) {
             Ok(m) => m,
             Err(_) => {
-                // Pre-NCS format: deserialize without modality field, then add default
-                let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
-                    .map_err(|e| MediumError::Serialization(e))?;
-                legacy.into_iter().map(|l| l.into()).collect()
+                // ADR-0031: pre-tier format (has modality, lacks tier). Try that
+                // before falling all the way back to the pre-NCS legacy layout.
+                match bincode::deserialize::<Vec<WavefrontMetaPreTier>>(&meta_bytes) {
+                    Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
+                    Err(_) => {
+                        // Pre-NCS format: no modality and no tier — add defaults.
+                        let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
+                            .map_err(|e| MediumError::Serialization(e))?;
+                        legacy.into_iter().map(|l| l.into()).collect()
+                    }
+                }
             }
         };
 
@@ -426,6 +468,61 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use std::path::PathBuf;
+
+    // ADR-0031: locks the bincode back-compat invariant for the `tier` field.
+    // Pre-tier metadata bytes (modality, no tier — the layout of every .hrm
+    // written before this change) MUST fail the new-struct deserialize and
+    // succeed via the WavefrontMetaPreTier fallback with tier defaulting to
+    // LongTerm. A regression here would silently corrupt existing HRM files.
+    #[test]
+    fn pretier_metadata_decodes_via_fallback_with_default_tier() {
+        use chrono::Utc;
+        use serde::Serialize;
+        use uuid::Uuid;
+
+        // Exact on-disk layout of pre-tier WavefrontMeta (sga/fano/category are
+        // #[serde(skip)], so they never hit the wire — modality is the last field).
+        #[derive(Serialize)]
+        struct OldMeta {
+            id: Uuid,
+            content: String,
+            tags: Vec<String>,
+            created_at: chrono::DateTime<Utc>,
+            hallucinated: bool,
+            is_self_referential: bool,
+            modality: Modality,
+        }
+        let old = vec![OldMeta {
+            id: Uuid::nil(),
+            content: "legacy".to_string(),
+            tags: vec![],
+            created_at: Utc::now(),
+            hallucinated: false,
+            is_self_referential: false,
+            modality: Modality::Audio,
+        }];
+        let bytes = bincode::serialize(&old).unwrap();
+
+        // New struct (with tier) must NOT decode old bytes — this is what makes
+        // the loader fall through to the pre-tier path instead of mis-reading.
+        assert!(bincode::deserialize::<Vec<WavefrontMeta>>(&bytes).is_err());
+
+        // Pre-tier fallback decodes cleanly and defaults tier to LongTerm.
+        let pre: Vec<WavefrontMetaPreTier> = bincode::deserialize(&bytes).unwrap();
+        let conv: Vec<WavefrontMeta> = pre.into_iter().map(Into::into).collect();
+        assert_eq!(conv.len(), 1);
+        assert_eq!(conv[0].modality, Modality::Audio);
+        assert_eq!(conv[0].tier, Tier::LongTerm);
+    }
+
+    #[test]
+    fn new_metadata_roundtrips_tier() {
+        let mut m = WavefrontMeta::new(uuid::Uuid::nil(), "x".to_string());
+        m.tier = Tier::Pinned;
+        let bytes = bincode::serialize(&vec![m]).unwrap();
+        let back: Vec<WavefrontMeta> = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back[0].tier, Tier::Pinned);
+    }
 
     fn test_pipeline() -> EncodingPipeline {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));

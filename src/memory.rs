@@ -108,6 +108,11 @@ pub struct HyperMemory {
     /// Sensory modality of this memory (NCS Phase 1.1)
     #[serde(default)]
     pub modality: Modality,
+    /// Retention tier (ADR-0031). Mirror of the canonical WavefrontMeta.tier,
+    /// populated when the cache is built so triage can filter by tier without
+    /// reaching into the medium. Not the persistence source of truth.
+    #[serde(default)]
+    pub tier: crate::medium::types::Tier,
 }
 
 impl HyperMemory {
@@ -137,6 +142,7 @@ impl HyperMemory {
             updated_at: None,
             retrieval_count: 0,
             modality: Modality::default(),
+            tier: crate::medium::types::Tier::default(),
         }
     }
 

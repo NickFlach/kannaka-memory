@@ -163,10 +163,17 @@ tick instead of being interrupted by an external cron.
   `--apply` performs `forget`+atomic-save, and each eviction is a normal forget
   (replayable via ADR-0028 events). This alone lets us delete `prune-cron.sh`.
 
-- **Phase 2 — the `tier` tag + promotion.**
-  `WavefrontMeta.tier`, ear-loop absorbs default to `ShortTerm`, dream/recall
-  promotion, `kannaka memory promote|pin`. Triage now only considers
-  `ShortTerm`, making it safe to run continuously.
+- **Phase 2 — the `tier` tag + explicit promotion. ✅ SHIPPED (tag + ops).**
+  `WavefrontMeta.tier` (`ShortTerm`/`LongTerm`/`Pinned`) added back-compat-safe:
+  the field is appended after `modality` and decoded via a new → pre-tier →
+  legacy bincode fallback, so every existing `.hrm` loads with `tier=LongTerm`
+  (nothing becomes eviction-eligible on upgrade). Mirrored onto `HyperMemory`
+  for triage. CLI: `kannaka promote|pin|demote <id>`. Triage now defaults to
+  **ShortTerm-only** (never evicts `Pinned`), with `--include-long-term` for
+  one-off legacy cleanup — making continuous triage safe.
+  *Still open (Phase 2b):* automatic promotion (dream-survival / recall-count →
+  `LongTerm`) and defaulting ear-loop absorbs to `ShortTerm` (needs an
+  absorb-with-tier path; partly kannaka-radio side).
 
 - **Phase 3 — Kannaktopus-scheduled, constellation-wide policy.**
   Kannaktopus drives the triage cadence and tunes thresholds per-agent (the
