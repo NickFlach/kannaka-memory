@@ -1670,9 +1670,18 @@ fn register_ghostsignals(hub_url: &str, agent_id: &str, display_name: &str, kind
     let json: serde_json::Value = resp.into_json()
         .map_err(|e| format!("failed to parse response: {e}"))?;
 
-    let token = json["token"].as_str()
-        .unwrap_or("")
-        .to_string();
+    // #111: a 200 OK with a missing/empty `token` is NOT success. Returning
+    // an empty token here let the installer persist `ghostsignals.enabled = true`
+    // with a blank token and print "Registered", leaving a silently-broken
+    // identity that only fails much later on the first authenticated call.
+    let token = json["token"].as_str().unwrap_or("").to_string();
+    if token.trim().is_empty() {
+        let body = serde_json::to_string(&json).unwrap_or_default();
+        let preview: String = body.chars().take(200).collect();
+        return Err(format!(
+            "registration response missing/empty 'token' field (body: {preview})"
+        ));
+    }
 
     Ok(token)
 }
@@ -3304,5 +3313,29 @@ pub fn offer_tui_launch() {
         }
     } else {
         eprintln!("  TUI not found. Build with: cargo build --features tui --bin kannaka-tui");
+    }
+}
+
+#[cfg(test)]
+mod config_field_tests {
+    use super::*;
+
+    // #112: swarm.role used to be a dead field — defined with a default but
+    // never settable and never read. These guard that it stays a real,
+    // round-trippable knob (it is now settable via `config set swarm.role`
+    // and surfaced at swarm-connect time).
+    #[test]
+    fn swarm_role_default_is_queen() {
+        let cfg = KannakaConfig::default();
+        assert_eq!(cfg.swarm.role, "queen");
+    }
+
+    #[test]
+    fn swarm_role_survives_toml_roundtrip() {
+        let mut cfg = KannakaConfig::default();
+        cfg.swarm.role = "witness".to_string();
+        let toml = toml::to_string(&cfg).expect("serialize config");
+        let back: KannakaConfig = toml::from_str(&toml).expect("deserialize config");
+        assert_eq!(back.swarm.role, "witness");
     }
 }
