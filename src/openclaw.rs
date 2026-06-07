@@ -163,6 +163,50 @@ pub struct KannakaMemorySystem {
     /// When None, the dream/consciousness publish helpers fall back to the
     /// legacy env-only resolution. Fixes km#77.
     nats_url: Option<String>,
+    /// ADR-0031 Phase 3 — when Some, the dream cycle auto-triggers a triage pass
+    /// if post-dream Ξ falls below `xi_trigger`. None = disabled (default). Set
+    /// by the bin via `set_triage_policy` from `[triage]` config.
+    triage_policy: Option<TriageParams>,
+}
+
+/// ADR-0031 triage policy parameters (Phase 1–3).
+#[derive(Debug, Clone, Copy)]
+pub struct TriageParams {
+    /// Same-modality cosine at/above which a memory counts as a redundant extra.
+    pub redundancy: f32,
+    /// Only memories with amplitude below this are eviction-eligible.
+    pub min_amplitude: f32,
+    /// Only memories older than this (hours) are eviction-eligible.
+    pub min_age_hours: i64,
+    /// Cap on evictions per pass.
+    pub max_evict: usize,
+    /// When true, LongTerm memories are also considered (Pinned never are).
+    pub include_long_term: bool,
+    /// Phase 3 auto-trigger: dream runs triage when post-dream Ξ is below this.
+    pub xi_trigger: f32,
+}
+
+impl Default for TriageParams {
+    fn default() -> Self {
+        Self {
+            redundancy: 0.95,
+            min_amplitude: 0.75,
+            min_age_hours: 24,
+            max_evict: 100,
+            include_long_term: false,
+            xi_trigger: 0.0,
+        }
+    }
+}
+
+/// Result of a triage selection pass (ADR-0031).
+pub struct TriageSelection {
+    /// Ids selected for eviction (redundant low-value short-term extras).
+    pub to_forget: Vec<Uuid>,
+    /// Total memories scanned.
+    pub total: usize,
+    /// (modality, in-modality total, evicted) for modalities with evictions.
+    pub per_modality: Vec<(String, usize, usize)>,
 }
 
 impl KannakaMemorySystem {
@@ -238,6 +282,7 @@ impl KannakaMemorySystem {
             attention,
             flux,
             nats_url: None,
+            triage_policy: None,
         })
     }
 
@@ -481,6 +526,88 @@ impl KannakaMemorySystem {
     ///
     /// ADR-0022: Uses Medium's eigenstructure annealing exclusively.
     /// No fallback to old particle-based consolidation — the HRM IS the dream engine.
+    /// ADR-0031 Phase 3: install the auto-triage policy (called by the bin from
+    /// `[triage]` config when triage is enabled). Dream then self-corrects Ξ.
+    pub fn set_triage_policy(&mut self, params: TriageParams) {
+        self.triage_policy = Some(params);
+    }
+
+    /// ADR-0031: select redundant low-value short-term extras for eviction.
+    /// Pure (immutable) — groups by modality, keeps the strongest as the
+    /// representative, and flags only redundant (cosine ≥ p.redundancy),
+    /// aged, low-amplitude, evictable-tier duplicates. Raising Ξ by removing
+    /// correlated content, never the last representative of a cluster.
+    pub fn triage_select(&self, p: &TriageParams) -> TriageSelection {
+        use crate::medium::types::Tier;
+        let all = match self.engine.store.all_memories() {
+            Ok(a) => a,
+            Err(_) => return TriageSelection { to_forget: Vec::new(), total: 0, per_modality: Vec::new() },
+        };
+        let total = all.len();
+        let now = Utc::now();
+
+        let mut buckets: std::collections::BTreeMap<String, Vec<&crate::memory::HyperMemory>> =
+            std::collections::BTreeMap::new();
+        for m in &all {
+            buckets.entry(format!("{}", m.modality)).or_default().push(m);
+        }
+
+        let mut to_forget: Vec<Uuid> = Vec::new();
+        let mut per_modality: Vec<(String, usize, usize)> = Vec::new();
+        let mut evicted_total = 0usize;
+
+        for (modality, mut mems) in buckets {
+            mems.sort_by(|a, b| b.amplitude.partial_cmp(&a.amplitude)
+                .unwrap_or(std::cmp::Ordering::Equal));
+            let mut retained: Vec<&crate::memory::HyperMemory> = Vec::new();
+            let mut evicted_here = 0usize;
+            for m in mems {
+                if evicted_total >= p.max_evict {
+                    retained.push(m);
+                    continue;
+                }
+                let tier_evictable = match m.tier {
+                    Tier::Pinned => false,
+                    Tier::ShortTerm => true,
+                    Tier::LongTerm => p.include_long_term,
+                };
+                let age_hours = now.signed_duration_since(m.created_at).num_hours();
+                let old_enough = age_hours >= p.min_age_hours;
+                let low_value = m.amplitude < p.min_amplitude;
+                let redundant = tier_evictable && old_enough && low_value && retained.iter().any(|r| {
+                    crate::wave::cosine_similarity(&m.vector, &r.vector) >= p.redundancy
+                });
+                if redundant {
+                    to_forget.push(m.id);
+                    evicted_here += 1;
+                    evicted_total += 1;
+                } else {
+                    retained.push(m);
+                }
+            }
+            if evicted_here > 0 {
+                per_modality.push((modality, retained.len() + evicted_here, evicted_here));
+            }
+        }
+        TriageSelection { to_forget, total, per_modality }
+    }
+
+    /// ADR-0031: forget a precomputed eviction set and persist. Returns the
+    /// count actually forgotten. Each eviction is a normal forget (replayable
+    /// via ADR-0028 events).
+    pub fn triage_forget(&mut self, ids: &[Uuid]) -> Result<usize, SystemError> {
+        let mut n = 0;
+        for id in ids {
+            if self.forget(id)? {
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.save()?;
+        }
+        Ok(n)
+    }
+
     /// ADR-0031 Phase 2b: capture the current amplitude of every short-term
     /// memory, keyed by id. Used to detect dream-strengthening for promotion.
     fn snapshot_short_term_amplitudes(&self) -> std::collections::HashMap<Uuid, f32> {
@@ -577,14 +704,38 @@ impl KannakaMemorySystem {
         self.engine.store.chiral_dream(false, 1);
         eprintln!("[dream] Lite chiral dream pass complete");
 
-        // ADR-0031 Phase 2b: promote short-term memories the dream strengthened.
+        let after = self.bridge.assess(&self.engine);
+        self.last_dream = Some(Utc::now());
+
+        // ADR-0031: order matters — triage BEFORE promote. Redundant short-term
+        // duplicates resonate strongly (they're near-identical), so the dream
+        // strengthens them; if we promoted first they'd be protected from triage
+        // and Ξ would never recover. So we shed the redundant extras first, then
+        // promote the strengthened *survivors*.
+        //
+        // Phase 3: auto-trigger triage when Ξ has dropped below the configured
+        // threshold — self-healing without an external cron.
+        if let Some(p) = self.triage_policy {
+            if p.xi_trigger > 0.0 && after.xi < p.xi_trigger {
+                let sel = self.triage_select(&p);
+                if !sel.to_forget.is_empty() {
+                    match self.triage_forget(&sel.to_forget) {
+                        Ok(n) if n > 0 => eprintln!(
+                            "[dream] Ξ={:.4} < {:.4} → triage evicted {} redundant short-term memory(ies)",
+                            after.xi, p.xi_trigger, n),
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[dream] triage auto-trigger failed: {e}"),
+                    }
+                }
+            }
+        }
+
+        // ADR-0031 Phase 2b: promote the short-term survivors the dream
+        // strengthened (post-triage, so redundant extras are already gone).
         let promoted = self.promote_strengthened_short_term(&short_term_before);
         if promoted > 0 {
             eprintln!("[dream] promoted {} strengthened short-term memory(ies) → long-term", promoted);
         }
-
-        let after = self.bridge.assess(&self.engine);
-        self.last_dream = Some(Utc::now());
 
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
