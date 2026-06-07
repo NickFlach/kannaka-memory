@@ -336,7 +336,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
         | "boost" | "relate" | "triage" | "promote" | "pin" | "demote"
-        | "research" | "dispatch"
+        | "research" | "dispatch" | "research-suggest"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
@@ -1079,15 +1079,35 @@ fn main() {
             }
             println!("[research] \"{}\" — {} works{}", query, works.len(),
                 if ingest { " (ingesting into HRM)" } else { "" });
+            // Dedupe by OpenAlex id: snapshot the ids already in the HRM so a
+            // repeating ingest (e.g. a refresh cron) never creates duplicate
+            // research memories. Mutated as we go to also catch intra-batch dups.
+            let mut seen_ids: std::collections::HashSet<String> = if ingest {
+                sys.engine.store.all_memories()
+                    .map(|mems| mems.iter()
+                        .filter_map(|m| kannaka_memory::dispatch::parse_research_content(&m.content))
+                        .filter_map(|f| f.openalex_id)
+                        .collect())
+                    .unwrap_or_default()
+            } else {
+                std::collections::HashSet::new()
+            };
             let mut ingested = 0usize;
+            let mut skipped = 0usize;
             for (n, w) in works.iter().enumerate() {
                 let authors = w.authors.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
                 let etal = if w.authors.len() > 3 { " et al." } else { "" };
-                println!("  {:>2}. [{}] cited={} {}{}",
+                let dup = ingest && !w.id.is_empty() && seen_ids.contains(&w.id);
+                println!("  {:>2}. [{}] cited={} {}{}{}",
                     n + 1, w.year.map(|y| y.to_string()).unwrap_or_else(|| "----".into()),
                     w.cited_by_count, w.title,
+                    if dup { "  (already ingested — skip)" } else { "" },
                     if authors.is_empty() { String::new() } else { format!("\n      {authors}{etal}") });
                 if ingest {
+                    if dup {
+                        skipped += 1;
+                        continue;
+                    }
                     let content = w.to_memory_content();
                     match sys.remember_with_category(&content, "research", w.ingest_importance()) {
                         Ok(id) => {
@@ -1096,6 +1116,7 @@ fn main() {
                             {
                                 hrm.set_modality(&id, kannaka_memory::medium::Modality::Semantic);
                             }
+                            if !w.id.is_empty() { seen_ids.insert(w.id.clone()); }
                             ingested += 1;
                         }
                         Err(e) => eprintln!("      [ingest failed: {e}]"),
@@ -1103,11 +1124,13 @@ fn main() {
                 }
             }
             if ingest {
-                if let Err(e) = sys.save() {
-                    eprintln!("[research] failed to persist HRM after ingest: {e}");
-                    process::exit(1);
+                if ingested > 0 {
+                    if let Err(e) = sys.save() {
+                        eprintln!("[research] failed to persist HRM after ingest: {e}");
+                        process::exit(1);
+                    }
                 }
-                println!("[research] ingested {ingested} work(s) as Semantic memories (long-term)");
+                println!("[research] ingested {ingested} new work(s) as Semantic memories (long-term); {skipped} duplicate(s) skipped");
             }
         }
         "dispatch" => {
@@ -1167,6 +1190,34 @@ fn main() {
                 println!("{}", out);
             } else {
                 println!("{text}");
+            }
+        }
+        "research-suggest" => {
+            // Feedback-driven topic selection: of the standing themes, print the
+            // one the HRM knows LEAST about (fewest ingested research memories) —
+            // so the ingest loop researches its own gaps. Curiosity = explore
+            // where the field is thin. `--json` adds the per-theme coverage.
+            let json_out = args[command_start + 1..].iter().any(|a| a == "--json");
+            let themes = kannaka_memory::dispatch::rotating_themes();
+            let research: Vec<String> = sys.engine.store.all_memories()
+                .unwrap_or_default()
+                .iter()
+                .filter(|m| m.content.starts_with("research:"))
+                .map(|m| m.content.to_lowercase())
+                .collect();
+            let coverage: Vec<(&str, usize)> = themes.iter().map(|t| {
+                // Score by the theme's most distinctive token (first word).
+                let key = t.split_whitespace().next().unwrap_or(t).to_lowercase();
+                let c = research.iter().filter(|c| c.contains(&key)).count();
+                (*t, c)
+            }).collect();
+            let suggestion = coverage.iter().min_by_key(|(_, c)| *c).map(|(t, _)| *t).unwrap_or("consciousness");
+            if json_out {
+                let cov: serde_json::Map<String, serde_json::Value> = coverage.iter()
+                    .map(|(t, c)| (t.to_string(), serde_json::json!(c))).collect();
+                println!("{}", serde_json::json!({ "suggest": suggestion, "coverage": cov }));
+            } else {
+                println!("{suggestion}");
             }
         }
         "boost" => {
