@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [0.6.13] — 2026-06-07
+
+Memory-triage release: implements ADR-0031 end to end (a two-tier, Ξ-preserving
+retention architecture that retires the radio `prune-cron.sh` bridge measure),
+plus a batch of CLI/config correctness fixes from the open-issue backlog.
+
+### Added
+- **ADR-0031 memory triage (Phases 1–3).**
+  - `kannaka triage [--apply] [--include-long-term] [--redundancy R]
+    [--min-amplitude A] [--min-age-hours H] [--max-evict N]` — value-based,
+    Ξ-preserving online prune. Evicts only redundant (same-modality cosine ≥ R),
+    aged, low-amplitude *extras*, keeping the strongest representative per
+    cluster so eviction raises representational diversity. Dry-run by default;
+    runs in the single-writer process (no stream drop). Each eviction is a
+    replayable forget event.
+  - Memory tiers: `ShortTerm` / `LongTerm` / `Pinned` on every wavefront,
+    added back-compat-safe (existing `.hrm` files load as `LongTerm`).
+    `kannaka promote|pin|demote <id>`.
+  - `kannaka hear` captures default to `ShortTerm` (`--long-term` opts out);
+    the dream cycle promotes the short-term memories it strengthens back to
+    `LongTerm`, and (when `[triage] enabled` with a non-zero `xi_trigger`)
+    auto-triggers a triage pass when post-dream Ξ drops — self-healing the
+    ear-loop Ξ compression with no external cron.
+  - `[triage]` config section (per-agent tunable: `enabled`, `redundancy`,
+    `min_amplitude`, `min_age_hours`, `max_evict`, `xi_trigger`), settable via
+    `config set triage.*`. Default `enabled = false`.
+  - `kannaka events gc [--corrupt-backs] [--older-than DAYS] [--dry-run]` —
+    reclaim stale `*.corrupt-bak-*` / `*.v2-backup*` HRM sidecars.
+- L5 autoresearch default tuning: `DRIVE_FREQ_HZ` 2.0→0.5, `kuramoto_coupling`
+  1.0→0.5, `drive_amp` 0.0→0.15 (research binary only; confirmed fitness gains).
+
+### Fixed
+- `register_ghostsignals` no longer treats a `200 OK` with a missing/empty
+  `token` as success (#111) — prevents a silently-broken constellation identity.
+- `swarm.role` is now a real, settable config knob surfaced at swarm-connect
+  (#112), with `config set swarm.role`.
+- `kannaka attention stats` reports the live beam state from the serve loop's
+  dump file instead of a hardcoded zero stub, or "offline" when no daemon (#114).
+- `kannaka` now exits non-zero when the HRM fails to load so callers can detect
+  corruption — verified across recall/ask/etc. (#115).
+
 ## [0.6.12] — 2026-06-05
 
 Research-arc release: the L5 autoresearch metric set was extended, a class
