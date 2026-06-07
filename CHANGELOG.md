@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.6.16] — 2026-06-07
+
+### Added
+- **`kannaka research-suggest [--json]`** — feedback-driven topic selection:
+  prints the standing theme the HRM knows least about (fewest ingested research
+  memories) so the ingest loop researches its own knowledge gaps.
+
+### Fixed
+- **`kannaka research --ingest` now dedupes by OpenAlex id** — snapshots ids
+  already in the HRM (and tracks intra-batch), skipping works already ingested.
+  A repeating ingest no longer creates duplicate Semantic long-term memories;
+  reports `N new / M duplicate(s) skipped` and only saves when something new lands.
+
 ## [0.6.15] — 2026-06-07
 
 ### Added
