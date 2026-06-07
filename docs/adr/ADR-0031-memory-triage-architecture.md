@@ -171,9 +171,15 @@ tick instead of being interrupted by an external cron.
   for triage. CLI: `kannaka promote|pin|demote <id>`. Triage now defaults to
   **ShortTerm-only** (never evicts `Pinned`), with `--include-long-term` for
   one-off legacy cleanup — making continuous triage safe.
-  *Still open (Phase 2b):* automatic promotion (dream-survival / recall-count →
-  `LongTerm`) and defaulting ear-loop absorbs to `ShortTerm` (needs an
-  absorb-with-tier path; partly kannaka-radio side).
+- **Phase 2b — automatic promotion + ear-loop default. ✅ SHIPPED.**
+  `kannaka hear` captures now default to `ShortTerm` (`--long-term` opts out), so
+  the high-rate ear-loop auto-populates the eviction-eligible pool. The dream
+  cycle promotes any `ShortTerm` memory it *strengthens* (amplitude grows by
+  ≥ `KANNAKA_PROMOTE_DELTA`, default 0.05, across the dream) back to `LongTerm`.
+  Recall-driven promotion is subsumed: recall raises a memory's energy, so it
+  resonates harder and is more likely to be strengthened by the next dream.
+  With ear-loop → ShortTerm and dream → promote/triage, the loop is
+  self-sustaining and `prune-cron.sh` can be retired.
 
 - **Phase 3 — Kannaktopus-scheduled, constellation-wide policy.**
   Kannaktopus drives the triage cadence and tunes thresholds per-agent (the

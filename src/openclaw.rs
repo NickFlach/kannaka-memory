@@ -481,8 +481,70 @@ impl KannakaMemorySystem {
     ///
     /// ADR-0022: Uses Medium's eigenstructure annealing exclusively.
     /// No fallback to old particle-based consolidation — the HRM IS the dream engine.
+    /// ADR-0031 Phase 2b: capture the current amplitude of every short-term
+    /// memory, keyed by id. Used to detect dream-strengthening for promotion.
+    fn snapshot_short_term_amplitudes(&self) -> std::collections::HashMap<Uuid, f32> {
+        use crate::medium::types::Tier;
+        self.engine.store.all_memories()
+            .map(|mems| mems.iter()
+                .filter(|m| m.tier == Tier::ShortTerm)
+                .map(|m| (m.id, m.amplitude))
+                .collect())
+            .unwrap_or_default()
+    }
+
+    /// ADR-0031 Phase 2b: promote short-term memories whose amplitude grew by at
+    /// least `KANNAKA_PROMOTE_DELTA` (default 0.05) across the dream — i.e. the
+    /// consolidation strengthened them, so they graduate to long-term and are no
+    /// longer eviction-eligible by `triage`. Returns the number promoted.
+    fn promote_strengthened_short_term(&mut self, before: &std::collections::HashMap<Uuid, f32>) -> usize {
+        use crate::medium::types::Tier;
+        if before.is_empty() {
+            return 0;
+        }
+        let eps: f32 = std::env::var("KANNAKA_PROMOTE_DELTA")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.05);
+        // Collect ids first (immutable borrow), then mutate.
+        let to_promote: Vec<Uuid> = match self.engine.store.all_memories() {
+            Ok(mems) => mems.iter().filter_map(|m| {
+                if m.tier == Tier::ShortTerm {
+                    if let Some(&amp0) = before.get(&m.id) {
+                        if m.amplitude >= amp0 + eps {
+                            return Some(m.id);
+                        }
+                    }
+                }
+                None
+            }).collect(),
+            Err(_) => return 0,
+        };
+        if to_promote.is_empty() {
+            return 0;
+        }
+        match self.engine.store.as_any_mut()
+            .downcast_mut::<crate::hrm_store::HrmStore>()
+        {
+            Some(hrm) => {
+                let mut n = 0;
+                for id in &to_promote {
+                    if hrm.set_tier(id, Tier::LongTerm) { n += 1; }
+                }
+                n
+            }
+            None => 0,
+        }
+    }
+
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
+
+        // ADR-0031 Phase 2b: snapshot short-term amplitudes before the dream so
+        // we can promote the ones the dream consolidation strengthens (they
+        // "earned" long-term). Recall-boosted memories benefit too — recall
+        // raises energy, so they resonate harder and strengthen here.
+        let short_term_before = self.snapshot_short_term_amplitudes();
 
         // Phase 1: Wave-native dream (eigenstructure annealing on holographic medium)
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
@@ -514,6 +576,12 @@ impl KannakaMemorySystem {
         // Phase 4: Lite chiral dream — transfer strong analytical memories to holistic side
         self.engine.store.chiral_dream(false, 1);
         eprintln!("[dream] Lite chiral dream pass complete");
+
+        // ADR-0031 Phase 2b: promote short-term memories the dream strengthened.
+        let promoted = self.promote_strengthened_short_term(&short_term_before);
+        if promoted > 0 {
+            eprintln!("[dream] promoted {} strengthened short-term memory(ies) → long-term", promoted);
+        }
 
         let after = self.bridge.assess(&self.engine);
         self.last_dream = Some(Utc::now());
