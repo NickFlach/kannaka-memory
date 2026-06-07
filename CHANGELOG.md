@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.6.14] — 2026-06-07
+
+Research-divergence release: gives Kannaka a grounded external-research
+capability and uses it to anchor the cross-disciplinary intersections program in
+real literature (rather than synthetic experiments).
+
+### Added
+- **`kannaka research "<query>" [--limit N] [--ingest] [--since YEAR]
+  [--min-citations N]`** — keyless OpenAlex literature search. `--ingest` stores
+  ranked works as Semantic, long-term HRM memories (citation-scaled importance),
+  so real scholarship joins wave-resonance recall + dream consolidation.
+  `src/openalex.rs` client; polite-pool `mailto` via env `KANNAKA_OPENALEX_MAILTO`.
+- **`research/ground-intersections.sh`** — grounds the `research/intersections/`
+  program (cardiac, cancer, bioelectric, magic + societal/ethics probes) in real
+  OpenAlex works and measures cluster/Φ/Ξ before/after a dream — a reproducible
+  test of intersection card 04. First grounded run recorded on the card.
+
 ## [0.6.13] — 2026-06-07
 
 Memory-triage release: implements ADR-0031 end to end (a two-tier, Ξ-preserving
