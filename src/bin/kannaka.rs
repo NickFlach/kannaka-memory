@@ -1628,6 +1628,7 @@ fn main() {
                 eprintln!("  File:   kannaka hear ./song.mp3");
                 eprintln!("  URL:    kannaka hear https://radio.ninja-portal.com/stream");
                 eprintln!("  Stream URLs are sampled for ~30s (default; cap with --secs N).");
+                eprintln!("  Captures are short-term by default (triage-eligible); --long-term to keep.");
                 process::exit(1);
             }
             let target = &args[command_start + 1];
@@ -1635,6 +1636,11 @@ fn main() {
             // Optional --secs N for stream sampling cap. Default 30s ≈ 480 KB
             // at 128 kbps MP3, plenty of audio to extract tempo/centroid/rms.
             let mut secs: u64 = 30;
+            // ADR-0031 Phase 2b: ear-loop captures are high-rate and semantically
+            // redundant (same voice/modality), so they default to ShortTerm —
+            // eviction-eligible by `triage`, promoted to LongTerm only if a dream
+            // strengthens them. `--long-term` opts a specific capture out.
+            let mut long_term = false;
             let mut i = command_start + 2;
             while i < args.len() {
                 if args[i] == "--secs" && i + 1 < args.len() {
@@ -1642,6 +1648,8 @@ fn main() {
                         secs = n.max(1).min(600);
                     }
                     i += 2;
+                } else if args[i] == "--long-term" {
+                    long_term = true; i += 1;
                 } else { i += 1; }
             }
 
@@ -1673,7 +1681,16 @@ fn main() {
 
             match result {
                 Ok((id, features)) => {
-                    println!("Heard: {id}");
+                    // ADR-0031 Phase 2b: tag ear-loop captures ShortTerm by default.
+                    if !long_term {
+                        if let Some(hrm) = sys.engine.store.as_any_mut()
+                            .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                        {
+                            hrm.set_tier(&id, kannaka_memory::medium::types::Tier::ShortTerm);
+                            let _ = sys.save();
+                        }
+                    }
+                    println!("Heard: {id}{}", if long_term { "" } else { " (short-term)" });
                     println!("  Duration: {:.1}s", features.duration_secs);
                     println!("  Tempo: {:.0} BPM", features.tempo_bpm);
                     println!("  RMS: {:.4}", features.rms_mean);
