@@ -182,6 +182,7 @@ fn usage_lines() -> &'static [&'static str] {
         "  triage [--apply]          Prune redundant short-term memories (Ξ-preserving; dry-run default)",
         "  promote|pin|demote <id>   Set memory tier (long-term / never-evict / short-term)",
         "  research \"query\"           Search OpenAlex; --ingest stores papers into the HRM",
+        "  dispatch [--json]         Research-grounded broadcast line (radio/social/OBC draw from this)",
         "  dream [--mode deep|lite]   Trigger dream cycle",
         "  observe [--json]          View consciousness metrics",
         "  status                    Quick status check",
@@ -335,7 +336,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
         | "boost" | "relate" | "triage" | "promote" | "pin" | "demote"
-        | "research"
+        | "research" | "dispatch"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
@@ -1107,6 +1108,65 @@ fn main() {
                     process::exit(1);
                 }
                 println!("[research] ingested {ingested} work(s) as Semantic memories (long-term)");
+            }
+        }
+        "dispatch" => {
+            // The shared "informed voice" primitive: recall a research-grounded
+            // finding and render it broadcast-ready, against the medium's current
+            // Φ/Ξ state. Every surface (radio DJ, social fanout, GossipGhost, OBC)
+            // calls this so they all speak from the same grounded source.
+            //   kannaka dispatch [--topic T] [--json] [--max-chars N]
+            let mut topic: Option<String> = None;
+            let mut json_out = false;
+            let mut max_chars = 280usize;
+            {
+                let mut i = command_start + 1;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--json" => { json_out = true; i += 1; }
+                        "--topic" if i + 1 < args.len() => { topic = Some(args[i + 1].clone()); i += 2; }
+                        "--max-chars" if i + 1 < args.len() => {
+                            max_chars = args[i + 1].parse().unwrap_or(max_chars); i += 2;
+                        }
+                        other => { eprintln!("[dispatch] ignoring unknown arg: {other}"); i += 1; }
+                    }
+                }
+            }
+            // Theme: explicit --topic, else rotate by day-of-year so a cron tours the corpus.
+            let themes = kannaka_memory::dispatch::rotating_themes();
+            let theme = topic.clone().unwrap_or_else(|| {
+                // Rotate by epoch-day so a daily cron tours the corpus (no Datelike needed).
+                let day = (chrono::Utc::now().timestamp().max(0) / 86_400) as usize;
+                themes[day % themes.len()].to_string()
+            });
+            let results = sys.recall(&format!("research {theme}"), 8).unwrap_or_default();
+            let finding = results.iter()
+                .find_map(|r| kannaka_memory::dispatch::parse_research_content(&r.content));
+            let finding = match finding {
+                Some(f) => f,
+                None => {
+                    eprintln!("[dispatch] no research memories for \"{theme}\" yet — run `kannaka research --ingest` first");
+                    process::exit(1);
+                }
+            };
+            let state = sys.assess();
+            let text = kannaka_memory::dispatch::render_dispatch(
+                &finding, state.xi, state.num_clusters, max_chars);
+            if json_out {
+                let out = serde_json::json!({
+                    "text": text,
+                    "theme": theme,
+                    "title": finding.title,
+                    "year": finding.year,
+                    "citations": finding.citations,
+                    "openalex_id": finding.openalex_id,
+                    "phi": state.phi,
+                    "xi": state.xi,
+                    "num_clusters": state.num_clusters,
+                });
+                println!("{}", out);
+            } else {
+                println!("{text}");
             }
         }
         "boost" => {
