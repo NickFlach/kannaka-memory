@@ -3339,13 +3339,13 @@ fn run_experiment_l5_session(params: &Params) {
     l5_params.consolidation_repulsion_threshold = 0.28;
     l5_params.chain_depth = 16; // L5 default — quiescence may short-circuit
     l5_params.chain_top_n = 7;
-    // K=1.0 confirmed optimal in K-sweep (2026-06-06): lower coupling preserves
-    // phase diversity, lifting xi_robustness_v2 from ~0.64 to ~0.86 and
-    // reducing avg fitness from ~0.18 to 0.138. KURAMOTO_COUPLING env var overrides.
+    // K=0.5 confirmed optimal in K-sweep (2026-06-06): weaker coupling preserves
+    // more phase diversity than K=1.0, further lifting xi and reducing avg fitness
+    // from ~0.138 (K=1.0) to ~0.133 (K=0.5). KURAMOTO_COUPLING env var overrides.
     l5_params.kuramoto_coupling = std::env::var("KURAMOTO_COUPLING")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(1.0);
+        .unwrap_or(0.5);
     let params = &l5_params;
 
     // Build Corpus A (hardness=2, bimodal frequency assignment)
