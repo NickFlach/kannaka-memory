@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.6.15] — 2026-06-07
+
+### Added
+- **`kannaka dispatch [--topic T] [--json] [--max-chars N]`** — the
+  research-grounded broadcast-voice primitive. Recalls an ingested `research:`
+  finding and renders it against the medium's live Φ/Ξ state; every surface
+  (radio DJ, social fanout, GossipGhost, OBC) draws from this one source.
+  `src/dispatch.rs`, day-rotating themes, `--json` for programmatic fanout.
+
 ## [0.6.14] — 2026-06-07
 
 Research-divergence release: gives Kannaka a grounded external-research
