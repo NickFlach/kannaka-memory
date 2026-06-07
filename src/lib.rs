@@ -61,6 +61,9 @@ pub mod agent;
 // Grounded scholarly research (OpenAlex) for the curiosity loop.
 pub mod openalex;
 
+// Dispatch — research-grounded broadcast-ready voice shared by all surfaces.
+pub mod dispatch;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
