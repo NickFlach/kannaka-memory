@@ -58,6 +58,9 @@ pub mod cli;
 
 pub mod agent;
 
+// Grounded scholarly research (OpenAlex) for the curiosity loop.
+pub mod openalex;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,

@@ -181,6 +181,7 @@ fn usage_lines() -> &'static [&'static str] {
         "  forget <id>               Remove a memory",
         "  triage [--apply]          Prune redundant short-term memories (Ξ-preserving; dry-run default)",
         "  promote|pin|demote <id>   Set memory tier (long-term / never-evict / short-term)",
+        "  research \"query\"           Search OpenAlex; --ingest stores papers into the HRM",
         "  dream [--mode deep|lite]   Trigger dream cycle",
         "  observe [--json]          View consciousness metrics",
         "  status                    Quick status check",
@@ -334,6 +335,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         // memory primitives
         | "remember" | "recall" | "search" | "forget" | "prune-prefix"
         | "boost" | "relate" | "triage" | "promote" | "pin" | "demote"
+        | "research"
         // consolidation + introspection
         | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
@@ -1034,6 +1036,78 @@ fn main() {
                 process::exit(1);
             }
             println!("{id} → {tier}");
+        }
+        "research" => {
+            // Grounded scholarly research via OpenAlex. Diverges the curiosity
+            // loop outward: `--ingest` stores ranked works as Semantic memories
+            // so real literature joins the HRM's wave-resonance + dream cycle.
+            //   kannaka research "<query>" [--limit N] [--ingest]
+            //                    [--since YEAR] [--min-citations N]
+            if args.len() < command_start + 2 {
+                eprintln!("Usage: kannaka research \"<query>\" [--limit N] [--ingest] [--since YEAR] [--min-citations N]");
+                process::exit(1);
+            }
+            let query = args[command_start + 1].clone();
+            let mut opts = kannaka_memory::openalex::SearchOpts::default();
+            let mut ingest = false;
+            {
+                let mut i = command_start + 2;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--ingest" => { ingest = true; i += 1; }
+                        "--limit" if i + 1 < args.len() => {
+                            opts.limit = args[i + 1].parse().unwrap_or(opts.limit); i += 2;
+                        }
+                        "--since" if i + 1 < args.len() => {
+                            opts.since_year = args[i + 1].parse().ok(); i += 2;
+                        }
+                        "--min-citations" if i + 1 < args.len() => {
+                            opts.min_citations = args[i + 1].parse().ok(); i += 2;
+                        }
+                        other => { eprintln!("[research] ignoring unknown arg: {other}"); i += 1; }
+                    }
+                }
+            }
+            let works = match kannaka_memory::openalex::search_works(&query, &opts) {
+                Ok(w) => w,
+                Err(e) => { eprintln!("[research] {e}"); process::exit(1); }
+            };
+            if works.is_empty() {
+                println!("[research] no works found for \"{query}\"");
+                return;
+            }
+            println!("[research] \"{}\" — {} works{}", query, works.len(),
+                if ingest { " (ingesting into HRM)" } else { "" });
+            let mut ingested = 0usize;
+            for (n, w) in works.iter().enumerate() {
+                let authors = w.authors.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let etal = if w.authors.len() > 3 { " et al." } else { "" };
+                println!("  {:>2}. [{}] cited={} {}{}",
+                    n + 1, w.year.map(|y| y.to_string()).unwrap_or_else(|| "----".into()),
+                    w.cited_by_count, w.title,
+                    if authors.is_empty() { String::new() } else { format!("\n      {authors}{etal}") });
+                if ingest {
+                    let content = w.to_memory_content();
+                    match sys.remember_with_category(&content, "research", w.ingest_importance()) {
+                        Ok(id) => {
+                            if let Some(hrm) = sys.engine.store.as_any_mut()
+                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                            {
+                                hrm.set_modality(&id, kannaka_memory::medium::Modality::Semantic);
+                            }
+                            ingested += 1;
+                        }
+                        Err(e) => eprintln!("      [ingest failed: {e}]"),
+                    }
+                }
+            }
+            if ingest {
+                if let Err(e) = sys.save() {
+                    eprintln!("[research] failed to persist HRM after ingest: {e}");
+                    process::exit(1);
+                }
+                println!("[research] ingested {ingested} work(s) as Semantic memories (long-term)");
+            }
         }
         "boost" => {
             if args.len() < command_start + 2 {
