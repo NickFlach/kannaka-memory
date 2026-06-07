@@ -564,6 +564,21 @@ fn main() {
     // of falling back to env-only. Fixes km#77.
     sys.set_nats_url(resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url));
 
+    // ADR-0031 Phase 3: install the dream-cycle auto-triage policy from config
+    // (opt-in via `config set triage.enabled true`). When enabled with a
+    // non-zero xi_trigger, the dream cycle self-heals Ξ by shedding redundant
+    // short-term memories — no external cron needed.
+    if cfg.triage.enabled {
+        sys.set_triage_policy(kannaka_memory::openclaw::TriageParams {
+            redundancy: cfg.triage.redundancy,
+            min_amplitude: cfg.triage.min_amplitude,
+            min_age_hours: cfg.triage.min_age_hours,
+            max_evict: cfg.triage.max_evict,
+            include_long_term: false,
+            xi_trigger: cfg.triage.xi_trigger,
+        });
+    }
+
     match args[command_start].as_str() {
         "remember" => {
             if args.len() < command_start + 2 {
@@ -927,16 +942,19 @@ fn main() {
             //
             // DRY-RUN BY DEFAULT. Pass --apply to actually forget+save. Each
             // eviction is a normal forget (replayable via ADR-0028 events).
+            // Defaults come from `[triage]` config (per-agent tunable, Phase 3);
+            // flags override per-invocation. --include-long-term restores the
+            // Phase-1 reach (Pinned is never evicted either way).
             let mut apply = false;
-            let mut redundancy: f32 = 0.95;
-            let mut min_amplitude: f32 = 0.75;
-            let mut min_age_hours: i64 = 24;
-            let mut max_evict: usize = 100;
-            // ADR-0031 Phase 2: by default only ShortTerm memories are
-            // eviction-eligible (safe to run continuously). --include-long-term
-            // restores the Phase-1 behavior for one-off legacy cleanup. Pinned
-            // memories are NEVER evicted under either mode.
             let mut include_long_term = false;
+            let mut params = kannaka_memory::openclaw::TriageParams {
+                redundancy: cfg.triage.redundancy,
+                min_amplitude: cfg.triage.min_amplitude,
+                min_age_hours: cfg.triage.min_age_hours,
+                max_evict: cfg.triage.max_evict,
+                include_long_term: false,
+                xi_trigger: cfg.triage.xi_trigger,
+            };
             {
                 let mut i = command_start + 1;
                 while i < args.len() {
@@ -945,111 +963,39 @@ fn main() {
                         "--dry-run" => { apply = false; i += 1; }
                         "--include-long-term" => { include_long_term = true; i += 1; }
                         "--redundancy" if i + 1 < args.len() => {
-                            redundancy = args[i + 1].parse().unwrap_or(redundancy); i += 2;
+                            params.redundancy = args[i + 1].parse().unwrap_or(params.redundancy); i += 2;
                         }
                         "--min-amplitude" if i + 1 < args.len() => {
-                            min_amplitude = args[i + 1].parse().unwrap_or(min_amplitude); i += 2;
+                            params.min_amplitude = args[i + 1].parse().unwrap_or(params.min_amplitude); i += 2;
                         }
                         "--min-age-hours" if i + 1 < args.len() => {
-                            min_age_hours = args[i + 1].parse().unwrap_or(min_age_hours); i += 2;
+                            params.min_age_hours = args[i + 1].parse().unwrap_or(params.min_age_hours); i += 2;
                         }
                         "--max-evict" if i + 1 < args.len() => {
-                            max_evict = args[i + 1].parse().unwrap_or(max_evict); i += 2;
+                            params.max_evict = args[i + 1].parse().unwrap_or(params.max_evict); i += 2;
                         }
                         other => { eprintln!("[triage] ignoring unknown arg: {other}"); i += 1; }
                     }
                 }
             }
+            params.include_long_term = include_long_term;
 
-            // Phase 1: scan (immutable borrow). Group by modality, keep the
-            // strongest as representatives, collect redundant low-value extras.
-            let (to_forget, total, per_mod): (Vec<uuid::Uuid>, usize, Vec<(String, usize, usize)>) = {
-                let all = sys.engine.store.all_memories().unwrap_or_else(|e| {
-                    eprintln!("Error listing memories: {e}"); process::exit(1);
-                });
-                let total = all.len();
-                let now = chrono::Utc::now();
-
-                // Bucket memory references by modality label.
-                use std::collections::BTreeMap;
-                let mut buckets: BTreeMap<String, Vec<&kannaka_memory::memory::HyperMemory>> = BTreeMap::new();
-                for m in &all {
-                    buckets.entry(format!("{}", m.modality)).or_default().push(m);
-                }
-
-                let mut to_forget: Vec<uuid::Uuid> = Vec::new();
-                let mut per_mod: Vec<(String, usize, usize)> = Vec::new(); // (modality, total, evicted)
-                let mut evicted_total = 0usize;
-
-                for (modality, mut mems) in buckets {
-                    // Strongest first → they become the retained representatives,
-                    // so the weak redundant duplicates are the ones evicted.
-                    mems.sort_by(|a, b| b.amplitude.partial_cmp(&a.amplitude)
-                        .unwrap_or(std::cmp::Ordering::Equal));
-                    let mut retained: Vec<&kannaka_memory::memory::HyperMemory> = Vec::new();
-                    let mut evicted_here = 0usize;
-                    for m in mems {
-                        if evicted_total >= max_evict {
-                            retained.push(m);
-                            continue;
-                        }
-                        // Tier gate (ADR-0031 Phase 2): never evict Pinned;
-                        // only ShortTerm unless --include-long-term is set.
-                        use kannaka_memory::medium::types::Tier;
-                        let tier_evictable = match m.tier {
-                            Tier::Pinned => false,
-                            Tier::ShortTerm => true,
-                            Tier::LongTerm => include_long_term,
-                        };
-                        let age_hours = now.signed_duration_since(m.created_at).num_hours();
-                        let old_enough = age_hours >= min_age_hours;
-                        let low_value = m.amplitude < min_amplitude;
-                        // Redundant only against already-RETAINED same-modality
-                        // memories — guarantees at least one representative survives.
-                        let redundant = tier_evictable && old_enough && low_value && retained.iter().any(|r| {
-                            kannaka_memory::wave::cosine_similarity(&m.vector, &r.vector) >= redundancy
-                        });
-                        if redundant {
-                            to_forget.push(m.id);
-                            evicted_here += 1;
-                            evicted_total += 1;
-                        } else {
-                            retained.push(m);
-                        }
-                    }
-                    if evicted_here > 0 {
-                        per_mod.push((modality, retained.len() + evicted_here, evicted_here));
-                    }
-                }
-                (to_forget, total, per_mod)
-            };
-
+            let sel = sys.triage_select(&params);
             println!("[triage] policy: tier={} redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
                 if include_long_term { "short+long (pinned protected)" } else { "short-term only" },
-                redundancy, min_amplitude, min_age_hours, max_evict);
+                params.redundancy, params.min_amplitude, params.min_age_hours, params.max_evict);
             println!("[triage] {} of {} memories are redundant low-value extras{}",
-                to_forget.len(), total,
+                sel.to_forget.len(), sel.total,
                 if apply { "" } else { " (dry-run — pass --apply to forget)" });
-            for (modality, mtotal, evicted) in &per_mod {
+            for (modality, mtotal, evicted) in &sel.per_modality {
                 println!("[triage]   {:<10} {} eviction(s) of {} in-modality", modality, evicted, mtotal);
             }
-            if !apply { return; }
-            if to_forget.is_empty() { return; }
+            if !apply || sel.to_forget.is_empty() { return; }
 
-            // Phase 2: delete (mutable borrow), then persist atomically.
-            let mut ok = 0usize;
-            for id in &to_forget {
-                match sys.forget(id) {
-                    Ok(true) => ok += 1,
-                    Ok(false) => {}
-                    Err(e) => eprintln!("[triage] forget {id}: {e}"),
-                }
+            match sys.triage_forget(&sel.to_forget) {
+                Ok(n) => println!("[triage] evicted={n} (Ξ-preserving; representatives retained)"),
+                Err(e) => { eprintln!("Failed to persist HRM after triage: {e}"); process::exit(1); }
             }
-            if let Err(e) = sys.save() {
-                eprintln!("Failed to persist HRM after triage: {e}");
-                process::exit(1);
-            }
-            println!("[triage] evicted={ok} (Ξ-preserving; representatives retained)");
         }
         cmd @ ("promote" | "pin" | "demote") => {
             // ADR-0031 Phase 2 — explicit tier control.

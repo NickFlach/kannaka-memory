@@ -28,6 +28,8 @@ pub struct KannakaConfig {
     pub hrm: HrmConfig,
     #[serde(default = "UpdatesConfig::default")]
     pub updates: UpdatesConfig,
+    #[serde(default = "TriageConfig::default")]
+    pub triage: TriageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +98,33 @@ pub struct UpdatesConfig {
     pub channel: String,
     #[serde(default)]
     pub last_checked: String,
+}
+
+/// ADR-0031 memory triage policy. Per-agent tunable — the witness, substrate,
+/// and radio have different redundancy profiles. `enabled` gates the dream-cycle
+/// auto-trigger (Phase 3); the explicit `kannaka triage` CLI works regardless.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriageConfig {
+    /// Enable the dream-cycle auto-trigger (default false — opt-in, since it
+    /// auto-deletes redundant short-term memories).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Same-modality cosine at/above which a memory is a redundant extra.
+    #[serde(default = "default_triage_redundancy")]
+    pub redundancy: f32,
+    /// Only memories with amplitude below this are eviction-eligible.
+    #[serde(default = "default_triage_min_amplitude")]
+    pub min_amplitude: f32,
+    /// Only memories older than this (hours) are eviction-eligible.
+    #[serde(default = "default_triage_min_age_hours")]
+    pub min_age_hours: i64,
+    /// Cap on evictions per pass.
+    #[serde(default = "default_triage_max_evict")]
+    pub max_evict: usize,
+    /// Dream auto-triggers triage when post-dream Ξ falls below this. 0 disables
+    /// the auto-trigger even when `enabled` (explicit CLI triage still works).
+    #[serde(default = "default_triage_xi_trigger")]
+    pub xi_trigger: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +220,25 @@ impl Default for UpdatesConfig {
     }
 }
 
+impl Default for TriageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            redundancy: default_triage_redundancy(),
+            min_amplitude: default_triage_min_amplitude(),
+            min_age_hours: default_triage_min_age_hours(),
+            max_evict: default_triage_max_evict(),
+            xi_trigger: default_triage_xi_trigger(),
+        }
+    }
+}
+
+fn default_triage_redundancy() -> f32 { 0.95 }
+fn default_triage_min_amplitude() -> f32 { 0.75 }
+fn default_triage_min_age_hours() -> i64 { 24 }
+fn default_triage_max_evict() -> usize { 100 }
+fn default_triage_xi_trigger() -> f32 { 0.0 }
+
 impl Default for KannakaConfig {
     fn default() -> Self {
         Self {
@@ -201,6 +249,7 @@ impl Default for KannakaConfig {
             constellation: ConstellationConfig::default(),
             hrm: HrmConfig::default(),
             updates: UpdatesConfig::default(),
+            triage: TriageConfig::default(),
         }
     }
 }

@@ -181,11 +181,18 @@ tick instead of being interrupted by an external cron.
   With ear-loop → ShortTerm and dream → promote/triage, the loop is
   self-sustaining and `prune-cron.sh` can be retired.
 
-- **Phase 3 — Kannaktopus-scheduled, constellation-wide policy.**
-  Kannaktopus drives the triage cadence and tunes thresholds per-agent (the
-  witness, the substrate, and the radio have different redundancy profiles).
-  Per-segment / second-file separation revisited here *only if* the in-file tag
-  proves insufficient under load.
+- **Phase 3 — config-driven auto-trigger + per-agent thresholds. ✅ SHIPPED.**
+  A `[triage]` config section (per-agent tunable: `redundancy`, `min_amplitude`,
+  `min_age_hours`, `max_evict`, `xi_trigger`, `enabled`) drives both the CLI
+  defaults and the dream-cycle auto-trigger. When `triage.enabled` and post-dream
+  Ξ falls below `xi_trigger`, the dream self-heals by running a triage pass —
+  no external cron. Default `enabled=false` (opt-in, since it auto-deletes).
+  The triage policy is now a reusable library method (`triage_select`/
+  `triage_forget` on `KannakaMemorySystem`) shared by the CLI and the dream.
+  Kannaktopus may still *schedule* dream/triage cadence across the constellation,
+  but per-agent policy now lives in each agent's config — Kannaktopus does not own
+  it. Per-segment / second-file separation remains deferred (the in-file tag
+  holds under current load).
 
 ## Consequences
 

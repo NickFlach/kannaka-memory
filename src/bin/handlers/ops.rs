@@ -116,7 +116,9 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url, swarm.role,");
                     eprintln!("      ghostsignals.enabled, ghostsignals.token, ghostsignals.hub_url,");
                     eprintln!("      constellation.radio_url, constellation.observatory_url,");
-                    eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check");
+                    eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check,");
+                    eprintln!("      triage.enabled, triage.redundancy, triage.min_amplitude,");
+                    eprintln!("      triage.min_age_hours, triage.max_evict, triage.xi_trigger");
                     eprintln!();
                     eprintln!("Booleans accept: true/false, 1/0, yes/no, on/off (case-insensitive).");
                     process::exit(1);
@@ -210,6 +212,36 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                         }
                     }
                 }
+                // ADR-0031 Phase 3 — per-agent triage policy.
+                "triage.enabled" => {
+                    match parse_bool(value) {
+                        Ok(b) => new_cfg.triage.enabled = b,
+                        Err(()) => {
+                            eprintln!("triage.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            process::exit(1);
+                        }
+                    }
+                }
+                "triage.redundancy" => match value.parse::<f32>() {
+                    Ok(n) if (0.0..=1.0).contains(&n) => new_cfg.triage.redundancy = n,
+                    _ => { eprintln!("triage.redundancy expects a float in [0,1], got: {}", value); process::exit(1); }
+                },
+                "triage.min_amplitude" => match value.parse::<f32>() {
+                    Ok(n) if n >= 0.0 => new_cfg.triage.min_amplitude = n,
+                    _ => { eprintln!("triage.min_amplitude expects a non-negative float, got: {}", value); process::exit(1); }
+                },
+                "triage.min_age_hours" => match value.parse::<i64>() {
+                    Ok(n) if n >= 0 => new_cfg.triage.min_age_hours = n,
+                    _ => { eprintln!("triage.min_age_hours expects a non-negative integer, got: {}", value); process::exit(1); }
+                },
+                "triage.max_evict" => match value.parse::<usize>() {
+                    Ok(n) => new_cfg.triage.max_evict = n,
+                    _ => { eprintln!("triage.max_evict expects a non-negative integer, got: {}", value); process::exit(1); }
+                },
+                "triage.xi_trigger" => match value.parse::<f32>() {
+                    Ok(n) if (0.0..=1.0).contains(&n) => new_cfg.triage.xi_trigger = n,
+                    _ => { eprintln!("triage.xi_trigger expects a float in [0,1] (0 disables auto-trigger), got: {}", value); process::exit(1); }
+                },
                 other => {
                     eprintln!("Unknown config key: {}", other);
                     process::exit(1);
