@@ -770,11 +770,13 @@ fn main() {
         }
         "recall" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka recall <query> [--top-k N] [--collective] [--timeout SECS]");
+                eprintln!("Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS]");
                 process::exit(1);
             }
             let mut top_k = 5usize;
             let mut collective = false;
+            let mut remote = false;
+            let mut agent_id_override: Option<String> = None;
             let mut timeout_secs: u64 = 8;
             let mut query_parts = Vec::new();
             let mut i = command_start + 1;
@@ -785,6 +787,12 @@ fn main() {
                 } else if args[i] == "--collective" {
                     collective = true;
                     i += 1;
+                } else if args[i] == "--remote" {
+                    remote = true;
+                    i += 1;
+                } else if args[i] == "--agent-id" && i + 1 < args.len() {
+                    agent_id_override = Some(args[i + 1].clone());
+                    i += 2;
                 } else if args[i] == "--timeout" && i + 1 < args.len() {
                     timeout_secs = args[i + 1].parse().unwrap_or(8);
                     i += 2;
@@ -827,6 +835,43 @@ fn main() {
             #[cfg(not(feature = "nats"))]
             if collective {
                 eprintln!("recall --collective requires the 'nats' feature");
+                process::exit(1);
+            }
+
+            // Daemon-served recall — route to this agent's `swarm serve` daemon,
+            // which recalls its WARM in-memory HRM (full content) and replies.
+            // Avoids the per-CLI 21 MB load + xi-rerank that makes recall slow on
+            // the 1-vCPU box. Prints the legacy results array so the observatory
+            // and OBC pulses consume it exactly like `recall --json`.
+            #[cfg(feature = "nats")]
+            if remote {
+                use std::time::Duration;
+                let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
+                let agent_id = agent_id_override.clone().unwrap_or_else(|| cfg.agent.id.clone());
+                let subject = format!("KANNAKA.recall.{}", agent_id);
+                let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                    Ok(t) => t,
+                    Err(e) => { eprintln!("remote recall: NATS connect failed: {}", e); process::exit(1); }
+                };
+                let req = serde_json::json!({ "query": query, "top_k": top_k });
+                match transport.request_one(&subject, req.to_string().as_bytes(), Duration::from_secs(timeout_secs)) {
+                    Ok(reply) => {
+                        let parsed: serde_json::Value = serde_json::from_slice(&reply)
+                            .unwrap_or(serde_json::Value::Null);
+                        let results = parsed.get("results").cloned().unwrap_or_else(|| serde_json::json!([]));
+                        println!("{}", results);
+                    }
+                    Err(e) => {
+                        eprintln!("remote recall: no reply within {}s ({})", timeout_secs, e);
+                        eprintln!("hint: is `kannaka swarm serve` alive (serving KANNAKA.recall.{})?", agent_id);
+                        process::exit(2);
+                    }
+                }
+                return;
+            }
+            #[cfg(not(feature = "nats"))]
+            if remote {
+                eprintln!("recall --remote requires the 'nats' feature");
                 process::exit(1);
             }
 

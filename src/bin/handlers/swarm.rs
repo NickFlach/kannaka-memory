@@ -77,6 +77,22 @@ pub(crate) fn handle_swarm_serve(
     };
     let _ = bcast_sub.set_timeout(Some(Duration::from_secs(5)));
 
+    // Daemon-served recall (KANNAKA.recall.<agent_id>): the observatory, OBC
+    // pulses, and the radio DJ can recall against this agent's warm in-memory
+    // HRM instead of paying a 21 MB load + full xi-rerank per CLI call on the
+    // 1-vCPU box. Uses the attention-beam prefilter + recall_with_beam
+    // (O(beam), sub-second) — the same path the substrate responder uses. swarm
+    // serve runs KANNAKA_READONLY, so the observation mutation never persists.
+    let recall_subject = format!("KANNAKA.recall.{}", agent_id);
+    let recall_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
+    let mut recall_sub = recall_transport
+        .as_ref()
+        .and_then(|t| t.subscribe(&recall_subject).ok());
+    match recall_sub.as_mut() {
+        Some(s) => { let _ = s.set_timeout(Some(Duration::from_secs(2))); eprintln!("[swarm serve] serving recall on {recall_subject}"); }
+        None => eprintln!("[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"),
+    }
+
     loop {
         // Round-robin: try directed first, then broadcast.
         if let Some(msg) = directed_sub.next_message() {
@@ -84,6 +100,35 @@ pub(crate) fn handle_swarm_serve(
         }
         if let Some(msg) = bcast_sub.next_message() {
             _handle_serve_msg(sys, cfg, &bcast_transport, &msg, /*is_broadcast*/ true, threshold);
+        }
+        // Daemon-served recall — reply with the agent's own memories (full content).
+        if let Some(ref mut rsub) = recall_sub {
+            if let Some(msg) = rsub.next_message() {
+                let reply_to = msg.reply_to.clone();
+                let req: serde_json::Value = serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
+                let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+                if let (false, Some(reply)) = (query.is_empty(), reply_to) {
+                    let beam = kannaka_memory::agent::attention_beam_for_prompt(
+                        sys, &query, kannaka_memory::agent::DEFAULT_ATTENTION_BEAM);
+                    let recall = if beam.is_empty() {
+                        sys.recall(&query, top_k)            // cold/small HRM fallback
+                    } else {
+                        sys.recall_with_beam(&beam, &query, top_k)
+                    };
+                    let results: Vec<serde_json::Value> = recall.map(|rs| rs.iter().map(|r| serde_json::json!({
+                        "id": r.id.to_string(),
+                        "content": r.content,
+                        "similarity": r.similarity,
+                        "strength": r.strength,
+                        "age_hours": r.age_hours,
+                    })).collect()).unwrap_or_default();
+                    if let Some(ref rt) = recall_transport {
+                        let payload = serde_json::json!({ "from": cfg.agent.id, "query": query, "results": results });
+                        let _ = rt.reply(&reply, payload.to_string().as_bytes());
+                    }
+                }
+            }
         }
     }
 }
