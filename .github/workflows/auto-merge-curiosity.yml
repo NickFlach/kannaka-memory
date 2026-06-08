@@ -1,0 +1,82 @@
+name: Auto-merge curiosity research
+
+# Closes the autonomous-research → automated-improvement loop.
+#
+# The hourly curiosity loop opens kannaka-curiosity/* PRs (append-only research
+# logs + occasional validated param tweaks). They used to pile up waiting for a
+# human merge — the bottleneck. This workflow merges the GREEN ones into master
+# so improvements land without a human in the loop. (The 02:00 autoresearch
+# param-tuner already pushes its kept changes straight to master.)
+#
+# Safety model:
+#   - Only kannaka-curiosity/* branches are touched.
+#   - Only merged after ALL checks are green (`gh pr checks` exits 0 = all pass).
+#   - The append-only results-L{3,4,5}.tsv conflicts are auto-resolved with the
+#     built-in `union` merge driver (exactly the manual flow).
+#   - Any PR with a NON-union conflict (e.g. two source edits) is skipped and
+#     left open for human review — never force-merged.
+#   - Disable by deleting this file or via the Actions tab.
+
+on:
+  schedule:
+    - cron: '41 */3 * * *'   # every 3h
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-curiosity
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge green curiosity PRs (union-resolve append-only TSVs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          git config user.name "kannaka-curiosity-bot"
+          git config user.email "noreply@github.com"
+          printf 'experiments/results-L5.tsv merge=union\nexperiments/results-L4.tsv merge=union\nexperiments/results-L3.tsv merge=union\n' \
+            > .git/info/attributes
+          git fetch origin master
+          git checkout -B master origin/master
+
+          merged=0
+          declare -a done_branches=()
+          for num in $(gh pr list --state open --limit 100 --json number,headRefName \
+                --jq '.[] | select(.headRefName | startswith("kannaka-curiosity/")) | .number' | sort -n); do
+            if ! gh pr checks "$num" >/dev/null 2>&1; then
+              echo "skip #$num — checks not all green yet"
+              continue
+            fi
+            br=$(gh pr view "$num" --json headRefName --jq .headRefName)
+            git fetch origin "$br" || { echo "fetch failed for #$num ($br)"; continue; }
+            if git merge --no-ff FETCH_HEAD -m "Auto-merge PR #$num ($br): curiosity research"; then
+              echo "merged #$num ($br)"
+              merged=$((merged + 1))
+              done_branches+=("$br")
+            else
+              git merge --abort 2>/dev/null || true
+              echo "::notice title=Left for review::#$num ($br) has a non-union conflict — not auto-merged"
+            fi
+          done
+
+          if [ "$merged" -gt 0 ]; then
+            git push origin master
+            echo "pushed $merged merge(s) to master"
+            for b in "${done_branches[@]}"; do
+              git push origin --delete "$b" 2>/dev/null && echo "deleted $b" || true
+            done
+          else
+            echo "no green curiosity PRs to merge"
+          fi
