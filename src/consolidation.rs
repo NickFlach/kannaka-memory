@@ -1911,6 +1911,20 @@ impl ConsolidationEngine {
             }
         }
 
+        // Precompute per-cluster handedness from mean cos(phase) of members.
+        // This breaks the UUID-sort-order dependency: adversarial memories have
+        // deterministic phases (fixed encoder_seed), so their effect on cluster
+        // mean-cos is deterministic → xi passes become deterministic.
+        let cluster_handedness: HashMap<usize, f32> = clusters.iter().enumerate()
+            .map(|(cluster_idx, cluster)| {
+                let sum_cos: f32 = cluster.memory_ids.iter()
+                    .filter_map(|&id| engine.store.get(&id).ok().flatten().map(|m| m.phase.cos()))
+                    .sum();
+                let handedness = if sum_cos >= 0.0 { 1.0f32 } else { -1.0f32 };
+                (cluster_idx, handedness)
+            })
+            .collect();
+
         // Apply targeted chiral perturbation for similar memory pairs
         self.apply_targeted_chiral_perturbation(engine, working_set, &id_to_cluster, eta);
 
@@ -1918,8 +1932,7 @@ impl ConsolidationEngine {
         for &memory_id in working_set {
             if let Ok(Some(mem)) = engine.store.get_mut(&memory_id) {
                 if let Some(&cluster_idx) = id_to_cluster.get(&memory_id) {
-                    // Alternate handedness by cluster: even = left (+), odd = right (-)
-                    let handedness = if cluster_idx % 2 == 0 { 1.0 } else { -1.0 };
+                    let handedness = cluster_handedness.get(&cluster_idx).copied().unwrap_or(1.0f32);
 
                     // Phase perturbation
                     let phase_perturbation = eta * handedness * (2.0 * mem.phase).sin();
