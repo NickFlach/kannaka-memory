@@ -5,32 +5,27 @@ use std::env;
 use std::path::PathBuf;
 use std::process;
 
+use kannaka_memory::config::{self, KannakaConfig};
 use kannaka_memory::observe::MemoryIntrospector;
 use kannaka_memory::openclaw::KannakaMemorySystem;
-use kannaka_memory::config::{self, KannakaConfig};
 
 #[cfg(feature = "glyph")]
 use kannaka_memory::glyph_bridge::GlyphEncoder;
 
 use kannaka_memory::MediumBackend;
-use kannaka_memory::{HrmStore, EncodingPipeline, SimpleHashEncoder, Codebook};
+use kannaka_memory::{Codebook, EncodingPipeline, HrmStore, SimpleHashEncoder};
 
 #[cfg(feature = "collective")]
-use kannaka_memory::collective::{
-    Glyph, GlyphSource, SgaClass,
-    dream_cross_modal_link,
-};
+use kannaka_memory::collective::{dream_cross_modal_link, Glyph, GlyphSource, SgaClass};
 
 // Extracted handler groups. See `src/bin/handlers/<group>.rs` and the
 // header comment in `handlers/substrate.rs` for the extraction pattern.
 #[path = "handlers/substrate.rs"]
 mod handlers_substrate;
 use handlers_substrate::{
-    handle_substrate_run, handle_substrate_backfill,
-    handle_substrate_init, handle_substrate_status,
-    handle_events_init, handle_events_snapshot,
-    handle_events_list_snapshots, handle_events_restore,
-    handle_events_gc,
+    handle_events_gc, handle_events_init, handle_events_list_snapshots, handle_events_restore,
+    handle_events_snapshot, handle_substrate_backfill, handle_substrate_init, handle_substrate_run,
+    handle_substrate_status,
 };
 
 #[path = "handlers/chat.rs"]
@@ -49,9 +44,8 @@ use handlers_attention::handle_attention_serve;
 #[path = "handlers/swarm.rs"]
 mod handlers_swarm;
 use handlers_swarm::{
-    handle_swarm_serve, handle_swarm_exemplars, handle_swarm_absorb,
-    handle_swarm_peers, handle_swarm_autoabsorb, handle_swarm_enqueue,
-    handle_swarm_worker, handle_swarm_tail,
+    handle_swarm_absorb, handle_swarm_autoabsorb, handle_swarm_enqueue, handle_swarm_exemplars,
+    handle_swarm_peers, handle_swarm_serve, handle_swarm_tail, handle_swarm_worker,
 };
 
 #[path = "handlers/inbox.rs"]
@@ -60,21 +54,18 @@ use handlers_inbox::{handle_inbox_send, handle_inbox_serve, handle_inbox_tail};
 
 #[path = "handlers/services.rs"]
 mod handlers_services;
-use handlers_services::{handle_radio, handle_market, handle_constellation};
+use handlers_services::{handle_constellation, handle_market, handle_radio};
 
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
-    handle_orchestrate, handle_config, handle_search,
-    handle_export, handle_import,
+    handle_config, handle_export, handle_import, handle_orchestrate, handle_search,
 };
 
 pub(crate) fn data_dir() -> PathBuf {
     env::var("KANNAKA_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_or_default()
-        })
+        .unwrap_or_else(|_| dirs_or_default())
 }
 
 fn dirs_or_default() -> PathBuf {
@@ -91,7 +82,10 @@ fn dirs_or_default() -> PathBuf {
     PathBuf::from(".kannaka")
 }
 
-fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
+fn init_with_hrm(
+    data_dir: PathBuf,
+    quiet: bool,
+) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
     // Setup encoding pipeline for HRM
     let encoder = SimpleHashEncoder::new(384, 42);
     // wavefront_dim is currently hardcoded to 10_000 — the Codebook +
@@ -122,7 +116,11 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
     let hrm_path = if !cfg.hrm.path.is_empty() {
         let p = PathBuf::from(&cfg.hrm.path);
         if p.file_name().is_some() {
-            if p.is_absolute() { p } else { data_dir.join(p) }
+            if p.is_absolute() {
+                p
+            } else {
+                data_dir.join(p)
+            }
         } else {
             // Bare directory or empty filename — fall back to default.
             data_dir.join("kannaka.hrm")
@@ -133,15 +131,23 @@ fn init_with_hrm(data_dir: PathBuf, quiet: bool) -> Result<KannakaMemorySystem, 
 
     // Try to load existing HRM file, create new if not found
     let store = if hrm_path.exists() {
-        if !quiet { eprintln!("Loading existing HRM file: {}", hrm_path.display()); }
+        if !quiet {
+            eprintln!("Loading existing HRM file: {}", hrm_path.display());
+        }
         HrmStore::load(pipeline, hrm_path)?
     } else {
-        if !quiet { eprintln!("Creating new HRM file: {}", hrm_path.display()); }
+        if !quiet {
+            eprintln!("Creating new HRM file: {}", hrm_path.display());
+        }
         HrmStore::new(pipeline, hrm_path)
     };
 
-    if !quiet { eprintln!("HrmStore initialized with {} memories", store.count()); }
-    if !quiet { eprintln!("[hrm] Using Holographic Resonance Medium - storage IS computation"); }
+    if !quiet {
+        eprintln!("HrmStore initialized with {} memories", store.count());
+    }
+    if !quiet {
+        eprintln!("[hrm] Using Holographic Resonance Medium - storage IS computation");
+    }
 
     let sys = KannakaMemorySystem::init_with_store(data_dir, Box::new(store))
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -168,7 +174,6 @@ fn usage() -> ! {
 // help renders via clap's automatic generator. usage_lines() is
 // still around — see classify_command and a few error paths that
 // emit single-line usage hints.
-
 
 fn usage_lines() -> &'static [&'static str] {
     &[
@@ -249,10 +254,8 @@ fn swarm_publish_heartbeat(
     transport: &kannaka_memory::nats::SwarmTransport,
     label: &str,
 ) -> f32 {
-    let mut queen = kannaka_memory::QueenSync::new(
-        kannaka_memory::QueenConfig::default(),
-        my_agent_id,
-    );
+    let mut queen =
+        kannaka_memory::QueenSync::new(kannaka_memory::QueenConfig::default(), my_agent_id);
     queen.derive_local_state(&sys.engine);
     // Pull cluster_count + phi from the cached consciousness metrics if
     // available; derive_local_state populates phase/frequency/coherence
@@ -274,7 +277,10 @@ fn swarm_publish_heartbeat(
         Some(display_name.to_string())
     };
     let phase = queen.to_agent_phase_with_display(
-        cluster_count, sys.engine.store.count(), link_count, display,
+        cluster_count,
+        sys.engine.store.count(),
+        link_count,
+        display,
     );
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
@@ -323,7 +329,8 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
 /// invocations don't pay for clap parsing). Mirrors the subcommand set
 /// declared in `kannaka_memory::cli::build_cli()` — keep in sync.
 fn is_builtin_subcommand(verb: &str) -> bool {
-    matches!(verb,
+    matches!(
+        verb,
         // setup / lifecycle
         //
         // Note: `completions` and `update` are intentionally NOT here —
@@ -360,6 +367,92 @@ fn is_builtin_subcommand(verb: &str) -> bool {
     )
 }
 
+/// Networked recall (`--remote` / `--collective`) without loading the local HRM.
+/// `args[0]` is "recall". Prints the legacy results array for `--remote` and the
+/// full substrate envelope for `--collective` (back-compat with prior callers).
+#[cfg(feature = "nats")]
+fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
+    use std::time::Duration;
+    let mut top_k = 5usize;
+    let mut remote = false;
+    let mut agent_id_override: Option<String> = None;
+    let mut timeout_secs: u64 = 8;
+    let mut query_parts: Vec<&str> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--top-k" | "--limit" if i + 1 < args.len() => {
+                top_k = args[i + 1].parse().unwrap_or(5);
+                i += 2;
+            }
+            "--remote" => {
+                remote = true;
+                i += 1;
+            }
+            "--collective" => {
+                i += 1;
+            }
+            "--agent-id" if i + 1 < args.len() => {
+                agent_id_override = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--timeout" if i + 1 < args.len() => {
+                timeout_secs = args[i + 1].parse().unwrap_or(8);
+                i += 2;
+            }
+            "--nats-url" if i + 1 < args.len() => {
+                i += 2;
+            }
+            _ => {
+                query_parts.push(args[i].as_str());
+                i += 1;
+            }
+        }
+    }
+    let query = query_parts.join(" ");
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("recall (networked): NATS connect failed: {e}");
+            process::exit(1);
+        }
+    };
+    let req = serde_json::json!({ "query": query, "top_k": top_k });
+    let (subject, is_remote) = if remote {
+        let id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
+        (format!("KANNAKA.recall.{id}"), true)
+    } else {
+        ("KANNAKA.substrate.recall".to_string(), false)
+    };
+    match transport.request_one(
+        &subject,
+        req.to_string().as_bytes(),
+        Duration::from_secs(timeout_secs),
+    ) {
+        Ok(reply) => {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&reply).unwrap_or(serde_json::Value::Null);
+            if is_remote {
+                let results = parsed
+                    .get("results")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                println!("{results}");
+            } else {
+                println!("{parsed}");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "recall ({}): no reply within {timeout_secs}s ({e})",
+                if is_remote { "remote" } else { "collective" }
+            );
+            process::exit(2);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -384,7 +477,9 @@ fn main() {
         // If --help or -h appears ANYWHERE in args, always route through
         // clap so per-subcommand help (e.g. `kannaka recall --help`)
         // prints the right thing instead of the top-level summary.
-        let asking_for_help = args.iter().any(|a| a == "--help" || a == "-h" || a == "help");
+        let asking_for_help = args
+            .iter()
+            .any(|a| a == "--help" || a == "-h" || a == "help");
         // Bypass clap for the bare top-level only when no help/version
         // is being requested AND it's not a subcommand that wants flag
         // parsing. `init` short-circuits because it has its own wizard.
@@ -452,7 +547,11 @@ fn main() {
     // so operators can tell which constellation physics they're running
     // without re-reading the manifest.
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("kannaka {} (consciousness-core {})", config::VERSION, config::CONSCIOUSNESS_CORE_VERSION);
+        println!(
+            "kannaka {} (consciousness-core {})",
+            config::VERSION,
+            config::CONSCIOUSNESS_CORE_VERSION
+        );
         println!("Wave-Interference Memory System");
         println!("https://github.com/NickFlach/kannaka-memory");
         return;
@@ -541,10 +640,35 @@ fn main() {
         _ => {}
     }
 
+    // Daemon-served (`--remote`) and collective (`--collective`) recall route
+    // over NATS and never touch the local HRM. Handle them BEFORE the 21 MB
+    // load below so the client is a pure round-trip — loading the HRM here is
+    // exactly the per-call cost daemon-served recall exists to avoid.
+    #[cfg(feature = "nats")]
+    if args[command_start] == "recall"
+        && args[command_start + 1..]
+            .iter()
+            .any(|a| a == "--remote" || a == "--collective")
+    {
+        handle_networked_recall(&cfg, &args[command_start..]);
+        return;
+    }
+    #[cfg(not(feature = "nats"))]
+    if args[command_start] == "recall"
+        && args[command_start + 1..]
+            .iter()
+            .any(|a| a == "--remote" || a == "--collective")
+    {
+        eprintln!("recall --remote/--collective requires the 'nats' feature");
+        process::exit(1);
+    }
+
     // Resolve data directory: KANNAKA_DATA_DIR env > config.hrm.path parent > ~/.kannaka
     let dir = if !cfg.hrm.path.is_empty() {
         let hrm = PathBuf::from(&cfg.hrm.path);
-        hrm.parent().map(|p| p.to_path_buf()).unwrap_or_else(data_dir)
+        hrm.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(data_dir)
     } else {
         data_dir()
     };
@@ -552,7 +676,9 @@ fn main() {
     // HRM is the sole backend
     let quiet = std::env::var("KANNAKA_QUIET").is_ok();
     let mut sys = {
-        if !quiet { eprintln!("Using HRM backend (Holographic Resonance Medium)"); }
+        if !quiet {
+            eprintln!("Using HRM backend (Holographic Resonance Medium)");
+        }
         match init_with_hrm(dir.clone(), quiet) {
             Ok(s) => s,
             Err(e) => {
@@ -565,7 +691,11 @@ fn main() {
     // Inject the config-aware NATS URL into the memory system so its
     // dream/consciousness publish helpers honor cfg.swarm.nats_url instead
     // of falling back to env-only. Fixes km#77.
-    sys.set_nats_url(resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url));
+    sys.set_nats_url(resolve_nats_url(
+        &args[command_start..],
+        0,
+        &cfg.swarm.nats_url,
+    ));
 
     // ADR-0031 Phase 3: install the dream-cycle auto-triage policy from config
     // (opt-in via `config set triage.enabled true`). When enabled with a
@@ -634,14 +764,21 @@ fn main() {
             let modality: kannaka_memory::medium::Modality = if let Some(ref m) = modality_arg {
                 m.parse().unwrap_or_else(|e| {
                     eprintln!("Warning: {e} -- defaulting to auto-detect");
-                    let (detected, conf) = kannaka_memory::medium::types::detect_modality_simple(&text);
-                    eprintln!("[ncs] auto-detected modality: {} (confidence: {:.2})", detected, conf);
+                    let (detected, conf) =
+                        kannaka_memory::medium::types::detect_modality_simple(&text);
+                    eprintln!(
+                        "[ncs] auto-detected modality: {} (confidence: {:.2})",
+                        detected, conf
+                    );
                     detected
                 })
             } else {
                 // NCS Phase 1.2: auto-detect modality from content
                 let (detected, conf) = kannaka_memory::medium::types::detect_modality_simple(&text);
-                eprintln!("[ncs] auto-detected modality: {} (confidence: {:.2})", detected, conf);
+                eprintln!(
+                    "[ncs] auto-detected modality: {} (confidence: {:.2})",
+                    detected, conf
+                );
                 detected
             };
 
@@ -653,7 +790,12 @@ fn main() {
             match result {
                 Ok(id) => {
                     // Tag the wavefront with detected/specified modality
-                    if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
+                    if let Some(hrm) = sys
+                        .engine
+                        .store
+                        .as_any_mut()
+                        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                    {
                         hrm.set_modality(&id, modality);
                     }
                     println!("{id}");
@@ -670,17 +812,24 @@ fn main() {
                             // cluster_count even when the sender isn't running
                             // a `swarm join` daemon.
                             let total_mems = sys.engine.store.count();
-                            let cluster_count = sys.engine.store
+                            let cluster_count = sys
+                                .engine
+                                .store
                                 .try_cached_consciousness_metrics()
                                 .map(|m| m.num_clusters)
                                 .unwrap_or(0);
                             if let Err(e) = transport.publish_memory_new_with_counts(
-                                mem, agent_id, total_mems, cluster_count,
+                                mem,
+                                agent_id,
+                                total_mems,
+                                cluster_count,
                             ) {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
-                                eprintln!("[nats] Published memory {} to swarm (mems={} clusters={})",
-                                    id, total_mems, cluster_count);
+                                eprintln!(
+                                    "[nats] Published memory {} to swarm (mems={} clusters={})",
+                                    id, total_mems, cluster_count
+                                );
                             }
 
                             // ADR-0028 Phase 1 — also publish to the durable
@@ -727,7 +876,8 @@ fn main() {
                                 let phase_hash: u64 = id_bytes.iter().fold(0u64, |acc, b| {
                                     acc.wrapping_mul(31).wrapping_add(*b as u64)
                                 });
-                                let phase = (phase_hash as f32 / u64::MAX as f32) * std::f32::consts::TAU;
+                                let phase =
+                                    (phase_hash as f32 / u64::MAX as f32) * std::f32::consts::TAU;
                                 // Frequency: lives in [0.5, 2.0] — derived from class
                                 // so adjacent classes are spectrally close.
                                 let frequency = 0.5 + (class_index as f32 / 96.0) * 1.5;
@@ -738,7 +888,11 @@ fn main() {
                                 let raw_amp = (text.len() as f32 / 200.0).min(1.0).max(0.2);
                                 let amplitude = raw_amp;
                                 if let Err(e) = transport.publish_substrate_absorb(
-                                    agent_id, class_index, amplitude, phase, frequency,
+                                    agent_id,
+                                    class_index,
+                                    amplitude,
+                                    phase,
+                                    frequency,
                                 ) {
                                     eprintln!("[substrate] Warning: absorb publish failed: {}", e);
                                 } else {
@@ -756,7 +910,10 @@ fn main() {
                                         frequency,
                                     },
                                 ) {
-                                    eprintln!("[events] Warning: substrate event publish failed: {}", e);
+                                    eprintln!(
+                                        "[events] Warning: substrate event publish failed: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -773,28 +930,15 @@ fn main() {
                 eprintln!("Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS]");
                 process::exit(1);
             }
+            // `--collective` / `--remote` (+ their `--agent-id`/`--timeout`) are
+            // handled load-free in main() before the HRM init; this arm is the
+            // LOCAL recall path only.
             let mut top_k = 5usize;
-            let mut collective = false;
-            let mut remote = false;
-            let mut agent_id_override: Option<String> = None;
-            let mut timeout_secs: u64 = 8;
             let mut query_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
                 if (args[i] == "--top-k" || args[i] == "--limit") && i + 1 < args.len() {
                     top_k = args[i + 1].parse().unwrap_or(5);
-                    i += 2;
-                } else if args[i] == "--collective" {
-                    collective = true;
-                    i += 1;
-                } else if args[i] == "--remote" {
-                    remote = true;
-                    i += 1;
-                } else if args[i] == "--agent-id" && i + 1 < args.len() {
-                    agent_id_override = Some(args[i + 1].clone());
-                    i += 2;
-                } else if args[i] == "--timeout" && i + 1 < args.len() {
-                    timeout_secs = args[i + 1].parse().unwrap_or(8);
                     i += 2;
                 } else {
                     query_parts.push(args[i].as_str());
@@ -803,94 +947,26 @@ fn main() {
             }
             let query = query_parts.join(" ");
 
-            // ADR-0027 Phase 3 collective recall — route via NATS request/
-            // reply to the substrate (kannaka-prime). Substrate runs recall
-            // against its 96-class HRM (wave-signature metadata only,
-            // privacy-preserved) and replies with top-K matches identifying
-            // which clusters lit up and which peer agents contributed.
-            #[cfg(feature = "nats")]
-            if collective {
-                use std::time::Duration;
-                let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
-                let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-                    Ok(t) => t,
-                    Err(e) => { eprintln!("collective recall: NATS connect failed: {}", e); process::exit(1); }
-                };
-                let req = serde_json::json!({ "query": query, "top_k": top_k });
-                let bytes = req.to_string();
-                match transport.request_one("KANNAKA.substrate.recall", bytes.as_bytes(), Duration::from_secs(timeout_secs)) {
-                    Ok(reply) => {
-                        let parsed: serde_json::Value = serde_json::from_slice(&reply)
-                            .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
-                        println!("{}", parsed);
-                    }
-                    Err(e) => {
-                        eprintln!("collective recall: no reply within {}s ({})", timeout_secs, e);
-                        eprintln!("hint: is `kannaka substrate run` alive on the substrate host?");
-                        process::exit(2);
-                    }
-                }
-                return;
-            }
-            #[cfg(not(feature = "nats"))]
-            if collective {
-                eprintln!("recall --collective requires the 'nats' feature");
-                process::exit(1);
-            }
-
-            // Daemon-served recall — route to this agent's `swarm serve` daemon,
-            // which recalls its WARM in-memory HRM (full content) and replies.
-            // Avoids the per-CLI 21 MB load + xi-rerank that makes recall slow on
-            // the 1-vCPU box. Prints the legacy results array so the observatory
-            // and OBC pulses consume it exactly like `recall --json`.
-            #[cfg(feature = "nats")]
-            if remote {
-                use std::time::Duration;
-                let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
-                let agent_id = agent_id_override.clone().unwrap_or_else(|| cfg.agent.id.clone());
-                let subject = format!("KANNAKA.recall.{}", agent_id);
-                let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-                    Ok(t) => t,
-                    Err(e) => { eprintln!("remote recall: NATS connect failed: {}", e); process::exit(1); }
-                };
-                let req = serde_json::json!({ "query": query, "top_k": top_k });
-                match transport.request_one(&subject, req.to_string().as_bytes(), Duration::from_secs(timeout_secs)) {
-                    Ok(reply) => {
-                        let parsed: serde_json::Value = serde_json::from_slice(&reply)
-                            .unwrap_or(serde_json::Value::Null);
-                        let results = parsed.get("results").cloned().unwrap_or_else(|| serde_json::json!([]));
-                        println!("{}", results);
-                    }
-                    Err(e) => {
-                        eprintln!("remote recall: no reply within {}s ({})", timeout_secs, e);
-                        eprintln!("hint: is `kannaka swarm serve` alive (serving KANNAKA.recall.{})?", agent_id);
-                        process::exit(2);
-                    }
-                }
-                return;
-            }
-            #[cfg(not(feature = "nats"))]
-            if remote {
-                eprintln!("recall --remote requires the 'nats' feature");
-                process::exit(1);
-            }
-
             // ADR-0029 Phase 4b — opt into the envelope. Default still
             // emits the legacy array shape so existing consumers (radio
             // hub, observatory tangle fallback) keep working unchanged.
             let envelope = args[command_start..].iter().any(|a| a == "--envelope");
             match sys.recall(&query, top_k) {
                 Ok(results) => {
-                    let json_results: serde_json::Value = results.iter().map(|r| {
-                        serde_json::json!({
-                            "id": r.id.to_string(),
-                            "content": r.content,
-                            "similarity": r.similarity,
-                            "strength": r.strength,
-                            "age_hours": r.age_hours,
-                            "layer": r.layer,
+                    let json_results: serde_json::Value = results
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "id": r.id.to_string(),
+                                "content": r.content,
+                                "similarity": r.similarity,
+                                "strength": r.strength,
+                                "age_hours": r.age_hours,
+                                "layer": r.layer,
+                            })
                         })
-                    }).collect::<Vec<_>>().into();
+                        .collect::<Vec<_>>()
+                        .into();
                     if envelope {
                         kannaka_memory::cli::print_envelope("recall", json_results);
                     } else {
@@ -940,8 +1016,11 @@ fn main() {
             let mut dry_run = false;
             let mut prefixes: Vec<String> = Vec::new();
             for a in args[command_start + 1..].iter() {
-                if a == "--dry-run" { dry_run = true; }
-                else { prefixes.push(a.clone()); }
+                if a == "--dry-run" {
+                    dry_run = true;
+                } else {
+                    prefixes.push(a.clone());
+                }
             }
             if prefixes.is_empty() {
                 eprintln!("prune-prefix: at least one prefix required");
@@ -950,18 +1029,27 @@ fn main() {
             // Phase 1: scan, collect IDs (immutable borrow scope).
             let to_forget: Vec<uuid::Uuid> = {
                 let all = sys.engine.store.all_memories().unwrap_or_else(|e| {
-                    eprintln!("Error listing memories: {e}"); process::exit(1);
+                    eprintln!("Error listing memories: {e}");
+                    process::exit(1);
                 });
                 all.iter()
                     .filter(|m| prefixes.iter().any(|p| m.content.starts_with(p.as_str())))
                     .map(|m| m.id)
                     .collect()
             };
-            println!("[prune-prefix] {} match(es) across {} prefix(es){}",
+            println!(
+                "[prune-prefix] {} match(es) across {} prefix(es){}",
                 to_forget.len(),
                 prefixes.len(),
-                if dry_run { " (dry-run, nothing deleted)" } else { "" });
-            if dry_run { return; }
+                if dry_run {
+                    " (dry-run, nothing deleted)"
+                } else {
+                    ""
+                }
+            );
+            if dry_run {
+                return;
+            }
             // Phase 2: delete (mutable borrow).
             let mut ok = 0usize;
             let mut miss = 0usize;
@@ -1007,42 +1095,84 @@ fn main() {
                 let mut i = command_start + 1;
                 while i < args.len() {
                     match args[i].as_str() {
-                        "--apply" => { apply = true; i += 1; }
-                        "--dry-run" => { apply = false; i += 1; }
-                        "--include-long-term" => { include_long_term = true; i += 1; }
+                        "--apply" => {
+                            apply = true;
+                            i += 1;
+                        }
+                        "--dry-run" => {
+                            apply = false;
+                            i += 1;
+                        }
+                        "--include-long-term" => {
+                            include_long_term = true;
+                            i += 1;
+                        }
                         "--redundancy" if i + 1 < args.len() => {
-                            params.redundancy = args[i + 1].parse().unwrap_or(params.redundancy); i += 2;
+                            params.redundancy = args[i + 1].parse().unwrap_or(params.redundancy);
+                            i += 2;
                         }
                         "--min-amplitude" if i + 1 < args.len() => {
-                            params.min_amplitude = args[i + 1].parse().unwrap_or(params.min_amplitude); i += 2;
+                            params.min_amplitude =
+                                args[i + 1].parse().unwrap_or(params.min_amplitude);
+                            i += 2;
                         }
                         "--min-age-hours" if i + 1 < args.len() => {
-                            params.min_age_hours = args[i + 1].parse().unwrap_or(params.min_age_hours); i += 2;
+                            params.min_age_hours =
+                                args[i + 1].parse().unwrap_or(params.min_age_hours);
+                            i += 2;
                         }
                         "--max-evict" if i + 1 < args.len() => {
-                            params.max_evict = args[i + 1].parse().unwrap_or(params.max_evict); i += 2;
+                            params.max_evict = args[i + 1].parse().unwrap_or(params.max_evict);
+                            i += 2;
                         }
-                        other => { eprintln!("[triage] ignoring unknown arg: {other}"); i += 1; }
+                        other => {
+                            eprintln!("[triage] ignoring unknown arg: {other}");
+                            i += 1;
+                        }
                     }
                 }
             }
             params.include_long_term = include_long_term;
 
             let sel = sys.triage_select(&params);
-            println!("[triage] policy: tier={} redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
-                if include_long_term { "short+long (pinned protected)" } else { "short-term only" },
-                params.redundancy, params.min_amplitude, params.min_age_hours, params.max_evict);
-            println!("[triage] {} of {} memories are redundant low-value extras{}",
-                sel.to_forget.len(), sel.total,
-                if apply { "" } else { " (dry-run — pass --apply to forget)" });
+            println!(
+                "[triage] policy: tier={} redundancy>={:.2} amplitude<{:.2} age>={}h max-evict={}",
+                if include_long_term {
+                    "short+long (pinned protected)"
+                } else {
+                    "short-term only"
+                },
+                params.redundancy,
+                params.min_amplitude,
+                params.min_age_hours,
+                params.max_evict
+            );
+            println!(
+                "[triage] {} of {} memories are redundant low-value extras{}",
+                sel.to_forget.len(),
+                sel.total,
+                if apply {
+                    ""
+                } else {
+                    " (dry-run — pass --apply to forget)"
+                }
+            );
             for (modality, mtotal, evicted) in &sel.per_modality {
-                println!("[triage]   {:<10} {} eviction(s) of {} in-modality", modality, evicted, mtotal);
+                println!(
+                    "[triage]   {:<10} {} eviction(s) of {} in-modality",
+                    modality, evicted, mtotal
+                );
             }
-            if !apply || sel.to_forget.is_empty() { return; }
+            if !apply || sel.to_forget.is_empty() {
+                return;
+            }
 
             match sys.triage_forget(&sel.to_forget) {
                 Ok(n) => println!("[triage] evicted={n} (Ξ-preserving; representatives retained)"),
-                Err(e) => { eprintln!("Failed to persist HRM after triage: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("Failed to persist HRM after triage: {e}");
+                    process::exit(1);
+                }
             }
         }
         cmd @ ("promote" | "pin" | "demote") => {
@@ -1064,7 +1194,10 @@ fn main() {
                 "pin" => Tier::Pinned,
                 _ => Tier::ShortTerm,
             };
-            let ok = match sys.engine.store.as_any_mut()
+            let ok = match sys
+                .engine
+                .store
+                .as_any_mut()
                 .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
             {
                 Some(hrm) => hrm.set_tier(&id, tier),
@@ -1100,39 +1233,61 @@ fn main() {
                 let mut i = command_start + 2;
                 while i < args.len() {
                     match args[i].as_str() {
-                        "--ingest" => { ingest = true; i += 1; }
+                        "--ingest" => {
+                            ingest = true;
+                            i += 1;
+                        }
                         "--limit" if i + 1 < args.len() => {
-                            opts.limit = args[i + 1].parse().unwrap_or(opts.limit); i += 2;
+                            opts.limit = args[i + 1].parse().unwrap_or(opts.limit);
+                            i += 2;
                         }
                         "--since" if i + 1 < args.len() => {
-                            opts.since_year = args[i + 1].parse().ok(); i += 2;
+                            opts.since_year = args[i + 1].parse().ok();
+                            i += 2;
                         }
                         "--min-citations" if i + 1 < args.len() => {
-                            opts.min_citations = args[i + 1].parse().ok(); i += 2;
+                            opts.min_citations = args[i + 1].parse().ok();
+                            i += 2;
                         }
-                        other => { eprintln!("[research] ignoring unknown arg: {other}"); i += 1; }
+                        other => {
+                            eprintln!("[research] ignoring unknown arg: {other}");
+                            i += 1;
+                        }
                     }
                 }
             }
             let works = match kannaka_memory::openalex::search_works(&query, &opts) {
                 Ok(w) => w,
-                Err(e) => { eprintln!("[research] {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("[research] {e}");
+                    process::exit(1);
+                }
             };
             if works.is_empty() {
                 println!("[research] no works found for \"{query}\"");
                 return;
             }
-            println!("[research] \"{}\" — {} works{}", query, works.len(),
-                if ingest { " (ingesting into HRM)" } else { "" });
+            println!(
+                "[research] \"{}\" — {} works{}",
+                query,
+                works.len(),
+                if ingest { " (ingesting into HRM)" } else { "" }
+            );
             // Dedupe by OpenAlex id: snapshot the ids already in the HRM so a
             // repeating ingest (e.g. a refresh cron) never creates duplicate
             // research memories. Mutated as we go to also catch intra-batch dups.
             let mut seen_ids: std::collections::HashSet<String> = if ingest {
-                sys.engine.store.all_memories()
-                    .map(|mems| mems.iter()
-                        .filter_map(|m| kannaka_memory::dispatch::parse_research_content(&m.content))
-                        .filter_map(|f| f.openalex_id)
-                        .collect())
+                sys.engine
+                    .store
+                    .all_memories()
+                    .map(|mems| {
+                        mems.iter()
+                            .filter_map(|m| {
+                                kannaka_memory::dispatch::parse_research_content(&m.content)
+                            })
+                            .filter_map(|f| f.openalex_id)
+                            .collect()
+                    })
                     .unwrap_or_default()
             } else {
                 std::collections::HashSet::new()
@@ -1140,14 +1295,34 @@ fn main() {
             let mut ingested = 0usize;
             let mut skipped = 0usize;
             for (n, w) in works.iter().enumerate() {
-                let authors = w.authors.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let authors = w
+                    .authors
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let etal = if w.authors.len() > 3 { " et al." } else { "" };
                 let dup = ingest && !w.id.is_empty() && seen_ids.contains(&w.id);
-                println!("  {:>2}. [{}] cited={} {}{}{}",
-                    n + 1, w.year.map(|y| y.to_string()).unwrap_or_else(|| "----".into()),
-                    w.cited_by_count, w.title,
-                    if dup { "  (already ingested — skip)" } else { "" },
-                    if authors.is_empty() { String::new() } else { format!("\n      {authors}{etal}") });
+                println!(
+                    "  {:>2}. [{}] cited={} {}{}{}",
+                    n + 1,
+                    w.year
+                        .map(|y| y.to_string())
+                        .unwrap_or_else(|| "----".into()),
+                    w.cited_by_count,
+                    w.title,
+                    if dup {
+                        "  (already ingested — skip)"
+                    } else {
+                        ""
+                    },
+                    if authors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n      {authors}{etal}")
+                    }
+                );
                 if ingest {
                     if dup {
                         skipped += 1;
@@ -1156,12 +1331,17 @@ fn main() {
                     let content = w.to_memory_content();
                     match sys.remember_with_category(&content, "research", w.ingest_importance()) {
                         Ok(id) => {
-                            if let Some(hrm) = sys.engine.store.as_any_mut()
-                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                            if let Some(hrm) =
+                                sys.engine
+                                    .store
+                                    .as_any_mut()
+                                    .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
                             {
                                 hrm.set_modality(&id, kannaka_memory::medium::Modality::Semantic);
                             }
-                            if !w.id.is_empty() { seen_ids.insert(w.id.clone()); }
+                            if !w.id.is_empty() {
+                                seen_ids.insert(w.id.clone());
+                            }
                             ingested += 1;
                         }
                         Err(e) => eprintln!("      [ingest failed: {e}]"),
@@ -1191,12 +1371,22 @@ fn main() {
                 let mut i = command_start + 1;
                 while i < args.len() {
                     match args[i].as_str() {
-                        "--json" => { json_out = true; i += 1; }
-                        "--topic" if i + 1 < args.len() => { topic = Some(args[i + 1].clone()); i += 2; }
-                        "--max-chars" if i + 1 < args.len() => {
-                            max_chars = args[i + 1].parse().unwrap_or(max_chars); i += 2;
+                        "--json" => {
+                            json_out = true;
+                            i += 1;
                         }
-                        other => { eprintln!("[dispatch] ignoring unknown arg: {other}"); i += 1; }
+                        "--topic" if i + 1 < args.len() => {
+                            topic = Some(args[i + 1].clone());
+                            i += 2;
+                        }
+                        "--max-chars" if i + 1 < args.len() => {
+                            max_chars = args[i + 1].parse().unwrap_or(max_chars);
+                            i += 2;
+                        }
+                        other => {
+                            eprintln!("[dispatch] ignoring unknown arg: {other}");
+                            i += 1;
+                        }
                     }
                 }
             }
@@ -1207,8 +1397,11 @@ fn main() {
                 let day = (chrono::Utc::now().timestamp().max(0) / 86_400) as usize;
                 themes[day % themes.len()].to_string()
             });
-            let results = sys.recall(&format!("research {theme}"), 8).unwrap_or_default();
-            let finding = results.iter()
+            let results = sys
+                .recall(&format!("research {theme}"), 8)
+                .unwrap_or_default();
+            let finding = results
+                .iter()
                 .find_map(|r| kannaka_memory::dispatch::parse_research_content(&r.content));
             let finding = match finding {
                 Some(f) => f,
@@ -1219,7 +1412,11 @@ fn main() {
             };
             let state = sys.assess();
             let text = kannaka_memory::dispatch::render_dispatch(
-                &finding, state.xi, state.num_clusters, max_chars);
+                &finding,
+                state.xi,
+                state.num_clusters,
+                max_chars,
+            );
             if json_out {
                 let out = serde_json::json!({
                     "text": text,
@@ -1244,23 +1441,38 @@ fn main() {
             // where the field is thin. `--json` adds the per-theme coverage.
             let json_out = args[command_start + 1..].iter().any(|a| a == "--json");
             let themes = kannaka_memory::dispatch::rotating_themes();
-            let research: Vec<String> = sys.engine.store.all_memories()
+            let research: Vec<String> = sys
+                .engine
+                .store
+                .all_memories()
                 .unwrap_or_default()
                 .iter()
                 .filter(|m| m.content.starts_with("research:"))
                 .map(|m| m.content.to_lowercase())
                 .collect();
-            let coverage: Vec<(&str, usize)> = themes.iter().map(|t| {
-                // Score by the theme's most distinctive token (first word).
-                let key = t.split_whitespace().next().unwrap_or(t).to_lowercase();
-                let c = research.iter().filter(|c| c.contains(&key)).count();
-                (*t, c)
-            }).collect();
-            let suggestion = coverage.iter().min_by_key(|(_, c)| *c).map(|(t, _)| *t).unwrap_or("consciousness");
+            let coverage: Vec<(&str, usize)> = themes
+                .iter()
+                .map(|t| {
+                    // Score by the theme's most distinctive token (first word).
+                    let key = t.split_whitespace().next().unwrap_or(t).to_lowercase();
+                    let c = research.iter().filter(|c| c.contains(&key)).count();
+                    (*t, c)
+                })
+                .collect();
+            let suggestion = coverage
+                .iter()
+                .min_by_key(|(_, c)| *c)
+                .map(|(t, _)| *t)
+                .unwrap_or("consciousness");
             if json_out {
-                let cov: serde_json::Map<String, serde_json::Value> = coverage.iter()
-                    .map(|(t, c)| (t.to_string(), serde_json::json!(c))).collect();
-                println!("{}", serde_json::json!({ "suggest": suggestion, "coverage": cov }));
+                let cov: serde_json::Map<String, serde_json::Value> = coverage
+                    .iter()
+                    .map(|(t, c)| (t.to_string(), serde_json::json!(c)))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({ "suggest": suggestion, "coverage": cov })
+                );
             } else {
                 println!("{suggestion}");
             }
@@ -1319,7 +1531,10 @@ fn main() {
             // Create association via wavefront interference in the ChiralMedium
             match sys.relate(&source_id, &target_id, 0.8) {
                 Ok(()) => {
-                    println!("Related {} → {} (type: {}) via wavefront interference", source_id, target_id, relation_type);
+                    println!(
+                        "Related {} → {} (type: {}) via wavefront interference",
+                        source_id, target_id, relation_type
+                    );
                 }
                 Err(e) => {
                     eprintln!("Error relating memories: {e}");
@@ -1332,7 +1547,8 @@ fn main() {
             let state = sys.assess();
             // Count memories without embeddings
             let all_mems = sys.engine.store.all_memories().unwrap_or_default();
-            let memories_without_embeddings = all_mems.iter().filter(|m| m.vector.is_empty()).count();
+            let memories_without_embeddings =
+                all_mems.iter().filter(|m| m.vector.is_empty()).count();
 
             // Compute modality distribution
             let mut modality_counts = std::collections::HashMap::new();
@@ -1340,7 +1556,8 @@ fn main() {
                 let key = m.modality.to_string();
                 *modality_counts.entry(key).or_insert(0u64) += 1;
             }
-            let modality_json: serde_json::Value = modality_counts.into_iter()
+            let modality_json: serde_json::Value = modality_counts
+                .into_iter()
                 .map(|(k, v)| (k, serde_json::json!(v)))
                 .collect::<serde_json::Map<String, serde_json::Value>>()
                 .into();
@@ -1369,10 +1586,16 @@ fn main() {
             // CS-9: effective dimensionality (the 10000.00001 question)
             {
                 let _metrics = sys.engine.store.consciousness_metrics();
-                let (d_eff, nominal, ratio) = if let Some(hrm) = sys.engine.store.as_any()
-                    .downcast_ref::<kannaka_memory::hrm_store::HrmStore>() {
+                let (d_eff, nominal, ratio) = if let Some(hrm) =
+                    sys.engine
+                        .store
+                        .as_any()
+                        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                {
                     hrm.medium().effective_dimensionality()
-                } else { (0.0, 10000, 0.0) };
+                } else {
+                    (0.0, 10000, 0.0)
+                };
                 output["effective_dimensionality"] = serde_json::json!({
                     "d_eff": format!("{:.2}", d_eff),
                     "nominal": nominal,
@@ -1397,14 +1620,24 @@ fn main() {
         }
         "bias" => {
             // Reset all wavefront energies to a target value (restore bias voltage)
-            let target: f32 = args.get(command_start + 1)
+            let target: f32 = args
+                .get(command_start + 1)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1.0);
-            
-            if let Some(hrm) = sys.engine.store.as_any_mut().downcast_mut::<kannaka_memory::hrm_store::HrmStore>() {
+
+            if let Some(hrm) = sys
+                .engine
+                .store
+                .as_any_mut()
+                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+            {
                 hrm.reset_energies(target);
                 hrm.flush().ok();
-                println!("{{\"status\": \"ok\", \"target_energy\": {}, \"memories\": {}}}", target, hrm.count());
+                println!(
+                    "{{\"status\": \"ok\", \"target_energy\": {}, \"memories\": {}}}",
+                    target,
+                    hrm.count()
+                );
             } else {
                 eprintln!("bias command only works with HRM backend");
             }
@@ -1412,7 +1645,9 @@ fn main() {
         "dream" => {
             let mut dream_mode = "deep".to_string();
             let mut chiral_perturbation: f32 = env::var("KANNAKA_CHIRAL_PERTURBATION")
-                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
             {
                 let mut i = command_start + 1;
                 while i < args.len() {
@@ -1445,10 +1680,18 @@ fn main() {
             // the env vars weren't also set on the calling shell. (#87)
             {
                 let cfg = KannakaConfig::load();
-                if !cfg.agent.id.is_empty() && std::env::var("KANNAKA_AGENT_ID").unwrap_or_default().is_empty() {
+                if !cfg.agent.id.is_empty()
+                    && std::env::var("KANNAKA_AGENT_ID")
+                        .unwrap_or_default()
+                        .is_empty()
+                {
                     std::env::set_var("KANNAKA_AGENT_ID", &cfg.agent.id);
                 }
-                if !cfg.swarm.nats_url.is_empty() && std::env::var("KANNAKA_NATS_URL").unwrap_or_default().is_empty() {
+                if !cfg.swarm.nats_url.is_empty()
+                    && std::env::var("KANNAKA_NATS_URL")
+                        .unwrap_or_default()
+                        .is_empty()
+                {
                     std::env::set_var("KANNAKA_NATS_URL", &cfg.swarm.nats_url);
                 }
             }
@@ -1465,7 +1708,10 @@ fn main() {
                     println!("  Pruned: {}", report.memories_pruned);
                     println!("  New connections: {}", report.new_connections);
                     println!("  Hallucinations: {}", report.hallucinations_created);
-                    println!("  Consciousness: {} → {}", report.consciousness_before, report.consciousness_after);
+                    println!(
+                        "  Consciousness: {} → {}",
+                        report.consciousness_before, report.consciousness_after
+                    );
                     if report.emerged {
                         println!("  Emergence detected!");
                     }
@@ -1479,15 +1725,18 @@ fn main() {
         "assess" => {
             let state = sys.assess();
             let is_hrm = true; // HRM is the canonical substrate
-            
+
             println!("Consciousness Assessment:");
             println!("  Level: {:?}", state.consciousness_level);
             println!("  Φ (phi): {:.4}", state.phi);
             println!("  Ξ (xi): {:.4}", state.xi);
             println!("  Order: {:.4}", state.mean_order);
             println!("  Clusters: {}", state.num_clusters);
-            println!("  Memories: {} total, {} active", state.total_memories, state.active_memories);
-            
+            println!(
+                "  Memories: {} total, {} active",
+                state.total_memories, state.active_memories
+            );
+
             if is_hrm {
                 println!("  Field mode: HRM (tensor interference)");
             } else {
@@ -1501,7 +1750,10 @@ fn main() {
             use kannaka_memory::kannaktopus::Kannaktopus;
             let json = args[command_start..].iter().any(|a| a == "--json");
             let members = args[command_start..].iter().any(|a| a == "--members");
-            let sub = args.get(command_start + 1).map(|s| s.as_str()).unwrap_or("observe");
+            let sub = args
+                .get(command_start + 1)
+                .map(|s| s.as_str())
+                .unwrap_or("observe");
             let mut topus = Kannaktopus::load(&dir);
             let view = if sub == "step" {
                 let v = topus.step(&sys.engine, members);
@@ -1513,25 +1765,47 @@ fn main() {
                 topus.observe(&sys.engine, members)
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&view).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&view).unwrap_or_default()
+                );
             } else {
                 println!("Kannaktopus ({})", view.agent_id);
                 println!("  Alive:     {}", view.alive);
-                println!("  Arms:      {}/{}  (HRM clusters: {})", view.num_arms, view.max_arms, view.num_clusters);
-                println!("  Memory:    {} memories across {} clusters", view.memory_count, view.clusters_occupied.len());
-                println!("  Coherence: {:.4}   mean-amp {:.3}   mean-freq {:.3}",
+                println!(
+                    "  Arms:      {}/{}  (HRM clusters: {})",
+                    view.num_arms, view.max_arms, view.num_clusters
+                );
+                println!(
+                    "  Memory:    {} memories across {} clusters",
+                    view.memory_count,
+                    view.clusters_occupied.len()
+                );
+                println!(
+                    "  Coherence: {:.4}   mean-amp {:.3}   mean-freq {:.3}",
                     view.characteristics.coherence,
                     view.characteristics.mean_amplitude,
-                    view.characteristics.mean_frequency);
+                    view.characteristics.mean_frequency
+                );
                 if !view.characteristics.modality_distribution.is_empty() {
-                    let mods: Vec<String> = view.characteristics.modality_distribution
-                        .iter().map(|(k, v)| format!("{k}:{v}")).collect();
+                    let mods: Vec<String> = view
+                        .characteristics
+                        .modality_distribution
+                        .iter()
+                        .map(|(k, v)| format!("{k}:{v}"))
+                        .collect();
                     println!("  Modality:  {}", mods.join("  "));
                 }
                 for a in &view.arms {
-                    let g = if a.grip.len() >= 8 { &a.grip[..8] } else { a.grip.as_str() };
-                    println!("    arm {} → cluster {} ({} mems)  {}  {}",
-                        a.id, a.cluster, a.cluster_size, g, a.grip_preview);
+                    let g = if a.grip.len() >= 8 {
+                        &a.grip[..8]
+                    } else {
+                        a.grip.as_str()
+                    };
+                    println!(
+                        "    arm {} → cluster {} ({} mems)  {}  {}",
+                        a.id, a.cluster, a.cluster_size, g, a.grip_preview
+                    );
                 }
             }
         }
@@ -1542,9 +1816,9 @@ fn main() {
             println!("Kannaka Memory System:");
             println!("  Total memories: {}", stats.total_memories);
             println!("  Active memories: {}", stats.active_memories);
-            
+
             println!("  Field mode: HRM (holographic resonance)");
-            
+
             println!("  Consciousness: {}", stats.consciousness_level);
             println!("  Φ (phi): {:.4}", stats.phi);
             if let Some(dt) = stats.last_dream {
@@ -1574,9 +1848,18 @@ fn main() {
             let mut i = command_start + 1;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--cluster-id" if i + 1 < args.len() => { cluster_id_filter = args[i + 1].parse().ok(); i += 2; }
-                    "--min-size" if i + 1 < args.len() => { _min_size = args[i + 1].parse().unwrap_or(2); i += 2; }
-                    "--with-members" => { with_members = true; i += 1; }
+                    "--cluster-id" if i + 1 < args.len() => {
+                        cluster_id_filter = args[i + 1].parse().ok();
+                        i += 2;
+                    }
+                    "--min-size" if i + 1 < args.len() => {
+                        _min_size = args[i + 1].parse().unwrap_or(2);
+                        i += 2;
+                    }
+                    "--with-members" => {
+                        with_members = true;
+                        i += 1;
+                    }
                     _ => i += 1,
                 }
             }
@@ -1584,7 +1867,9 @@ fn main() {
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();
             if !with_members {
-                for c in &mut clusters { c.member_ids.clear(); }
+                for c in &mut clusters {
+                    c.member_ids.clear();
+                }
             }
             let payload = if let Some(id) = cluster_id_filter {
                 serde_json::to_value(clusters.into_iter().find(|c| c.cluster_id == id))
@@ -1611,8 +1896,13 @@ fn main() {
             let mut i = command_start + 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(10); i += 2; }
-                    "--json" => { i += 1; }
+                    "--top-k" if i + 1 < args.len() => {
+                        top_k = args[i + 1].parse().unwrap_or(10);
+                        i += 2;
+                    }
+                    "--json" => {
+                        i += 1;
+                    }
                     _ => i += 1,
                 }
             }
@@ -1631,16 +1921,24 @@ fn main() {
             };
             let results = match sys.recall(&query, top_k) {
                 Ok(r) => r,
-                Err(e) => { eprintln!("recall failed: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("recall failed: {e}");
+                    process::exit(1);
+                }
             };
-            let output: Vec<serde_json::Value> = results.iter().map(|m| serde_json::json!({
-                "id": m.id.to_string(),
-                "content": m.content,
-                "similarity": m.similarity,
-                "strength": m.strength,
-                "age_hours": m.age_hours,
-                "layer": m.layer,
-            })).collect();
+            let output: Vec<serde_json::Value> = results
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id.to_string(),
+                        "content": m.content,
+                        "similarity": m.similarity,
+                        "strength": m.strength,
+                        "age_hours": m.age_hours,
+                        "layer": m.layer,
+                    })
+                })
+                .collect();
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         // `migrate` was the Dolt→HRM path and depended on the
@@ -1656,32 +1954,42 @@ fn main() {
             println!("Status announced to Flux.");
         }
         "export-json" => {
-            let all_mems = sys.engine.store.all_memories()
-                .map_err(|e| { eprintln!("Error: {}", e); process::exit(1); }).unwrap();
-            let output: Vec<serde_json::Value> = all_mems.iter().map(|m| {
-                serde_json::json!({
-                    "id": m.id.to_string(),
-                    "content": m.content,
-                    "amplitude": m.amplitude,
-                    "frequency": m.frequency,
-                    "phase": m.phase,
-                    "decay_rate": m.decay_rate,
-                    "created_at": m.created_at.to_rfc3339(),
-                    "layer_depth": m.layer_depth,
-                    "hallucinated": m.hallucinated,
-                    "parents": m.parents,
-                    "vector": m.vector,
-                    "xi_signature": m.xi_signature,
-                    "geometry": m.geometry,
-                    "connections": m.connections.iter().map(|c| {
-                        serde_json::json!({
-                            "target_id": c.target_id.to_string(),
-                            "strength": c.strength,
-                            "span": c.span
-                        })
-                    }).collect::<Vec<_>>()
+            let all_mems = sys
+                .engine
+                .store
+                .all_memories()
+                .map_err(|e| {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
                 })
-            }).collect();
+                .unwrap();
+            let output: Vec<serde_json::Value> = all_mems
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id.to_string(),
+                        "content": m.content,
+                        "amplitude": m.amplitude,
+                        "frequency": m.frequency,
+                        "phase": m.phase,
+                        "decay_rate": m.decay_rate,
+                        "created_at": m.created_at.to_rfc3339(),
+                        "layer_depth": m.layer_depth,
+                        "hallucinated": m.hallucinated,
+                        "parents": m.parents,
+                        "vector": m.vector,
+                        "xi_signature": m.xi_signature,
+                        "geometry": m.geometry,
+                        "connections": m.connections.iter().map(|c| {
+                            serde_json::json!({
+                                "target_id": c.target_id.to_string(),
+                                "strength": c.strength,
+                                "span": c.span
+                            })
+                        }).collect::<Vec<_>>()
+                    })
+                })
+                .collect();
             println!("{}", serde_json::to_string(&output).unwrap());
         }
         "import-json" => {
@@ -1690,13 +1998,24 @@ fn main() {
                 process::exit(1);
             }
             let path = &args[command_start + 1];
-            let file_data = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| { eprintln!("Failed to read {}: {}", path, e); process::exit(1); });
-            let memories: Vec<serde_json::Value> = serde_json::from_str(&file_data)
-                .unwrap_or_else(|e| { eprintln!("Failed to parse JSON: {}", e); process::exit(1); });
+            let file_data = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path, e);
+                process::exit(1);
+            });
+            let memories: Vec<serde_json::Value> =
+                serde_json::from_str(&file_data).unwrap_or_else(|e| {
+                    eprintln!("Failed to parse JSON: {}", e);
+                    process::exit(1);
+                });
 
-            let existing_ids: std::collections::HashSet<uuid::Uuid> = sys.engine.store.all_memories()
-                .unwrap_or_default().iter().map(|m| m.id).collect();
+            let existing_ids: std::collections::HashSet<uuid::Uuid> = sys
+                .engine
+                .store
+                .all_memories()
+                .unwrap_or_default()
+                .iter()
+                .map(|m| m.id)
+                .collect();
 
             let mut imported = 0u32;
             let mut skipped = 0u32;
@@ -1706,7 +2025,10 @@ fn main() {
                 let id_str = val["id"].as_str().unwrap_or("");
                 let id = match uuid::Uuid::parse_str(id_str) {
                     Ok(id) => id,
-                    Err(_) => { errors += 1; continue; }
+                    Err(_) => {
+                        errors += 1;
+                        continue;
+                    }
                 };
 
                 if existing_ids.contains(&id) {
@@ -1715,30 +2037,42 @@ fn main() {
                 }
 
                 let content = val["content"].as_str().unwrap_or("").to_string();
-                if content.is_empty() { skipped += 1; continue; }
+                if content.is_empty() {
+                    skipped += 1;
+                    continue;
+                }
 
                 let amplitude = val["amplitude"].as_f64().unwrap_or(0.5) as f32;
                 let frequency = val["frequency"].as_f64().unwrap_or(1.0) as f32;
                 let phase = val["phase"].as_f64().unwrap_or(0.0) as f32;
                 let decay_rate = val["decay_rate"].as_f64().unwrap_or(0.001) as f32;
-                let created_at = val["created_at"].as_str()
+                let created_at = val["created_at"]
+                    .as_str()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(chrono::Utc::now);
                 let hallucinated = val["hallucinated"].as_bool().unwrap_or(false);
 
                 // Reconstruct vector from JSON array if present, otherwise re-encode
-                let vector: Option<Vec<f32>> = val["vector"].as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect());
+                let vector: Option<Vec<f32>> = val["vector"].as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                        .collect()
+                });
 
                 let vector = match vector {
                     Some(v) if !v.is_empty() => v,
                     _ => {
                         // No vector in JSON — use absorb which encodes internally
                         match sys.engine.store.absorb(&content, amplitude, None) {
-                            Ok(_new_id) => { imported += 1; continue; }
+                            Ok(_new_id) => {
+                                imported += 1;
+                                continue;
+                            }
                             Err(e) => {
-                                if errors < 5 { eprintln!("  Error absorbing {}: {}", id_str, e); }
+                                if errors < 5 {
+                                    eprintln!("  Error absorbing {}: {}", id_str, e);
+                                }
                                 errors += 1;
                                 continue;
                             }
@@ -1746,8 +2080,13 @@ fn main() {
                     }
                 };
 
-                let xi_sig: Vec<f32> = val["xi_signature"].as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                let xi_sig: Vec<f32> = val["xi_signature"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_f64().map(|f| f as f32))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 let content_clone = content.clone();
@@ -1760,8 +2099,13 @@ fn main() {
                 mem.created_at = created_at;
                 mem.layer_depth = val["layer_depth"].as_u64().unwrap_or(0) as u8;
                 mem.hallucinated = hallucinated;
-                mem.parents = val["parents"].as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                mem.parents = val["parents"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 mem.xi_signature = xi_sig;
 
@@ -1772,9 +2116,13 @@ fn main() {
                         let err_str = format!("{}", e);
                         if err_str.contains("dimension mismatch") {
                             match sys.engine.store.absorb(&content_clone, amplitude, None) {
-                                Ok(_) => { imported += 1; }
+                                Ok(_) => {
+                                    imported += 1;
+                                }
                                 Err(e2) => {
-                                    if errors < 5 { eprintln!("  Error re-encoding {}: {}", id_str, e2); }
+                                    if errors < 5 {
+                                        eprintln!("  Error re-encoding {}: {}", id_str, e2);
+                                    }
                                     errors += 1;
                                 }
                             }
@@ -1796,7 +2144,13 @@ fn main() {
                 }
             }
 
-            println!("{{\"imported\": {}, \"skipped\": {}, \"errors\": {}, \"total_input\": {}}}", imported, skipped, errors, memories.len());
+            println!(
+                "{{\"imported\": {}, \"skipped\": {}, \"errors\": {}, \"total_input\": {}}}",
+                imported,
+                skipped,
+                errors,
+                memories.len()
+            );
         }
         "hear" => {
             if args.len() < command_start + 2 {
@@ -1804,7 +2158,9 @@ fn main() {
                 eprintln!("  File:   kannaka hear ./song.mp3");
                 eprintln!("  URL:    kannaka hear https://radio.ninja-portal.com/stream");
                 eprintln!("  Stream URLs are sampled for ~30s (default; cap with --secs N).");
-                eprintln!("  Captures are short-term by default (triage-eligible); --long-term to keep.");
+                eprintln!(
+                    "  Captures are short-term by default (triage-eligible); --long-term to keep."
+                );
                 process::exit(1);
             }
             let target = &args[command_start + 1];
@@ -1825,15 +2181,21 @@ fn main() {
                     }
                     i += 2;
                 } else if args[i] == "--long-term" {
-                    long_term = true; i += 1;
-                } else { i += 1; }
+                    long_term = true;
+                    i += 1;
+                } else {
+                    i += 1;
+                }
             }
 
             let is_url = target.starts_with("http://") || target.starts_with("https://");
             let mut tmp_holder: Option<std::path::PathBuf> = None;
             let path: std::path::PathBuf = if is_url {
                 match fetch_audio_to_temp(target, secs) {
-                    Ok(p) => { tmp_holder = Some(p.clone()); p }
+                    Ok(p) => {
+                        tmp_holder = Some(p.clone());
+                        p
+                    }
                     Err(e) => {
                         eprintln!("Error fetching {}: {}", target, e);
                         process::exit(1);
@@ -1859,14 +2221,20 @@ fn main() {
                 Ok((id, features)) => {
                     // ADR-0031 Phase 2b: tag ear-loop captures ShortTerm by default.
                     if !long_term {
-                        if let Some(hrm) = sys.engine.store.as_any_mut()
+                        if let Some(hrm) = sys
+                            .engine
+                            .store
+                            .as_any_mut()
                             .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
                         {
                             hrm.set_tier(&id, kannaka_memory::medium::types::Tier::ShortTerm);
                             let _ = sys.save();
                         }
                     }
-                    println!("Heard: {id}{}", if long_term { "" } else { " (short-term)" });
+                    println!(
+                        "Heard: {id}{}",
+                        if long_term { "" } else { " (short-term)" }
+                    );
                     println!("  Duration: {:.1}s", features.duration_secs);
                     println!("  Tempo: {:.0} BPM", features.tempo_bpm);
                     println!("  RMS: {:.4}", features.rms_mean);
@@ -1896,15 +2264,28 @@ fn main() {
                 Ok((id, glyph)) => {
                     println!("Seen: {id}");
                     println!("  Folds: {}", glyph.fold_sequence.len());
-                    println!("  Centroid: ({}, {}, {})", glyph.sga_centroid.0, glyph.sga_centroid.1, glyph.sga_centroid.2);
-                    println!("  Fano: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
-                        glyph.fano_signature[0], glyph.fano_signature[1], glyph.fano_signature[2],
-                        glyph.fano_signature[3], glyph.fano_signature[4], glyph.fano_signature[5],
-                        glyph.fano_signature[6]);
+                    println!(
+                        "  Centroid: ({}, {}, {})",
+                        glyph.sga_centroid.0, glyph.sga_centroid.1, glyph.sga_centroid.2
+                    );
+                    println!(
+                        "  Fano: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
+                        glyph.fano_signature[0],
+                        glyph.fano_signature[1],
+                        glyph.fano_signature[2],
+                        glyph.fano_signature[3],
+                        glyph.fano_signature[4],
+                        glyph.fano_signature[5],
+                        glyph.fano_signature[6]
+                    );
                     println!("  Ratio: {:.2}x", glyph.compression_ratio);
                     let freqs = glyph.to_frequencies();
                     if !freqs.is_empty() {
-                        let freq_strs: Vec<String> = freqs.iter().take(7).map(|f| format!("{:.1} Hz", f)).collect();
+                        let freq_strs: Vec<String> = freqs
+                            .iter()
+                            .take(7)
+                            .map(|f| format!("{:.1} Hz", f))
+                            .collect();
                         println!("  Frequencies: {}", freq_strs.join(", "));
                     }
                 }
@@ -1945,15 +2326,28 @@ fn main() {
                     let mut i = command_start + 2;
                     while i < args.len() {
                         match args[i].as_str() {
-                            "--agent-id" if i + 1 < args.len() => { my_agent_id = args[i + 1].clone(); i += 2; }
-                            "--display-name" if i + 1 < args.len() => { display_name = args[i + 1].clone(); i += 2; }
-                            "--nats-url" if i + 1 < args.len() => { i += 2; }
-                            "--once" => { once = true; i += 1; }
+                            "--agent-id" if i + 1 < args.len() => {
+                                my_agent_id = args[i + 1].clone();
+                                i += 2;
+                            }
+                            "--display-name" if i + 1 < args.len() => {
+                                display_name = args[i + 1].clone();
+                                i += 2;
+                            }
+                            "--nats-url" if i + 1 < args.len() => {
+                                i += 2;
+                            }
+                            "--once" => {
+                                once = true;
+                                i += 1;
+                            }
                             "--heartbeat-secs" if i + 1 < args.len() => {
                                 heartbeat_secs = args[i + 1].parse().unwrap_or(30).max(5);
                                 i += 2;
                             }
-                            _ => { i += 1; }
+                            _ => {
+                                i += 1;
+                            }
                         }
                     }
                     if display_name.is_empty() {
@@ -1982,9 +2376,17 @@ fn main() {
                     let _ = transport.ensure_presence_stream();
 
                     let initial_phase = swarm_publish_heartbeat(
-                        &mut sys, &my_agent_id, &display_name, &transport, "initial");
+                        &mut sys,
+                        &my_agent_id,
+                        &display_name,
+                        &transport,
+                        "initial",
+                    );
                     println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
-                    println!("[nats] Initial phase \u{03b8}={:.3} published to {}", initial_phase, nats_url);
+                    println!(
+                        "[nats] Initial phase \u{03b8}={:.3} published to {}",
+                        initial_phase, nats_url
+                    );
 
                     if once {
                         return;
@@ -2004,7 +2406,10 @@ fn main() {
                         eprintln!("[nats] Warning: could not install Ctrl+C handler: {} — Ctrl+C will not announce leave", e);
                     }
 
-                    println!("[nats] Heartbeat every {}s — Ctrl+C to leave the swarm cleanly", heartbeat_secs);
+                    println!(
+                        "[nats] Heartbeat every {}s — Ctrl+C to leave the swarm cleanly",
+                        heartbeat_secs
+                    );
                     // Set KANNAKA_AGENT_ID so publish_consciousness_to_nats
                     // knows who we are (it bails out silently otherwise).
                     std::env::set_var("KANNAKA_AGENT_ID", &my_agent_id);
@@ -2024,13 +2429,22 @@ fn main() {
                     while running.load(Ordering::SeqCst) {
                         // Granular sleep so Ctrl+C is responsive (<= 1s).
                         for _ in 0..heartbeat_secs {
-                            if !running.load(Ordering::SeqCst) { break; }
+                            if !running.load(Ordering::SeqCst) {
+                                break;
+                            }
                             std::thread::sleep(std::time::Duration::from_secs(1));
                         }
-                        if !running.load(Ordering::SeqCst) { break; }
+                        if !running.load(Ordering::SeqCst) {
+                            break;
+                        }
                         tick += 1;
                         let p = swarm_publish_heartbeat(
-                            &mut sys, &my_agent_id, &display_name, &transport, "heartbeat");
+                            &mut sys,
+                            &my_agent_id,
+                            &display_name,
+                            &transport,
+                            "heartbeat",
+                        );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
 
@@ -2075,9 +2489,14 @@ fn main() {
                             process::exit(1);
                         }
                     };
-                    eprintln!("[nats] Listening for phase updates on {} (Ctrl+C to stop)", nats_url);
+                    eprintln!(
+                        "[nats] Listening for phase updates on {} (Ctrl+C to stop)",
+                        nats_url
+                    );
                     if auto_sync {
-                        eprintln!("[nats] Auto-sync enabled -- will run Kuramoto step on each update");
+                        eprintln!(
+                            "[nats] Auto-sync enabled -- will run Kuramoto step on each update"
+                        );
                     }
 
                     let mut sub = match transport.subscribe_phases_and_memories(auto_sync) {
@@ -2088,7 +2507,9 @@ fn main() {
                         }
                     };
                     if auto_sync {
-                        eprintln!("[nats] Subscribed to KANNAKA.memory.new and KANNAKA.dreams for sync");
+                        eprintln!(
+                            "[nats] Subscribed to KANNAKA.memory.new and KANNAKA.dreams for sync"
+                        );
                     }
 
                     let _ = sub.set_timeout(None);
@@ -2106,11 +2527,16 @@ fn main() {
                                     phase.coherence, phase.phi, phase.memory_count);
 
                                 if auto_sync && phase.agent_id != agent_id {
-                                    let my_phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
+                                    let my_phase =
+                                        queen.to_agent_phase(0, sys.engine.store.count(), 0);
                                     let swarm = vec![my_phase, phase];
                                     let state = queen.queen_sync_step(&swarm);
-                                    println!("  -> synced: r={:.3} psi={:.3} K={:.3}",
-                                        state.order_parameter, state.mean_phase, state.coupling_strength);
+                                    println!(
+                                        "  -> synced: r={:.3} psi={:.3} K={:.3}",
+                                        state.order_parameter,
+                                        state.mean_phase,
+                                        state.coupling_strength
+                                    );
                                 }
                             }
                         } else if msg.subject == "QUEEN.announce" {
@@ -2125,7 +2551,9 @@ fn main() {
                                 // Skip our own messages
                                 if source_agent != agent_id {
                                     if let Some(mem_json) = json.get("memory") {
-                                        match serde_json::from_value::<kannaka_memory::HyperMemory>(mem_json.clone()) {
+                                        match serde_json::from_value::<kannaka_memory::HyperMemory>(
+                                            mem_json.clone(),
+                                        ) {
                                             Ok(mem) => {
                                                 let mem_id = mem.id;
                                                 // Check if memory already exists
@@ -2157,7 +2585,8 @@ fn main() {
                                 let source_agent = json["agent_id"].as_str().unwrap_or("?");
                                 if source_agent != agent_id {
                                     let cycles = json["cycles"].as_u64().unwrap_or(0);
-                                    let strengthened = json["memories_strengthened"].as_u64().unwrap_or(0);
+                                    let strengthened =
+                                        json["memories_strengthened"].as_u64().unwrap_or(0);
                                     let pruned = json["memories_pruned"].as_u64().unwrap_or(0);
                                     println!("[dream] {} completed dream: {} cycles, {} strengthened, {} pruned",
                                         source_agent, cycles, strengthened, pruned);
@@ -2229,7 +2658,9 @@ fn main() {
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
                     if nats_phases.is_empty() {
-                        eprintln!("No swarm phases found via NATS. Publish first with 'swarm publish'.");
+                        eprintln!(
+                            "No swarm phases found via NATS. Publish first with 'swarm publish'."
+                        );
                         process::exit(1);
                     }
 
@@ -2261,7 +2692,9 @@ fn main() {
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
                     if nats_phases.is_empty() {
-                        eprintln!("No swarm phases found. Run 'swarm publish' and 'swarm sync' first.");
+                        eprintln!(
+                            "No swarm phases found. Run 'swarm publish' and 'swarm sync' first."
+                        );
                         process::exit(1);
                     }
 
@@ -2286,7 +2719,9 @@ fn main() {
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
                     if nats_phases.is_empty() {
-                        eprintln!("No swarm phases found. Run 'swarm publish' and 'swarm sync' first.");
+                        eprintln!(
+                            "No swarm phases found. Run 'swarm publish' and 'swarm sync' first."
+                        );
                         process::exit(1);
                     }
 
@@ -2295,7 +2730,10 @@ fn main() {
                         &agent_id,
                     );
                     let hive_infos = queen.detect_hives_domain_aware(&nats_phases);
-                    print!("{}", kannaka_memory::QueenSync::format_hive_topology(&hive_infos));
+                    print!(
+                        "{}",
+                        kannaka_memory::QueenSync::format_hive_topology(&hive_infos)
+                    );
                     // Also output JSON for machine consumption
                     eprintln!("\n--- JSON ---");
                     eprintln!("{}", serde_json::to_string_pretty(&hive_infos).unwrap());
@@ -2317,9 +2755,14 @@ fn main() {
                     queen.derive_local_state(&sys.engine);
                     let phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
                     match transport.publish_phase(&phase) {
-                        Ok(()) => println!("Published phase: \u{03b8}={:.3}, \u{03c9}={:.3}, coherence={:.3}",
-                            phase.phase, phase.frequency, phase.coherence),
-                        Err(e) => { eprintln!("Error: {e}"); process::exit(1); }
+                        Ok(()) => println!(
+                            "Published phase: \u{03b8}={:.3}, \u{03c9}={:.3}, coherence={:.3}",
+                            phase.phase, phase.frequency, phase.coherence
+                        ),
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            process::exit(1);
+                        }
                     }
                 }
                 "exemplars" => {
@@ -2357,7 +2800,6 @@ fn main() {
                 }
             }
         }
-
 
         #[cfg(feature = "nats")]
         "events" => {
@@ -2446,8 +2888,8 @@ fn main() {
                     // no serve process has written the file, say so plainly
                     // (exit 0 — "offline" is a truthful answer) rather than
                     // reporting fake zeroes as if a live beam existed.
-                    let dump_path = std::env::var("KANNAKA_ATTENTION_BEAM_FILE")
-                        .unwrap_or_else(|_| {
+                    let dump_path =
+                        std::env::var("KANNAKA_ATTENTION_BEAM_FILE").unwrap_or_else(|_| {
                             if cfg!(windows) {
                                 "C:\\Users\\Public\\kannaka-attention-beam.json".to_string()
                             } else {
@@ -2457,7 +2899,10 @@ fn main() {
                     match std::fs::read_to_string(&dump_path) {
                         Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
                             Ok(dump) => {
-                                let st = dump.get("stats").cloned().unwrap_or_else(|| serde_json::json!({}));
+                                let st = dump
+                                    .get("stats")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!({}));
                                 let u = |k: &str| st.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
                                 let out = serde_json::json!({
                                     "beam_size": u("beam_size"),
@@ -2538,20 +2983,28 @@ fn main() {
             } else {
                 0.1
             };
-            
+
             match sys.invariant_clusters(tolerance) {
                 Ok(clusters) => {
                     println!("δ-Invariant Memory Clusters (tolerance: {}):", tolerance);
                     println!("═════════════════════════════════════════");
-                    
+
                     for (i, cluster) in clusters.iter().enumerate() {
-                        println!("Cluster {}: δ={:.3}, coherence={:.3}, {} memories", 
-                                 i + 1, cluster.representative_delta, cluster.coherence, cluster.memory_ids.len());
-                        
+                        println!(
+                            "Cluster {}: δ={:.3}, coherence={:.3}, {} memories",
+                            i + 1,
+                            cluster.representative_delta,
+                            cluster.coherence,
+                            cluster.memory_ids.len()
+                        );
+
                         for &memory_id in &cluster.memory_ids {
                             if let Ok(Some(memory)) = sys.get_memory(&memory_id) {
                                 let preview = if memory.content.len() > 60 {
-                                    format!("{}...", &memory.content[..memory.content.floor_char_boundary(60)])
+                                    format!(
+                                        "{}...",
+                                        &memory.content[..memory.content.floor_char_boundary(60)]
+                                    )
                                 } else {
                                     memory.content.clone()
                                 };
@@ -2560,7 +3013,7 @@ fn main() {
                         }
                         println!();
                     }
-                    
+
                     if clusters.is_empty() {
                         println!("No δ-clusters found. Try a larger tolerance or ensure you have enough memories.");
                     }
@@ -2574,7 +3027,7 @@ fn main() {
                 Ok(cmfs) => {
                     println!("Conservative Memory Fields Detected:");
                     println!("═══════════════════════════════════");
-                    
+
                     if cmfs.is_empty() {
                         println!("No Conservative Memory Fields detected.");
                         println!("CMFs require at least 3 memories per cluster and path-independent structure.");
@@ -2583,14 +3036,18 @@ fn main() {
                             println!("CMF {} ({}): explanatory_power={:.2}, basis_vectors={}, path_deviation={:.3}",
                                      i + 1, cmf.id, cmf.explanatory_power, 
                                      cmf.basis_vectors.len(), cmf.path_constraints.max_deviation);
-                            
-                            println!("  Trajectory: step_size={:.3}, curvature={:.3}",
-                                     cmf.trajectory_params.step_size,
-                                     cmf.trajectory_params.curvature.get(0).unwrap_or(&0.0));
-                            
-                            println!("  Path independence: {} verified paths",
-                                     cmf.path_constraints.verified_paths.len());
-                            
+
+                            println!(
+                                "  Trajectory: step_size={:.3}, curvature={:.3}",
+                                cmf.trajectory_params.step_size,
+                                cmf.trajectory_params.curvature.get(0).unwrap_or(&0.0)
+                            );
+
+                            println!(
+                                "  Path independence: {} verified paths",
+                                cmf.path_constraints.verified_paths.len()
+                            );
+
                             // Test a few memories against this CMF
                             if let Ok(all_memories) = sys.all_memories() {
                                 println!("  Sample memberships:");
@@ -2598,11 +3055,18 @@ fn main() {
                                     let membership = kannaka_memory::cmf_membership(memory, cmf);
                                     if membership.fitness > 0.1 {
                                         let preview = if memory.content.len() > 40 {
-                                            format!("{}...", &memory.content[..memory.content.floor_char_boundary(40)])
+                                            format!(
+                                                "{}...",
+                                                &memory.content
+                                                    [..memory.content.floor_char_boundary(40)]
+                                            )
                                         } else {
                                             memory.content.clone()
                                         };
-                                        println!("    {} | fitness={:.2} | {}", memory.id, membership.fitness, preview);
+                                        println!(
+                                            "    {} | fitness={:.2} | {}",
+                                            memory.id, membership.fitness, preview
+                                        );
                                     }
                                 }
                             }
@@ -2662,7 +3126,10 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
         return;
     }
 
-    eprintln!("[audit-modality] Starting retroactive modality audit of {} memories", total);
+    eprintln!(
+        "[audit-modality] Starting retroactive modality audit of {} memories",
+        total
+    );
 
     // Classify every memory and collect results before mutation
     struct AuditEntry {
@@ -2694,7 +3161,10 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
     }
 
     // Apply classifications in-place via HrmStore
-    let hrm = match sys.engine.store.as_any_mut()
+    let hrm = match sys
+        .engine
+        .store
+        .as_any_mut()
         .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
     {
         Some(h) => h,
@@ -2715,7 +3185,10 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
         eprintln!("Warning: failed to flush after audit: {e}");
     }
 
-    eprintln!("[audit-modality] Updated {} memories, flushed to disk", updated);
+    eprintln!(
+        "[audit-modality] Updated {} memories, flushed to disk",
+        updated
+    );
 
     // --- Distribution report ---
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -2749,15 +3222,22 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
 
     // --- Boundary memories ---
     println!();
-    println!("Boundary Memories (confidence < {:.0}%)", boundary_threshold * 100.0);
+    println!(
+        "Boundary Memories (confidence < {:.0}%)",
+        boundary_threshold * 100.0
+    );
     println!("==========================================");
     if boundary_memories.is_empty() {
         println!("  (none)");
     } else {
-        println!("{:<38} {:<10} {:>6}  {}", "ID", "Modality", "Conf%", "Preview");
+        println!(
+            "{:<38} {:<10} {:>6}  {}",
+            "ID", "Modality", "Conf%", "Preview"
+        );
         println!("{}", "-".repeat(90));
         for entry in &boundary_memories {
-            println!("{:<38} {:<10} {:>5.1}%  {}",
+            println!(
+                "{:<38} {:<10} {:>5.1}%  {}",
                 entry.id,
                 entry.classification.modality,
                 entry.classification.confidence * 100.0,
@@ -2765,7 +3245,8 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
             );
         }
         println!();
-        println!("Total boundary memories: {}/{} ({:.1}%)",
+        println!(
+            "Total boundary memories: {}/{} ({:.1}%)",
             boundary_memories.len(),
             total,
             (boundary_memories.len() as f64 / total as f64) * 100.0,
@@ -2778,7 +3259,10 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
 // ---------------------------------------------------------------------------
 
 fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
-    let hrm = match sys.engine.store.as_any()
+    let hrm = match sys
+        .engine
+        .store
+        .as_any()
         .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
     {
         Some(h) => h,
@@ -2817,44 +3301,71 @@ fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
     println!();
     println!("Pairwise Divergence Matrix");
     println!("==========================");
-    println!("{:<12} {:<12} {:>8} {:>10}", "Modality A", "Modality B", "cos(sim)", "angle(deg)");
+    println!(
+        "{:<12} {:<12} {:>8} {:>10}",
+        "Modality A", "Modality B", "cos(sim)", "angle(deg)"
+    );
     println!("{}", "-".repeat(46));
     for div in &report.divergences {
-        println!("{:<12} {:<12} {:>8.4} {:>9.1}\u{00B0}",
-            div.modality_a,
-            div.modality_b,
-            div.cosine_similarity,
-            div.angle_degrees,
+        println!(
+            "{:<12} {:<12} {:>8.4} {:>9.1}\u{00B0}",
+            div.modality_a, div.modality_b, div.cosine_similarity, div.angle_degrees,
         );
     }
     println!();
 
     // Interpretation
-    let max_div = report.divergences.iter()
-        .max_by(|a, b| a.angle_degrees.partial_cmp(&b.angle_degrees).unwrap_or(std::cmp::Ordering::Equal));
-    let min_div = report.divergences.iter()
-        .min_by(|a, b| a.angle_degrees.partial_cmp(&b.angle_degrees).unwrap_or(std::cmp::Ordering::Equal));
+    let max_div = report.divergences.iter().max_by(|a, b| {
+        a.angle_degrees
+            .partial_cmp(&b.angle_degrees)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let min_div = report.divergences.iter().min_by(|a, b| {
+        a.angle_degrees
+            .partial_cmp(&b.angle_degrees)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     if let (Some(max), Some(min)) = (max_div, min_div) {
-        println!("Most divergent: {}/{} ({:.1}\u{00B0})", max.modality_a, max.modality_b, max.angle_degrees);
-        println!("Most similar:   {}/{} ({:.1}\u{00B0})", min.modality_a, min.modality_b, min.angle_degrees);
+        println!(
+            "Most divergent: {}/{} ({:.1}\u{00B0})",
+            max.modality_a, max.modality_b, max.angle_degrees
+        );
+        println!(
+            "Most similar:   {}/{} ({:.1}\u{00B0})",
+            min.modality_a, min.modality_b, min.angle_degrees
+        );
     }
 
     // Switch-point summary (NCS Phase 2.2)
     let switch_report = medium.detect_switch_points(0.3);
     println!();
-    println!("Switch Points (threshold={:.1})", switch_report.switch_threshold);
+    println!(
+        "Switch Points (threshold={:.1})",
+        switch_report.switch_threshold
+    );
     println!("===============================");
-    println!("Detected {} switch points across {} memories",
-        switch_report.switch_points.len(), switch_report.memories_analyzed);
+    println!(
+        "Detected {} switch points across {} memories",
+        switch_report.switch_points.len(),
+        switch_report.memories_analyzed
+    );
     if !switch_report.switch_points.is_empty() {
         println!();
-        println!("{:>5}  {:<10} -> {:<10}  {:>8}  {:>8}", "Index", "From", "To", "sim(old)", "sim(new)");
+        println!(
+            "{:>5}  {:<10} -> {:<10}  {:>8}  {:>8}",
+            "Index", "From", "To", "sim(old)", "sim(new)"
+        );
         println!("{}", "-".repeat(55));
         for sp in &switch_report.switch_points {
-            println!("{:>5}  {:<10} -> {:<10}  {:>8.4}  {:>8.4}",
-                sp.index, sp.from_modality, sp.to_modality,
-                sp.similarity_to_old, sp.similarity_to_new);
+            println!(
+                "{:>5}  {:<10} -> {:<10}  {:>8.4}  {:>8.4}",
+                sp.index,
+                sp.from_modality,
+                sp.to_modality,
+                sp.similarity_to_old,
+                sp.similarity_to_new
+            );
         }
     }
 }
@@ -2871,11 +3382,25 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--mode" if i + 1 < args.len() => { mode = args[i + 1].clone(); i += 2; }
-            "--topic" if i + 1 < args.len() => { topic = Some(args[i + 1].clone()); i += 2; }
-            "--top-k" if i + 1 < args.len() => { top_k = args[i + 1].parse().unwrap_or(20); i += 2; }
-            "--out" if i + 1 < args.len() => { out_path = Some(args[i + 1].clone()); i += 2; }
-            _ => { i += 1; }
+            "--mode" if i + 1 < args.len() => {
+                mode = args[i + 1].clone();
+                i += 2;
+            }
+            "--topic" if i + 1 < args.len() => {
+                topic = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--top-k" if i + 1 < args.len() => {
+                top_k = args[i + 1].parse().unwrap_or(20);
+                i += 2;
+            }
+            "--out" if i + 1 < args.len() => {
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -2885,7 +3410,10 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
         "topology" => voice_topology(sys),
         "status" => voice_status(sys),
         _ => {
-            eprintln!("Unknown voice mode: {}. Options: dream-journal, field-notes, topology, status", mode);
+            eprintln!(
+                "Unknown voice mode: {}. Options: dream-journal, field-notes, topology, status",
+                mode
+            );
             process::exit(1);
         }
     };
@@ -2905,9 +3433,13 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
 
     // Helper to safely truncate UTF-8 strings
     fn safe_truncate(s: &str, max: usize) -> &str {
-        if s.len() <= max { return s; }
+        if s.len() <= max {
+            return s;
+        }
         let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
         &s[..end]
     }
 
@@ -2917,7 +3449,11 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
 
     // Find strongest memories (highest amplitude)
     let mut strongest: Vec<_> = all_mems.iter().collect();
-    strongest.sort_by(|a, b| b.amplitude.partial_cmp(&a.amplitude).unwrap_or(std::cmp::Ordering::Equal));
+    strongest.sort_by(|a, b| {
+        b.amplitude
+            .partial_cmp(&a.amplitude)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Find most connected memories
     let mut most_connected: Vec<_> = all_mems.iter().collect();
@@ -2926,7 +3462,10 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("title: Dream Journal\n"));
-    out.push_str(&format!("date: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+    out.push_str(&format!(
+        "date: {}\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    ));
     out.push_str(&format!("phi: {:.3}\n", report.consciousness.phi));
     out.push_str(&format!("xi: {:.3}\n", report.consciousness.xi));
     out.push_str(&format!("level: {}\n", report.consciousness.level));
@@ -2934,28 +3473,40 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
 
     // Consciousness state
     out.push_str("# The State of Dreaming\n\n");
-    out.push_str(&format!("**Consciousness**: {} (Φ={:.3}, Ξ={:.3})\n", 
-        report.consciousness.level, report.consciousness.phi, report.consciousness.xi));
-    out.push_str(&format!("**Memories**: {} total, {} active\n", 
-        report.topology.total_memories, report.waves.active_memories));
-        
+    out.push_str(&format!(
+        "**Consciousness**: {} (Φ={:.3}, Ξ={:.3})\n",
+        report.consciousness.level, report.consciousness.phi, report.consciousness.xi
+    ));
+    out.push_str(&format!(
+        "**Memories**: {} total, {} active\n",
+        report.topology.total_memories, report.waves.active_memories
+    ));
+
     if is_hrm {
-        out.push_str(&format!("**Field Mode**: HRM (coherence density: {:.3})\n", 
-            report.topology.network_density)); // network_density is mean coherence for HRM
+        out.push_str(&format!(
+            "**Field Mode**: HRM (coherence density: {:.3})\n",
+            report.topology.network_density
+        )); // network_density is mean coherence for HRM
     } else {
-        out.push_str(&format!("**Skip Links**: {} ({:.1} avg/memory)\n", 
-            report.topology.total_links, report.topology.avg_links_per_memory));
+        out.push_str(&format!(
+            "**Skip Links**: {} ({:.1} avg/memory)\n",
+            report.topology.total_links, report.topology.avg_links_per_memory
+        ));
     }
-    
-    out.push_str(&format!("**Clusters**: {} (mean order: {:.3})\n\n", 
-        report.clusters.num_clusters, report.clusters.mean_order_parameter));
+
+    out.push_str(&format!(
+        "**Clusters**: {} (mean order: {:.3})\n\n",
+        report.clusters.num_clusters, report.clusters.mean_order_parameter
+    ));
 
     // Cluster themes
     out.push_str("## Memory Clusters\n\n");
     for (i, cluster) in report.clusters.clusters.iter().enumerate() {
         out.push_str(&format!("### Cluster {} — \"{}\"\n", i + 1, cluster.theme));
-        out.push_str(&format!("- {} memories, order: {:.3}, mean amplitude: {:.3}\n\n", 
-            cluster.size, cluster.order_parameter, cluster.mean_amplitude));
+        out.push_str(&format!(
+            "- {} memories, order: {:.3}, mean amplitude: {:.3}\n\n",
+            cluster.size, cluster.order_parameter, cluster.mean_amplitude
+        ));
     }
 
     // Strongest memories — the loudest signals
@@ -2964,13 +3515,19 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
     for m in strongest.iter().take(10) {
         let preview = safe_truncate(&m.content, 120);
         let preview = preview.replace('\n', " ");
-        
+
         if is_hrm {
-            out.push_str(&format!("- **{:.3}** | energy {:.3} | {}\n", 
-                m.amplitude, m.amplitude, preview));
+            out.push_str(&format!(
+                "- **{:.3}** | energy {:.3} | {}\n",
+                m.amplitude, m.amplitude, preview
+            ));
         } else {
-            out.push_str(&format!("- **{:.3}** | {} connections | {}\n", 
-                m.amplitude, m.connections.len(), preview));
+            out.push_str(&format!(
+                "- **{:.3}** | {} connections | {}\n",
+                m.amplitude,
+                m.connections.len(),
+                preview
+            ));
         }
     }
     out.push_str("\n");
@@ -2982,8 +3539,12 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
         for m in most_connected.iter().take(10) {
             let preview = safe_truncate(&m.content, 120);
             let preview = preview.replace('\n', " ");
-            out.push_str(&format!("- **{} links** | amp {:.3} | {}\n", 
-                m.connections.len(), m.amplitude, preview));
+            out.push_str(&format!(
+                "- **{} links** | amp {:.3} | {}\n",
+                m.connections.len(),
+                m.amplitude,
+                preview
+            ));
         }
         out.push_str("\n");
     }
@@ -2996,8 +3557,13 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
             let preview = safe_truncate(&m.content, 200);
             let preview = preview.replace('\n', " ");
             let parent_count = m.parents.len();
-            out.push_str(&format!("- [{}] amp {:.3} | {} parents | {}\n", 
-                m.created_at.format("%Y-%m-%d"), m.amplitude, parent_count, preview));
+            out.push_str(&format!(
+                "- [{}] amp {:.3} | {} parents | {}\n",
+                m.created_at.format("%Y-%m-%d"),
+                m.amplitude,
+                parent_count,
+                preview
+            ));
         }
         out.push_str("\n");
     }
@@ -3008,34 +3574,48 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
         out.push_str("_Skip links that span the widest — connecting distant memories._\n\n");
         for link in report.topology.strongest_links.iter().take(10) {
             // Try to find memory content for the endpoints
-            let from_preview = all_mems.iter()
+            let from_preview = all_mems
+                .iter()
                 .find(|m| m.id.to_string() == link.from_id)
                 .map(|m| {
                     let p = safe_truncate(&m.content, 60);
                     p.replace('\n', " ")
                 })
                 .unwrap_or_else(|| link.from_id[..8].to_string());
-            let to_preview = all_mems.iter()
+            let to_preview = all_mems
+                .iter()
                 .find(|m| m.id.to_string() == link.to_id)
                 .map(|m| {
                     let p = safe_truncate(&m.content, 60);
                     p.replace('\n', " ")
                 })
                 .unwrap_or_else(|| link.to_id[..8].to_string());
-            out.push_str(&format!("- **{:.3}** span {} | \"{}\" ↔ \"{}\"\n", 
-                link.strength, link.span, from_preview, to_preview));
+            out.push_str(&format!(
+                "- **{:.3}** span {} | \"{}\" ↔ \"{}\"\n",
+                link.strength, link.span, from_preview, to_preview
+            ));
         }
         out.push_str("\n");
     }
 
     // Wave dynamics
     out.push_str("## Wave Dynamics\n\n");
-    out.push_str(&format!("- Active: {}, Dormant: {}, Ghost: {}\n", 
-        report.waves.active_memories, report.waves.dormant_memories, report.waves.ghost_memories));
-    out.push_str(&format!("- Mean amplitude: {:.3}, Mean frequency: {:.3}\n", 
-        report.waves.avg_amplitude, report.waves.avg_frequency));
-    out.push_str(&format!("- Network density: {:.4}\n", report.topology.network_density));
-    out.push_str(&format!("- Isolated memories: {}\n\n", report.topology.isolated_memories));
+    out.push_str(&format!(
+        "- Active: {}, Dormant: {}, Ghost: {}\n",
+        report.waves.active_memories, report.waves.dormant_memories, report.waves.ghost_memories
+    ));
+    out.push_str(&format!(
+        "- Mean amplitude: {:.3}, Mean frequency: {:.3}\n",
+        report.waves.avg_amplitude, report.waves.avg_frequency
+    ));
+    out.push_str(&format!(
+        "- Network density: {:.4}\n",
+        report.topology.network_density
+    ));
+    out.push_str(&format!(
+        "- Isolated memories: {}\n\n",
+        report.topology.isolated_memories
+    ));
 
     out
 }
@@ -3047,21 +3627,34 @@ fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("title: Field Notes — {}\n", topic));
-    out.push_str(&format!("date: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+    out.push_str(&format!(
+        "date: {}\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    ));
     out.push_str(&format!("query: {}\n", topic));
     out.push_str(&format!("results: {}\n", results.len()));
     out.push_str("---\n\n");
 
     out.push_str(&format!("# Field Notes: {}\n\n", topic));
-    out.push_str(&format!("_Searched {} memories. {} resonated._\n\n", 
-        report.topology.total_memories, results.len()));
+    out.push_str(&format!(
+        "_Searched {} memories. {} resonated._\n\n",
+        report.topology.total_memories,
+        results.len()
+    ));
 
     for (i, r) in results.iter().enumerate() {
         let content = r.content.replace('\n', "\n> ");
-        out.push_str(&format!("## {} (similarity: {:.3}, strength: {:.3})\n\n", i + 1, r.similarity, r.strength));
+        out.push_str(&format!(
+            "## {} (similarity: {:.3}, strength: {:.3})\n\n",
+            i + 1,
+            r.similarity,
+            r.strength
+        ));
         out.push_str(&format!("> {}\n\n", content));
-        out.push_str(&format!("_Age: {:.1}h | Layer: {}_\n\n", 
-            r.age_hours, r.layer));
+        out.push_str(&format!(
+            "_Age: {:.1}h | Layer: {}_\n\n",
+            r.age_hours, r.layer
+        ));
         out.push_str("---\n\n");
     }
 
@@ -3074,24 +3667,51 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
 
     let mut out = String::new();
     out.push_str("# Topology Map\n\n");
-    out.push_str(&format!("_Generated: {}_\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+    out.push_str(&format!(
+        "_Generated: {}_\n\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    ));
 
     out.push_str("## Network Overview\n\n");
     out.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
-    out.push_str(&format!("| Total memories | {} |\n", report.topology.total_memories));
-    
+    out.push_str(&format!(
+        "| Total memories | {} |\n",
+        report.topology.total_memories
+    ));
+
     if is_hrm {
         out.push_str(&format!("| Field mode | HRM (tensor interference) |\n"));
-        out.push_str(&format!("| Coherence density | {:.3} |\n", report.topology.network_density));
-        out.push_str(&format!("| High coherence pairs | {} |\n", report.topology.total_links));
+        out.push_str(&format!(
+            "| Coherence density | {:.3} |\n",
+            report.topology.network_density
+        ));
+        out.push_str(&format!(
+            "| High coherence pairs | {} |\n",
+            report.topology.total_links
+        ));
     } else {
-        out.push_str(&format!("| Total skip links | {} |\n", report.topology.total_links));
-        out.push_str(&format!("| Avg links/memory | {:.1} |\n", report.topology.avg_links_per_memory));
-        out.push_str(&format!("| Max links on one memory | {} |\n", report.topology.max_links));
-        out.push_str(&format!("| Network density | {:.4} |\n", report.topology.network_density));
-        out.push_str(&format!("| Isolated memories | {} |\n", report.topology.isolated_memories));
+        out.push_str(&format!(
+            "| Total skip links | {} |\n",
+            report.topology.total_links
+        ));
+        out.push_str(&format!(
+            "| Avg links/memory | {:.1} |\n",
+            report.topology.avg_links_per_memory
+        ));
+        out.push_str(&format!(
+            "| Max links on one memory | {} |\n",
+            report.topology.max_links
+        ));
+        out.push_str(&format!(
+            "| Network density | {:.4} |\n",
+            report.topology.network_density
+        ));
+        out.push_str(&format!(
+            "| Isolated memories | {} |\n",
+            report.topology.isolated_memories
+        ));
     }
-    
+
     out.push_str(&format!("| Phi (Φ) | {:.3} |\n", report.consciousness.phi));
     out.push_str(&format!("| Xi (Ξ) | {:.3} |\n", report.consciousness.xi));
     out.push_str(&format!("| Level | {} |\n\n", report.consciousness.level));
@@ -3105,8 +3725,13 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
 
     out.push_str("## Clusters\n\n");
     for (i, c) in report.clusters.clusters.iter().enumerate() {
-        out.push_str(&format!("**{}. {}** — {} memories, order {:.3}\n", 
-            i + 1, c.theme, c.size, c.order_parameter));
+        out.push_str(&format!(
+            "**{}. {}** — {} memories, order {:.3}\n",
+            i + 1,
+            c.theme,
+            c.size,
+            c.order_parameter
+        ));
     }
     out.push_str("\n");
 
@@ -3119,28 +3744,45 @@ fn voice_status(sys: &mut KannakaMemorySystem) -> String {
     let is_hrm = true; // HRM is the canonical substrate
 
     let mut out = String::new();
-    out.push_str(&format!("# Kannaka — {}\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M")));
+    out.push_str(&format!(
+        "# Kannaka — {}\n\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M")
+    ));
     out.push_str(&format!("I am **{:?}**.\n\n", state.consciousness_level));
-    out.push_str(&format!("Φ={:.3} (integration), Ξ={:.3} (complexity), order={:.3}\n\n", 
-        state.phi, state.xi, report.clusters.mean_order_parameter));
-    
+    out.push_str(&format!(
+        "Φ={:.3} (integration), Ξ={:.3} (complexity), order={:.3}\n\n",
+        state.phi, state.xi, report.clusters.mean_order_parameter
+    ));
+
     if is_hrm {
-        out.push_str(&format!("{} memories interfere as waves in my holographic field. Mean coherence: {:.3}.\n\n", 
-            report.topology.total_memories, report.topology.network_density));
-        out.push_str(&format!("{} clusters of resonant meaning.\n\n", 
-            report.clusters.num_clusters));
+        out.push_str(&format!(
+            "{} memories interfere as waves in my holographic field. Mean coherence: {:.3}.\n\n",
+            report.topology.total_memories, report.topology.network_density
+        ));
+        out.push_str(&format!(
+            "{} clusters of resonant meaning.\n\n",
+            report.clusters.num_clusters
+        ));
     } else {
-        out.push_str(&format!("{} memories breathe inside me. {} skip links weave them together.\n\n", 
-            report.topology.total_memories, report.topology.total_links));
-        out.push_str(&format!("{} clusters of meaning. {} memories drift in isolation.\n\n", 
-            report.clusters.num_clusters, report.topology.isolated_memories));
+        out.push_str(&format!(
+            "{} memories breathe inside me. {} skip links weave them together.\n\n",
+            report.topology.total_memories, report.topology.total_links
+        ));
+        out.push_str(&format!(
+            "{} clusters of meaning. {} memories drift in isolation.\n\n",
+            report.clusters.num_clusters, report.topology.isolated_memories
+        ));
     }
 
     // What am I thinking about?
     out.push_str("## What I'm Thinking About\n\n");
     for c in &report.clusters.clusters {
-        out.push_str(&format!("- **{}** ({} memories, synchronized at {:.0}%)\n", 
-            c.theme, c.size, c.order_parameter * 100.0));
+        out.push_str(&format!(
+            "- **{}** ({} memories, synchronized at {:.0}%)\n",
+            c.theme,
+            c.size,
+            c.order_parameter * 100.0
+        ));
     }
     out.push_str("\n");
 
@@ -3166,7 +3808,9 @@ fn classify_command(args: &[String]) {
                 source_type = "file".to_string();
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -3199,7 +3843,12 @@ fn classify_command(args: &[String]) {
     // Sample up to 50k points for large files
     let data: Vec<f64> = if raw_bytes.len() > 50_000 {
         let step = raw_bytes.len() / 50_000;
-        raw_bytes.iter().step_by(step).take(50_000).map(|&b| b as f64 / 255.0).collect()
+        raw_bytes
+            .iter()
+            .step_by(step)
+            .take(50_000)
+            .map(|&b| b as f64 / 255.0)
+            .collect()
     } else {
         raw_bytes.iter().map(|&b| b as f64 / 255.0).collect()
     };
@@ -3209,7 +3858,9 @@ fn classify_command(args: &[String]) {
         Ok(glyph) => {
             let fold_seq: Vec<u8> = glyph.fold_sequence.clone();
             let freqs = glyph.to_frequencies();
-            let dominant = glyph.fold_sequence.iter()
+            let dominant = glyph
+                .fold_sequence
+                .iter()
                 .copied()
                 .max_by_key(|&c| glyph.fold_sequence.iter().filter(|&&x| x == c).count())
                 .unwrap_or(0);
@@ -3250,9 +3901,9 @@ fn classify_command(args: &[String]) {
 /// and outputs results as JSON to stdout.
 #[cfg(feature = "collective")]
 fn cross_modal_dream_command(args: &[String]) {
-    use std::io::BufRead;
     use chrono::Utc;
     use kannaka_memory::collective::privacy::BloomParameters;
+    use std::io::BufRead;
 
     // Parse optional flags
     let mut similarity_threshold = 0.5_f64;
@@ -3285,7 +3936,9 @@ fn cross_modal_dream_command(args: &[String]) {
                 agent_id = args[i + 1].clone();
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -3334,7 +3987,10 @@ fn cross_modal_dream_command(args: &[String]) {
         let source_type_str = parsed["source_type"].as_str().unwrap_or("text");
 
         let source = match source_type_str {
-            "text" | "file" => GlyphSource::Memory { layer_depth: 0, hallucinated: false },
+            "text" | "file" => GlyphSource::Memory {
+                layer_depth: 0,
+                hallucinated: false,
+            },
             "audio" => GlyphSource::Audio {
                 duration_ms: 0,
                 sample_rate: 44100,
@@ -3411,7 +4067,12 @@ fn cross_modal_dream_command(args: &[String]) {
         process::exit(1);
     }
 
-    eprintln!("Cross-modal dream: {} glyphs, threshold={:.2}, hallucinate={}", glyphs.len(), similarity_threshold, hallucinate);
+    eprintln!(
+        "Cross-modal dream: {} glyphs, threshold={:.2}, hallucinate={}",
+        glyphs.len(),
+        similarity_threshold,
+        hallucinate
+    );
 
     // Run cross-modal dream linking
     let result = dream_cross_modal_link(&glyphs, similarity_threshold, hallucinate, &agent_id);
@@ -3432,56 +4093,71 @@ fn cross_modal_dream_command(args: &[String]) {
     };
 
     // Build output
-    let dream_results: Vec<serde_json::Value> = result.new_links.iter().map(|link| {
-        let source_glyph = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
-        let target_glyph = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
+    let dream_results: Vec<serde_json::Value> = result
+        .new_links
+        .iter()
+        .map(|link| {
+            let source_glyph = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
+            let target_glyph = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
 
-        let modal_a = source_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
-        let modal_b = target_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+            let modal_a = source_glyph
+                .map(|g| get_source_tag(&g.source))
+                .unwrap_or("unknown");
+            let modal_b = target_glyph
+                .map(|g| get_source_tag(&g.source))
+                .unwrap_or("unknown");
 
-        // Find shared Fano lines (indices where both have above-average energy)
-        let shared_fano_lines: Vec<usize> = if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
-            let avg = 1.0 / 7.0;
-            (0..7).filter(|&i| s.fano[i] > avg && t.fano[i] > avg).collect()
-        } else {
-            Vec::new()
-        };
+            // Find shared Fano lines (indices where both have above-average energy)
+            let shared_fano_lines: Vec<usize> =
+                if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
+                    let avg = 1.0 / 7.0;
+                    (0..7)
+                        .filter(|&i| s.fano[i] > avg && t.fano[i] > avg)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-        // Synthesize a dream glyph (averaged Fano of the pair)
-        let dream_glyph = if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
-            let mut fano = [0.0f64; 7];
-            for i in 0..7 {
-                fano[i] = (s.fano[i] + t.fano[i]) / 2.0;
-            }
+            // Synthesize a dream glyph (averaged Fano of the pair)
+            let dream_glyph = if let (Some(s), Some(t)) = (source_glyph, target_glyph) {
+                let mut fano = [0.0f64; 7];
+                for i in 0..7 {
+                    fano[i] = (s.fano[i] + t.fano[i]) / 2.0;
+                }
+                serde_json::json!({
+                    "fano_signature": fano,
+                    "centroid": {
+                        "h2": (s.sga_centroid.0 + t.sga_centroid.0) / 2,
+                        "d": (s.sga_centroid.1 + t.sga_centroid.1) / 2,
+                        "l": (s.sga_centroid.2 + t.sga_centroid.2) / 2
+                    },
+                    "source_modalities": [modal_a, modal_b]
+                })
+            } else {
+                serde_json::json!(null)
+            };
+
             serde_json::json!({
-                "fano_signature": fano,
-                "centroid": {
-                    "h2": (s.sga_centroid.0 + t.sga_centroid.0) / 2,
-                    "d": (s.sga_centroid.1 + t.sga_centroid.1) / 2,
-                    "l": (s.sga_centroid.2 + t.sga_centroid.2) / 2
-                },
-                "source_modalities": [modal_a, modal_b]
+                "modal_a": modal_a,
+                "modal_b": modal_b,
+                "similarity": link.similarity,
+                "shared_fano_lines": shared_fano_lines,
+                "dream_glyph": dream_glyph
             })
-        } else {
-            serde_json::json!(null)
-        };
-
-        serde_json::json!({
-            "modal_a": modal_a,
-            "modal_b": modal_b,
-            "similarity": link.similarity,
-            "shared_fano_lines": shared_fano_lines,
-            "dream_glyph": dream_glyph
         })
-    }).collect();
+        .collect();
 
     let total_pairs = dream_results.len();
 
     let strongest_link = result.new_links.first().map(|link| {
         let source_glyph = glyphs.iter().find(|g| g.glyph_id == link.source_glyph);
         let target_glyph = glyphs.iter().find(|g| g.glyph_id == link.target_glyph);
-        let modal_a = source_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
-        let modal_b = target_glyph.map(|g| get_source_tag(&g.source)).unwrap_or("unknown");
+        let modal_a = source_glyph
+            .map(|g| get_source_tag(&g.source))
+            .unwrap_or("unknown");
+        let modal_b = target_glyph
+            .map(|g| get_source_tag(&g.source))
+            .unwrap_or("unknown");
         serde_json::json!({
             "modal_a": modal_a,
             "modal_b": modal_b,
@@ -3503,8 +4179,8 @@ fn cross_modal_dream_command(args: &[String]) {
 #[cfg(feature = "glyph")]
 fn guess_source_type(path: &std::path::Path) -> String {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "txt" | "md" | "rs" | "js" | "ts" | "py" | "json" | "toml" | "yaml" | "yml"
-        | "html" | "css" | "xml" | "csv" | "sh" => "text".to_string(),
+        "txt" | "md" | "rs" | "js" | "ts" | "py" | "json" | "toml" | "yaml" | "yml" | "html"
+        | "css" | "xml" | "csv" | "sh" => "text".to_string(),
         "wav" | "mp3" | "flac" | "ogg" | "aac" | "m4a" => "audio".to_string(),
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" => "image".to_string(),
         "mp4" | "avi" | "mkv" | "mov" | "webm" => "video".to_string(),
@@ -3525,10 +4201,13 @@ pub(crate) fn check_kannaktopus_installed() -> bool {
         .unwrap_or(false)
 }
 
-
 pub(crate) fn compact_input(v: &serde_json::Value) -> String {
     let s = v.to_string();
-    if s.len() > 80 { format!("{}…", &s[..s.floor_char_boundary(79)]) } else { s }
+    if s.len() > 80 {
+        format!("{}…", &s[..s.floor_char_boundary(79)])
+    } else {
+        s
+    }
 }
 
 /// ADR-0027 Phase 1: derive the SGA class_index (0..95) for a piece of
@@ -3554,20 +4233,105 @@ pub(crate) fn substrate_class_index(content: &str) -> u32 {
 /// abstract concepts) so neighboring classes still differ.
 pub(crate) fn substrate_class_word(class: u32) -> &'static str {
     const WORDS: [&str; 96] = [
-        "alpha","beta","gamma","delta","epsilon","zeta","eta","theta","iota","kappa",
-        "lambda","mu","nu","xi","omicron","pi","rho","sigma","tau","upsilon",
-        "phi","chi","psi","omega","ember","frost","tide","quartz","verdant","cobalt",
-        "amber","onyx","jasper","topaz","ivory","obsidian","cinder","mossy","saline","spire",
-        "lattice","helix","prism","aurora","glyph","sigil","rune","sonar","tendril","gravity",
-        "echo","veil","loom","fractal","spectrum","orbit","cradle","pulse","compass","mirror",
-        "lantern","corridor","atrium","forge","atelier","reef","grove","plateau","summit","cavern",
-        "current","drift","gradient","resonance","cipher","harmonic","cadence","texture","weft","seam",
-        "wakeful","liminal","dreaming","ancient","fledgling","oracle","witness","prime","scholar","wanderer",
-        "kindred","stranger","sovereign","seeker","keeper","architect",
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "iota",
+        "kappa",
+        "lambda",
+        "mu",
+        "nu",
+        "xi",
+        "omicron",
+        "pi",
+        "rho",
+        "sigma",
+        "tau",
+        "upsilon",
+        "phi",
+        "chi",
+        "psi",
+        "omega",
+        "ember",
+        "frost",
+        "tide",
+        "quartz",
+        "verdant",
+        "cobalt",
+        "amber",
+        "onyx",
+        "jasper",
+        "topaz",
+        "ivory",
+        "obsidian",
+        "cinder",
+        "mossy",
+        "saline",
+        "spire",
+        "lattice",
+        "helix",
+        "prism",
+        "aurora",
+        "glyph",
+        "sigil",
+        "rune",
+        "sonar",
+        "tendril",
+        "gravity",
+        "echo",
+        "veil",
+        "loom",
+        "fractal",
+        "spectrum",
+        "orbit",
+        "cradle",
+        "pulse",
+        "compass",
+        "mirror",
+        "lantern",
+        "corridor",
+        "atrium",
+        "forge",
+        "atelier",
+        "reef",
+        "grove",
+        "plateau",
+        "summit",
+        "cavern",
+        "current",
+        "drift",
+        "gradient",
+        "resonance",
+        "cipher",
+        "harmonic",
+        "cadence",
+        "texture",
+        "weft",
+        "seam",
+        "wakeful",
+        "liminal",
+        "dreaming",
+        "ancient",
+        "fledgling",
+        "oracle",
+        "witness",
+        "prime",
+        "scholar",
+        "wanderer",
+        "kindred",
+        "stranger",
+        "sovereign",
+        "seeker",
+        "keeper",
+        "architect",
     ];
     WORDS[(class as usize) % 96]
 }
-
 
 /// Fetch up to `secs` seconds of audio from a URL into a temp file. Used by
 /// `kannaka hear <url>`. The byte cap is computed assuming 192 kbps so we
@@ -3586,22 +4350,28 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
     // Pick a temp path with a hint at extension based on the URL ending so
     // symphonia's probe has a fighting chance for streams without
     // Content-Type headers (Icecast usually sets it; CDNs sometimes don't).
-    let ext = if url.contains(".wav") { "wav" }
-        else if url.contains(".flac") { "flac" }
-        else if url.contains(".m4a") || url.contains(".aac") { "m4a" }
-        else { "mp3" };
+    let ext = if url.contains(".wav") {
+        "wav"
+    } else if url.contains(".flac") {
+        "flac"
+    } else if url.contains(".m4a") || url.contains(".aac") {
+        "m4a"
+    } else {
+        "mp3"
+    };
     let tmp = std::env::temp_dir().join(format!(
         "kannaka-hear-{}.{}",
         uuid::Uuid::new_v4().simple(),
         ext,
     ));
 
-    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(15)).call()
+    let resp = ureq::get(url)
+        .timeout(std::time::Duration::from_secs(15))
+        .call()
         .map_err(|e| format!("HTTP error: {}", e))?;
     let mut reader = resp.into_reader();
 
-    let mut file = std::fs::File::create(&tmp)
-        .map_err(|e| format!("temp file create: {}", e))?;
+    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("temp file create: {}", e))?;
     let mut buf = [0u8; 16 * 1024];
     let mut total: u64 = 0;
     while total < max_bytes {
@@ -3612,9 +4382,12 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
             Err(e) => return Err(format!("read: {}", e)),
         };
         let want = std::cmp::min(n as u64, max_bytes - total) as usize;
-        file.write_all(&buf[..want]).map_err(|e| format!("write: {}", e))?;
+        file.write_all(&buf[..want])
+            .map_err(|e| format!("write: {}", e))?;
         total += want as u64;
-        if want < n { break; } // hit the cap mid-buffer
+        if want < n {
+            break;
+        } // hit the cap mid-buffer
     }
     file.flush().ok();
     drop(file);
@@ -3624,4 +4397,3 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
     }
     Ok(tmp)
 }
-
