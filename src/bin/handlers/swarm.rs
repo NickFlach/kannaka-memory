@@ -56,8 +56,12 @@ pub(crate) fn handle_swarm_serve(
         Ok(s) => s,
         Err(e) => { eprintln!("subscribe directed: {e}"); process::exit(1); }
     };
-    // Use 5s read timeout so we can poll between subjects.
-    let _ = directed_sub.set_timeout(Some(Duration::from_secs(5)));
+    // Short read timeout so the loop multiplexes all subjects responsively.
+    // (Was 5s — with directed+broadcast+recall round-robined, a 5s timeout meant
+    // the recall sub was only polled every ~12s, making daemon-served recall
+    // slower than local. 250ms keeps recall sub-second; idle cost is a blocking
+    // read, near-zero CPU.)
+    let _ = directed_sub.set_timeout(Some(Duration::from_millis(250)));
 
     // Broadcast on a separate connection so the directed sub doesn't block it.
     let bcast_transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
@@ -75,7 +79,7 @@ pub(crate) fn handle_swarm_serve(
             return _serve_directed_only(sys, cfg, &transport, directed_sub);
         }
     };
-    let _ = bcast_sub.set_timeout(Some(Duration::from_secs(5)));
+    let _ = bcast_sub.set_timeout(Some(Duration::from_millis(250)));
 
     // Daemon-served recall (KANNAKA.recall.<agent_id>): the observatory, OBC
     // pulses, and the radio DJ can recall against this agent's warm in-memory
@@ -89,7 +93,7 @@ pub(crate) fn handle_swarm_serve(
         .as_ref()
         .and_then(|t| t.subscribe(&recall_subject).ok());
     match recall_sub.as_mut() {
-        Some(s) => { let _ = s.set_timeout(Some(Duration::from_secs(2))); eprintln!("[swarm serve] serving recall on {recall_subject}"); }
+        Some(s) => { let _ = s.set_timeout(Some(Duration::from_millis(250))); eprintln!("[swarm serve] serving recall on {recall_subject}"); }
         None => eprintln!("[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"),
     }
 
