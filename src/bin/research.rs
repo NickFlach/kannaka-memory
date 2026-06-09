@@ -2890,7 +2890,14 @@ fn eval_xi_robustness_v2(
     // Adversarial pass: same corpus + 30 adversarial memories
     let mut engine_adv = build_l5_engine(corpus_a, params, dim);
     let adv_set = build_adversarial_set_l5(corpus_a, params.encoder_seed);
-    for mut mem in adv_set {
+    // Assign deterministic UUIDs above every corpus UUID so BFS cluster indices
+    // remain identical to the clean pass. The corpus uses (i+1)*K which overflows
+    // at i=224 giving max corpus UUID ≈ 0xFFFF_FFFF_FFFF_FEF1_..._FEF1; any value
+    // starting 0xFFFF_FFFF_FFFF_FF00 sorts after it.
+    for (i, mut mem) in adv_set.into_iter().enumerate() {
+        mem.id = uuid::Uuid::from_u128(
+            0xFFFF_FFFF_FFFF_FF00_FFFF_FFFF_FFFF_FF00_u128 + i as u128,
+        );
         mem.decay_rate = params.decay_rate;
         let _ = engine_adv.store.insert(mem);
     }
