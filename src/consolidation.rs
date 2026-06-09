@@ -333,10 +333,16 @@ impl ConsolidationEngine {
     /// Stage 1: Load memories in the given layer range into a working set.
     fn stage_replay(&self, engine: &ResonanceEngine, min_layer: u8, max_layer: u8) -> Vec<Uuid> {
         let all = engine.store.all_memories().unwrap_or_default();
-        all.iter()
+        // Sort by content for deterministic working_set order regardless of HashMap
+        // iteration order. apply_targeted_chiral_perturbation uses a sliding window
+        // over working_set, so order matters for which pairs get targeted.
+        let mut filtered: Vec<(&str, Uuid)> = all
+            .iter()
             .filter(|m| m.layer_depth >= min_layer && m.layer_depth <= max_layer)
-            .map(|m| m.id)
-            .collect()
+            .map(|m| (m.content.as_str(), m.id))
+            .collect();
+        filtered.sort_by_key(|(content, _)| *content);
+        filtered.into_iter().map(|(_, id)| id).collect()
     }
 
     /// Stage 2: Detect interference patterns between memory pairs.
