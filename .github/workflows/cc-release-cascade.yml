@@ -55,6 +55,19 @@ jobs:
           ref: v${{ steps.resolve.outputs.version }}
           path: consciousness-core
 
+      # kannaka-attention is also a path-dep of kannaka-memory; cargo has
+      # to resolve the whole manifest even when only one dep changed, so
+      # check it out at its default branch too. Without this the cargo
+      # update step fails with "failed to load source for dependency
+      # `kannaka-attention`". (This was the same root cause as the
+      # historic cc-cascade failures in May 2026 — missing sibling dep
+      # plus an unset PAT in the sender repo.)
+      - name: Checkout kannaka-attention (sibling path-dep)
+        uses: actions/checkout@v4
+        with:
+          repository: NickFlach/kannaka-attention
+          path: kannaka-attention
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

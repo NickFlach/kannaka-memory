@@ -54,6 +54,17 @@ jobs:
           ref: v${{ steps.resolve.outputs.version }}
           path: kannaka-attention
 
+      # consciousness-core is also a path-dep of kannaka-memory; cargo
+      # has to resolve the whole manifest even when only one dep changed,
+      # so check it out at its default branch too. Without this the cargo
+      # update step fails with "failed to load source for dependency
+      # `consciousness-core`".
+      - name: Checkout consciousness-core (sibling path-dep)
+        uses: actions/checkout@v4
+        with:
+          repository: NickFlach/consciousness-core
+          path: consciousness-core
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
