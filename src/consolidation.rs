@@ -2005,13 +2005,31 @@ impl ConsolidationEngine {
         _id_to_cluster: &std::collections::HashMap<Uuid, usize>,
         eta: f32,
     ) {
+        // Sort by content string so pair selection is UUID-order-independent.
+        // working_set follows all_memories() insertion order; adversarial memories in
+        // the xi adversarial pass have random UUIDs and land at different positions
+        // each run → different pairs → different vector perturbations → xi variance.
+        // Content strings are deterministic (corpus fixed, adversarials use fixed
+        // format strings) → sorted order stable across runs.
+        let sorted_ids: Vec<Uuid> = {
+            let mut pairs: Vec<(Uuid, u64)> = working_set.iter().map(|&id| {
+                let h = engine.store.get(&id).ok().flatten()
+                    .map(|m| m.content.as_bytes().iter()
+                        .fold(0u64, |a, &b| a.wrapping_mul(31).wrapping_add(b as u64)))
+                    .unwrap_or(u64::MAX);
+                (id, h)
+            }).collect();
+            pairs.sort_by_key(|&(_, h)| h);
+            pairs.into_iter().map(|(id, _)| id).collect()
+        };
+
         // Find similar memory pairs
         let mut similar_pairs = Vec::new();
-        
-        for i in 0..working_set.len() {
-            for j in (i + 1)..working_set.len().min(i + 20) { // Limit pairs to avoid O(n�) blowup
-                let id_a = working_set[i];
-                let id_b = working_set[j];
+
+        for i in 0..sorted_ids.len() {
+            for j in (i + 1)..sorted_ids.len().min(i + 20) { // Limit pairs to avoid O(n�) blowup
+                let id_a = sorted_ids[i];
+                let id_b = sorted_ids[j];
                 
                 let similarity = {
                     let mem_a = match engine.store.get(&id_a).ok().flatten() {
