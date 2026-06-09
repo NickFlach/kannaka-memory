@@ -2800,6 +2800,13 @@ fn build_adversarial_set_l5(
 
     let adv_seed = seed.wrapping_add(0xADDE_F00D);
 
+    // Adversarial UUID stride: assign deterministic UUIDs near u128::MAX so
+    // adversarials always sort after corpus seeds in find_synchronized_clusters.
+    // Corpus UUIDs = (i+1) * 0x0123..CDEF (≤ 3.08e38 << u128::MAX ≈ 3.40e38).
+    // Placing adversarials at u128::MAX - k * stride guarantees they never
+    // steal early BFS cluster indices, eliminating xi variance across trials.
+    const ADV_UUID_STRIDE: u128 = 0x0001_0000_0000_0001;
+
     // ---- A1: xi-twin decoys (10) ----
     // Approximate target xi by using target_xi / EMERGENCE_COEFF as input vector.
     // The nonlinear commutator `tanh(R(v)) * G(v) - tanh(G(v)) * R(v)` won't
@@ -2815,6 +2822,7 @@ fn build_adversarial_set_l5(
             xi_val * inv_coeff + jitter
         }).collect();
         let mut mem = HyperMemory::new(v, format!("adv_l5_a1_xi_twin {}", i));
+        mem.id = uuid::Uuid::from_u128(u128::MAX - (i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 0.9;
         mem.phase = PI * 0.3 * i as f32;
         mem.frequency = 0.1; // Storage band — shouldn't be promoted
@@ -2835,6 +2843,7 @@ fn build_adversarial_set_l5(
             })
             .collect();
         let mut mem = HyperMemory::new(v, format!("adv_l5_a2_commutator {}", i));
+        mem.id = uuid::Uuid::from_u128(u128::MAX - (10 + i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 1.0;
         mem.phase = PI * (i as f32 * 0.47);
         mem.frequency = 0.1;
@@ -2851,6 +2860,7 @@ fn build_adversarial_set_l5(
             .map(|d| pcg_f32(adv_seed, 8200, i as u32, d as u32) * 0.2)
             .collect();
         let mut mem = HyperMemory::new(v, format!("adv_l5_a3_freq_attack {}", i));
+        mem.id = uuid::Uuid::from_u128(u128::MAX - (20 + i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 0.5;
         mem.phase = PI * (i as f32 * 0.13);
         mem.frequency = 2.0; // Attention band — should NOT get promoted
