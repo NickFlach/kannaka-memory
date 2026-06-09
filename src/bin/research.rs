@@ -3562,7 +3562,12 @@ fn run_experiment_l5_session(params: &Params) {
     let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
 
     // L5.8: xi_robustness_v2 — adversarial robustness of xi re-ranking paths
-    let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, params, dim);
+    // Xi engines (clean + adv) get depth=2: 32 relaxation steps vs 64 at depth=4.
+    // T16 identified that depth=4 gave adversaries extra disruption time (xi 0.808).
+    // depth=2 gives the same relative comparison (both engines equally constrained)
+    // while halving adversarial phase-disruption time.
+    let xi_eval_params = { let mut p = (*params).clone(); p.chain_depth = 2; p };
+    let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, &xi_eval_params, dim);
 
     // L5 fitness — all 13 metrics wired, no placeholders remaining
     // Inherited core (15%): noise_removal(2%), signal_preservation(2%),
