@@ -3132,12 +3132,17 @@ fn run_l5_dream_chain(
     let mut quiescence_at: Option<usize> = None;
     let mut amplitude_deltas: Vec<f32> = Vec::with_capacity(depth);
 
-    // L5.5: track original memory IDs and their initial oldest-quartile amplitude
+    // L5.5: track original memory IDs and their initial oldest-quartile amplitude.
+    // Exclude adversarial memories (content starts with "adv_l5_") so that
+    // random adversarial UUIDs do not land at random positions in the UUID-sorted
+    // list and corrupt the "oldest quartile" amplitude baseline. Catastrophic
+    // forgetting measures survival of corpus memories, not injected adversarials.
     let original_ids: Vec<uuid::Uuid> = engine
         .store
         .all_memories()
         .unwrap_or_default()
         .iter()
+        .filter(|m| !m.content.starts_with("adv_l5_"))
         .map(|m| m.id)
         .collect();
 
