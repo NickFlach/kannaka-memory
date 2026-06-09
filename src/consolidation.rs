@@ -1911,14 +1911,20 @@ impl ConsolidationEngine {
             }
         }
 
-        // Precompute per-cluster handedness from mean cos(phase) of members.
-        // This breaks the UUID-sort-order dependency: adversarial memories have
-        // deterministic phases (fixed encoder_seed), so their effect on cluster
-        // mean-cos is deterministic → xi passes become deterministic.
+        // Precompute per-cluster handedness from mean cos(phase) of corpus members only.
+        // Adversarial xi-twins have π-flipped phases that can flip the cluster mean-cos sign
+        // between clean and adv dream passes, making chirality non-deterministic → xi variance.
+        // Excluding adversarials from this sum stabilises corpus chirality across passes while
+        // keeping the perturbation applied to adversarials (the A1 neutralisation effect).
+        // Adversarials are identified by their "adv_" content prefix (research.rs §build_adversarial_set).
         let cluster_handedness: HashMap<usize, f32> = clusters.iter().enumerate()
             .map(|(cluster_idx, cluster)| {
                 let sum_cos: f32 = cluster.memory_ids.iter()
-                    .filter_map(|&id| engine.store.get(&id).ok().flatten().map(|m| m.phase.cos()))
+                    .filter_map(|&id| {
+                        let m = engine.store.get(&id).ok().flatten()?;
+                        if m.content.starts_with("adv_") { return None; }
+                        Some(m.phase.cos())
+                    })
                     .sum();
                 let handedness = if sum_cos >= 0.0 { 1.0f32 } else { -1.0f32 };
                 (cluster_idx, handedness)
