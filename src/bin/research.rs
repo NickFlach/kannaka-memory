@@ -3352,7 +3352,11 @@ fn run_experiment_l5_session(params: &Params) {
     l5_params.chain_carry_strength = 0.7;
     l5_params.chiral_perturbation = 0.7;
     l5_params.consolidation_repulsion_threshold = 0.28;
-    l5_params.chain_depth = 16; // L5 default — quiescence may short-circuit
+    // interference_relax phi fluctuates through injection events (cycles 2,5,8,11,14),
+    // preventing quiescence from firing and causing 15-cycle over-consolidation that
+    // collapses xi (0.97→0.68) and transfer (0.84→0.53). Hard-cap at 4 cycles:
+    // T15's good runs (0.037 fitness) quiesced at cycle 4 — same effective depth.
+    l5_params.chain_depth = 4; // irx cap — prevents hallucination-driven over-consolidation
     l5_params.chain_top_n = 7;
     // K=0.5 confirmed optimal in K-sweep (2026-06-06): weaker coupling preserves
     // more phase diversity than K=1.0, further lifting xi and reducing avg fitness
