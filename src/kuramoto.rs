@@ -532,15 +532,6 @@ impl KuramotoSync {
             }
         }
 
-        // Sort by content string for deterministic BFS traversal order regardless of
-        // HashMap iteration order or adversarial UUID generation. The adjacency matrix
-        // is symmetric and order-independent; only the BFS seed sequence and spectral
-        // sub-split ordering are affected. Content strings are unique per memory and
-        // deterministic across runs (corpus uses fixed seeds, adversarial uses fixed seed).
-        let mut all = all;
-        all.sort_by(|a, b| a.content.cmp(&b.content));
-        let all = all;
-
         // Build adjacency list from similarity graph.
         //
         // PERF: pair similarity is O(n² × d). For n=558, d=10000 that's ~1.56B
