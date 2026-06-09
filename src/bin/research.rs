@@ -2909,6 +2909,25 @@ fn eval_xi_robustness_v2(
          _inj_adv, _orig_adv, _iamp_adv) =
         run_l5_dream_chain(params, &mut engine_adv);
     std::env::remove_var("DRIVE_CONTEXT");
+    // Remove adversarial memories before evaluating corpus state.
+    // Adversarials inflate phi (IIT proxy) because they add inter-cluster
+    // links, making fitness_adv artificially high regardless of corpus health.
+    // Deleting them here measures corpus robustness: did adversarial dreaming
+    // actually degrade corpus memories? The chain_seeds/phi_history still
+    // reflect dynamics from the adversarial dream.
+    {
+        let adv_ids: Vec<uuid::Uuid> = engine_adv
+            .store
+            .all_memories()
+            .unwrap_or_default()
+            .iter()
+            .filter(|m| m.content.starts_with("adv_l5_"))
+            .map(|m| m.id)
+            .collect();
+        for id in &adv_ids {
+            let _ = engine_adv.store.delete(id);
+        }
+    }
     let fitness_adv = eval_l5_placeholder_fitness(&engine_adv, params, &cs_adv, &phi_adv);
 
     let divergence = (fitness_clean - fitness_adv).abs();
