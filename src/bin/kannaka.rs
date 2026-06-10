@@ -60,6 +60,7 @@ use handlers_services::{handle_constellation, handle_market, handle_radio};
 mod handlers_ops;
 use handlers_ops::{
     handle_config, handle_export, handle_import, handle_orchestrate, handle_search,
+    import_memories_from_file,
 };
 
 pub(crate) fn data_dir() -> PathBuf {
@@ -85,6 +86,7 @@ fn dirs_or_default() -> PathBuf {
 fn init_with_hrm(
     data_dir: PathBuf,
     quiet: bool,
+    cfg: &KannakaConfig,
 ) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
     // Setup encoding pipeline for HRM
     let encoder = SimpleHashEncoder::new(384, 42);
@@ -94,14 +96,11 @@ fn init_with_hrm(
     // The config field exists for future variable-dim support; if a
     // user sets a non-default value, warn them that the runtime ignored
     // it rather than silently disregarding the setting. (#93)
-    {
-        let cfg = KannakaConfig::load();
-        if cfg.hrm.wavefront_dim != 10_000 && !quiet {
-            eprintln!(
-                "[config] hrm.wavefront_dim = {} but runtime uses 10000 (variable-dim HRM not yet supported)",
-                cfg.hrm.wavefront_dim,
-            );
-        }
+    if cfg.hrm.wavefront_dim != 10_000 && !quiet {
+        eprintln!(
+            "[config] hrm.wavefront_dim = {} but runtime uses 10000 (variable-dim HRM not yet supported)",
+            cfg.hrm.wavefront_dim,
+        );
     }
     let codebook = Codebook::new(384, 10_000, 42);
     let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
@@ -112,7 +111,6 @@ fn init_with_hrm(
     // `~/.kannaka/nested/custom-store.hrm` collapsed to the default
     // `kannaka.hrm` because the parent-match guard from #81 only let
     // through paths whose parent literally equaled `data_dir`.
-    let cfg = KannakaConfig::load();
     let hrm_path = if !cfg.hrm.path.is_empty() {
         let p = PathBuf::from(&cfg.hrm.path);
         if p.file_name().is_some() {
@@ -239,6 +237,63 @@ pub(crate) fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &
     // Env var is already applied via config.load(), so config_nats_url reflects
     // KANNAKA_NATS_URL > config.toml > built-in default.
     config_nats_url.to_string()
+}
+
+/// Return the value following `--flag` at position `i`, or exit 2 with the
+/// given usage line when the flag is the last token. Replaces the
+/// `"--flag" if i + 1 < args.len()` guards whose failure mode was silently
+/// swallowing a trailing flag into prompt/query text (or ignoring it).
+pub(crate) fn flag_value<'a>(args: &'a [String], i: usize, flag: &str, usage: &str) -> &'a str {
+    match args.get(i + 1) {
+        Some(v) => v.as_str(),
+        None => {
+            eprintln!("{flag} requires a value");
+            eprintln!("{usage}");
+            process::exit(2);
+        }
+    }
+}
+
+/// Strict-parse the value following `--flag`; exit 2 on a missing or
+/// unparsable value instead of silently substituting a default (which
+/// turned typos like `--top-k 1O` into surprise behavior).
+pub(crate) fn parse_flag_value<T: std::str::FromStr>(
+    args: &[String],
+    i: usize,
+    flag: &str,
+    usage: &str,
+) -> T {
+    let v = flag_value(args, i, flag, usage);
+    match v.parse::<T>() {
+        Ok(t) => t,
+        Err(_) => {
+            eprintln!("{flag}: invalid value '{v}'");
+            eprintln!("{usage}");
+            process::exit(2);
+        }
+    }
+}
+
+/// True when KANNAKA_READONLY requests no-persist mode. Mirrors
+/// `HrmStore::env_readonly` (any non-empty value other than "0"/"false").
+pub(crate) fn readonly_env_active() -> bool {
+    match env::var("KANNAKA_READONLY") {
+        Ok(v) => !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => false,
+    }
+}
+
+/// Loud warning for mutating verbs running under KANNAKA_READONLY: the
+/// store mutates in RAM but save/flush silently no-ops (hrm_store.rs
+/// save_medium), so without this the user gets a success message and
+/// zero persistence.
+pub(crate) fn warn_if_readonly(verb: &str) {
+    if readonly_env_active() {
+        eprintln!(
+            "WARNING: KANNAKA_READONLY is set — `{verb}` will modify the \
+             in-memory medium only; NOTHING will be persisted to disk."
+        );
+    }
 }
 
 /// Rebuild + publish AgentPhase + presence from `sys`'s current HRM state,
@@ -373,6 +428,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
 #[cfg(feature = "nats")]
 fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]";
     let mut top_k = 5usize;
     let mut remote = false;
     let mut agent_id_override: Option<String> = None;
@@ -381,8 +437,8 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--top-k" | "--limit" if i + 1 < args.len() => {
-                top_k = args[i + 1].parse().unwrap_or(5);
+            "--top-k" | "--limit" => {
+                top_k = parse_flag_value(args, i, args[i].as_str(), USAGE);
                 i += 2;
             }
             "--remote" => {
@@ -392,16 +448,23 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
             "--collective" => {
                 i += 1;
             }
-            "--agent-id" if i + 1 < args.len() => {
-                agent_id_override = Some(args[i + 1].clone());
+            "--agent-id" => {
+                agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string());
                 i += 2;
             }
-            "--timeout" if i + 1 < args.len() => {
-                timeout_secs = args[i + 1].parse().unwrap_or(8);
+            "--timeout" => {
+                timeout_secs = parse_flag_value(args, i, "--timeout", USAGE);
                 i += 2;
             }
-            "--nats-url" if i + 1 < args.len() => {
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
                 i += 2;
+            }
+            other if other.starts_with("--") => {
+                // A typo'd flag must NOT silently become part of the query.
+                eprintln!("recall: unknown flag: {other}");
+                eprintln!("{USAGE}");
+                process::exit(2);
             }
             _ => {
                 query_parts.push(args[i].as_str());
@@ -679,7 +742,7 @@ fn main() {
         if !quiet {
             eprintln!("Using HRM backend (Holographic Resonance Medium)");
         }
-        match init_with_hrm(dir.clone(), quiet) {
+        match init_with_hrm(dir.clone(), quiet, &cfg) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to initialize with HRM: {e}");
@@ -714,10 +777,12 @@ fn main() {
 
     match args[command_start].as_str() {
         "remember" => {
+            const REMEMBER_USAGE: &str = "Usage: kannaka remember <text> [--importance N] [--category CAT] [--modality MOD] [--tags T1,T2] [--substrate] [--nats-url URL]";
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka remember <text> [--importance N] [--category CAT] [--modality MOD]");
+                eprintln!("{REMEMBER_USAGE}");
                 process::exit(1);
             }
+            warn_if_readonly("remember");
             let mut importance: Option<f64> = None;
             let mut category: Option<String> = None;
             let mut modality_arg: Option<String> = None;
@@ -730,27 +795,40 @@ fn main() {
             let mut i = command_start + 1;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--importance" if i + 1 < args.len() => {
-                        importance = args[i + 1].parse().ok();
+                    "--importance" => {
+                        importance = Some(parse_flag_value(&args, i, "--importance", REMEMBER_USAGE));
                         i += 2;
                     }
-                    "--category" if i + 1 < args.len() => {
-                        category = Some(args[i + 1].clone());
+                    "--category" => {
+                        category = Some(flag_value(&args, i, "--category", REMEMBER_USAGE).to_string());
                         i += 2;
                     }
-                    "--modality" if i + 1 < args.len() => {
-                        modality_arg = Some(args[i + 1].clone());
+                    "--modality" => {
+                        modality_arg = Some(flag_value(&args, i, "--modality", REMEMBER_USAGE).to_string());
                         i += 2;
                     }
-                    "--tags" if i + 1 < args.len() => {
+                    "--tags" => {
                         // Tags are informational — stored in content prefix
-                        let tags = &args[i + 1];
+                        let tags = flag_value(&args, i, "--tags", REMEMBER_USAGE);
                         text_parts.push(format!("[tags: {}]", tags));
                         i += 2;
                     }
                     "--substrate" => {
                         substrate_publish = true;
                         i += 1;
+                    }
+                    // Consumed so it never leaks into the memory text; the
+                    // value is picked up by resolve_nats_url's scan below.
+                    "--nats-url" => {
+                        let _ = flag_value(&args, i, "--nats-url", REMEMBER_USAGE);
+                        i += 2;
+                    }
+                    other if other.starts_with("--") => {
+                        // A typo'd flag must NOT silently become part of the
+                        // stored memory content.
+                        eprintln!("remember: unknown flag: {other}");
+                        eprintln!("{REMEMBER_USAGE}");
+                        process::exit(2);
                     }
                     _ => {
                         text_parts.push(args[i].clone());
@@ -782,10 +860,13 @@ fn main() {
                 detected
             };
 
+            // Importance applies with or without --category. Pre-fix,
+            // `kannaka remember "x" --importance 0.9` without --category
+            // silently dropped the importance on the floor.
             let result = if let Some(cat) = category {
                 sys.remember_with_category(&text, &cat, importance.unwrap_or(0.5))
             } else {
-                sys.remember(&text)
+                sys.remember_with_importance(&text, importance.unwrap_or(0.5))
             };
             match result {
                 Ok(id) => {
@@ -800,10 +881,12 @@ fn main() {
                     }
                     println!("{id}");
 
-                    // Best-effort: publish new memory to NATS for swarm sync
-                    // Uses config (env > config.toml > default) instead of raw env::var
-                    let nats_url = &cfg.swarm.nats_url;
-                    if let Some(transport) = try_nats_connect(nats_url) {
+                    // Best-effort: publish new memory to NATS for swarm sync.
+                    // Honors --nats-url > KANNAKA_NATS_URL (folded into cfg
+                    // at load) > config.toml — pre-fix the flag was ignored
+                    // on this path.
+                    let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
+                    if let Some(transport) = try_nats_connect(&nats_url) {
                         if let Ok(Some(mem)) = sys.engine.store.get(&id) {
                             let agent_id = &cfg.agent.id;
                             // Sender's authoritative counts at publish time —
@@ -926,31 +1009,53 @@ fn main() {
             }
         }
         "recall" => {
+            const RECALL_USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--envelope] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]";
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS]");
+                eprintln!("{RECALL_USAGE}");
                 process::exit(1);
             }
             // `--collective` / `--remote` (+ their `--agent-id`/`--timeout`) are
             // handled load-free in main() before the HRM init; this arm is the
             // LOCAL recall path only.
             let mut top_k = 5usize;
+            let mut envelope = false;
             let mut query_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
-                if (args[i] == "--top-k" || args[i] == "--limit") && i + 1 < args.len() {
-                    top_k = args[i + 1].parse().unwrap_or(5);
-                    i += 2;
-                } else {
-                    query_parts.push(args[i].as_str());
-                    i += 1;
+                match args[i].as_str() {
+                    "--top-k" | "--limit" => {
+                        top_k = parse_flag_value(&args, i, args[i].as_str(), RECALL_USAGE);
+                        i += 2;
+                    }
+                    // ADR-0029 Phase 4b — opt into the envelope. Default
+                    // still emits the legacy array shape so existing
+                    // consumers (radio hub, observatory tangle fallback)
+                    // keep working unchanged. Pre-fix this flag was only
+                    // detected via a separate scan and leaked into the
+                    // query text.
+                    "--envelope" => {
+                        envelope = true;
+                        i += 1;
+                    }
+                    // Accepted everywhere; local recall never touches NATS.
+                    "--nats-url" => {
+                        let _ = flag_value(&args, i, "--nats-url", RECALL_USAGE);
+                        i += 2;
+                    }
+                    other if other.starts_with("--") => {
+                        // A typo'd flag must NOT silently become part of
+                        // the resonance query.
+                        eprintln!("recall: unknown flag: {other}");
+                        eprintln!("{RECALL_USAGE}");
+                        process::exit(2);
+                    }
+                    _ => {
+                        query_parts.push(args[i].as_str());
+                        i += 1;
+                    }
                 }
             }
             let query = query_parts.join(" ");
-
-            // ADR-0029 Phase 4b — opt into the envelope. Default still
-            // emits the legacy array shape so existing consumers (radio
-            // hub, observatory tangle fallback) keep working unchanged.
-            let envelope = args[command_start..].iter().any(|a| a == "--envelope");
             match sys.recall(&query, top_k) {
                 Ok(results) => {
                     let json_results: serde_json::Value = results
@@ -1025,6 +1130,9 @@ fn main() {
             if prefixes.is_empty() {
                 eprintln!("prune-prefix: at least one prefix required");
                 process::exit(1);
+            }
+            if !dry_run {
+                warn_if_readonly("prune-prefix");
             }
             // Phase 1: scan, collect IDs (immutable borrow scope).
             let to_forget: Vec<uuid::Uuid> = {
@@ -1166,6 +1274,7 @@ fn main() {
             if !apply || sel.to_forget.is_empty() {
                 return;
             }
+            warn_if_readonly("triage --apply");
 
             match sys.triage_forget(&sel.to_forget) {
                 Ok(n) => println!("[triage] evicted={n} (Ξ-preserving; representatives retained)"),
@@ -1185,6 +1294,7 @@ fn main() {
                 eprintln!("Usage: kannaka {cmd} <id>");
                 process::exit(1);
             }
+            warn_if_readonly(cmd);
             let id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
                 eprintln!("Invalid UUID: {e}");
                 process::exit(1);
@@ -1237,8 +1347,11 @@ fn main() {
                             ingest = true;
                             i += 1;
                         }
-                        "--limit" if i + 1 < args.len() => {
-                            opts.limit = args[i + 1].parse().unwrap_or(opts.limit);
+                        "--limit" => {
+                            opts.limit = parse_flag_value(
+                                &args, i, "--limit",
+                                "Usage: kannaka research \"<query>\" [--limit N] [--ingest] [--since YEAR] [--min-citations N]",
+                            );
                             i += 2;
                         }
                         "--since" if i + 1 < args.len() => {
@@ -1379,8 +1492,11 @@ fn main() {
                             topic = Some(args[i + 1].clone());
                             i += 2;
                         }
-                        "--max-chars" if i + 1 < args.len() => {
-                            max_chars = args[i + 1].parse().unwrap_or(max_chars);
+                        "--max-chars" => {
+                            max_chars = parse_flag_value(
+                                &args, i, "--max-chars",
+                                "Usage: kannaka dispatch [--topic T] [--json] [--max-chars N]",
+                            );
                             i += 2;
                         }
                         other => {
@@ -1478,10 +1594,12 @@ fn main() {
             }
         }
         "boost" => {
+            const BOOST_USAGE: &str = "Usage: kannaka boost <id> [--amount N]";
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka boost <id> [--amount N]");
+                eprintln!("{BOOST_USAGE}");
                 process::exit(1);
             }
+            warn_if_readonly("boost");
             let id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
                 eprintln!("Invalid UUID: {e}");
                 process::exit(1);
@@ -1489,10 +1607,13 @@ fn main() {
             let mut amount = 0.3f64;
             let mut i = command_start + 2;
             while i < args.len() {
-                if args[i] == "--amount" && i + 1 < args.len() {
-                    amount = args[i + 1].parse().unwrap_or(0.3);
+                if args[i] == "--amount" {
+                    amount = parse_flag_value(&args, i, "--amount", BOOST_USAGE);
                     i += 2;
                 } else {
+                    if args[i].starts_with("--") {
+                        eprintln!("[boost] ignoring unknown flag: {}", args[i]);
+                    }
                     i += 1;
                 }
             }
@@ -1510,6 +1631,7 @@ fn main() {
                 eprintln!("Usage: kannaka relate <source_id> <target_id> [--type TYPE]");
                 process::exit(1);
             }
+            warn_if_readonly("relate");
             let source_id = uuid::Uuid::parse_str(&args[command_start + 1]).unwrap_or_else(|e| {
                 eprintln!("Invalid source UUID: {e}");
                 process::exit(1);
@@ -1619,11 +1741,21 @@ fn main() {
             }
         }
         "bias" => {
-            // Reset all wavefront energies to a target value (restore bias voltage)
-            let target: f32 = args
-                .get(command_start + 1)
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1.0);
+            // Reset all wavefront energies to a target value (restore bias
+            // voltage). Destructive — strict-parse the target: a typo used
+            // to silently default to 1.0 and reset every energy anyway.
+            let target: f32 = match args.get(command_start + 1) {
+                None => 1.0,
+                Some(v) => match v.parse() {
+                    Ok(t) => t,
+                    Err(_) => {
+                        eprintln!("bias: target energy expects a number, got: {v}");
+                        eprintln!("Usage: kannaka bias [TARGET_ENERGY]");
+                        process::exit(1);
+                    }
+                },
+            };
+            warn_if_readonly("bias");
 
             if let Some(hrm) = sys
                 .engine
@@ -1640,6 +1772,7 @@ fn main() {
                 );
             } else {
                 eprintln!("bias command only works with HRM backend");
+                process::exit(1);
             }
         }
         "dream" => {
@@ -1679,7 +1812,8 @@ fn main() {
             // install would silently skip dream-side swarm publishing if
             // the env vars weren't also set on the calling shell. (#87)
             {
-                let cfg = KannakaConfig::load();
+                // Reuses the cfg loaded once in main() — this block used to
+                // re-run KannakaConfig::load() for no reason.
                 if !cfg.agent.id.is_empty()
                     && std::env::var("KANNAKA_AGENT_ID")
                         .unwrap_or_default()
@@ -1997,159 +2131,16 @@ fn main() {
                 eprintln!("Usage: kannaka import-json <file.json>");
                 process::exit(1);
             }
-            let path = &args[command_start + 1];
-            let file_data = std::fs::read_to_string(path).unwrap_or_else(|e| {
-                eprintln!("Failed to read {}: {}", path, e);
-                process::exit(1);
-            });
-            let memories: Vec<serde_json::Value> =
-                serde_json::from_str(&file_data).unwrap_or_else(|e| {
-                    eprintln!("Failed to parse JSON: {}", e);
-                    process::exit(1);
-                });
-
-            let existing_ids: std::collections::HashSet<uuid::Uuid> = sys
-                .engine
-                .store
-                .all_memories()
-                .unwrap_or_default()
-                .iter()
-                .map(|m| m.id)
-                .collect();
-
-            let mut imported = 0u32;
-            let mut skipped = 0u32;
-            let mut errors = 0u32;
-
-            for val in &memories {
-                let id_str = val["id"].as_str().unwrap_or("");
-                let id = match uuid::Uuid::parse_str(id_str) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        errors += 1;
-                        continue;
-                    }
-                };
-
-                if existing_ids.contains(&id) {
-                    skipped += 1;
-                    continue;
-                }
-
-                let content = val["content"].as_str().unwrap_or("").to_string();
-                if content.is_empty() {
-                    skipped += 1;
-                    continue;
-                }
-
-                let amplitude = val["amplitude"].as_f64().unwrap_or(0.5) as f32;
-                let frequency = val["frequency"].as_f64().unwrap_or(1.0) as f32;
-                let phase = val["phase"].as_f64().unwrap_or(0.0) as f32;
-                let decay_rate = val["decay_rate"].as_f64().unwrap_or(0.001) as f32;
-                let created_at = val["created_at"]
-                    .as_str()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(chrono::Utc::now);
-                let hallucinated = val["hallucinated"].as_bool().unwrap_or(false);
-
-                // Reconstruct vector from JSON array if present, otherwise re-encode
-                let vector: Option<Vec<f32>> = val["vector"].as_array().map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_f64().map(|f| f as f32))
-                        .collect()
-                });
-
-                let vector = match vector {
-                    Some(v) if !v.is_empty() => v,
-                    _ => {
-                        // No vector in JSON — use absorb which encodes internally
-                        match sys.engine.store.absorb(&content, amplitude, None) {
-                            Ok(_new_id) => {
-                                imported += 1;
-                                continue;
-                            }
-                            Err(e) => {
-                                if errors < 5 {
-                                    eprintln!("  Error absorbing {}: {}", id_str, e);
-                                }
-                                errors += 1;
-                                continue;
-                            }
-                        }
-                    }
-                };
-
-                let xi_sig: Vec<f32> = val["xi_signature"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_f64().map(|f| f as f32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let content_clone = content.clone();
-                let mut mem = kannaka_memory::memory::HyperMemory::new(vector, content);
-                mem.id = id;
-                mem.amplitude = amplitude;
-                mem.frequency = frequency;
-                mem.phase = phase;
-                mem.decay_rate = decay_rate;
-                mem.created_at = created_at;
-                mem.layer_depth = val["layer_depth"].as_u64().unwrap_or(0) as u8;
-                mem.hallucinated = hallucinated;
-                mem.parents = val["parents"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                mem.xi_signature = xi_sig;
-
-                match sys.engine.store.insert(mem) {
-                    Ok(_) => imported += 1,
-                    Err(e) => {
-                        // Dimension mismatch — fall back to absorb (re-encodes the text)
-                        let err_str = format!("{}", e);
-                        if err_str.contains("dimension mismatch") {
-                            match sys.engine.store.absorb(&content_clone, amplitude, None) {
-                                Ok(_) => {
-                                    imported += 1;
-                                }
-                                Err(e2) => {
-                                    if errors < 5 {
-                                        eprintln!("  Error re-encoding {}: {}", id_str, e2);
-                                    }
-                                    errors += 1;
-                                }
-                            }
-                        } else {
-                            if errors < 5 {
-                                eprintln!("  Error importing {}: {}", id_str, e);
-                            }
-                            errors += 1;
-                        }
-                    }
-                }
-            }
-
-            // Save
-            if imported > 0 {
-                if let Err(e) = sys.save() {
-                    eprintln!("Failed to save: {}", e);
-                    process::exit(1);
-                }
-            }
+            let path = args[command_start + 1].clone();
+            warn_if_readonly("import-json");
+            // Shared lossless import implementation (handlers/ops.rs) —
+            // identical engine to `kannaka import`; only the summary
+            // output shape differs (JSON here, human-readable there).
+            let s = import_memories_from_file(&mut sys, &path);
 
             println!(
                 "{{\"imported\": {}, \"skipped\": {}, \"errors\": {}, \"total_input\": {}}}",
-                imported,
-                skipped,
-                errors,
-                memories.len()
+                s.imported, s.skipped, s.errors, s.total
             );
         }
         "hear" => {
@@ -2298,7 +2289,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker>");
                 process::exit(1);
             }
 
@@ -2319,6 +2310,7 @@ fn main() {
                     // announces leave and exits cleanly. Pass --once to keep
                     // the legacy one-shot behavior (used by scripts that
                     // manage the heartbeat themselves).
+                    const JOIN_USAGE: &str = "Usage: kannaka swarm join [--agent-id ID] [--display-name NAME] [--once] [--heartbeat-secs N] [--nats-url URL]";
                     let mut my_agent_id = agent_id.clone();
                     let mut display_name = String::new();
                     let mut once = false;
@@ -2326,23 +2318,28 @@ fn main() {
                     let mut i = command_start + 2;
                     while i < args.len() {
                         match args[i].as_str() {
-                            "--agent-id" if i + 1 < args.len() => {
-                                my_agent_id = args[i + 1].clone();
+                            "--agent-id" => {
+                                my_agent_id = flag_value(&args, i, "--agent-id", JOIN_USAGE).to_string();
                                 i += 2;
                             }
-                            "--display-name" if i + 1 < args.len() => {
-                                display_name = args[i + 1].clone();
+                            "--display-name" => {
+                                display_name = flag_value(&args, i, "--display-name", JOIN_USAGE).to_string();
                                 i += 2;
                             }
-                            "--nats-url" if i + 1 < args.len() => {
+                            "--nats-url" => {
+                                let _ = flag_value(&args, i, "--nats-url", JOIN_USAGE);
                                 i += 2;
                             }
                             "--once" => {
                                 once = true;
                                 i += 1;
                             }
-                            "--heartbeat-secs" if i + 1 < args.len() => {
-                                heartbeat_secs = args[i + 1].parse().unwrap_or(30).max(5);
+                            "--heartbeat-secs" => {
+                                let v: u64 = parse_flag_value(
+                                    &args, i, "--heartbeat-secs",
+                                    "Usage: kannaka swarm join [--agent-id ID] [--display-name NAME] [--once] [--heartbeat-secs N] [--nats-url URL]",
+                                );
+                                heartbeat_secs = v.max(5);
                                 i += 2;
                             }
                             _ => {
@@ -2519,7 +2516,15 @@ fn main() {
                         &agent_id,
                     );
 
-                    while let Some(msg) = sub.next_message() {
+                    loop {
+                        let msg = match sub.next_event() {
+                            kannaka_memory::nats::SubEvent::Msg(m) => m,
+                            kannaka_memory::nats::SubEvent::Timeout => continue,
+                            // EOF / fatal error — break to the exit below so
+                            // systemd Restart=on-failure restarts the listener
+                            // (pre-fix this exited 0 on connection close).
+                            kannaka_memory::nats::SubEvent::Closed => break,
+                        };
                         if msg.subject.starts_with("QUEEN.phase.") {
                             if let Some(phase) = msg.as_phase() {
                                 println!("[{}] \u{03b8}={:.3} \u{03c9}={:.3} coherence={:.3} phi={:.3} memories={}",
@@ -2594,7 +2599,8 @@ fn main() {
                             }
                         }
                     }
-                    eprintln!("[nats] Connection closed");
+                    eprintln!("[nats] Connection closed — exiting for restart");
+                    process::exit(1);
                 }
                 "status" => {
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
@@ -2795,7 +2801,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker>");
                     process::exit(1);
                 }
             }
@@ -2978,10 +2984,16 @@ fn main() {
         }
 
         "invariant" => {
-            let tolerance = if args.len() > command_start + 1 {
-                args[command_start + 1].parse().unwrap_or(0.1)
-            } else {
-                0.1
+            let tolerance = match args.get(command_start + 1) {
+                None => 0.1,
+                Some(v) => match v.parse() {
+                    Ok(t) => t,
+                    Err(_) => {
+                        eprintln!("invariant: tolerance expects a number, got: {v}");
+                        eprintln!("Usage: kannaka invariant [TOLERANCE]");
+                        process::exit(2);
+                    }
+                },
             };
 
             match sys.invariant_clusters(tolerance) {
@@ -3018,7 +3030,12 @@ fn main() {
                         println!("No δ-clusters found. Try a larger tolerance or ensure you have enough memories.");
                     }
                 }
-                Err(e) => eprintln!("Error computing invariant clusters: {}", e),
+                Err(e) => {
+                    // Errors must not exit 0 — scripted callers couldn't
+                    // tell failure from "no clusters".
+                    eprintln!("Error computing invariant clusters: {}", e);
+                    process::exit(1);
+                }
             }
         }
 
@@ -3074,7 +3091,12 @@ fn main() {
                         }
                     }
                 }
-                Err(e) => eprintln!("Error detecting CMFs: {}", e),
+                Err(e) => {
+                    // Errors must not exit 0 — scripted callers couldn't
+                    // tell failure from "no CMFs detected".
+                    eprintln!("Error detecting CMFs: {}", e);
+                    process::exit(1);
+                }
             }
         }
 
@@ -3419,7 +3441,11 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
     };
 
     if let Some(path) = out_path {
-        std::fs::write(&path, &output).expect("Failed to write output file");
+        // No panic on a bad user-supplied path — exit 1 with the error.
+        if let Err(e) = std::fs::write(&path, &output) {
+            eprintln!("voice: failed to write {}: {}", path, e);
+            process::exit(1);
+        }
         eprintln!("Written to {}", path);
     } else {
         println!("{}", output);
@@ -3827,6 +3853,7 @@ fn classify_command(args: &[String]) {
         })
     } else {
         // Read from stdin
+        use std::io::Read;
         let mut buf = Vec::new();
         std::io::stdin().read_to_end(&mut buf).unwrap_or_else(|e| {
             eprintln!("Error reading stdin: {e}");
