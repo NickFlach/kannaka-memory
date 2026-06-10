@@ -1025,9 +1025,14 @@ pub(crate) fn handle_swarm_worker(_: &mut kannaka_memory::openclaw::KannakaMemor
 }
 
 /// `kannaka swarm tail` — subscribe to the constellation pulse and emit
-/// one NDJSON line per inbound NATS message. The default subject set is
-/// `QUEEN.>`, `KANNAKA.>`, `RADIO.>`, `KAX.>`, `EYE.>` — the prefixes any
-/// constellation node publishes on. `--subject` repeats override the set.
+/// one NDJSON line per inbound NATS message. With credentials (NATS_USER
+/// or user:pass in the URL) the default subject set is the broad
+/// `QUEEN.>`, `KANNAKA.>`, `RADIO.>`, `KAX.>`, `EYE.>`. Without
+/// credentials the swarm server's anonymous user (ADR-0026 #73 public
+/// read-only mirror) denies those wildcards at SUB time — the whole
+/// subscription yields nothing, not just the disallowed subjects — so
+/// the anonymous default is the curated anon-visible set instead.
+/// `--subject` repeats override either default.
 ///
 /// Output format (one line per message):
 ///   {"ts": <unix-ms>, "subject": "<subj>", "payload": <json-or-string>}
@@ -1048,13 +1053,30 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             other => { warn_unknown_flag("tail", other); i += 1; }
         }
     }
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     if subjects.is_empty() {
-        for s in ["QUEEN.>", "KANNAKA.>", "RADIO.>", "KAX.>", "EYE.>"] {
+        let has_creds = std::env::var("NATS_USER").map(|u| !u.is_empty()).unwrap_or(false)
+            || nats_url.contains('@');
+        let defaults: &[&str] = if has_creds {
+            &["QUEEN.>", "KANNAKA.>", "RADIO.>", "KAX.>", "EYE.>"]
+        } else {
+            // Anon-visible set, mirroring the server's anonymous subscribe
+            // allowlist. A broad wildcard here would be denied wholesale.
+            &[
+                "QUEEN.>",
+                "KANNAKA.activity.>",
+                "KANNAKA.events.>",
+                "KANNAKA.consciousness",
+                "KANNAKA.dreams",
+                "KANNAKA.exemplar.>",
+                "KANNAKA.presence.>",
+            ]
+        };
+        for s in defaults {
             subjects.push(s.to_string());
         }
     }
 
-    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     eprintln!("[tail] connecting to {} — subjects: {:?}", nats_url, subjects);
 
     // One dedicated transport per subject — the transport documents a

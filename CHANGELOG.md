@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.6.19] — 2026-06-10
+
+### Fixed
+- **`swarm tail` defaults now work for anonymous connections** — the swarm
+  server's anonymous user (ADR-0026 #73 public read-only mirror) denies the
+  broad `KANNAKA.>`/`RADIO.>`/`KAX.>`/`EYE.>` wildcards at SUB time, so the
+  statusline pulse has only ever received `QUEEN.>` traffic when running
+  without credentials. Credential-less tails now default to the curated
+  anon-visible subject set (`QUEEN.>`, `KANNAKA.activity.>`,
+  `KANNAKA.events.>`, `consciousness`, `dreams`, `exemplar.>`,
+  `presence.>`); with NATS_USER or `user:pass@` in the URL the broad set is
+  unchanged. Server-side, `KANNAKA.activity.>` was added to the anonymous
+  publish+subscribe allowlists so v0.6.18's ask-activity events actually
+  reach the pulse. Verified end-to-end: `kannaka ask` → statusline PULSE.
+
 ## [0.6.18] — 2026-06-10
 
 Comms-hardening release: full-pass bug hunt over the NATS transport, the CLI
