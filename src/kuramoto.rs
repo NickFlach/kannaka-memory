@@ -532,6 +532,22 @@ impl KuramotoSync {
             }
         }
 
+        // In the engine_a pass, sort by content so dense cluster members ("dense_...")
+        // seed BFS before sparse ("sparse_...") and bridge/noise ("l4_...").
+        // Dense-first BFS produces tighter same-cluster components at the start of
+        // the dream chain, which sets up a richer amplitude/phase state for the
+        // engine_a snapshot that seeds engine_b_primed. The xi eval runs on
+        // separate engine_clean / engine_adv engines — those keep UUID order, so
+        // xi/carrier_e are not exposed to the sort.
+        let drive_context = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
+        let all = if drive_context == "engine_a" {
+            let mut v = all;
+            v.sort_by(|a, b| a.content.cmp(&b.content));
+            v
+        } else {
+            all
+        };
+
         // Build adjacency list from similarity graph.
         //
         // PERF: pair similarity is O(n² × d). For n=558, d=10000 that's ~1.56B
