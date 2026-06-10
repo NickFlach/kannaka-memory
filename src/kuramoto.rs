@@ -532,6 +532,17 @@ impl KuramotoSync {
             }
         }
 
+        // Content sort for transfer-path engines (no adversarials); xi/carrier eval engines
+        // (engine_clean, engine_adv, engine_flat) keep UUID sort so adversarials sort last.
+        let mut all = all;
+        {
+            let ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
+            if ctx == "engine_a" || ctx == "engine_b_primed" || ctx == "engine_b_naive" {
+                all.sort_by(|a, b| a.content.cmp(&b.content));
+            }
+        }
+        let all = all;
+
         // Build adjacency list from similarity graph.
         //
         // PERF: pair similarity is O(n² × d). For n=558, d=10000 that's ~1.56B
