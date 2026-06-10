@@ -269,6 +269,8 @@ impl KannakaMemorySystem {
             }
         };
 
+        let last_dream = Self::load_last_dream(&data_dir);
+
         Ok(Self {
             engine,
             consolidation,
@@ -277,7 +279,7 @@ impl KannakaMemorySystem {
             kuramoto,
             data_dir,
             auto_save: true,
-            last_dream: None,
+            last_dream,
             rhythm,
             attention,
             flux,
@@ -705,7 +707,7 @@ impl KannakaMemorySystem {
         eprintln!("[dream] Lite chiral dream pass complete");
 
         let after = self.bridge.assess(&self.engine);
-        self.last_dream = Some(Utc::now());
+        self.mark_dreamed();
 
         // ADR-0031: order matters — triage BEFORE promote. Redundant short-term
         // duplicates resonate strongly (they're near-identical), so the dream
@@ -792,7 +794,7 @@ impl KannakaMemorySystem {
             .map_err(|e| SystemError::Store(e))?;
 
         let after = self.bridge.assess(&self.engine);
-        self.last_dream = Some(Utc::now());
+        self.mark_dreamed();
 
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
@@ -947,6 +949,26 @@ impl KannakaMemorySystem {
 
     // migrate_from_sqlite removed — use chiral_migrate binary instead
     // resonate() removed — resonance IS recall in HRM; no separate step needed
+
+    /// `save()` only flushes the wave medium, so `last_dream` lived and died
+    /// with each process — every CLI invocation reported `last_dream: null`
+    /// no matter how recently a dream ran. Persist it in a tiny sidecar.
+    fn last_dream_path(data_dir: &std::path::Path) -> PathBuf {
+        data_dir.join("last_dream")
+    }
+
+    fn load_last_dream(data_dir: &std::path::Path) -> Option<DateTime<Utc>> {
+        let s = std::fs::read_to_string(Self::last_dream_path(data_dir)).ok()?;
+        DateTime::parse_from_rfc3339(s.trim())
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+    }
+
+    fn mark_dreamed(&mut self) {
+        let now = Utc::now();
+        self.last_dream = Some(now);
+        let _ = std::fs::write(Self::last_dream_path(&self.data_dir), now.to_rfc3339());
+    }
 
     /// Persist to disk -- flush HRM medium. The medium IS the persistence layer.
     pub fn save(&mut self) -> Result<(), SystemError> {
