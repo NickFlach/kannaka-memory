@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.6.17] — 2026-06-09
+
+### Fixed
+- **`last_dream` now persists across processes** (#237) — `save()` only flushes
+  the wave medium, so the timestamp lived and died with each process and every
+  CLI invocation reported `last_dream: null` no matter how recently a dream ran.
+  Dream completion now writes an RFC3339 sidecar (`<data-dir>/last_dream`) that
+  fresh processes load at init.
+
 ## [0.6.16] — 2026-06-07
 
 ### Added
