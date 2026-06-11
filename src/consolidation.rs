@@ -791,12 +791,15 @@ impl ConsolidationEngine {
             .collect();
         let initial_r = self.compute_category_order_parameter(&initial_memories);
 
-        let alpha_base: f32 = 0.10;
-        // engine_b_primed holds ~2× as many memories (A + B combined) and its 16-step
-        // convergence may be under-sufficient. Extra steps improve B-memory integration
-        // into A's phase landscape; flat-corpus carrier_e is unaffected (separate engine).
         let drive_ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
-        let relax_steps: usize = if drive_ctx == "engine_b_primed" { 20 } else { 16 };
+        // engine_b_primed: 20 steps (B-memory integration) + alpha 0.13 (marginal chain_fidelity gain).
+        // engine_clean/engine_adv (xi eval): 20 steps reduce adversarial disruption fraction;
+        //   confirmed sweet spot — 24 steps is catastrophically brittle (T08).
+        let alpha_base: f32 = if drive_ctx == "engine_b_primed" { 0.13 } else { 0.10 };
+        let relax_steps: usize = match drive_ctx.as_str() {
+            "engine_b_primed" | "engine_clean" | "engine_adv" => 20,
+            _ => 16,
+        };
         let envelope_depth: f32 = 0.15;  // "quiet wave" amplitude on alpha
         let two_pi = 2.0 * std::f32::consts::PI;
 
