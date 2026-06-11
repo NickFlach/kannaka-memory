@@ -3452,11 +3452,15 @@ fn run_experiment_l5_session(params: &Params) {
         let _ = engine_b_primed.store.insert(mem);
     }
     // Dream on the primed engine (A state + B memories)
+    // chiral_p_bp=0.15: reduces over-synchronization in B-primed integration,
+    // improving chain_fidelity and transfer_score (confirmed T05/T11).
+    let mut bp_params = (*params).clone();
+    bp_params.chiral_perturbation = 0.15;
     let start_b_primed = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_b_primed");
     let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
          _injected_bp, _orig_bp, _init_amp_bp) =
-        run_l5_dream_chain(params, &mut engine_b_primed);
+        run_l5_dream_chain(&bp_params, &mut engine_b_primed);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 

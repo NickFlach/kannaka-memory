@@ -791,12 +791,18 @@ impl ConsolidationEngine {
             .collect();
         let initial_r = self.compute_category_order_parameter(&initial_memories);
 
-        let alpha_base: f32 = 0.10;
-        // engine_b_primed holds ~2× as many memories (A + B combined) and its 16-step
-        // convergence may be under-sufficient. Extra steps improve B-memory integration
-        // into A's phase landscape; flat-corpus carrier_e is unaffected (separate engine).
         let drive_ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
-        let relax_steps: usize = if drive_ctx == "engine_b_primed" { 20 } else { 16 };
+        // engine_a: stronger per-step convergence (0.12 vs 0.10) moves phi_a from ~0.294
+        // toward phi_target 0.28092 to improve consciousness. relax_steps unchanged at 16
+        // to avoid the T13 transfer crash from over-total-convergence.
+        let alpha_base: f32 = if drive_ctx == "engine_a" { 0.12 } else { 0.10 };
+        // engine_b_primed: 20 steps for B-memory integration into A's landscape.
+        // engine_clean/adv: 20 steps confirmed T08 as xi_eval_relax optimum (xi 0.9870→0.9973).
+        // engine_flat: stays at 16 steps — 20 crashes carrier_emergence (confirmed T17).
+        let relax_steps: usize = match drive_ctx.as_str() {
+            "engine_b_primed" | "engine_clean" | "engine_adv" => 20,
+            _ => 16,
+        };
         let envelope_depth: f32 = 0.15;  // "quiet wave" amplitude on alpha
         let two_pi = 2.0 * std::f32::consts::PI;
 
