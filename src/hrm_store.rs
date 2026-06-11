@@ -443,15 +443,19 @@ impl HrmStore {
 
     /// Apply observation effects to recall results.
     /// Ranked results get proportionally stronger observation.
+    /// Batched: one field-settle pass per recall, not per result.
     fn apply_observation(&mut self, results: &[Resonance]) {
         if results.is_empty() { return; }
-        for (i, resonance) in results.iter().enumerate() {
-            if let Some(index) = self.medium.get_wavefront_index(&resonance.id) {
-                let ranking_factor = 1.0 - (i as f32 / results.len() as f32);
-                let intensity = resonance.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
-                self.medium.observe_wavefront(index, intensity);
-            }
-        }
+        let observations: Vec<(usize, f32)> = results.iter().enumerate()
+            .filter_map(|(i, resonance)| {
+                self.medium.get_wavefront_index(&resonance.id).map(|index| {
+                    let ranking_factor = 1.0 - (i as f32 / results.len() as f32);
+                    let intensity = resonance.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
+                    (index, intensity)
+                })
+            })
+            .collect();
+        self.medium.observe_wavefronts(&observations);
         self.mark_dirty();
     }
     
@@ -957,14 +961,7 @@ impl MediumBackend for HrmStore {
                     let resonances = self.medium.recall_against(
                         Some(&candidates), query, top_k, &self.pipeline,
                     ).map_err(|e| StoreError::Other(format!("prefiltered recall failed: {}", e)))?;
-                    for (i, r) in resonances.iter().enumerate() {
-                        let ranking_factor = 1.0 - (i as f32 / resonances.len().max(1) as f32);
-                        let intensity = r.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
-                        if let Some(index) = self.medium.get_wavefront_index(&r.id) {
-                            self.medium.observe_wavefront(index, intensity);
-                        }
-                    }
-                    self.mark_dirty();
+                    self.apply_observation(&resonances);
                     return Ok(resonances.iter().map(|r| (r.id, r.resonance_strength)).collect());
                 }
             }
@@ -977,14 +974,18 @@ impl MediumBackend for HrmStore {
             let results = chiral.recall(query, top_k, &self.pipeline)
                 .map_err(|e| StoreError::Other(format!("chiral recall failed: {}", e)))?;
 
-            // Observation: recall reshapes the field — attention IS computation
-            for (i, r) in results.iter().enumerate() {
-                let ranking_factor = 1.0 - (i as f32 / results.len().max(1) as f32);
-                let intensity = r.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
-                if let Some(index) = self.medium.get_wavefront_index(&r.id) {
-                    self.medium.observe_wavefront(index, intensity);
-                }
-            }
+            // Observation: recall reshapes the field — attention IS computation.
+            // Batched: one field-settle pass per recall, not per result.
+            let observations: Vec<(usize, f32)> = results.iter().enumerate()
+                .filter_map(|(i, r)| {
+                    self.medium.get_wavefront_index(&r.id).map(|index| {
+                        let ranking_factor = 1.0 - (i as f32 / results.len().max(1) as f32);
+                        let intensity = r.resonance_strength.abs().min(1.0).max(0.1) * ranking_factor;
+                        (index, intensity)
+                    })
+                })
+                .collect();
+            self.medium.observe_wavefronts(&observations);
             self.mark_dirty();
 
             Ok(results.iter().map(|r| (r.id, r.resonance_strength)).collect())

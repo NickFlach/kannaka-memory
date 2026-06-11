@@ -82,29 +82,47 @@ impl Medium {
     /// and phase coherence.
     pub fn compute_interference_matrix(&self, threshold: f32) -> Array2<f32> {
         let n = self.wavefront_count();
-        let mut interference = Array2::zeros((n, n));
+        let gram = self.gram_matrix();
+        let (cos_p, sin_p) = self.phase_trig();
 
+        let mut interference = Array2::zeros((n, n));
         for i in 0..n {
             for j in 0..n {
                 if i != j {
-                    let vec_i = self.store.wavefronts.row(i);
-                    let vec_j = self.store.wavefronts.row(j);
-
-                    // Compute dot product (similarity)
-                    let dot_product: f32 =
-                        vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
-
+                    let dot_product = gram[[i, j]];
                     if dot_product.abs() > threshold {
-                        // Phase coherence: cos(phase_i - phase_j)
-                        let phase_coherence = (self.store.phase[i] - self.store.phase[j]).cos();
-                        let coherence = dot_product * phase_coherence;
-                        interference[[i, j]] = coherence.abs();
+                        // cos(phase_i - phase_j) via the angle-difference identity
+                        let phase_coherence = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
+                        interference[[i, j]] = (dot_product * phase_coherence).abs();
                     }
                 }
             }
         }
 
         interference
+    }
+
+    /// Pairwise dot products of all wavefronts — H · Hᵀ as one real matrix
+    /// multiplication (matrixmultiply-backed). The naive per-element loop
+    /// this replaced cost ~40s on a 650×1024 field; this is ~100ms. Every
+    /// O(N²·dim) consumer (coherence, interference, Gram-based Ξ) routes
+    /// through here.
+    pub(crate) fn gram_matrix(&self) -> Array2<f32> {
+        let h = &self.store.wavefronts;
+        h.dot(&h.t())
+    }
+
+    /// Cached-per-call cos/sin of every wavefront phase, for building
+    /// cos(Δphase) terms without N² trig calls.
+    fn phase_trig(&self) -> (Vec<f32>, Vec<f32>) {
+        let n = self.wavefront_count();
+        let mut cos_p = Vec::with_capacity(n);
+        let mut sin_p = Vec::with_capacity(n);
+        for i in 0..n {
+            cos_p.push(self.store.phase[i].cos());
+            sin_p.push(self.store.phase[i].sin());
+        }
+        (cos_p, sin_p)
     }
 
     /// Compute pairwise coherence matrix for all wavefronts
@@ -114,23 +132,15 @@ impl Medium {
     /// coherence = cos(phase_i - phase_j) * dot(h_i, h_j)
     pub fn coherence_matrix(&self) -> Array2<f32> {
         let n = self.wavefront_count();
-        let mut coherence = Array2::zeros((n, n));
+        let gram = self.gram_matrix();
+        let (cos_p, sin_p) = self.phase_trig();
 
+        let mut coherence = Array2::zeros((n, n));
         for i in 0..n {
             for j in 0..n {
                 if i != j {
-                    let vec_i = self.store.wavefronts.row(i);
-                    let vec_j = self.store.wavefronts.row(j);
-
-                    // Compute dot product
-                    let dot_product: f32 =
-                        vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
-
-                    // Compute phase coherence
-                    let phase_coherence = (self.store.phase[i] - self.store.phase[j]).cos();
-
-                    // Combined coherence: cos(phase_i - phase_j) * dot(h_i, h_j)
-                    coherence[[i, j]] = phase_coherence * dot_product;
+                    let phase_coherence = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
+                    coherence[[i, j]] = phase_coherence * gram[[i, j]];
                 } else {
                     // Self-coherence is 1.0
                     coherence[[i, j]] = 1.0;

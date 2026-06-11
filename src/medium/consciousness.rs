@@ -476,19 +476,9 @@ impl Medium {
             return 0.0;
         }
 
-        // Compute H @ H^T (Gram matrix)
-        let mut gram = Array2::zeros((n, n));
-        for i in 0..n {
-            for j in 0..n {
-                let vec_i = self.store.wavefronts.row(i);
-                let vec_j = self.store.wavefronts.row(j);
-
-                let dot_product: f32 =
-                    vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
-
-                gram[[i, j]] = dot_product;
-            }
-        }
+        // Compute H @ H^T (Gram matrix) — one real matrix multiplication,
+        // not the N²·dim per-element loop (which cost ~40s at 650×1024).
+        let gram = self.gram_matrix();
 
         // Off-diagonal variance proxies "structural richness".
         //
@@ -991,8 +981,43 @@ impl Medium {
     /// * `idx` - Index of the wavefront being observed
     /// * `intensity` - Strength of observation (0.0-1.0+)
     pub(crate) fn observe_wavefront(&mut self, idx: usize, intensity: f32) {
+        if self.observe_wavefront_inner(idx, intensity) {
+            // Apply small dynamics step to let the field settle
+            self.apply_dynamics(0.05);
+        }
+    }
+
+    /// Observe a batch of recalled wavefronts in one pass — the recall hot
+    /// path. Per-wavefront effects are identical to calling
+    /// `observe_wavefront` per result, with two cost fixes:
+    ///
+    /// 1. Each observation computes only the coherence values it reads (one
+    ///    matrix row's worth, O(N·dim)) instead of materializing the full
+    ///    N×N coherence matrix (O(N²·dim)) and reading a single row of it.
+    /// 2. The field-settling dynamics step (itself a full O(N²·dim)
+    ///    interference pass) runs ONCE after all observations instead of
+    ///    once per observation — one recall is one observation event.
+    ///
+    /// Pre-fix, a default `kannaka ask` (top-8 recall) paid ~16 full
+    /// quadratic field passes for the observation side-effect alone —
+    /// minutes of CPU on a 650-wavefront medium.
+    pub(crate) fn observe_wavefronts(&mut self, observations: &[(usize, f32)]) {
+        let mut observed_any = false;
+        for &(idx, intensity) in observations {
+            if self.observe_wavefront_inner(idx, intensity) {
+                observed_any = true;
+            }
+        }
+        if observed_any {
+            self.apply_dynamics(0.05);
+        }
+    }
+
+    /// One observation, no settle step. Returns true if the observation was
+    /// applied (valid index, positive intensity).
+    fn observe_wavefront_inner(&mut self, idx: usize, intensity: f32) -> bool {
         if idx >= self.wavefront_count() || intensity <= 0.0 {
-            return;
+            return false;
         }
 
         // 1. Boost energy of the observed wavefront
@@ -1003,40 +1028,45 @@ impl Medium {
         let observed_meta = &self.store.metadata[idx];
         let modality_weight = get_modality_weight(&observed_meta.content);
 
-        // 3. Compute coherence matrix to find neighbors
-        let coherence_matrix = self.coherence_matrix();
+        // 3/4. Find high-coherence neighbors and nudge their phases toward
+        // alignment. Coherence is computed per neighbor — exactly the values
+        // the full coherence_matrix() row used to hold: cos(Δphase)·dot(h_i,h_j).
         let coherence_threshold = 0.3;
+        let observed_vec = self.store.wavefronts.row(idx).to_owned();
+        let target_phase = self.store.phase[idx];
 
-        // 4. Find high-coherence neighbors and nudge their phases toward alignment
         for neighbor_idx in 0..self.wavefront_count() {
             if neighbor_idx == idx {
                 continue;
             }
 
-            let coherence = coherence_matrix[[idx, neighbor_idx]].abs();
-            
+            let dot_product: f32 = observed_vec
+                .iter()
+                .zip(self.store.wavefronts.row(neighbor_idx).iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            let phase_coherence = (target_phase - self.store.phase[neighbor_idx]).cos();
+            let coherence = (phase_coherence * dot_product).abs();
+
             if coherence > coherence_threshold {
                 // Phase nudging proportional to coherence * intensity * modality_weight
                 let coupling_strength = coherence * intensity * modality_weight * 0.05;
-                
-                // Target phase: the observed wavefront's phase
-                let target_phase = self.store.phase[idx];
+
                 let current_phase = self.store.phase[neighbor_idx];
-                
+
                 // Nudge toward alignment using Kuramoto-like dynamics
                 let phase_difference = target_phase - current_phase;
                 let phase_nudge = coupling_strength * phase_difference.sin();
-                
+
                 self.store.phase[neighbor_idx] += phase_nudge;
-                
+
                 // Also apply a small energy boost to coherent neighbors
                 let neighbor_energy_boost = coupling_strength * 0.5;
                 self.store.energy[neighbor_idx] = (self.store.energy[neighbor_idx] + neighbor_energy_boost).min(1.5);
             }
         }
 
-        // 5. Apply small dynamics step to let the field settle
-        self.apply_dynamics(0.05);
+        true
     }
 
     /// Internal helper: apply interference without going through the full store path.

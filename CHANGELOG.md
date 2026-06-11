@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.6.20] — 2026-06-10
+
+### Performance — `kannaka ask` 6m35s → ~17s end-to-end (650-memory medium)
+
+Three compounding fixes, found by profiling (`KANNAKA_TIME=1`, new):
+
+- **Batched recall observation** — `observe_wavefront` materialized the full
+  N×N coherence matrix (O(N²·dim)) to read ONE row of it, then ran a full
+  field-settling `apply_dynamics` pass — per recall result. A top-8 recall
+  paid ~16 quadratic field passes for the observation side-effect alone. Now:
+  each observation computes only its own coherence row (O(N·dim), identical
+  values), and the settle pass runs once per recall batch. All three recall
+  paths (beam, cluster-prefiltered, chiral) route through the batch.
+- **Gram-matrix kernels are real matrix multiplications** — `coherence_matrix`,
+  `compute_interference_matrix`, and Ξ's Gram loop each rebuilt H·Hᵀ with
+  naive per-element loops (~40s each at 650×1024). They now share one
+  `gram_matrix()` (ndarray `dot`, matrixmultiply-backed, ~100ms) plus
+  cos/sin phase vectors (angle-difference identity instead of N² trig).
+  This makes the whole assess suite (Φ, Ξ, clusters) ~18× faster — which
+  matters beyond ask: every ask's observation mutates the field and saves,
+  so the metrics/cluster fingerprint caches MISS on the next invocation by
+  design; the recompute they guard had to be cheap.
+- **`KANNAKA_TIME=1`** prints per-phase wall times (beam / recall /
+  system_prompt / llm_turn) to stderr — the ask path has now had two silent
+  multi-minute regressions; keep the seams instrumented.
+
+Measured (650 memories, Windows box): recall 42.3s → 2.5s, assess 54.7s →
+3.1s, LLM turn ~2-5s. `--no-recall` unchanged (~7s).
+
 ## [0.6.19] — 2026-06-10
 
 ### Fixed
