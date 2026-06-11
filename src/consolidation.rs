@@ -796,7 +796,10 @@ impl ConsolidationEngine {
         // convergence may be under-sufficient. Extra steps improve B-memory integration
         // into A's phase landscape; flat-corpus carrier_e is unaffected (separate engine).
         let drive_ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
-        let relax_steps: usize = if drive_ctx == "engine_b_primed" { 20 } else { 16 };
+        let relax_steps: usize = if drive_ctx == "engine_b_primed"
+            || drive_ctx == "engine_clean"
+            || drive_ctx == "engine_adv"
+        { 20 } else { 16 };
         let envelope_depth: f32 = 0.15;  // "quiet wave" amplitude on alpha
         let two_pi = 2.0 * std::f32::consts::PI;
 
