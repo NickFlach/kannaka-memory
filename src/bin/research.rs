@@ -3454,9 +3454,10 @@ fn run_experiment_l5_session(params: &Params) {
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_b_primed");
+    let params_bp = { let mut p = (*params).clone(); p.chiral_perturbation = 0.15; p };
     let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
          _injected_bp, _orig_bp, _init_amp_bp) =
-        run_l5_dream_chain(params, &mut engine_b_primed);
+        run_l5_dream_chain(&params_bp, &mut engine_b_primed);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
