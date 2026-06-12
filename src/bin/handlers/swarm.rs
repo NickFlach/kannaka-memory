@@ -582,11 +582,17 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
             .map(|o| o.iter().filter_map(|(k, v)| if v.as_bool() == Some(true) { Some(k.as_str()) } else { None })
                 .collect::<Vec<_>>().join(","))
             .unwrap_or_default();
-        let label = if display.is_empty() || display == agent {
+        let mut label = if display.is_empty() || display == agent {
             agent.to_string()
         } else {
             format!("{} ({})", display, agent)
         };
+        // Optional identity block (swarm agent identity, step 2): agents
+        // that joined while logged in via `kannaka identity` carry
+        // {user_id, email} in their presence record — show the email.
+        if let Some(email) = kannaka_memory::nats::AnnounceIdentity::email_from(p) {
+            label = format!("{} <{}>", label, email);
+        }
         println!("{:<24} {:<8} {:<8} {}", label, mem, ver, caps);
     }
     println!();

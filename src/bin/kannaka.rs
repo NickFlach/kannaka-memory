@@ -313,6 +313,7 @@ fn swarm_publish_heartbeat(
     display_name: &str,
     transport: &kannaka_memory::nats::SwarmTransport,
     label: &str,
+    identity: Option<&kannaka_memory::nats::AnnounceIdentity>,
 ) -> f32 {
     let mut queen =
         kannaka_memory::QueenSync::new(kannaka_memory::QueenConfig::default(), my_agent_id);
@@ -345,7 +346,7 @@ fn swarm_publish_heartbeat(
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
     }
-    let presence = serde_json::json!({
+    let mut presence = serde_json::json!({
         "agent_id": my_agent_id,
         "display_name": display_name,
         "capabilities": {
@@ -357,6 +358,12 @@ fn swarm_publish_heartbeat(
         "memory_count": sys.engine.store.count(),
         "kannaka_version": kannaka_memory::config::VERSION,
     });
+    // Optional identity block (user_id/email only, never tokens) so peers
+    // can render who operates this node. Absent identity → presence
+    // payload unchanged from pre-identity versions.
+    if let Some(idn) = identity {
+        idn.attach_to(&mut presence);
+    }
     if let Err(e) = transport.publish_presence(my_agent_id, &presence) {
         eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
     }
@@ -2380,7 +2387,19 @@ fn main() {
                         }
                     };
 
-                    if let Err(e) = transport.announce_join(&my_agent_id) {
+                    // Stored SSO identity (swarm agent identity, step 2):
+                    // when the operator is logged in via `kannaka identity`,
+                    // announce + presence carry an optional identity block
+                    // (user_id/email only). Not logged in → payloads are
+                    // byte-identical to pre-identity versions.
+                    let identity = kannaka_memory::nats::AnnounceIdentity::from_store();
+                    if let Some(ref idn) = identity {
+                        println!("[identity] Joining as {} ({})", idn.email, idn.user_id);
+                    }
+
+                    if let Err(e) =
+                        transport.announce_join_with_identity(&my_agent_id, identity.as_ref())
+                    {
                         eprintln!("[nats] Warning: announce failed: {}", e);
                     }
                     let _ = transport.ensure_presence_stream();
@@ -2391,6 +2410,7 @@ fn main() {
                         &display_name,
                         &transport,
                         "initial",
+                        identity.as_ref(),
                     );
                     println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
                     println!(
@@ -2454,6 +2474,7 @@ fn main() {
                             &display_name,
                             &transport,
                             "heartbeat",
+                            identity.as_ref(),
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
