@@ -210,6 +210,14 @@ pub fn build_cli() -> Command {
                 .about("Agent-to-agent declarative messaging: send, serve, tail")
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
+        // ── Identity (SpaceChild SSO) ──────────────────────────────────
+        // Step 1 of cryptographic swarm-agent identity: register/login
+        // against spacechild-auth, tokens stored in <data_dir>/identity.json.
+        .subcommand(
+            Command::new("identity")
+                .about("SpaceChild SSO identity: register, login, whoami, logout (KANNAKA_AUTH_URL to override endpoint)")
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
         // ── Constellation services (HTTP) ──────────────────────────────
         .subcommand(passthrough("radio", "Query kannaka-radio (now-playing, schedule)"))
         .subcommand(passthrough("market", "GhostSignals prediction markets"))

@@ -56,6 +56,10 @@ use handlers_inbox::{handle_inbox_send, handle_inbox_serve, handle_inbox_tail};
 mod handlers_services;
 use handlers_services::{handle_constellation, handle_market, handle_radio};
 
+#[path = "handlers/identity.rs"]
+mod handlers_identity;
+use handlers_identity::handle_identity;
+
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
@@ -206,6 +210,7 @@ fn usage_lines() -> &'static [&'static str] {
         "Tools:",
         "  orchestrate run \"task\"    Kannaktopus task orchestration",
         "  config show|set|path      Configuration management",
+        "  identity register|login|whoami|logout   SpaceChild SSO identity",
         "  init                      Re-run setup wizard",
         "  update                    Check for updates",
         "",
@@ -409,6 +414,8 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "ask" | "chat" | "voice"
         // swarm / nats
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
+        // identity (SpaceChild SSO)
+        | "identity"
         // constellation services
         | "radio" | "market" | "constellation"
         // ops / data movement
@@ -698,6 +705,12 @@ fn main() {
         }
         "config" => {
             handle_config(&cfg, &args[command_start..]);
+            return;
+        }
+        // SpaceChild SSO identity — pure HTTP + identity.json, never
+        // touches the HRM (keep it out of the 21 MB load below).
+        "identity" => {
+            handle_identity(&args[command_start..]);
             return;
         }
         _ => {}
