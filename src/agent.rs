@@ -952,6 +952,18 @@ pub fn ask_with_opts(
 ) -> Result<TurnResult, AgentError> {
     let client = client_from_config(cfg)?;
 
+    // KANNAKA_TIME=1 prints per-phase wall times to stderr. The ask path
+    // has a history of silent multi-minute regressions (observation-side
+    // O(N²·dim) passes), so keep the seams instrumented.
+    let timing = std::env::var("KANNAKA_TIME").map(|v| v == "1").unwrap_or(false);
+    let mut t = std::time::Instant::now();
+    let mut lap = move |label: &str, t: &mut std::time::Instant| {
+        if timing {
+            eprintln!("[time] {label}: {:.2}s", t.elapsed().as_secs_f64());
+        }
+        *t = std::time::Instant::now();
+    };
+
     // Surface memories per the chosen recall mode.
     let query = opts.recall_query.unwrap_or(prompt);
     let surfaced = match opts.recall {
@@ -959,6 +971,7 @@ pub fn ask_with_opts(
         RecallMode::Full { top_k } => sys.recall(query, top_k).unwrap_or_default(),
         RecallMode::Attention { beam_size, top_k } => {
             let beam = attention_beam_for_prompt(sys, query, beam_size);
+            lap("attention_beam", &mut t);
             if beam.is_empty() {
                 Vec::new()
             } else {
@@ -966,7 +979,9 @@ pub fn ask_with_opts(
             }
         }
     };
+    lap("recall", &mut t);
     let system = system_prompt(sys, &surfaced);
+    lap("system_prompt(assess)", &mut t);
 
     // Load or seed history.
     let mut history = match opts.session_path {
@@ -1000,6 +1015,7 @@ pub fn ask_with_opts(
             new_messages: vec![assistant],
         }
     };
+    lap("llm_turn", &mut t);
 
     if let Some(path) = opts.session_path {
         let _ = save_session(path, &history);

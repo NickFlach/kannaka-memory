@@ -14,9 +14,21 @@ use super::{
     data_dir, resolve_nats_url, substrate_class_index, substrate_class_word,
     KannakaConfig,
 };
+#[cfg(feature = "nats")]
+use super::flag_value;
+#[cfg(feature = "nats")]
+use kannaka_memory::nats::SubEvent;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
+
+/// Stderr warning for unrecognized `--flags`; unknown flags used to be
+/// silently swallowed by `_ => i += 1` arms.
+fn warn_unknown_flag(ctx: &str, arg: &str) {
+    if arg.starts_with("--") {
+        eprintln!("[{ctx}] ignoring unknown flag: {arg}");
+    }
+}
 
 /// Prune snapshot bodies in `dir` so only the latest `retain` files for
 /// `agent_id` remain. Matches the JetStream max_msgs_per_subject so disk
@@ -159,16 +171,26 @@ pub(crate) fn handle_events_snapshot(
     args: &[String],
 ) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka events snapshot [--interval SECS] [--nats-url URL]";
     let mut interval_secs: Option<u64> = None;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--interval" if i + 1 < args.len() => {
-                interval_secs = args[i + 1].parse().ok();
+            "--interval" => {
+                let v = flag_value(args, i, "--interval", USAGE);
+                // Strict: a typo here used to silently degrade the daemon
+                // into a one-shot run, so the snapshot cadence just stopped.
+                match v.parse::<u64>() {
+                    Ok(n) => interval_secs = Some(n),
+                    Err(_) => {
+                        eprintln!("[snapshot] --interval expects a whole number of seconds, got: {v}");
+                        process::exit(1);
+                    }
+                }
                 i += 2;
             }
-            "--nats-url" if i + 1 < args.len() => { i += 2; }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("snapshot", other); i += 1; }
         }
     }
 
@@ -214,17 +236,18 @@ pub(crate) fn handle_events_snapshot(_: &mut kannaka_memory::openclaw::KannakaMe
 /// clusters, phi, body_gz_bytes (KB), body_path.
 #[cfg(feature = "nats")]
 pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String]) {
+    const USAGE: &str = "Usage: kannaka events list-snapshots [--agent ID] [--json] [--nats-url URL]";
     let mut agent_filter: Option<String> = None;
     let mut json_mode = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--agent" if i + 1 < args.len() => {
-                agent_filter = Some(args[i + 1].clone()); i += 2;
+            "--agent" => {
+                agent_filter = Some(flag_value(args, i, "--agent", USAGE).to_string()); i += 2;
             }
             "--json" => { json_mode = true; i += 1; }
-            "--nats-url" if i + 1 < args.len() => { i += 2; }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("list-snapshots", other); i += 1; }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
@@ -306,6 +329,7 @@ pub(crate) fn handle_events_list_snapshots(_: &KannakaConfig, _: &[String]) {
 pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     use std::io::Read;
     use flate2::read::GzDecoder;
+    const USAGE: &str = "Usage: kannaka events restore [--agent ID] [--from PATH | --from-url URL] [--dry-run] [--nats-url URL]";
     let mut from: Option<String> = None;
     let mut from_url: Option<String> = None;
     let mut agent_filter: Option<String> = None;
@@ -313,56 +337,24 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--from" if i + 1 < args.len() => { from = Some(args[i + 1].clone()); i += 2; }
-            "--from-url" if i + 1 < args.len() => { from_url = Some(args[i + 1].clone()); i += 2; }
-            "--agent" if i + 1 < args.len() => { agent_filter = Some(args[i + 1].clone()); i += 2; }
+            "--from" => { from = Some(flag_value(args, i, "--from", USAGE).to_string()); i += 2; }
+            "--from-url" => { from_url = Some(flag_value(args, i, "--from-url", USAGE).to_string()); i += 2; }
+            "--agent" => { agent_filter = Some(flag_value(args, i, "--agent", USAGE).to_string()); i += 2; }
             "--dry-run" => { dry_run = true; i += 1; }
-            "--nats-url" if i + 1 < args.len() => { i += 2; }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("restore", other); i += 1; }
         }
     }
-
-    // Resolve body_path: either explicit --from or look up latest manifest.
-    let body_path = match from {
-        Some(p) => p,
-        None => {
-            let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
-            let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-                Ok(t) => t,
-                Err(e) => { eprintln!("[restore] NATS connect failed: {}", e); process::exit(1); }
-            };
-            let target_agent = agent_filter.unwrap_or_else(|| cfg.agent.id.clone());
-            let subject = format!("KANNAKA.snapshots.{}.full", target_agent);
-            let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject, 500) {
-                Ok(v) => v,
-                Err(e) => { eprintln!("[restore] read manifests failed: {}", e); process::exit(1); }
-            };
-            if manifests.is_empty() {
-                eprintln!("[restore] no snapshots found for agent={}", target_agent);
-                process::exit(1);
-            }
-            let mut latest = manifests;
-            latest.sort_by(|a, b| {
-                let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-                let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-                bt.cmp(at)
-            });
-            let path = latest[0].get("body_path").and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            match path {
-                Some(p) => p,
-                None => {
-                    eprintln!("[restore] latest manifest has no body_path");
-                    process::exit(1);
-                }
-            }
-        }
-    };
 
     // km#75 — cross-host fetch via the observatory's /api/snapshots/body/<name>
     // (or any HTTP URL serving the gzipped body). Takes precedence over
     // --from and the manifest lookup; the body lands on local disk under
     // <data_dir>/snapshots/ so future replays can use --from.
+    //
+    // The NATS manifest lookup is SKIPPED entirely for --from-url: pre-fix
+    // it ran unconditionally first and exited 1 on a disaster-recovery host
+    // with no reachable NATS / no manifests — the exact scenario --from-url
+    // exists for.
     let gz_bytes: Vec<u8> = if let Some(url) = from_url {
         eprintln!("[restore] source (url): {}", url);
         let resp = match ureq::get(&url).timeout(std::time::Duration::from_secs(120)).call() {
@@ -391,6 +383,42 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
         }
         buf
     } else {
+        // Resolve body_path: either explicit --from or look up latest manifest.
+        let body_path = match from {
+            Some(p) => p,
+            None => {
+                let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+                let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+                    Ok(t) => t,
+                    Err(e) => { eprintln!("[restore] NATS connect failed: {}", e); process::exit(1); }
+                };
+                let target_agent = agent_filter.unwrap_or_else(|| cfg.agent.id.clone());
+                let subject = format!("KANNAKA.snapshots.{}.full", target_agent);
+                let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject, 500) {
+                    Ok(v) => v,
+                    Err(e) => { eprintln!("[restore] read manifests failed: {}", e); process::exit(1); }
+                };
+                if manifests.is_empty() {
+                    eprintln!("[restore] no snapshots found for agent={}", target_agent);
+                    process::exit(1);
+                }
+                let mut latest = manifests;
+                latest.sort_by(|a, b| {
+                    let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                    let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                    bt.cmp(at)
+                });
+                let path = latest[0].get("body_path").and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                match path {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("[restore] latest manifest has no body_path");
+                        process::exit(1);
+                    }
+                }
+            }
+        };
         eprintln!("[restore] source: {}", body_path);
         match std::fs::read(&body_path) {
             Ok(b) => b,
@@ -455,17 +483,18 @@ pub(crate) fn handle_events_restore(_: &KannakaConfig, _: &[String]) {
 #[cfg(feature = "nats")]
 pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
     use std::time::{Duration, Instant};
+    const USAGE: &str = "Usage: kannaka substrate status [--wait SECS] [--json] [--nats-url URL]";
     let mut wait_secs: u64 = 65;
     let mut json_mode = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--wait" if i + 1 < args.len() => {
-                wait_secs = args[i + 1].parse().unwrap_or(65); i += 2;
+            "--wait" => {
+                wait_secs = super::parse_flag_value(args, i, "--wait", USAGE); i += 2;
             }
             "--json" => { json_mode = true; i += 1; }
-            "--nats-url" if i + 1 < args.len() => { i += 2; }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("substrate status", other); i += 1; }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
@@ -481,7 +510,15 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
     eprintln!("[substrate status] waiting up to {}s for next KANNAKA.substrate.phi …", wait_secs);
     let deadline = Instant::now() + Duration::from_secs(wait_secs);
     while Instant::now() < deadline {
-        if let Some(msg) = sub.next_message() {
+        let msg = match sub.next_event() {
+            SubEvent::Msg(m) => m,
+            SubEvent::Timeout => continue,
+            SubEvent::Closed => {
+                eprintln!("[substrate status] subscription closed before a phi event arrived");
+                process::exit(1);
+            }
+        };
+        {
             let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
                 Ok(v) => v,
                 Err(e) => { eprintln!("[substrate status] bad payload: {}", e); continue; }
@@ -616,8 +653,18 @@ pub(crate) fn handle_substrate_run(
         // from <agent> amp=... phase=... freq=...") — peer texts never
         // crossed the boundary in the first place (ADR-0027 Phase 1.c
         // privacy: only wave signatures absorb into the substrate).
+        let mut recall_closed = false;
         if let Some(ref mut rsub) = recall_sub {
-            if let Some(msg) = rsub.next_message() {
+            match rsub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    // Best-effort responder — degrade to absorb-only
+                    // (mirrors the startup behavior when the extra
+                    // connection fails) instead of spinning on a dead fd.
+                    eprintln!("[substrate] WARN: collective-recall subscription closed — continuing absorb-only");
+                    recall_closed = true;
+                }
+                SubEvent::Msg(msg) => {
                 let reply_to = msg.reply_to.clone();
                 let req: serde_json::Value = serde_json::from_slice(&msg.payload)
                     .unwrap_or(serde_json::Value::Null);
@@ -660,10 +707,27 @@ pub(crate) fn handle_substrate_run(
                         }
                     }
                 }
+                }
             }
         }
+        if recall_closed {
+            recall_sub = None;
+        }
 
-        if let Some(msg) = sub.next_message() {
+        // Absorb listener. Timeout falls through so the periodic phi
+        // publish + snapshot checks below still run on an idle bus;
+        // Closed exits nonzero for systemd Restart=on-failure (pre-fix a
+        // dead socket hot-spun here for up to ~3 minutes until the phi
+        // publish failure counter tripped).
+        let absorb_msg = match sub.next_event() {
+            SubEvent::Msg(m) => Some(m),
+            SubEvent::Timeout => None,
+            SubEvent::Closed => {
+                eprintln!("[substrate] absorb subscription closed — exiting for restart");
+                process::exit(1);
+            }
+        };
+        if let Some(msg) = absorb_msg {
             let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
                 Ok(v) => v,
                 Err(e) => { eprintln!("[substrate] skip malformed event: {}", e); continue; }
@@ -837,17 +901,19 @@ pub(crate) fn handle_substrate_backfill(
     args: &[String],
 ) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka substrate backfill [--force] [--delay-ms N] [--nats-url URL]";
     let mut force = false;
     let mut delay_ms: u64 = 50;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--force" => { force = true; i += 1; }
-            "--delay-ms" if i + 1 < args.len() => {
-                delay_ms = args[i + 1].parse().unwrap_or(50);
+            "--delay-ms" => {
+                delay_ms = super::parse_flag_value(args, i, "--delay-ms", USAGE);
                 i += 2;
             }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("backfill", other); i += 1; }
         }
     }
     let marker_path = data_dir().join(".substrate-backfilled");
@@ -970,7 +1036,7 @@ pub(crate) fn handle_substrate_init(
     while i < args.len() {
         match args[i].as_str() {
             "--force" => { force = true; i += 1; }
-            _ => i += 1,
+            other => { warn_unknown_flag("substrate init", other); i += 1; }
         }
     }
     let marker_path = data_dir().join(".substrate-initialized");

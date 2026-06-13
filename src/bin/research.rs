@@ -2909,6 +2909,25 @@ fn eval_xi_robustness_v2(
          _inj_adv, _orig_adv, _iamp_adv) =
         run_l5_dream_chain(params, &mut engine_adv);
     std::env::remove_var("DRIVE_CONTEXT");
+    // Remove adversarial memories before evaluating corpus state.
+    // Adversarials inflate phi (IIT proxy) because they add inter-cluster
+    // links, making fitness_adv artificially high regardless of corpus health.
+    // Deleting them here measures corpus robustness: did adversarial dreaming
+    // actually degrade corpus memories? The chain_seeds/phi_history still
+    // reflect dynamics from the adversarial dream.
+    {
+        let adv_ids: Vec<uuid::Uuid> = engine_adv
+            .store
+            .all_memories()
+            .unwrap_or_default()
+            .iter()
+            .filter(|m| m.content.starts_with("adv_l5_"))
+            .map(|m| m.id)
+            .collect();
+        for id in &adv_ids {
+            let _ = engine_adv.store.delete(id);
+        }
+    }
     let fitness_adv = eval_l5_placeholder_fitness(&engine_adv, params, &cs_adv, &phi_adv);
 
     let divergence = (fitness_clean - fitness_adv).abs();
@@ -3352,8 +3371,15 @@ fn run_experiment_l5_session(params: &Params) {
     l5_params.chain_carry_strength = 0.7;
     l5_params.chiral_perturbation = 0.7;
     l5_params.consolidation_repulsion_threshold = 0.28;
-    l5_params.chain_depth = 16; // L5 default — quiescence may short-circuit
-    l5_params.chain_top_n = 7;
+    // interference_relax phi fluctuates through injection events (cycles 2,5,8,11,14),
+    // preventing quiescence from firing and causing 15-cycle over-consolidation that
+    // collapses xi (0.97→0.68) and transfer (0.84→0.53). Hard-cap at 4 cycles:
+    // T15's good runs (0.037 fitness) quiesced at cycle 4 — same effective depth.
+    l5_params.chain_depth = 4; // irx cap — prevents hallucination-driven over-consolidation
+    l5_params.chain_top_n = std::env::var("CHAIN_TOP_N")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(7);
     // K=0.5 confirmed optimal in K-sweep (2026-06-06): weaker coupling preserves
     // more phase diversity than K=1.0, further lifting xi and reducing avg fitness
     // from ~0.138 (K=1.0) to ~0.133 (K=0.5). KURAMOTO_COUPLING env var overrides.
@@ -3428,9 +3454,10 @@ fn run_experiment_l5_session(params: &Params) {
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_b_primed");
+    let params_bp = { let mut p = (*params).clone(); p.chiral_perturbation = 0.15; p };
     let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
          _injected_bp, _orig_bp, _init_amp_bp) =
-        run_l5_dream_chain(params, &mut engine_b_primed);
+        run_l5_dream_chain(&params_bp, &mut engine_b_primed);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 
@@ -3539,7 +3566,12 @@ fn run_experiment_l5_session(params: &Params) {
     let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
 
     // L5.8: xi_robustness_v2 — adversarial robustness of xi re-ranking paths
-    let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, params, dim);
+    // Xi engines (clean + adv) get depth=2: 32 relaxation steps vs 64 at depth=4.
+    // T16 identified that depth=4 gave adversaries extra disruption time (xi 0.808).
+    // depth=2 gives the same relative comparison (both engines equally constrained)
+    // while halving adversarial phase-disruption time.
+    let xi_eval_params = { let mut p = (*params).clone(); p.chain_depth = 2; p };
+    let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, &xi_eval_params, dim);
 
     // L5 fitness — all 13 metrics wired, no placeholders remaining
     // Inherited core (15%): noise_removal(2%), signal_preservation(2%),

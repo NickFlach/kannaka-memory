@@ -1,0 +1,1 @@
+All structural axes confirmed closed after T21 (combined stack confirmed at fitness 0.008334); remaining gap is transfer floor (fp=0.002488 structural) and consciousness floor (phi_a=0.268 structural); next improvement would require architectural change, not parameter sweep.

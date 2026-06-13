@@ -46,7 +46,25 @@ use std::process;
 
 use super::KannakaConfig;
 #[cfg(feature = "nats")]
-use super::resolve_nats_url;
+use super::{flag_value, resolve_nats_url};
+#[cfg(feature = "nats")]
+use kannaka_memory::nats::SubEvent;
+
+/// Reply subjects the `--wait` sender actually subscribes to. `inbox serve`
+/// refuses to publish handler output anywhere else — a forged `reply_to`
+/// in an inbound message must not turn the daemon into an arbitrary-subject
+/// publisher.
+#[cfg(feature = "nats")]
+const REPLY_SUBJECT_PREFIX: &str = "KANNAKA.inbox.reply.";
+
+/// Stderr warning for unrecognized `--flags` (non-text handlers); unknown
+/// flags used to be silently swallowed by `_ => i += 1`.
+#[cfg(feature = "nats")]
+fn warn_unknown_flag(ctx: &str, arg: &str) {
+    if arg.starts_with("--") {
+        eprintln!("[{ctx}] ignoring unknown flag: {arg}");
+    }
+}
 
 /// Default handlers config path: $KANNAKA_INBOX_HANDLERS or
 /// $HOME/.kannaka/inbox-handlers.toml.
@@ -161,8 +179,9 @@ fn render_cmd(
 #[cfg(feature = "nats")]
 pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>] [--wait [secs]] [--nats-url URL]";
     if args.len() < 4 {
-        eprintln!("Usage: kannaka inbox send <to> <verb> [--arg key=val ...] [--from <id>] [--wait [secs]]");
+        eprintln!("{USAGE}");
         process::exit(1);
     }
     let to = args[2].clone();
@@ -173,12 +192,12 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
     let mut i = 4;
     while i < args.len() {
         match args[i].as_str() {
-            "--from" if i + 1 < args.len() => {
-                from = args[i + 1].clone();
+            "--from" => {
+                from = flag_value(args, i, "--from", USAGE).to_string();
                 i += 2;
             }
-            "--arg" if i + 1 < args.len() => {
-                let kv = &args[i + 1];
+            "--arg" => {
+                let kv = flag_value(args, i, "--arg", USAGE);
                 if let Some(eq) = kv.find('=') {
                     let k = kv[..eq].to_string();
                     let v = kv[eq + 1..].to_string();
@@ -201,10 +220,11 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
                 wait_secs = Some(30);
                 i += 1;
             }
-            "--nats-url" if i + 1 < args.len() => i += 2,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
             _ => {
                 eprintln!("unknown flag: {}", args[i]);
-                process::exit(1);
+                eprintln!("{USAGE}");
+                process::exit(2);
             }
         }
     }
@@ -271,12 +291,30 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
     if let (Some(mut sub), Some(secs)) = (reply_sub, wait_secs) {
         let deadline = std::time::Instant::now() + Duration::from_secs(secs);
         while std::time::Instant::now() < deadline {
-            if let Some(msg) = sub.next_message() {
-                // Reply payload mirrors the audit "received" envelope,
-                // so callers parse a known shape.
-                std::io::Write::write_all(&mut std::io::stdout(), &msg.payload).ok();
-                println!();
-                return;
+            match sub.next_event() {
+                SubEvent::Msg(msg) => {
+                    // Reply payload mirrors the audit "received" envelope,
+                    // so callers parse a known shape.
+                    std::io::Write::write_all(&mut std::io::stdout(), &msg.payload).ok();
+                    println!();
+                    // Exit nonzero when the handler did NOT succeed — pre-fix
+                    // a `handler_failed` / `unknown_verb` envelope still
+                    // exited 0, so scripted callers couldn't tell.
+                    let status = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+                        .ok()
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from))
+                        .unwrap_or_default();
+                    if status == "ok" {
+                        return;
+                    }
+                    eprintln!("[inbox send] handler reply status: {}", if status.is_empty() { "(missing)" } else { &status });
+                    process::exit(1);
+                }
+                SubEvent::Timeout => continue,
+                SubEvent::Closed => {
+                    eprintln!("[inbox send] reply subscription closed before a reply arrived");
+                    process::exit(1);
+                }
             }
         }
         eprintln!("[inbox send] no reply within {secs}s — handler may still run async");
@@ -292,21 +330,22 @@ pub(crate) fn handle_inbox_send(cfg: &KannakaConfig, args: &[String]) {
 #[cfg(feature = "nats")]
 pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka inbox serve [--agent-id <id>] [--handlers <path>] [--nats-url URL]";
     let mut agent_id = cfg.agent.id.clone();
     let mut handlers_path = default_handlers_path();
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--agent-id" if i + 1 < args.len() => {
-                agent_id = args[i + 1].clone();
+            "--agent-id" => {
+                agent_id = flag_value(args, i, "--agent-id", USAGE).to_string();
                 i += 2;
             }
-            "--handlers" if i + 1 < args.len() => {
-                handlers_path = PathBuf::from(&args[i + 1]);
+            "--handlers" => {
+                handlers_path = PathBuf::from(flag_value(args, i, "--handlers", USAGE));
                 i += 2;
             }
-            "--nats-url" if i + 1 < args.len() => i += 2,
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("inbox serve", other); i += 1; }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
@@ -384,9 +423,17 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
             publish_skills();
             last_announce = std::time::Instant::now();
         }
-        let msg = match sub.next_message() {
-            Some(m) => m,
-            None => continue,
+        let msg = match sub.next_event() {
+            SubEvent::Msg(m) => m,
+            // Read timeout — healthy idle; loop back for the announce check.
+            SubEvent::Timeout => continue,
+            // Pre-fix a closed socket spun this loop at 100% CPU forever
+            // while the daemon looked alive. Exit nonzero so systemd
+            // Restart=on-failure brings us back with a fresh connection.
+            SubEvent::Closed => {
+                eprintln!("[inbox serve] subscription {subject} closed — exiting for restart");
+                process::exit(1);
+            }
         };
         let parsed: serde_json::Value = match serde_json::from_slice(&msg.payload) {
             Ok(v) => v,
@@ -424,8 +471,24 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
         let _ = transport.publish("KANNAKA.inbox.audit", &envelope_bytes);
         // Direct reply to the sender if they asked. Same envelope as the
         // audit fan-out — sender's --wait loop expects this shape.
+        //
+        // Validate before publishing: the sender's --wait loop only ever
+        // subscribes to KANNAKA.inbox.reply.<msg_id>, so any other
+        // reply_to is forged (or a confused client) and would let an
+        // inbound message use this daemon to publish handler output onto
+        // arbitrary subjects.
         if let Some(rt) = reply_to {
-            let _ = transport.publish(&rt, &envelope_bytes);
+            if rt.starts_with(REPLY_SUBJECT_PREFIX)
+                && rt.len() > REPLY_SUBJECT_PREFIX.len()
+                && !rt[REPLY_SUBJECT_PREFIX.len()..].contains(['*', '>', ' '])
+            {
+                let _ = transport.publish(&rt, &envelope_bytes);
+            } else {
+                eprintln!(
+                    "[inbox serve] rejecting reply_to '{}' from {} — replies only go to {}<msg_id>",
+                    rt, from, REPLY_SUBJECT_PREFIX
+                );
+            }
         }
     }
 }
@@ -486,16 +549,17 @@ fn run_one(
 #[cfg(feature = "nats")]
 pub(crate) fn handle_inbox_tail(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
+    const USAGE: &str = "Usage: kannaka inbox tail [--agent-id <id>] [--nats-url URL]";
     let mut filter_agent: Option<String> = None;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--agent-id" if i + 1 < args.len() => {
-                filter_agent = Some(args[i + 1].clone());
+            "--agent-id" => {
+                filter_agent = Some(flag_value(args, i, "--agent-id", USAGE).to_string());
                 i += 2;
             }
-            "--nats-url" if i + 1 < args.len() => i += 2,
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("inbox tail", other); i += 1; }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
@@ -517,9 +581,13 @@ pub(crate) fn handle_inbox_tail(cfg: &KannakaConfig, args: &[String]) {
     eprintln!("[inbox tail] watching KANNAKA.inbox.audit{}", filter_agent.as_ref().map(|a| format!(" (filter: {a})")).unwrap_or_default());
 
     loop {
-        let msg = match sub.next_message() {
-            Some(m) => m,
-            None => continue,
+        let msg = match sub.next_event() {
+            SubEvent::Msg(m) => m,
+            SubEvent::Timeout => continue,
+            SubEvent::Closed => {
+                eprintln!("[inbox tail] subscription closed — exiting for restart");
+                process::exit(1);
+            }
         };
         let parsed: serde_json::Value = match serde_json::from_slice(&msg.payload) {
             Ok(v) => v,

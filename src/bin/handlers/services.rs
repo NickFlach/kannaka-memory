@@ -291,9 +291,19 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     process::exit(1);
                 }
             };
-            let shares: u64 = args.get(4)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1);
+            // Strict-parse the quantity — a typo like "1O" used to silently
+            // buy 1 share. Absent quantity keeps the historical default of 1.
+            let shares: u64 = match args.get(4) {
+                None => 1,
+                Some(s) => match s.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("  market buy: <shares> expects a whole number, got: {s}");
+                        eprintln!("  Usage: kannaka market buy <market-id> <outcome> <shares>");
+                        process::exit(1);
+                    }
+                },
+            };
 
             let url = format!("{}/api/markets/{}/trade", base, market_id);
             let body = serde_json::json!({
@@ -327,13 +337,17 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     process::exit(1);
                 }
             };
+            const CREATE_USAGE: &str = "Usage: kannaka market create \"question\" [--ttl 3600]";
             let mut ttl: u64 = 3600;
             let mut i = 3;
             while i < args.len() {
-                if args[i] == "--ttl" && i + 1 < args.len() {
-                    ttl = args[i + 1].parse().unwrap_or(3600);
+                if args[i] == "--ttl" {
+                    ttl = super::parse_flag_value(args, i, "--ttl", CREATE_USAGE);
                     i += 2;
                 } else {
+                    if args[i].starts_with("--") {
+                        eprintln!("[market create] ignoring unknown flag: {}", args[i]);
+                    }
                     i += 1;
                 }
             }

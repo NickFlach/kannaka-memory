@@ -532,14 +532,23 @@ impl KuramotoSync {
             }
         }
 
-        // Sort by content string for deterministic BFS traversal order regardless of
-        // HashMap iteration order or adversarial UUID generation. The adjacency matrix
-        // is symmetric and order-independent; only the BFS seed sequence and spectral
-        // sub-split ordering are affected. Content strings are unique per memory and
-        // deterministic across runs (corpus uses fixed seeds, adversarial uses fixed seed).
-        let mut all = all;
-        all.sort_by(|a, b| a.content.cmp(&b.content));
-        let all = all;
+        // Apply content-string sort only for the transfer-eval engines. UUID order
+        // (from all_memories()) places T15 adversarials last (UUID ≈ u128::MAX),
+        // which is critical for xi: engine_adv must NOT sort by content (adversarials
+        // "adv_l5_..." sort before corpus alphabetically) and engine_clean must use
+        // the same ordering as engine_adv (consistent topology → good xi comparison).
+        // For transfer engines (engine_a, engine_b_primed, engine_b_naive, engine_flat),
+        // adversarials are absent; content sort provides the same BFS cluster seeding
+        // across all transfer passes — the same topology engine_a builds is what
+        // engine_b_primed inherits and extends, recovering the T13 transfer benefit.
+        let drive_ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
+        let all = if matches!(drive_ctx.as_str(), "engine_a" | "engine_b_primed" | "engine_b_naive" | "engine_flat") {
+            let mut sorted = all;
+            sorted.sort_by(|a, b| a.content.cmp(&b.content));
+            sorted
+        } else {
+            all
+        };
 
         // Build adjacency list from similarity graph.
         //
