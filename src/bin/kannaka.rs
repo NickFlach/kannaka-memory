@@ -3521,7 +3521,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
 
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("title: Dream Journal\n"));
+    out.push_str("title: Dream Journal\n");
     out.push_str(&format!(
         "date: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
@@ -3590,7 +3590,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
             ));
         }
     }
-    out.push_str("\n");
+    out.push('\n');
 
     if !is_hrm {
         // Most connected — the hubs (graph mode only)
@@ -3606,7 +3606,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Dream-generated memories
@@ -3625,7 +3625,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     if !is_hrm {
@@ -3655,7 +3655,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 link.strength, link.span, from_preview, to_preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Wave dynamics
@@ -3733,14 +3733,14 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     ));
 
     out.push_str("## Network Overview\n\n");
-    out.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+    out.push_str("| Metric | Value |\n|--------|-------|\n");
     out.push_str(&format!(
         "| Total memories | {} |\n",
         report.topology.total_memories
     ));
 
     if is_hrm {
-        out.push_str(&format!("| Field mode | HRM (tensor interference) |\n"));
+        out.push_str("| Field mode | HRM (tensor interference) |\n");
         out.push_str(&format!(
             "| Coherence density | {:.3} |\n",
             report.topology.network_density
@@ -3781,7 +3781,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
         let bar = "█".repeat((*count).min(50));
         out.push_str(&format!("Layer {} | {:>4} | {}\n", layer, count, bar));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out.push_str("## Clusters\n\n");
     for (i, c) in report.clusters.clusters.iter().enumerate() {
@@ -3793,7 +3793,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
             c.order_parameter
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out
 }
@@ -3844,7 +3844,7 @@ fn voice_status(sys: &mut KannakaMemorySystem) -> String {
             c.order_parameter * 100.0
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out
 }
