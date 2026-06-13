@@ -6,7 +6,11 @@
 
 use std::process;
 
-use super::{compact_input, data_dir, KannakaConfig};
+use super::{compact_input, data_dir, flag_value, parse_flag_value, KannakaConfig};
+
+const ASK_USAGE: &str = "Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] \
+[--no-recall|--full-recall] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \
+[--remote-timeout <seconds>] [--nats-url <url>] \"your question\"";
 
 pub(crate) fn handle_ask(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
@@ -15,7 +19,7 @@ pub(crate) fn handle_ask(
 ) {
     // Parse flags: --session <id>, --quiet-tools, --no-tools, --no-recall,
     // --full-recall, --recall-query <text>, --remote <agent_id|broadcast>,
-    // --remote-timeout <seconds>
+    // --remote-timeout <seconds>, --nats-url <url>
     //
     // Recall mode precedence: --no-recall > --full-recall > attention (default).
     //   attention   — query-aware beam + recall_with_beam. Default. ~3-5s.
@@ -34,30 +38,39 @@ pub(crate) fn handle_ask(
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--session" if i + 1 < args.len() => { session = Some(args[i + 1].clone()); i += 2; }
+            "--session" => { session = Some(flag_value(args, i, "--session", ASK_USAGE).to_string()); i += 2; }
             "--quiet-tools" => { quiet_tools = true; i += 1; }
             "--no-tools" => { no_tools = true; i += 1; }
             "--no-recall" => { no_recall = true; i += 1; }
             "--full-recall" => { full_recall = true; i += 1; }
-            "--recall-query" if i + 1 < args.len() => { recall_query = Some(args[i + 1].clone()); i += 2; }
-            "--remote" if i + 1 < args.len() => { remote = Some(args[i + 1].clone()); i += 2; }
-            "--remote-timeout" if i + 1 < args.len() => {
-                remote_timeout_secs = args[i + 1].parse().unwrap_or(60);
+            "--recall-query" => { recall_query = Some(flag_value(args, i, "--recall-query", ASK_USAGE).to_string()); i += 2; }
+            "--remote" => { remote = Some(flag_value(args, i, "--remote", ASK_USAGE).to_string()); i += 2; }
+            "--remote-timeout" => {
+                remote_timeout_secs = parse_flag_value(args, i, "--remote-timeout", ASK_USAGE);
                 i += 2;
+            }
+            // Consumed here so it never leaks into the prompt; the value is
+            // picked up by resolve_nats_url's scan in handle_ask_remote.
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", ASK_USAGE); i += 2; }
+            other if other.starts_with("--") => {
+                // A typo'd flag must NOT silently become part of the question.
+                eprintln!("ask: unknown flag: {other}");
+                eprintln!("{ASK_USAGE}");
+                process::exit(2);
             }
             _ => { parts.push(args[i].clone()); i += 1; }
         }
     }
     let prompt = parts.join(" ").trim().to_string();
     if prompt.is_empty() {
-        eprintln!("Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] [--no-recall|--full-recall] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \"your question\"");
+        eprintln!("{ASK_USAGE}");
         process::exit(1);
     }
 
     // --remote: route the question over NATS to a peer (or broadcast) running
     // `kannaka swarm serve`. ADR-0026 Phase 1.
     if let Some(target) = remote {
-        return handle_ask_remote(cfg, &target, &prompt, recall_query.as_deref(),
+        return handle_ask_remote(cfg, args, &target, &prompt, recall_query.as_deref(),
             no_tools, remote_timeout_secs, quiet_tools);
     }
 
@@ -123,6 +136,11 @@ pub(crate) fn handle_ask(
                 process::exit(2);
             }
             println!("{}", result.text);
+            // Best-effort pulse so local asks show up in the swarm-tail /
+            // statusline activity feed. Runs AFTER the answer is printed
+            // so the user never waits on NATS; failures never affect the
+            // exit code.
+            publish_ask_activity(cfg, &prompt);
         }
         Err(e) => {
             eprintln!("agent error: {e}");
@@ -131,11 +149,54 @@ pub(crate) fn handle_ask(
     }
 }
 
+/// Publish a `KANNAKA.activity.<agent_id>` event for a successful local ask.
+/// Only attempted when a NATS URL is explicitly configured (config or
+/// KANNAKA_NATS_URL env) — never falls back to a hardcoded public host.
+/// Failures are at most a single eprintln and never change the exit code.
+#[cfg(feature = "nats")]
+fn publish_ask_activity(cfg: &KannakaConfig, prompt: &str) {
+    let nats_url = if !cfg.swarm.nats_url.is_empty() {
+        cfg.swarm.nats_url.clone()
+    } else {
+        match std::env::var("KANNAKA_NATS_URL") {
+            Ok(u) if !u.is_empty() => u,
+            _ => return, // not configured — stay quiet
+        }
+    };
+    let display_name = if cfg.agent.display_name.is_empty() {
+        cfg.agent.id.clone()
+    } else {
+        cfg.agent.display_name.clone()
+    };
+    let preview: String = prompt.chars().take(48).collect();
+    let payload = serde_json::json!({
+        "agent_id": cfg.agent.id,
+        "display_name": display_name,
+        "kind": "ask",
+        "preview": preview,
+        "ts": chrono::Utc::now().timestamp_millis(),
+    });
+    let subject = format!("KANNAKA.activity.{}", cfg.agent.id);
+    match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => {
+            if let Err(e) = t.publish(&subject, payload.to_string().as_bytes()) {
+                eprintln!("[ask] activity publish failed: {e}");
+            }
+        }
+        Err(_) => {} // best-effort: silent on connect failure
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+fn publish_ask_activity(_: &KannakaConfig, _: &str) {}
+
 // ── ADR-0026 Phase 1: remote ask routing over NATS ─────────────────────────
 
 #[cfg(feature = "nats")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_ask_remote(
     cfg: &KannakaConfig,
+    args: &[String],
     target: &str,
     prompt: &str,
     recall_query: Option<&str>,
@@ -144,12 +205,13 @@ pub(crate) fn handle_ask_remote(
     quiet_tools: bool,
 ) {
     use std::time::Duration;
-    let nats_url = if !cfg.swarm.nats_url.is_empty() {
-        cfg.swarm.nats_url.clone()
-    } else {
-        std::env::var("KANNAKA_NATS_URL")
-            .unwrap_or_else(|_| "nats://swarm.ninja-portal.com:4222".to_string())
-    };
+    // Honors --nats-url > KANNAKA_NATS_URL (folded into cfg at load) >
+    // config.toml. No hardcoded public-host fallback.
+    let nats_url = super::resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    if nats_url.is_empty() {
+        eprintln!("ask --remote: no NATS URL configured — set swarm.nats_url, KANNAKA_NATS_URL, or pass --nats-url");
+        process::exit(1);
+    }
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
         Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
@@ -207,7 +269,8 @@ pub(crate) fn handle_ask_remote(
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_ask_remote(_: &KannakaConfig, _: &str, _: &str, _: Option<&str>, _: bool, _: u64, _: bool) {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_ask_remote(_: &KannakaConfig, _: &[String], _: &str, _: &str, _: Option<&str>, _: bool, _: u64, _: bool) {
     eprintln!("--remote requires the 'nats' feature");
     process::exit(1);
 }

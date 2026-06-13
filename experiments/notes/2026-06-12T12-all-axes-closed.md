@@ -1,0 +1,1 @@
+All axes confirmed closed (transfer structural floor 0.963983, K=0.5 swept 2026-06-06, freq=0.5Hz, alpha_a=0.12 cliff, xi_eval=20, chiral_p_bp=0.15); total improvable ≈0.002615 < threshold 0.002627; no new test worth running.

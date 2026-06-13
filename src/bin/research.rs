@@ -3376,7 +3376,10 @@ fn run_experiment_l5_session(params: &Params) {
     // collapses xi (0.97→0.68) and transfer (0.84→0.53). Hard-cap at 4 cycles:
     // T15's good runs (0.037 fitness) quiesced at cycle 4 — same effective depth.
     l5_params.chain_depth = 4; // irx cap — prevents hallucination-driven over-consolidation
-    l5_params.chain_top_n = 7;
+    l5_params.chain_top_n = std::env::var("CHAIN_TOP_N")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(7);
     // K=0.5 confirmed optimal in K-sweep (2026-06-06): weaker coupling preserves
     // more phase diversity than K=1.0, further lifting xi and reducing avg fitness
     // from ~0.138 (K=1.0) to ~0.133 (K=0.5). KURAMOTO_COUPLING env var overrides.
@@ -3451,9 +3454,10 @@ fn run_experiment_l5_session(params: &Params) {
     // Dream on the primed engine (A state + B memories)
     let start_b_primed = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_b_primed");
+    let params_bp = { let mut p = (*params).clone(); p.chiral_perturbation = 0.15; p };
     let (chain_seeds_bp, phi_history_bp, _chain_totals_bp, quiescence_bp, _amp_deltas_bp,
          _injected_bp, _orig_bp, _init_amp_bp) =
-        run_l5_dream_chain(params, &mut engine_b_primed);
+        run_l5_dream_chain(&params_bp, &mut engine_b_primed);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_b_primed = start_b_primed.elapsed().as_millis() as u64;
 

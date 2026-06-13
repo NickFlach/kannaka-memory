@@ -5,6 +5,15 @@
 //! for agent registry / discovery, structured event streams, and automatic
 //! reconnection with message buffering.
 //!
+//! Connection model: one TCP socket per `SwarmTransport`, guarded by a single
+//! mutex holding both the write half and a persistent `BufReader` (the reader
+//! must persist across calls — recreating it per call discards any bytes it
+//! pre-read into its internal buffer and desyncs the protocol). Long-running
+//! subscriptions clone the socket and own their own reader; while one is open
+//! the transport's RPC methods MUST NOT be used on the same connection (the
+//! two readers would steal each other's bytes) — serving agents open a
+//! dedicated `SwarmTransport` per subscription.
+//!
 //! Subject layout:
 //! - `QUEEN.phase.<agent_id>` — each agent's latest phase (publish per agent)
 //! - `QUEEN.phase.*` — wildcard subscribe to get all phases
@@ -15,8 +24,9 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use crate::queen::AgentPhase;
@@ -54,6 +64,73 @@ fn add_envelope(value: &mut serde_json::Value) {
     }
 }
 
+/// Identity block attached to swarm announces/presence when the operator
+/// has logged in via `kannaka identity` (swarm agent identity, step 2).
+/// user_id + email ONLY — tokens never cross the NATS boundary.
+///
+/// Compatibility: the block rides as an OPTIONAL `"identity"` key on
+/// payloads that production v0.6.19/0.6.20 agents parse as loose JSON
+/// (`serde_json::Value`), so old agents ignore it and new agents see
+/// `None` on old payloads. With no stored identity the payloads are
+/// byte-identical to the pre-identity shape.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnnounceIdentity {
+    pub user_id: String,
+    pub email: String,
+}
+
+impl AnnounceIdentity {
+    /// Build from the stored identity file (`<data_dir>/identity.json`).
+    /// Not logged in → `None`. Present-but-unreadable → warn and `None`
+    /// (the swarm announce must never fail because of a bad identity file).
+    pub fn from_store() -> Option<Self> {
+        let path = crate::identity::identity_path();
+        match crate::identity::IdentityStore::load(&path) {
+            Ok(Some(s)) => Some(Self { user_id: s.user_id, email: s.email }),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("[nats] Warning: ignoring unreadable identity file: {e}");
+                None
+            }
+        }
+    }
+
+    /// Insert the `"identity": {user_id, email}` block into a JSON object
+    /// payload. No-op on non-objects.
+    pub fn attach_to(&self, payload: &mut serde_json::Value) {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "identity".to_string(),
+                serde_json::json!({ "user_id": self.user_id, "email": self.email }),
+            );
+        }
+    }
+
+    /// Read the identity email out of an announce/presence payload.
+    /// Old-shape payloads (no `"identity"` key) → `None`.
+    pub fn email_from(payload: &serde_json::Value) -> Option<&str> {
+        payload.get("identity")?.get("email")?.as_str()
+    }
+}
+
+/// Build the legacy `QUEEN.announce` payload (pre-envelope), optionally
+/// enriched with the identity block. `identity = None` reproduces the
+/// pre-identity shape exactly.
+fn legacy_announce_payload(
+    event: &str,
+    agent_id: &str,
+    identity: Option<&AnnounceIdentity>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "event": event,
+        "agent_id": agent_id,
+    });
+    if let Some(idn) = identity {
+        idn.attach_to(&mut payload);
+    }
+    payload
+}
+
 pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
 const EVENTS_STREAM_NAME: &str = "QUEEN_EVENTS";
@@ -62,9 +139,30 @@ const KV_BUCKET_AGENTS: &str = "QUEEN_AGENTS";
 /// Maximum number of messages to buffer during disconnect.
 const PUBLISH_BUFFER_LIMIT: usize = 100;
 
+/// Default socket read/write timeout used outside explicit RPC windows.
+const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default per-call timeout for JetStream API request/reply exchanges.
+const JS_API_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Upper bound on messages pulled by a single JetStream stream walk.
+const STREAM_WALK_LIMIT: usize = 10_000;
+
+/// Reverse lookup table for the standard base64 alphabet. 0xFF = invalid.
+const BASE64_REV: [u8; 256] = {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut rev = [0xFFu8; 256];
+    let mut i = 0;
+    while i < 64 {
+        rev[TABLE[i] as usize] = i as u8;
+        i += 1;
+    }
+    rev
+};
+
 /// Minimal base64 decoder (standard alphabet, with padding).
 fn base64_decode(input: &str) -> Result<Vec<u8>, NatsError> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(input.len() * 3 / 4);
     let mut buf: u32 = 0;
     let mut bits: u32 = 0;
@@ -72,9 +170,14 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, NatsError> {
         if b == b'=' || b == b'\n' || b == b'\r' {
             continue;
         }
-        let val = TABLE.iter().position(|&c| c == b)
-            .ok_or_else(|| NatsError::Protocol(format!("invalid base64 char: {}", b as char)))? as u32;
-        buf = (buf << 6) | val;
+        let val = BASE64_REV[b as usize];
+        if val == 0xFF {
+            return Err(NatsError::Protocol(format!(
+                "invalid base64 char: {}",
+                b as char
+            )));
+        }
+        buf = (buf << 6) | val as u32;
         bits += 6;
         if bits >= 8 {
             bits -= 8;
@@ -202,32 +305,325 @@ impl SharedWavefront {
     }
 }
 
-/// Parse a NATS URL into (host, port).
-fn parse_nats_url(url: &str) -> Result<(String, u16), NatsError> {
-    let stripped = url
-        .strip_prefix("nats://")
-        .unwrap_or(url);
-    let parts: Vec<&str> = stripped.split(':').collect();
+/// Parse a NATS URL into (host, port, optional (user, password)).
+///
+/// Accepts `nats://host`, `nats://host:port`, `nats://user:pass@host:port`,
+/// and the same forms without the scheme.
+fn parse_nats_url(url: &str) -> Result<(String, u16, Option<(String, String)>), NatsError> {
+    let stripped = url.strip_prefix("nats://").unwrap_or(url);
+    let (creds, hostport) = match stripped.rsplit_once('@') {
+        Some((c, hp)) => {
+            let (user, pass) = c.split_once(':').unwrap_or((c, ""));
+            if user.is_empty() || pass.is_empty() {
+                (None, hp)
+            } else {
+                (Some((user.to_string(), pass.to_string())), hp)
+            }
+        }
+        None => (None, stripped),
+    };
+    let parts: Vec<&str> = hostport.split(':').collect();
     match parts.len() {
-        1 => Ok((parts[0].to_string(), 4222)),
+        1 => Ok((parts[0].to_string(), 4222, creds)),
         2 => {
             let port = parts[1]
                 .parse::<u16>()
                 .map_err(|e| NatsError::Connect(format!("invalid port: {}", e)))?;
-            Ok((parts[0].to_string(), port))
+            Ok((parts[0].to_string(), port, creds))
         }
         _ => Err(NatsError::Connect(format!("invalid NATS URL: {}", url))),
     }
 }
 
-/// Generate a unique inbox subject.
+/// Generate a unique inbox subject. Combines pid, a random uuid, and a
+/// timestamp so two processes (or two threads in one process) starting a
+/// request in the same instant cannot collide and cross-read replies.
 fn new_inbox(tag: &str) -> String {
     use std::time::SystemTime;
     let nonce = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("_INBOX.{}.{}", tag, nonce)
+    format!(
+        "_INBOX.{}.{}.{}.{}",
+        tag,
+        std::process::id(),
+        uuid::Uuid::new_v4().simple(),
+        nonce
+    )
+}
+
+/// True for server `-ERR` messages that mean this connection is unusable.
+fn is_auth_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("authorization") || m.contains("authentication")
+}
+
+// ---------------------------------------------------------------------------
+// Wire-protocol frame reader
+// ---------------------------------------------------------------------------
+
+/// One parsed NATS protocol frame.
+enum Frame {
+    Msg {
+        subject: String,
+        sid: String,
+        reply_to: Option<String>,
+        payload: Vec<u8>,
+    },
+    Ping,
+    Pong,
+    OkAck,
+    Info,
+    ServerErr(String),
+}
+
+/// Outcome of one frame-read attempt.
+enum ReadOutcome {
+    Frame(Frame),
+    /// Clean read timeout at a frame boundary — no bytes were consumed,
+    /// the stream is still in sync. Safe to poll again.
+    TimedOut,
+    /// EOF — the server closed the connection.
+    Closed,
+}
+
+/// Read exactly one protocol frame. Returns `Err` on any condition that
+/// desyncs the byte stream (partial line consumed before a timeout, short
+/// payload read, unparseable MSG header, missing CRLF, non-UTF-8 control
+/// line) — after such an error the connection must be considered dead.
+fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsError> {
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => return Ok(ReadOutcome::Closed),
+        Ok(_) => {}
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            if line.is_empty() {
+                return Ok(ReadOutcome::TimedOut);
+            }
+            // Bytes of a control line were consumed before the timeout hit;
+            // they are lost and the stream is desynced. Fatal.
+            return Err(NatsError::Protocol(format!(
+                "read timed out mid-frame ({} bytes consumed) — protocol desync",
+                line.len()
+            )));
+        }
+        Err(e) => return Err(NatsError::Io(e)),
+    }
+
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("MSG ") {
+        // Wire format:
+        //   MSG <subject> <sid> <#bytes>
+        //   MSG <subject> <sid> <reply-to> <#bytes>
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let (subject, sid, reply_to, nbytes_str) = match parts.len() {
+            3 => (parts[0], parts[1], None, parts[2]),
+            4 => (parts[0], parts[1], Some(parts[2]), parts[3]),
+            n => {
+                return Err(NatsError::Protocol(format!(
+                    "malformed MSG header ({} fields): {}",
+                    n, trimmed
+                )))
+            }
+        };
+        let nbytes: usize = nbytes_str.parse().map_err(|_| {
+            NatsError::Protocol(format!("invalid MSG byte count: {}", trimmed))
+        })?;
+        let mut payload = vec![0u8; nbytes];
+        reader.read_exact(&mut payload).map_err(|e| {
+            NatsError::Protocol(format!("short MSG payload read: {}", e))
+        })?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).map_err(|e| {
+            NatsError::Protocol(format!("missing CRLF after MSG payload: {}", e))
+        })?;
+        if &crlf != b"\r\n" {
+            return Err(NatsError::Protocol(
+                "MSG payload not followed by CRLF".to_string(),
+            ));
+        }
+        return Ok(ReadOutcome::Frame(Frame::Msg {
+            subject: subject.to_string(),
+            sid: sid.to_string(),
+            reply_to: reply_to.map(String::from),
+            payload,
+        }));
+    }
+    if trimmed == "PING" {
+        return Ok(ReadOutcome::Frame(Frame::Ping));
+    }
+    if trimmed == "PONG" {
+        return Ok(ReadOutcome::Frame(Frame::Pong));
+    }
+    if trimmed == "+OK" {
+        return Ok(ReadOutcome::Frame(Frame::OkAck));
+    }
+    if let Some(rest) = trimmed.strip_prefix("-ERR") {
+        return Ok(ReadOutcome::Frame(Frame::ServerErr(
+            rest.trim().trim_matches('\'').to_string(),
+        )));
+    }
+    if trimmed == "INFO" || trimmed.starts_with("INFO ") {
+        return Ok(ReadOutcome::Frame(Frame::Info));
+    }
+    Err(NatsError::Protocol(format!(
+        "unexpected protocol line: {}",
+        trimmed.chars().take(80).collect::<String>()
+    )))
+}
+
+/// Write one PUB frame (header + payload + CRLF) and flush.
+fn write_pub(w: &mut TcpStream, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+    write!(w, "PUB {} {}\r\n", subject, payload.len())?;
+    w.write_all(payload)?;
+    w.write_all(b"\r\n")?;
+    w.flush()?;
+    Ok(())
+}
+
+/// The two halves of one NATS connection. The reader is persistent: it must
+/// never be recreated mid-connection because `BufReader` may have pre-read
+/// bytes past the kernel cursor; dropping it would silently discard them.
+struct Conn {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+impl Conn {
+    fn set_read_timeout(&self, t: Option<Duration>) -> Result<(), NatsError> {
+        // writer/reader are clones of the same socket; the timeout is a
+        // property of the shared socket, so setting it once is enough.
+        self.writer.set_read_timeout(t).map_err(NatsError::Io)
+    }
+
+    /// Current read timeout, falling back to the connection default if the
+    /// getter fails.
+    fn read_timeout(&self) -> Option<Duration> {
+        self.writer.read_timeout().unwrap_or(Some(DEFAULT_IO_TIMEOUT))
+    }
+
+    fn pong(&mut self) -> Result<(), NatsError> {
+        write!(self.writer, "PONG\r\n")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
+/// Perform the TCP connect + INFO/CONNECT/PING/PONG handshake. Shared by
+/// `connect()` and `reconnect()` so both send the same authenticated
+/// CONNECT payload (NATS_USER/NATS_PASSWORD env, falling back to URL
+/// credentials). ADR-0026 #73.
+fn handshake(url: &str) -> Result<Conn, NatsError> {
+    let (host, port, url_creds) = parse_nats_url(url)?;
+    let addr = format!("{}:{}", host, port);
+    use std::net::ToSocketAddrs;
+    let socket_addr = addr
+        .to_socket_addrs()
+        .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
+        .next()
+        .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, DEFAULT_IO_TIMEOUT)
+        .map_err(|e| NatsError::Connect(format!("failed to connect to {}: {}", addr, e)))?;
+
+    stream.set_read_timeout(Some(DEFAULT_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(DEFAULT_IO_TIMEOUT))?;
+
+    let mut writer = stream.try_clone()?;
+    // This BufReader lives for the whole connection (it becomes Conn.reader),
+    // so no pre-read bytes are ever discarded by an into_inner()/drop.
+    let mut reader = BufReader::new(stream);
+
+    // Read the INFO line.
+    let mut info_line = String::new();
+    reader.read_line(&mut info_line)?;
+    if !info_line.starts_with("INFO ") {
+        return Err(NatsError::Protocol(format!(
+            "expected INFO, got: {}",
+            info_line.trim()
+        )));
+    }
+    // Inspect the server INFO: we cannot speak TLS, so fail with a clear
+    // message instead of a confusing "expected PONG" later.
+    if let Ok(info) =
+        serde_json::from_str::<serde_json::Value>(info_line["INFO ".len()..].trim())
+    {
+        if info
+            .get("tls_required")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Err(NatsError::Connect(
+                "server requires TLS, which this client does not support".to_string(),
+            ));
+        }
+    }
+
+    // Credentials: env vars take precedence, then URL user:pass@. Anonymous
+    // connections get the server's anonymous permissions (read-only).
+    let env_user = std::env::var("NATS_USER").unwrap_or_default();
+    let env_pass = std::env::var("NATS_PASSWORD").unwrap_or_default();
+    let creds = if !env_user.is_empty() && !env_pass.is_empty() {
+        Some((env_user, env_pass))
+    } else {
+        url_creds
+    };
+    let connect_payload = match &creds {
+        Some((user, pass)) => {
+            // Escape JSON safely. Both fields are short tokens — quotation
+            // and backslash are the only chars worth handling.
+            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!(
+                r#"{{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1,"user":"{}","pass":"{}"}}"#,
+                esc(user),
+                esc(pass)
+            )
+        }
+        None => {
+            r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#
+                .to_string()
+        }
+    };
+    write!(writer, "CONNECT {}\r\n", connect_payload)?;
+    write!(writer, "PING\r\n")?;
+    writer.flush()?;
+
+    // Wait for the actual PONG. +OK / async INFO lines are skipped (they are
+    // not success); -ERR (e.g. Authorization Violation) fails the handshake.
+    for _ in 0..10 {
+        match read_frame(&mut reader)? {
+            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader }),
+            ReadOutcome::Frame(Frame::Ping) => {
+                write!(writer, "PONG\r\n")?;
+                writer.flush()?;
+            }
+            ReadOutcome::Frame(Frame::ServerErr(m)) => {
+                return Err(NatsError::Connect(format!(
+                    "server rejected connect: {}",
+                    m
+                )));
+            }
+            ReadOutcome::Frame(_) => continue,
+            ReadOutcome::TimedOut => {
+                return Err(NatsError::Protocol(
+                    "timed out waiting for PONG during handshake".to_string(),
+                ));
+            }
+            ReadOutcome::Closed => {
+                return Err(NatsError::Connect(
+                    "connection closed during handshake".to_string(),
+                ));
+            }
+        }
+    }
+    Err(NatsError::Protocol(
+        "no PONG after CONNECT (too many interleaved frames)".to_string(),
+    ))
 }
 
 /// A message buffered during disconnect, replayed on reconnect.
@@ -239,10 +635,12 @@ struct BufferedMessage {
 
 /// A minimal synchronous NATS client with JetStream KV, events, and reconnection.
 pub struct SwarmTransport {
-    stream: Arc<Mutex<TcpStream>>,
+    conn: Arc<Mutex<Conn>>,
     url: String,
-    #[allow(dead_code)]
-    next_sid: u64,
+    /// Monotonic subscription-id allocator. Every SUB (long-running
+    /// subscriptions AND one-shot RPC inboxes) gets a unique sid so a
+    /// timed-out request can never collide with a later subscription.
+    next_sid: AtomicU64,
     jetstream_ok: bool,
     connected: Arc<Mutex<bool>>,
     publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
@@ -443,76 +841,11 @@ impl<'a> EventPayload<'a> {
 impl SwarmTransport {
     /// Connect to a NATS server at the given URL.
     pub fn connect(url: &str) -> Result<Self, NatsError> {
-        let (host, port) = parse_nats_url(url)?;
-        let addr = format!("{}:{}", host, port);
-        use std::net::ToSocketAddrs;
-        let socket_addr = addr
-            .to_socket_addrs()
-            .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
-            .next()
-            .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
-        let stream = TcpStream::connect_timeout(
-            &socket_addr,
-            Duration::from_secs(5),
-        )
-        .map_err(|e| NatsError::Connect(format!("failed to connect to {}: {}", addr, e)))?;
-
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-        // Read INFO line
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut info_line = String::new();
-        reader.read_line(&mut info_line)?;
-        if !info_line.starts_with("INFO ") {
-            return Err(NatsError::Protocol(format!(
-                "expected INFO, got: {}",
-                info_line.trim()
-            )));
-        }
-
-        // Send CONNECT — include user/pass if env-supplied. ADR-0026 #73.
-        // NATS_USER + NATS_PASSWORD let agents authenticate; public/anon
-        // connections leave them unset and the server applies the
-        // anonymous permissions (read-only).
-        let user = std::env::var("NATS_USER").unwrap_or_default();
-        let pass = std::env::var("NATS_PASSWORD").unwrap_or_default();
-        let connect_payload = if !user.is_empty() && !pass.is_empty() {
-            // Escape JSON safely. Both fields are short tokens — quotation
-            // and backslash are the only chars worth handling.
-            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-            format!(
-                r#"{{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1,"user":"{}","pass":"{}"}}"#,
-                esc(&user), esc(&pass)
-            )
-        } else {
-            r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#.to_string()
-        };
-        let mut stream = reader.into_inner();
-        write!(stream, "CONNECT {}\r\n", connect_payload)?;
-        write!(stream, "PING\r\n")?;
-        stream.flush()?;
-
-        // Read PONG
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut pong_line = String::new();
-        reader.read_line(&mut pong_line)?;
-        if !pong_line.trim().starts_with("PONG") && !pong_line.trim().starts_with("+OK") {
-            let mut pong2 = String::new();
-            reader.read_line(&mut pong2)?;
-            if !pong2.trim().starts_with("PONG") {
-                return Err(NatsError::Protocol(format!(
-                    "expected PONG, got: {} / {}",
-                    pong_line.trim(),
-                    pong2.trim()
-                )));
-            }
-        }
-
+        let conn = handshake(url)?;
         let mut transport = Self {
-            stream: Arc::new(Mutex::new(reader.into_inner())),
+            conn: Arc::new(Mutex::new(conn)),
             url: url.to_string(),
-            next_sid: 1,
+            next_sid: AtomicU64::new(1),
             jetstream_ok: false,
             connected: Arc::new(Mutex::new(true)),
             publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
@@ -542,76 +875,37 @@ impl SwarmTransport {
         &self.url
     }
 
+    /// Allocate a fresh, connection-unique subscription id.
+    fn alloc_sid(&self) -> u64 {
+        self.next_sid.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Lock the connection, mapping a poisoned mutex to a protocol error
+    /// (the connection state under a panic mid-write is unknowable).
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Conn>, NatsError> {
+        self.conn
+            .lock()
+            .map_err(|e| NatsError::Protocol(format!("connection lock poisoned: {}", e)))
+    }
+
     // -----------------------------------------------------------------------
     // Reconnection
     // -----------------------------------------------------------------------
 
-    /// Attempt to reconnect to the NATS server, replaying any buffered messages.
+    /// Attempt to reconnect to the NATS server, replaying any buffered
+    /// messages in their original order. Uses the same authenticated
+    /// handshake as `connect()` (NATS_USER/NATS_PASSWORD are NOT dropped
+    /// on reconnect).
     pub fn reconnect(&mut self) -> Result<(), NatsError> {
-        let (host, port) = parse_nats_url(&self.url)?;
-        let addr = format!("{}:{}", host, port);
-        use std::net::ToSocketAddrs;
-        let socket_addr = addr
-            .to_socket_addrs()
-            .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
-            .next()
-            .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
+        let new_conn = handshake(&self.url)?;
 
-        let new_stream = TcpStream::connect_timeout(
-            &socket_addr,
-            Duration::from_secs(5),
-        )
-        .map_err(|e| NatsError::Connect(format!("reconnect failed to {}: {}", addr, e)))?;
-
-        new_stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        new_stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-        // Read INFO
-        let mut reader = BufReader::new(new_stream.try_clone()?);
-        let mut info_line = String::new();
-        reader.read_line(&mut info_line)?;
-        if !info_line.starts_with("INFO ") {
-            return Err(NatsError::Protocol(format!(
-                "reconnect: expected INFO, got: {}",
-                info_line.trim()
-            )));
-        }
-
-        // Send CONNECT + PING
-        let connect_payload = r#"{"verbose":false,"pedantic":false,"name":"kannaka","lang":"rust","version":"0.1.0","protocol":1}"#;
-        let mut raw = reader.into_inner();
-        write!(raw, "CONNECT {}\r\n", connect_payload)?;
-        write!(raw, "PING\r\n")?;
-        raw.flush()?;
-
-        // Read PONG
-        let mut reader = BufReader::new(raw.try_clone()?);
-        let mut pong_line = String::new();
-        reader.read_line(&mut pong_line)?;
-        if !pong_line.trim().starts_with("PONG") && !pong_line.trim().starts_with("+OK") {
-            let mut pong2 = String::new();
-            reader.read_line(&mut pong2)?;
-            if !pong2.trim().starts_with("PONG") {
-                return Err(NatsError::Protocol(format!(
-                    "reconnect: expected PONG, got: {} / {}",
-                    pong_line.trim(),
-                    pong2.trim()
-                )));
-            }
-        }
-
-        // Swap in the new stream
+        // Swap in the new connection. A poisoned lock just means a previous
+        // holder panicked — the old Conn is being replaced wholesale anyway.
         {
-            let mut guard = self.stream.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            *guard = reader.into_inner();
+            let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+            *guard = new_conn;
         }
-
-        // Mark connected
-        if let Ok(mut c) = self.connected.lock() {
-            *c = true;
-        }
+        *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
 
         // Re-check JetStream
         self.jetstream_ok = self.ensure_stream().is_ok();
@@ -619,23 +913,30 @@ impl SwarmTransport {
             let _ = self.ensure_events_stream();
         }
 
-        // Replay buffered messages
-        let buffered: Vec<BufferedMessage> = {
-            let mut buf = self.publish_buffer.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            buf.drain(..).collect()
+        // Replay buffered messages in order. On failure the unsent remainder
+        // stays queued (in order, at the front) for the next attempt.
+        let replay_result = {
+            let mut conn = self.lock_conn()?;
+            self.flush_buffer_locked(&mut conn)
         };
-        for msg in buffered {
-            let _ = self.publish_raw(&msg.subject, &msg.payload);
+        if let Err(e) = replay_result {
+            self.mark_disconnected();
+            eprintln!(
+                "[nats] reconnect: buffered replay incomplete ({} still queued): {}",
+                self.buffered_count(),
+                e
+            );
         }
 
         Ok(())
     }
 
-    /// Check if connection is still alive.
+    /// Check if connection is still alive. Sends a PING and waits for the
+    /// PONG, so a dead socket whose writes still land in the kernel buffer
+    /// is detected.
     pub fn is_connected(&self) -> bool {
-        if let Ok(c) = self.connected.lock() {
+        {
+            let c = self.connected.lock().unwrap_or_else(|p| p.into_inner());
             if !*c {
                 return false;
             }
@@ -645,27 +946,204 @@ impl SwarmTransport {
 
     /// Mark the connection as disconnected (used internally on I/O failure).
     fn mark_disconnected(&self) {
-        if let Ok(mut c) = self.connected.lock() {
-            *c = false;
-        }
+        *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = false;
     }
 
     /// Buffer a message for later replay (up to PUBLISH_BUFFER_LIMIT).
     fn buffer_message(&self, subject: &str, payload: &[u8]) {
-        if let Ok(mut buf) = self.publish_buffer.lock() {
-            if buf.len() >= PUBLISH_BUFFER_LIMIT {
-                buf.pop_front();
+        let mut buf = self.publish_buffer.lock().unwrap_or_else(|p| p.into_inner());
+        if buf.len() >= PUBLISH_BUFFER_LIMIT {
+            if let Some(dropped) = buf.pop_front() {
+                eprintln!(
+                    "[nats] publish buffer full ({}) — dropping oldest message on {}",
+                    PUBLISH_BUFFER_LIMIT, dropped.subject
+                );
             }
-            buf.push_back(BufferedMessage {
-                subject: subject.to_string(),
-                payload: payload.to_vec(),
-            });
         }
+        buf.push_back(BufferedMessage {
+            subject: subject.to_string(),
+            payload: payload.to_vec(),
+        });
     }
 
     /// Return the number of messages currently buffered.
     pub fn buffered_count(&self) -> usize {
-        self.publish_buffer.lock().map(|b| b.len()).unwrap_or(0)
+        self.publish_buffer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
+    }
+
+    /// Drain the publish buffer onto the wire in FIFO order. If a message
+    /// fails to send it is pushed back to the FRONT (preserving order) and
+    /// the error is returned; nothing after it is attempted.
+    fn flush_buffer_locked(&self, conn: &mut Conn) -> Result<(), NatsError> {
+        loop {
+            let next = self
+                .publish_buffer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pop_front();
+            let Some(msg) = next else { return Ok(()) };
+            if let Err(e) = write_pub(&mut conn.writer, &msg.subject, &msg.payload) {
+                eprintln!(
+                    "[nats] buffered replay failed on {} — re-queueing: {}",
+                    msg.subject, e
+                );
+                self.publish_buffer
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push_front(msg);
+                return Err(e);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // JetStream API request/reply core
+    // -----------------------------------------------------------------------
+
+    /// One JetStream API request/reply exchange over the held connection.
+    ///
+    /// SUBs a unique inbox with a unique sid (auto-unsubscribed after one
+    /// message), PUBs the request with the inbox as reply-to, then reads
+    /// frames until the reply lands on OUR inbox — frames for other sids
+    /// (gossip, stray replies) are consumed and skipped, server PINGs are
+    /// answered, `-ERR` lines are logged (auth errors are fatal).
+    ///
+    /// Returns `Ok(None)` on a clean no-reply-within-timeout; `Err` only
+    /// for conditions that invalidate the connection (which is then marked
+    /// disconnected). The previous read timeout is restored on all paths.
+    fn js_api_call_locked(
+        &self,
+        conn: &mut Conn,
+        api_subject: &str,
+        request: &[u8],
+        timeout: Duration,
+    ) -> Result<Option<serde_json::Value>, NatsError> {
+        let sid = self.alloc_sid();
+        let inbox = new_inbox("js");
+
+        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
+        write!(conn.writer, "UNSUB {} 1\r\n", sid)?;
+        write!(conn.writer, "PUB {} {} {}\r\n", api_subject, inbox, request.len())?;
+        conn.writer.write_all(request)?;
+        conn.writer.write_all(b"\r\n")?;
+        conn.writer.flush()?;
+
+        let prev = conn.read_timeout();
+        conn.set_read_timeout(Some(timeout))?;
+        let deadline = Instant::now() + timeout;
+
+        let mut fatal = false;
+        let result = loop {
+            if Instant::now() > deadline {
+                break Ok(None);
+            }
+            match read_frame(&mut conn.reader) {
+                Ok(ReadOutcome::Frame(Frame::Msg { subject, payload, .. }))
+                    if subject == inbox =>
+                {
+                    break serde_json::from_slice::<serde_json::Value>(&payload)
+                        .map(Some)
+                        .map_err(|e| {
+                            NatsError::Protocol(format!("bad JetStream API reply: {}", e))
+                        });
+                }
+                // A frame for some other subscription on this connection —
+                // its payload was consumed correctly; skip it.
+                Ok(ReadOutcome::Frame(Frame::Msg { .. })) => continue,
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    let _ = conn.pong();
+                }
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    eprintln!("[nats] server error: {}", m);
+                    if is_auth_error(&m) {
+                        fatal = true;
+                        break Err(NatsError::Disconnected(m));
+                    }
+                }
+                Ok(ReadOutcome::Frame(_)) => continue,
+                Ok(ReadOutcome::TimedOut) => break Ok(None),
+                Ok(ReadOutcome::Closed) => {
+                    fatal = true;
+                    break Err(NatsError::Disconnected(
+                        "connection closed during JetStream request".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    fatal = true;
+                    break Err(e);
+                }
+            }
+        };
+
+        // If no reply was delivered, the auto-unsub never fired — remove the
+        // subscription explicitly so it can't leak server-side.
+        if !matches!(result, Ok(Some(_))) {
+            let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
+            let _ = conn.writer.flush();
+        }
+        let _ = conn.set_read_timeout(prev);
+        if fatal {
+            self.mark_disconnected();
+        }
+        result
+    }
+
+    /// Walk a JetStream stream by subject filter, returning the raw stored
+    /// messages as (subject, decoded payload) pairs. Shared engine behind
+    /// `get_stream_messages`, `kv_keys` and the phase reader; keeps the ONE
+    /// persistent connection reader for the whole walk (recreating a reader
+    /// per request used to lose pre-read bytes and return 0 rows).
+    fn stream_walk(
+        &self,
+        stream_name: &str,
+        subject_filter: &str,
+        max_messages: usize,
+    ) -> Result<Vec<(String, Vec<u8>)>, NatsError> {
+        let mut conn = self.lock_conn()?;
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut next_seq: u64 = 1;
+
+        while out.len() < max_messages {
+            let req = serde_json::json!({
+                "seq": next_seq,
+                "next_by_subj": subject_filter,
+            })
+            .to_string();
+            let resp = match self.js_api_call_locked(
+                &mut conn,
+                &api_subject,
+                req.as_bytes(),
+                JS_API_TIMEOUT,
+            ) {
+                Ok(Some(v)) => v,
+                Ok(None) => break, // no reply — treat as end of stream
+                Err(e) => return Err(e),
+            };
+            if resp.get("error").is_some() {
+                break; // typically "no message found" — end of matches
+            }
+            let Some(msg) = resp.get("message") else { break };
+            let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) else { break };
+            // Bookkeeping first so non-decodable payloads don't stall the
+            // iteration (older test data in front of real manifests).
+            next_seq = seq + 1;
+            let subject = msg
+                .get("subject")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let data = msg
+                .get("data")
+                .and_then(|d| d.as_str())
+                .and_then(|b64| base64_decode(b64).ok())
+                .unwrap_or_default();
+            out.push((subject, data));
+        }
+        Ok(out)
     }
 
     // -----------------------------------------------------------------------
@@ -710,150 +1188,46 @@ impl SwarmTransport {
         stream_name: &str,
         config: serde_json::Value,
     ) -> Result<(), NatsError> {
-        let inbox = new_inbox("jscreate");
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
+        let payload = config.to_string();
+        let mut conn = self.lock_conn()?;
 
-        write!(stream, "SUB {} 99\r\n", inbox)?;
-        stream.flush()?;
+        let create_subject = format!("$JS.API.STREAM.CREATE.{}", stream_name);
+        let resp = self
+            .js_api_call_locked(&mut conn, &create_subject, payload.as_bytes(), JS_API_TIMEOUT)?
+            .ok_or_else(|| {
+                NatsError::Protocol(format!(
+                    "no JetStream reply for stream create: {}",
+                    stream_name
+                ))
+            })?;
 
-        let payload_bytes = config.to_string();
-        let subject = format!("$JS.API.STREAM.CREATE.{}", stream_name);
-        write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload_bytes.len())?;
-        stream.write_all(payload_bytes.as_bytes())?;
-        write!(stream, "\r\n")?;
-        stream.flush()?;
-
-        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-        let mut got_reply = false;
-
-        for _ in 0..10 {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("PING") {
-                        let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                        write!(s, "PONG\r\n")?;
-                        s.flush()?;
-                        continue;
-                    }
-                    if trimmed == "PONG" || trimmed == "+OK" {
-                        continue;
-                    }
-                    if trimmed.starts_with("MSG ") {
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        if parts.len() >= 4 {
-                            let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                            let mut payload = vec![0u8; nbytes];
-                            reader.read_exact(&mut payload).ok();
-                            let mut crlf = String::new();
-                            reader.read_line(&mut crlf).ok();
-
-                            if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                                if let Some(err) = resp.get("error") {
-                                    let code = err.get("err_code").and_then(|c| c.as_u64()).unwrap_or(0);
-                                    if code == 10058 {
-                                        // Stream already exists -- attempt UPDATE to sync config.
-                                        // Send UPDATE, then drain its reply so nothing lingers.
-                                        let upd_subject = format!("$JS.API.STREAM.UPDATE.{}", stream_name);
-                                        let mut ws = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                                        write!(ws, "PUB {} {} {}\r\n", upd_subject, inbox, payload_bytes.len())?;
-                                        ws.write_all(payload_bytes.as_bytes())?;
-                                        write!(ws, "\r\n")?;
-                                        ws.flush()?;
-                                        // Read the UPDATE reply to drain it
-                                        for _ in 0..10 {
-                                            let mut uline = String::new();
-                                            match reader.read_line(&mut uline) {
-                                                Ok(0) => break,
-                                                Ok(_) => {
-                                                    let ut = uline.trim();
-                                                    if ut.starts_with("PING") {
-                                                        let mut ps = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                                                        write!(ps, "PONG\r\n")?;
-                                                        ps.flush()?;
-                                                        continue;
-                                                    }
-                                                    if ut == "PONG" || ut == "+OK" { continue; }
-                                                    if ut.starts_with("MSG ") {
-                                                        let up: Vec<&str> = ut.split_whitespace().collect();
-                                                        if up.len() >= 4 {
-                                                            let ub: usize = up.last().unwrap().parse().unwrap_or(0);
-                                                            let mut ubuf = vec![0u8; ub];
-                                                            reader.read_exact(&mut ubuf).ok();
-                                                            let mut ucrlf = String::new();
-                                                            reader.read_line(&mut ucrlf).ok();
-                                                        }
-                                                        break;
-                                                    }
-                                                }
-                                                Err(_) => break,
-                                            }
-                                        }
-                                        got_reply = true;
-                                        break;
-                                    }
-                                    return Err(NatsError::Protocol(format!(
-                                        "JetStream stream create error: {}", err
-                                    )));
-                                }
-                            }
-                            got_reply = true;
-                            break;
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => return Err(NatsError::Io(e)),
+        if let Some(err) = resp.get("error") {
+            let code = err.get("err_code").and_then(|c| c.as_u64()).unwrap_or(0);
+            if code == 10058 {
+                // Stream already exists — attempt UPDATE to sync config.
+                // Best-effort: an UPDATE rejection (e.g. immutable field)
+                // still leaves a usable stream, so the reply is drained
+                // and ignored.
+                let update_subject = format!("$JS.API.STREAM.UPDATE.{}", stream_name);
+                let _ = self.js_api_call_locked(
+                    &mut conn,
+                    &update_subject,
+                    payload.as_bytes(),
+                    JS_API_TIMEOUT,
+                );
+                return Ok(());
             }
+            return Err(NatsError::Protocol(format!(
+                "JetStream stream create error: {}",
+                err
+            )));
         }
-
-        drop(reader);
-        write!(stream, "UNSUB 99\r\n")?;
-        stream.flush()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-
-        if got_reply {
-            Ok(())
-        } else {
-            Err(NatsError::Protocol(format!(
-                "no JetStream reply for stream create: {}", stream_name
-            )))
-        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
     // Low-level publish (with disconnect buffering)
     // -----------------------------------------------------------------------
-
-    /// Publish a raw message to a subject with an optional reply-to.
-    #[allow(dead_code)]
-    fn publish_raw_reply(&self, subject: &str, reply_to: Option<&str>, payload: &[u8]) -> Result<(), NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-        let result = (|| -> Result<(), NatsError> {
-            match reply_to {
-                Some(rt) => write!(stream, "PUB {} {} {}\r\n", subject, rt, payload.len())?,
-                None => write!(stream, "PUB {} {}\r\n", subject, payload.len())?,
-            }
-            stream.write_all(payload)?;
-            write!(stream, "\r\n")?;
-            stream.flush()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            drop(stream);
-            self.mark_disconnected();
-            self.buffer_message(subject, payload);
-        }
-        result
-    }
 
     /// Public façade over the raw PUB. Use this for ad-hoc subjects
     /// (e.g. the inbox prototype) that don't have a typed publish_X
@@ -864,19 +1238,17 @@ impl SwarmTransport {
     }
 
     /// Publish a raw message to a subject, buffering on disconnect.
+    ///
+    /// If earlier messages are sitting in the disconnect buffer they are
+    /// replayed (in order) BEFORE this message, so the wire order matches
+    /// the call order. On failure this message joins the back of the buffer.
     fn publish_raw(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-        let result = (|| -> Result<(), NatsError> {
-            write!(stream, "PUB {} {}\r\n", subject, payload.len())?;
-            stream.write_all(payload)?;
-            write!(stream, "\r\n")?;
-            stream.flush()?;
-            Ok(())
-        })();
+        let mut conn = self.lock_conn()?;
+        let result = self
+            .flush_buffer_locked(&mut conn)
+            .and_then(|()| write_pub(&mut conn.writer, subject, payload));
         if result.is_err() {
-            drop(stream);
+            drop(conn);
             self.mark_disconnected();
             self.buffer_message(subject, payload);
         }
@@ -965,115 +1337,18 @@ impl SwarmTransport {
 
     /// Generic helper: iterate a JetStream stream's messages by subject filter.
     /// Used by both exemplars and presence (and future ADR-0026 streams).
+    /// Non-JSON payloads are skipped (but still advance the walk).
     pub fn get_stream_messages(
         &self,
         stream_name: &str,
         subject_filter: &str,
         max_messages: usize,
     ) -> Result<Vec<serde_json::Value>, NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-
-        let inbox = new_inbox("strmget");
-        write!(stream, "SUB {} 94\r\n", inbox)?;
-        stream.flush()?;
-
-        let mut out: Vec<serde_json::Value> = Vec::new();
-        let mut next_seq: u64 = 1;
-
-        // Keep ONE BufReader across the whole iteration. Recreating it per
-        // request loses any bytes BufReader had pre-read into its internal
-        // buffer (and the underlying TcpStream may have data past the
-        // kernel's read cursor sitting in BufReader). That manifested as
-        // the wildcard list-snapshots returning 0 rows even when the
-        // stream had multiple matching subjects — first response landed
-        // in a BufReader we dropped, second response read from a fresh
-        // BufReader that hit nothing and timed out.
-        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-
-        loop {
-            let req = serde_json::json!({
-                "seq": next_seq,
-                "next_by_subj": subject_filter,
-            });
-            let req_bytes = req.to_string();
-            let get_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
-            write!(stream, "PUB {} {} {}\r\n", get_subject, inbox, req_bytes.len())?;
-            stream.write_all(req_bytes.as_bytes())?;
-            write!(stream, "\r\n")?;
-            stream.flush()?;
-
-            let mut got_any = false;
-            let mut got_end = false;
-
-            for _ in 0..6 {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => { got_end = true; break; }
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("PING") {
-                            write!(stream, "PONG\r\n")?;
-                            stream.flush()?;
-                            continue;
-                        }
-                        if trimmed.starts_with("MSG ") {
-                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                            let nbytes: usize = parts.last()
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0);
-                            let mut buf = vec![0u8; nbytes];
-                            reader.read_exact(&mut buf)?;
-                            let mut crlf = String::new();
-                            let _ = reader.read_line(&mut crlf);
-                            // The response is a JS API envelope. The actual
-                            // payload is inside `message.data` (base64).
-                            if let Ok(env) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                if env.get("error").is_some() {
-                                    got_end = true;
-                                    break;
-                                }
-                                if let Some(msg) = env.get("message") {
-                                    // Bookkeeping first so non-JSON payloads
-                                    // don't stall the iteration. Earlier code
-                                    // would treat a single non-decodable
-                                    // message as "no more matches" and bail
-                                    // — fine on the happy path but it broke
-                                    // list-snapshots on streams where older
-                                    // test data sat in front of the real
-                                    // manifests.
-                                    if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
-                                        next_seq = seq + 1;
-                                        // We made forward progress, even if
-                                        // the payload isn't usable to us.
-                                        got_any = true;
-                                    } else {
-                                        got_end = true;
-                                    }
-                                    // Best-effort decode; skip if not JSON.
-                                    if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
-                                        if let Ok(decoded) = base64_decode(data_b64) {
-                                            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&decoded) {
-                                                out.push(v);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    Err(_) => { got_end = true; break; }
-                }
-            }
-            if got_end || !got_any {
-                break;
-            }
-            if out.len() >= max_messages { break; }
-        }
-        Ok(out)
+        Ok(self
+            .stream_walk(stream_name, subject_filter, max_messages)?
+            .into_iter()
+            .filter_map(|(_, data)| serde_json::from_slice(&data).ok())
+            .collect())
     }
 
     /// Publish this agent's presence record. ADR-0026 Phase 5.
@@ -1308,161 +1583,75 @@ impl SwarmTransport {
 
     /// Fetch all phases from JetStream by iterating stored messages.
     fn get_all_phases_jetstream(&self) -> Result<Vec<AgentPhase>, NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-
-        let inbox = new_inbox("phases");
-        write!(stream, "SUB {} 98\r\n", inbox)?;
-        stream.flush()?;
-
+        let msgs = self.stream_walk(STREAM_NAME, "QUEEN.phase.>", STREAM_WALK_LIMIT)?;
         let mut phases: HashMap<String, AgentPhase> = HashMap::new();
-        let mut next_seq: u64 = 1;
-
-        loop {
-            let req = serde_json::json!({
-                "seq": next_seq,
-                "next_by_subj": "QUEEN.phase.>"
-            });
-            let req_bytes = req.to_string();
-            let get_subject = format!("$JS.API.STREAM.MSG.GET.{}", STREAM_NAME);
-            write!(stream, "PUB {} {} {}\r\n", get_subject, inbox, req_bytes.len())?;
-            stream.write_all(req_bytes.as_bytes())?;
-            write!(stream, "\r\n")?;
-            stream.flush()?;
-
-            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-            let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-            let mut got_message = false;
-
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("PING") {
-                            let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                            write!(s, "PONG\r\n")?;
-                            s.flush()?;
-                            continue;
-                        }
-                        if trimmed == "PONG" || trimmed == "+OK" {
-                            continue;
-                        }
-                        if trimmed.starts_with("MSG ") {
-                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                            if parts.len() >= 4 {
-                                let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                                let mut payload = vec![0u8; nbytes];
-                                reader.read_exact(&mut payload).ok();
-                                let mut crlf = String::new();
-                                reader.read_line(&mut crlf).ok();
-
-                                if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                                    if resp.get("error").is_some() {
-                                        break;
-                                    }
-                                    if let Some(msg) = resp.get("message") {
-                                        if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
-                                            if let Ok(decoded) = base64_decode(data_b64) {
-                                                if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&decoded) {
-                                                    phases.insert(phase.agent_id.clone(), phase);
-                                                }
-                                            }
-                                        }
-                                        if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
-                                            next_seq = seq + 1;
-                                            got_message = true;
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                        || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        drop(reader);
-                        write!(stream, "UNSUB 98\r\n")?;
-                        stream.flush()?;
-                        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                        return Err(NatsError::Io(e));
-                    }
-                }
-            }
-
-            drop(reader);
-            if !got_message {
-                break;
+        for (_, data) in msgs {
+            if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&data) {
+                phases.insert(phase.agent_id.clone(), phase);
             }
         }
-
-        write!(stream, "UNSUB 98\r\n")?;
-        stream.flush()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-
         Ok(phases.into_values().collect())
     }
 
     /// Legacy PUB/SUB phase collection (fallback when JetStream is unavailable).
+    /// Subscribes to the live gossip subject and collects whatever arrives
+    /// until 1.5s of silence (capped at 10s total). Only frames carrying our
+    /// own sid are interpreted as phases.
     fn get_all_phases_legacy(&self) -> Result<Vec<AgentPhase>, NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
+        let mut conn = self.lock_conn()?;
+        let sid = self.alloc_sid();
+        let sid_str = sid.to_string();
 
-        let sid = "phase_collect";
-        write!(stream, "SUB QUEEN.phase.* {}\r\n", sid)?;
-        write!(stream, "PING\r\n")?;
-        stream.flush()?;
+        write!(conn.writer, "SUB QUEEN.phase.* {}\r\n", sid)?;
+        write!(conn.writer, "PING\r\n")?;
+        conn.writer.flush()?;
 
-        stream.set_read_timeout(Some(Duration::from_millis(1500)))?;
+        let prev = conn.read_timeout();
+        conn.set_read_timeout(Some(Duration::from_millis(1500)))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
 
         let mut phases: HashMap<String, AgentPhase> = HashMap::new();
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-
+        let mut fatal: Option<NatsError> = None;
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed == "PONG" {
-                        continue;
-                    }
-                    if trimmed.starts_with("PING") {
-                        let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                        write!(s, "PONG\r\n")?;
-                        s.flush()?;
-                        continue;
-                    }
-                    if trimmed.starts_with("MSG ") {
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        if parts.len() >= 4 {
-                            let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                            let mut payload = vec![0u8; nbytes];
-                            reader.read_exact(&mut payload).ok();
-                            let mut crlf = String::new();
-                            reader.read_line(&mut crlf).ok();
-
-                            if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&payload) {
-                                phases.insert(phase.agent_id.clone(), phase);
-                            }
+            if Instant::now() > deadline {
+                break;
+            }
+            match read_frame(&mut conn.reader) {
+                Ok(ReadOutcome::Frame(Frame::Msg { sid: msid, payload, .. })) => {
+                    if msid == sid_str {
+                        if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&payload) {
+                            phases.insert(phase.agent_id.clone(), phase);
                         }
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => return Err(NatsError::Io(e)),
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    let _ = conn.pong();
+                }
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    eprintln!("[nats] server error: {}", m);
+                    if is_auth_error(&m) {
+                        fatal = Some(NatsError::Disconnected(m));
+                        break;
+                    }
+                }
+                Ok(ReadOutcome::Frame(_)) => continue,
+                Ok(ReadOutcome::TimedOut) | Ok(ReadOutcome::Closed) => break,
+                Err(e) => {
+                    fatal = Some(e);
+                    break;
+                }
             }
         }
 
-        drop(reader);
-        write!(stream, "UNSUB {}\r\n", sid)?;
-        stream.flush()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
+        let _ = conn.writer.flush();
+        let _ = conn.set_read_timeout(prev);
 
+        if let Some(e) = fatal {
+            drop(conn);
+            self.mark_disconnected();
+            return Err(e);
+        }
         Ok(phases.into_values().collect())
     }
 
@@ -1507,13 +1696,25 @@ impl SwarmTransport {
     /// Publishes to both the new event stream (`QUEEN.event.join`) and the
     /// legacy `QUEEN.announce` subject for backward compatibility.
     pub fn announce_join(&self, agent_id: &str) -> Result<(), NatsError> {
-        let event_payload = serde_json::json!({ "agent_id": agent_id });
+        self.announce_join_with_identity(agent_id, None)
+    }
+
+    /// Announce joining the swarm, optionally carrying the operator's
+    /// stored identity (swarm agent identity, step 2). `identity = None`
+    /// publishes payloads byte-identical to `announce_join` pre-identity,
+    /// so v0.6.19/0.6.20 peers see no change.
+    pub fn announce_join_with_identity(
+        &self,
+        agent_id: &str,
+        identity: Option<&AnnounceIdentity>,
+    ) -> Result<(), NatsError> {
+        let mut event_payload = serde_json::json!({ "agent_id": agent_id });
+        if let Some(idn) = identity {
+            idn.attach_to(&mut event_payload);
+        }
         self.announce_event("join", &event_payload)?;
 
-        let mut legacy = serde_json::json!({
-            "event": "join",
-            "agent_id": agent_id,
-        });
+        let mut legacy = legacy_announce_payload("join", agent_id, identity);
         add_envelope(&mut legacy);
         let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -1586,190 +1787,38 @@ impl SwarmTransport {
     /// Get a value from a NATS KV bucket.
     ///
     /// Returns the latest value for the given key, or `NatsError::KvNotFound`
-    /// if the key does not exist.
+    /// if the key does not exist (or the server didn't reply in time).
     pub fn kv_get(&self, bucket: &str, key: &str) -> Result<String, NatsError> {
         let stream_name = format!("KV_{}", bucket);
         let target_subject = format!("$KV.{}.{}", bucket, key);
-        let inbox = new_inbox("kvget");
-
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-
-        write!(stream, "SUB {} 97\r\n", inbox)?;
-        stream.flush()?;
-
-        let req = serde_json::json!({ "last_by_subj": target_subject });
-        let req_bytes = req.to_string();
         let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
-        write!(stream, "PUB {} {} {}\r\n", api_subject, inbox, req_bytes.len())?;
-        stream.write_all(req_bytes.as_bytes())?;
-        write!(stream, "\r\n")?;
-        stream.flush()?;
+        let req = serde_json::json!({ "last_by_subj": target_subject }).to_string();
 
-        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-        let mut result: Option<String> = None;
+        let resp = {
+            let mut conn = self.lock_conn()?;
+            self.js_api_call_locked(&mut conn, &api_subject, req.as_bytes(), JS_API_TIMEOUT)?
+        };
 
-        for _ in 0..10 {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("PING") {
-                        let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                        write!(s, "PONG\r\n")?;
-                        s.flush()?;
-                        continue;
-                    }
-                    if trimmed == "PONG" || trimmed == "+OK" {
-                        continue;
-                    }
-                    if trimmed.starts_with("MSG ") {
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        if parts.len() >= 4 {
-                            let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                            let mut payload = vec![0u8; nbytes];
-                            reader.read_exact(&mut payload).ok();
-                            let mut crlf = String::new();
-                            reader.read_line(&mut crlf).ok();
-
-                            if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                                if resp.get("error").is_some() {
-                                    break;
-                                }
-                                if let Some(msg) = resp.get("message") {
-                                    if let Some(data_b64) = msg.get("data").and_then(|d| d.as_str()) {
-                                        if let Ok(decoded) = base64_decode(data_b64) {
-                                            result = Some(String::from_utf8_lossy(&decoded).to_string());
-                                        }
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    drop(reader);
-                    write!(stream, "UNSUB 97\r\n")?;
-                    stream.flush()?;
-                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    return Err(NatsError::Io(e));
-                }
-            }
-        }
-
-        drop(reader);
-        write!(stream, "UNSUB 97\r\n")?;
-        stream.flush()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-
-        result.ok_or_else(|| NatsError::KvNotFound(format!("{}/{}", bucket, key)))
+        resp.as_ref()
+            .filter(|r| r.get("error").is_none())
+            .and_then(|r| r.get("message"))
+            .and_then(|m| m.get("data"))
+            .and_then(|d| d.as_str())
+            .and_then(|b64| base64_decode(b64).ok())
+            .map(|decoded| String::from_utf8_lossy(&decoded).to_string())
+            .ok_or_else(|| NatsError::KvNotFound(format!("{}/{}", bucket, key)))
     }
 
     /// List all keys in a NATS KV bucket.
     pub fn kv_keys(&self, bucket: &str) -> Result<Vec<String>, NatsError> {
         let stream_name = format!("KV_{}", bucket);
-        let inbox = new_inbox("kvkeys");
-
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-
-        write!(stream, "SUB {} 96\r\n", inbox)?;
-        stream.flush()?;
-
-        let mut keys = Vec::new();
-        let mut next_seq: u64 = 1;
         let prefix = format!("$KV.{}.", bucket);
-
-        loop {
-            let req = serde_json::json!({
-                "seq": next_seq,
-                "next_by_subj": format!("$KV.{}.>", bucket),
-            });
-            let req_bytes = req.to_string();
-            let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
-            write!(stream, "PUB {} {} {}\r\n", api_subject, inbox, req_bytes.len())?;
-            stream.write_all(req_bytes.as_bytes())?;
-            write!(stream, "\r\n")?;
-            stream.flush()?;
-
-            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-            let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
-            let mut got_message = false;
-
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("PING") {
-                            let mut s = reader.get_ref().try_clone().map_err(NatsError::Io)?;
-                            write!(s, "PONG\r\n")?;
-                            s.flush()?;
-                            continue;
-                        }
-                        if trimmed == "PONG" || trimmed == "+OK" {
-                            continue;
-                        }
-                        if trimmed.starts_with("MSG ") {
-                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                            if parts.len() >= 4 {
-                                let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                                let mut payload = vec![0u8; nbytes];
-                                reader.read_exact(&mut payload).ok();
-                                let mut crlf = String::new();
-                                reader.read_line(&mut crlf).ok();
-
-                                if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                                    if resp.get("error").is_some() {
-                                        break;
-                                    }
-                                    if let Some(msg) = resp.get("message") {
-                                        if let Some(subj) = msg.get("subject").and_then(|s| s.as_str()) {
-                                            if let Some(key) = subj.strip_prefix(&prefix) {
-                                                keys.push(key.to_string());
-                                            }
-                                        }
-                                        if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
-                                            next_seq = seq + 1;
-                                            got_message = true;
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                        || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        drop(reader);
-                        write!(stream, "UNSUB 96\r\n")?;
-                        stream.flush()?;
-                        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                        return Err(NatsError::Io(e));
-                    }
-                }
-            }
-
-            drop(reader);
-            if !got_message {
-                break;
-            }
-        }
-
-        write!(stream, "UNSUB 96\r\n")?;
-        stream.flush()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-
-        Ok(keys)
+        let filter = format!("$KV.{}.>", bucket);
+        let msgs = self.stream_walk(&stream_name, &filter, STREAM_WALK_LIMIT)?;
+        Ok(msgs
+            .into_iter()
+            .filter_map(|(subject, _)| subject.strip_prefix(&prefix).map(String::from))
+            .collect())
     }
 
     /// Discover all agents registered in the QUEEN_AGENTS KV bucket.
@@ -1803,31 +1852,23 @@ impl SwarmTransport {
     /// Subscribes to:
     /// - `QUEEN.phase.*` — agent phase gossip
     /// - `QUEEN.announce` — join/leave announcements
-    /// - `KANNAKA.memory.new` — new memory sync (when `include_memories` is true)
+    /// - `KANNAKA.memory.new` + `KANNAKA.dreams` — memory sync (when
+    ///   `include_memories` is true)
     pub fn subscribe_phases_and_memories(&self, include_memories: bool) -> Result<NatsSubscription, NatsError> {
-        let stream_clone = {
-            let stream = self.stream.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            stream.try_clone()?
-        };
-
-        {
-            let mut stream = self.stream.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            write!(stream, "SUB QUEEN.phase.* 1\r\n")?;
-            write!(stream, "SUB QUEEN.announce 2\r\n")?;
-            if include_memories {
-                write!(stream, "SUB KANNAKA.memory.new 3\r\n")?;
-                write!(stream, "SUB KANNAKA.dreams 4\r\n")?;
-            }
-            stream.flush()?;
+        let mut conn = self.lock_conn()?;
+        let first_sid = self.alloc_sid();
+        write!(conn.writer, "SUB QUEEN.phase.* {}\r\n", first_sid)?;
+        write!(conn.writer, "SUB QUEEN.announce {}\r\n", self.alloc_sid())?;
+        if include_memories {
+            write!(conn.writer, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid())?;
+            write!(conn.writer, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid())?;
         }
+        conn.writer.flush()?;
+        let stream_clone = conn.writer.try_clone()?;
 
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
-            sid: "1".to_string(), // sid unused in next_message parsing
+            sid: first_sid.to_string(),
         })
     }
 
@@ -1838,36 +1879,59 @@ impl SwarmTransport {
 
     /// Subscribe to memory sync messages only. Returns a NatsSubscription.
     pub fn subscribe_memories(&self) -> Result<NatsSubscription, NatsError> {
-        let stream_clone = {
-            let stream = self.stream.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            stream.try_clone()?
-        };
-
-        let sid = "memory_listen";
-        {
-            let mut stream = self.stream.lock().map_err(|e| {
-                NatsError::Protocol(format!("lock poisoned: {}", e))
-            })?;
-            write!(stream, "SUB KANNAKA.memory.new {}\r\n", sid)?;
-            stream.flush()?;
-        }
-
-        Ok(NatsSubscription {
-            reader: BufReader::new(stream_clone),
-            sid: sid.to_string(),
-        })
+        self.subscribe_with_queue("KANNAKA.memory.new", None)
     }
 
-    /// Send a PING to check connection health.
+    /// Send a PING and wait for the PONG (2s budget) to check connection
+    /// health. A write that merely lands in a dead socket's kernel buffer
+    /// no longer counts as "connected". Marks the transport disconnected
+    /// on failure. The previous read timeout is restored on all paths.
     pub fn ping(&self) -> Result<(), NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-        write!(stream, "PING\r\n")?;
-        stream.flush()?;
-        Ok(())
+        let mut conn = self.lock_conn()?;
+        let prev = conn.read_timeout();
+        let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let result = (|conn: &mut Conn| -> Result<(), NatsError> {
+            write!(conn.writer, "PING\r\n")?;
+            conn.writer.flush()?;
+            loop {
+                if Instant::now() > deadline {
+                    return Err(NatsError::Protocol("no PONG within 2s".to_string()));
+                }
+                match read_frame(&mut conn.reader) {
+                    Ok(ReadOutcome::Frame(Frame::Pong)) => return Ok(()),
+                    Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                        let _ = conn.pong();
+                    }
+                    Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                        eprintln!("[nats] server error: {}", m);
+                        if is_auth_error(&m) {
+                            return Err(NatsError::Disconnected(m));
+                        }
+                    }
+                    Ok(ReadOutcome::Frame(_)) => continue,
+                    Ok(ReadOutcome::TimedOut) => {
+                        return Err(NatsError::Protocol(
+                            "timed out waiting for PONG".to_string(),
+                        ));
+                    }
+                    Ok(ReadOutcome::Closed) => {
+                        return Err(NatsError::Disconnected(
+                            "connection closed".to_string(),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })(&mut conn);
+
+        let _ = conn.set_read_timeout(prev);
+        if result.is_err() {
+            drop(conn);
+            self.mark_disconnected();
+        }
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -1875,11 +1939,13 @@ impl SwarmTransport {
     // -----------------------------------------------------------------------
 
     /// Synchronous request: publish to `subject` with a unique reply-to inbox,
-    /// await the FIRST reply, return its payload. Used for directed agent
-    /// queries (`kannaka ask --remote <agent_id>`).
+    /// await the FIRST reply on that inbox, return its payload. Used for
+    /// directed agent queries (`kannaka ask --remote <agent_id>`).
     ///
-    /// Holds the connection lock for the whole exchange — same pattern as
-    /// `ensure_js_stream`. The serving agent must respond within `timeout`.
+    /// Holds the connection lock for the whole exchange. Replies are matched
+    /// by inbox subject — messages for other subscriptions on this connection
+    /// are consumed and skipped, never returned as the reply. The previous
+    /// read timeout is restored on all paths.
     pub fn request_one(
         &self,
         subject: &str,
@@ -1887,63 +1953,79 @@ impl SwarmTransport {
         timeout: Duration,
     ) -> Result<Vec<u8>, NatsError> {
         let inbox = new_inbox("req");
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
+        let sid = self.alloc_sid();
+        let mut conn = self.lock_conn()?;
 
-        // SUB inbox first so we don't race the reply.
-        write!(stream, "SUB {} 97\r\n", inbox)?;
-        // PUB <subject> <reply-to> <#bytes>
-        write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
-        stream.write_all(payload)?;
-        write!(stream, "\r\n")?;
-        // UNSUB after first message — let the server clean up automatically.
-        write!(stream, "UNSUB 97 1\r\n")?;
-        stream.flush()?;
+        // SUB inbox first so we don't race the reply; UNSUB <sid> 1 lets the
+        // server clean up automatically after the first delivery.
+        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
+        write!(conn.writer, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
+        conn.writer.write_all(payload)?;
+        conn.writer.write_all(b"\r\n")?;
+        write!(conn.writer, "UNSUB {} 1\r\n", sid)?;
+        conn.writer.flush()?;
 
-        stream.set_read_timeout(Some(timeout))?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+        let prev = conn.read_timeout();
+        conn.set_read_timeout(Some(timeout))?;
+        let deadline = Instant::now() + timeout;
 
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if std::time::Instant::now() > deadline {
-                return Err(NatsError::Protocol("request_one timed out".into()));
+        let mut fatal = false;
+        let result = loop {
+            if Instant::now() > deadline {
+                break Err(NatsError::Protocol("request_one timed out".to_string()));
             }
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => return Err(NatsError::Protocol("connection closed during request".into())),
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("PING") {
-                        write!(stream, "PONG\r\n")?;
-                        stream.flush()?;
-                        continue;
+            match read_frame(&mut conn.reader) {
+                Ok(ReadOutcome::Frame(Frame::Msg { subject: msub, payload, .. }))
+                    if msub == inbox =>
+                {
+                    break Ok(payload);
+                }
+                Ok(ReadOutcome::Frame(Frame::Msg { .. })) => continue,
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    let _ = conn.pong();
+                }
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    eprintln!("[nats] server error: {}", m);
+                    if is_auth_error(&m) {
+                        fatal = true;
+                        break Err(NatsError::Disconnected(m));
                     }
-                    if trimmed.starts_with("MSG ") {
-                        // 4 parts: MSG <subj> <sid> <#bytes>
-                        // 5 parts: MSG <subj> <sid> <reply-to> <#bytes>
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        let nbytes: usize = parts.last()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                        let mut buf = vec![0u8; nbytes];
-                        reader.read_exact(&mut buf)?;
-                        let mut crlf = String::new();
-                        let _ = reader.read_line(&mut crlf);
-                        return Ok(buf);
-                    }
-                    // ignore +OK, INFO, and other server lines
+                }
+                Ok(ReadOutcome::Frame(_)) => continue,
+                Ok(ReadOutcome::TimedOut) => {
+                    break Err(NatsError::Protocol("request_one timed out".to_string()));
+                }
+                Ok(ReadOutcome::Closed) => {
+                    fatal = true;
+                    break Err(NatsError::Disconnected(
+                        "connection closed during request".to_string(),
+                    ));
                 }
                 Err(e) => {
-                    return Err(NatsError::Protocol(format!("request_one read error: {}", e)));
+                    fatal = true;
+                    break Err(e);
                 }
             }
+        };
+
+        if result.is_err() {
+            // No reply was delivered, so the auto-unsub never fired —
+            // remove the subscription explicitly.
+            let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
+            let _ = conn.writer.flush();
         }
+        let _ = conn.set_read_timeout(prev);
+        if fatal {
+            drop(conn);
+            self.mark_disconnected();
+        }
+        result
     }
 
     /// Broadcast request: publish to `subject` with a reply-to inbox, collect
-    /// every reply that arrives within `timeout`, return them all. Used for
-    /// `kannaka ask --remote broadcast` where any number of agents may answer.
+    /// every reply that arrives on that inbox within `timeout`, return them
+    /// all. Used for `kannaka ask --remote broadcast` where any number of
+    /// agents may answer. The previous read timeout is restored on all paths.
     pub fn request_many(
         &self,
         subject: &str,
@@ -1951,52 +2033,63 @@ impl SwarmTransport {
         timeout: Duration,
     ) -> Result<Vec<Vec<u8>>, NatsError> {
         let inbox = new_inbox("reqm");
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
+        let sid = self.alloc_sid();
+        let mut conn = self.lock_conn()?;
 
-        write!(stream, "SUB {} 96\r\n", inbox)?;
-        write!(stream, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
-        stream.write_all(payload)?;
-        write!(stream, "\r\n")?;
-        stream.flush()?;
+        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
+        write!(conn.writer, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
+        conn.writer.write_all(payload)?;
+        conn.writer.write_all(b"\r\n")?;
+        conn.writer.flush()?;
 
-        stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(NatsError::Io)?);
+        let prev = conn.read_timeout();
+        conn.set_read_timeout(Some(Duration::from_millis(500)))?;
+        let deadline = Instant::now() + timeout;
 
-        let deadline = std::time::Instant::now() + timeout;
         let mut replies: Vec<Vec<u8>> = Vec::new();
-
-        while std::time::Instant::now() < deadline {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("PING") {
-                        write!(stream, "PONG\r\n")?;
-                        stream.flush()?;
-                        continue;
-                    }
-                    if trimmed.starts_with("MSG ") {
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        let nbytes: usize = parts.last()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                        let mut buf = vec![0u8; nbytes];
-                        reader.read_exact(&mut buf)?;
-                        let mut crlf = String::new();
-                        let _ = reader.read_line(&mut crlf);
-                        replies.push(buf);
+        let mut fatal = false;
+        while Instant::now() < deadline {
+            match read_frame(&mut conn.reader) {
+                Ok(ReadOutcome::Frame(Frame::Msg { subject: msub, payload, .. }))
+                    if msub == inbox =>
+                {
+                    replies.push(payload);
+                }
+                Ok(ReadOutcome::Frame(Frame::Msg { .. })) => continue,
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    let _ = conn.pong();
+                }
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    eprintln!("[nats] server error: {}", m);
+                    if is_auth_error(&m) {
+                        fatal = true;
+                        break;
                     }
                 }
-                Err(_) => continue, // timeout on this read, loop checks deadline
+                Ok(ReadOutcome::Frame(_)) => continue,
+                // Clean per-read timeout: the outer loop re-checks the deadline.
+                Ok(ReadOutcome::TimedOut) => continue,
+                Ok(ReadOutcome::Closed) => {
+                    fatal = true;
+                    break;
+                }
+                Err(e) => {
+                    // Hard error (desync, reset) — do NOT spin on it.
+                    eprintln!("[nats] request_many read error: {}", e);
+                    fatal = true;
+                    break;
+                }
             }
         }
 
         // UNSUB so the server stops delivering on this inbox.
-        write!(stream, "UNSUB 96\r\n", )?;
-        stream.flush()?;
+        let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
+        let _ = conn.writer.flush();
+        let _ = conn.set_read_timeout(prev);
+        if fatal {
+            drop(conn);
+            self.mark_disconnected();
+        }
         Ok(replies)
     }
 
@@ -2009,8 +2102,9 @@ impl SwarmTransport {
     /// Open a long-running subscription on `subject` and return a stream of
     /// messages. The caller drives the loop and decides when to stop.
     /// Note: while the subscription is open, calls to other methods on this
-    /// transport will block (single-mutex stream); a serving agent should run
-    /// on a dedicated SwarmTransport instance.
+    /// transport will block (single-mutex stream) and the two readers would
+    /// steal each other's bytes; a serving agent should run on a dedicated
+    /// SwarmTransport instance per subscription.
     pub fn subscribe(&self, subject: &str) -> Result<NatsSubscription, NatsError> {
         self.subscribe_with_queue(subject, None)
     }
@@ -2024,20 +2118,22 @@ impl SwarmTransport {
         subject: &str,
         queue_group: Option<&str>,
     ) -> Result<NatsSubscription, NatsError> {
-        let mut stream = self.stream.lock().map_err(|e| {
-            NatsError::Protocol(format!("lock poisoned: {}", e))
-        })?;
-        // sid 95 is reserved for these long-poll subscriptions.
+        let mut conn = self.lock_conn()?;
+        let sid = self.alloc_sid();
         match queue_group {
-            Some(g) => write!(stream, "SUB {} {} 95\r\n", subject, g)?,
-            None => write!(stream, "SUB {} 95\r\n", subject)?,
+            Some(g) => write!(conn.writer, "SUB {} {} {}\r\n", subject, g, sid)?,
+            None => write!(conn.writer, "SUB {} {}\r\n", subject, sid)?,
         }
-        stream.flush()?;
-        let stream_clone = stream.try_clone().map_err(NatsError::Io)?;
+        conn.writer.flush()?;
+        let stream_clone = conn.writer.try_clone().map_err(NatsError::Io)?;
+        // NOTE: the read timeout is a property of the underlying socket,
+        // which is shared with the transport — this also clears the
+        // transport's default timeout. Acceptable under the documented
+        // one-subscription-per-connection model.
         stream_clone.set_read_timeout(None)?;
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
-            sid: "95".to_string(),
+            sid: sid.to_string(),
         })
     }
 }
@@ -2045,11 +2141,12 @@ impl SwarmTransport {
 /// A subscription that yields NATS messages.
 pub struct NatsSubscription {
     reader: BufReader<TcpStream>,
-    #[allow(dead_code)]
+    /// The (first) subscription id registered for this subscription.
     sid: String,
 }
 
 /// A received NATS message.
+#[derive(Debug)]
 pub struct NatsMessage {
     pub subject: String,
     pub payload: Vec<u8>,
@@ -2071,51 +2168,77 @@ impl NatsMessage {
     }
 }
 
+/// Outcome of one `NatsSubscription::next_event` poll. Lets serve loops
+/// distinguish "nothing arrived within the read timeout — poll again"
+/// from "the connection is dead — reconnect or exit" (which `next_message`
+/// conflates into `None`, historically causing 100%-CPU spin loops on a
+/// closed socket).
+#[derive(Debug)]
+pub enum SubEvent {
+    /// A message arrived.
+    Msg(NatsMessage),
+    /// The read timeout (see `set_timeout`) elapsed with no traffic.
+    /// The connection is still healthy; poll again.
+    Timeout,
+    /// EOF, a fatal protocol desync, or an authorization error from the
+    /// server. This subscription will never yield again — reconnect or exit.
+    Closed,
+}
+
 impl NatsSubscription {
-    /// Block until the next message arrives. Returns None on connection close.
-    pub fn next_message(&mut self) -> Option<NatsMessage> {
+    /// The subscription id this subscription registered with the server.
+    pub fn sid(&self) -> &str {
+        &self.sid
+    }
+
+    /// Poll for the next event, distinguishing timeout from connection
+    /// death. Server PINGs are answered transparently; `-ERR` lines are
+    /// logged (authorization errors close the subscription).
+    pub fn next_event(&mut self) -> SubEvent {
         loop {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("PING") {
-                        if let Ok(mut s) = self.reader.get_ref().try_clone() {
-                            let _ = write!(s, "PONG\r\n");
-                            let _ = s.flush();
-                        }
-                        continue;
-                    }
-                    if trimmed.starts_with("MSG ") {
-                        // Wire format:
-                        //   4 parts: MSG <subject> <sid> <#bytes>
-                        //   5 parts: MSG <subject> <sid> <reply-to> <#bytes>
-                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                        if parts.len() >= 4 {
-                            let subject = parts[1].to_string();
-                            let reply_to = if parts.len() >= 5 {
-                                Some(parts[3].to_string())
-                            } else {
-                                None
-                            };
-                            let nbytes: usize = parts.last().unwrap().parse().unwrap_or(0);
-                            let mut payload = vec![0u8; nbytes];
-                            if self.reader.read_exact(&mut payload).is_err() {
-                                return None;
-                            }
-                            let mut crlf = String::new();
-                            let _ = self.reader.read_line(&mut crlf);
-                            return Some(NatsMessage { subject, payload, reply_to });
-                        }
+            match read_frame(&mut self.reader) {
+                Ok(ReadOutcome::Frame(Frame::Msg { subject, reply_to, payload, .. })) => {
+                    return SubEvent::Msg(NatsMessage { subject, payload, reply_to });
+                }
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    if let Ok(mut s) = self.reader.get_ref().try_clone() {
+                        let _ = write!(s, "PONG\r\n");
+                        let _ = s.flush();
                     }
                 }
-                Err(_) => return None,
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    eprintln!("[nats] server error: {}", m);
+                    if is_auth_error(&m) {
+                        return SubEvent::Closed;
+                    }
+                }
+                Ok(ReadOutcome::Frame(_)) => continue,
+                Ok(ReadOutcome::TimedOut) => return SubEvent::Timeout,
+                Ok(ReadOutcome::Closed) => return SubEvent::Closed,
+                Err(e) => {
+                    eprintln!("[nats] subscription protocol error: {}", e);
+                    return SubEvent::Closed;
+                }
             }
         }
     }
 
+    /// Block until the next message arrives. Returns None on read timeout
+    /// AND on connection close — callers that need to tell those apart
+    /// (e.g. serve loops that must not spin on a dead socket) should use
+    /// `next_event` instead.
+    pub fn next_message(&mut self) -> Option<NatsMessage> {
+        match self.next_event() {
+            SubEvent::Msg(m) => Some(m),
+            SubEvent::Timeout | SubEvent::Closed => None,
+        }
+    }
+
     /// Set read timeout for the subscription stream.
+    ///
+    /// NOTE: the timeout is a property of the underlying socket, which is
+    /// shared with the SwarmTransport that created this subscription — fine
+    /// under the one-subscription-per-connection model.
     pub fn set_timeout(&self, timeout: Option<Duration>) -> Result<(), NatsError> {
         self.reader.get_ref().set_read_timeout(timeout)?;
         Ok(())
@@ -2132,23 +2255,50 @@ mod tests {
 
     #[test]
     fn parse_nats_url_default_port() {
-        let (host, port) = parse_nats_url("nats://localhost").unwrap();
+        let (host, port, creds) = parse_nats_url("nats://localhost").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 4222);
+        assert!(creds.is_none());
     }
 
     #[test]
     fn parse_nats_url_custom_port() {
-        let (host, port) = parse_nats_url("nats://swarm.ninja-portal.com:4222").unwrap();
+        let (host, port, creds) = parse_nats_url("nats://swarm.ninja-portal.com:4222").unwrap();
         assert_eq!(host, "swarm.ninja-portal.com");
         assert_eq!(port, 4222);
+        assert!(creds.is_none());
     }
 
     #[test]
     fn parse_nats_url_no_scheme() {
-        let (host, port) = parse_nats_url("localhost:4222").unwrap();
+        let (host, port, creds) = parse_nats_url("localhost:4222").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 4222);
+        assert!(creds.is_none());
+    }
+
+    #[test]
+    fn parse_nats_url_with_credentials() {
+        let (host, port, creds) = parse_nats_url("nats://alice:s3cr3t@example.com:4223").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 4223);
+        assert_eq!(creds, Some(("alice".to_string(), "s3cr3t".to_string())));
+    }
+
+    #[test]
+    fn parse_nats_url_creds_default_port() {
+        let (host, port, creds) = parse_nats_url("nats://bob:pw@example.com").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 4222);
+        assert_eq!(creds, Some(("bob".to_string(), "pw".to_string())));
+    }
+
+    #[test]
+    fn new_inbox_unique() {
+        let a = new_inbox("t");
+        let b = new_inbox("t");
+        assert_ne!(a, b);
+        assert!(a.starts_with("_INBOX.t."));
     }
 
     #[test]
@@ -2211,6 +2361,11 @@ mod tests {
     }
 
     #[test]
+    fn base64_decode_rejects_invalid() {
+        assert!(base64_decode("ab!c").is_err());
+    }
+
+    #[test]
     fn nats_error_display_variants() {
         let e = NatsError::Disconnected("lost connection".into());
         assert!(format!("{}", e).contains("disconnected"));
@@ -2248,6 +2403,86 @@ mod tests {
             assert_eq!(guard.len(), PUBLISH_BUFFER_LIMIT);
             assert_eq!(guard.front().unwrap().subject, "test.20");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Announce identity (swarm agent identity, step 2)
+    // -----------------------------------------------------------------------
+
+    fn sample_identity() -> AnnounceIdentity {
+        AnnounceIdentity {
+            user_id: "user-123".into(),
+            email: "agent@spacechild.love".into(),
+        }
+    }
+
+    #[test]
+    fn announce_payload_without_identity_is_byte_compatible() {
+        // No stored identity → exactly the payload v0.6.19/0.6.20 publish.
+        let new = legacy_announce_payload("join", "agent-a", None);
+        let old = serde_json::json!({ "event": "join", "agent_id": "agent-a" });
+        assert_eq!(
+            serde_json::to_string(&new).unwrap(),
+            serde_json::to_string(&old).unwrap(),
+        );
+    }
+
+    #[test]
+    fn announce_payload_with_identity_adds_optional_block() {
+        let payload = legacy_announce_payload("join", "agent-a", Some(&sample_identity()));
+        // Existing fields untouched (old agents read these by name).
+        assert_eq!(payload["event"], "join");
+        assert_eq!(payload["agent_id"], "agent-a");
+        // Identity block carries user_id/email ONLY — never tokens.
+        assert_eq!(payload["identity"]["user_id"], "user-123");
+        assert_eq!(payload["identity"]["email"], "agent@spacechild.love");
+        let block = payload["identity"].as_object().unwrap();
+        assert_eq!(block.len(), 2, "identity block must be user_id + email only");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("token"), "no token material on the wire");
+    }
+
+    #[test]
+    fn old_shape_announce_still_deserializes() {
+        // What a v0.6.19/0.6.20 agent publishes today (post-envelope).
+        let old = r#"{"event":"join","agent_id":"agent-old","schema_version":"1.0","ts":1765400000000}"#;
+        let v: serde_json::Value = serde_json::from_str(old).expect("old payload parses");
+        assert_eq!(v["agent_id"], "agent-old");
+        // New code sees no identity on old payloads — no error, just None.
+        assert_eq!(AnnounceIdentity::email_from(&v), None);
+    }
+
+    #[test]
+    fn new_shape_announce_keeps_legacy_fields_intact() {
+        // Old agents parse announces as loose JSON by field name — verify
+        // the fields they use survive the identity enrichment + envelope.
+        let mut payload = legacy_announce_payload("join", "agent-new", Some(&sample_identity()));
+        add_envelope(&mut payload);
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["event"], "join");
+        assert_eq!(v["agent_id"], "agent-new");
+        assert_eq!(v["schema_version"], "1.0");
+        assert!(v["ts"].is_number());
+        assert_eq!(AnnounceIdentity::email_from(&v), Some("agent@spacechild.love"));
+    }
+
+    #[test]
+    fn presence_identity_email_extraction() {
+        // Presence record from a pre-identity agent: no identity key.
+        let old = serde_json::json!({ "agent_id": "a", "memory_count": 5 });
+        assert_eq!(AnnounceIdentity::email_from(&old), None);
+
+        // Presence record with an attached identity.
+        let mut new = serde_json::json!({ "agent_id": "a", "memory_count": 5 });
+        sample_identity().attach_to(&mut new);
+        assert_eq!(new["agent_id"], "a", "existing fields untouched");
+        assert_eq!(AnnounceIdentity::email_from(&new), Some("agent@spacechild.love"));
+
+        // attach_to on a non-object is a no-op, not a panic.
+        let mut not_obj = serde_json::json!("scalar");
+        sample_identity().attach_to(&mut not_obj);
+        assert_eq!(AnnounceIdentity::email_from(&not_obj), None);
     }
 
     // -----------------------------------------------------------------------

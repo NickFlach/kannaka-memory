@@ -2,6 +2,129 @@
 
 ## [Unreleased]
 
+## [0.6.20] — 2026-06-10
+
+### Performance — `kannaka ask` 6m35s → ~17s end-to-end (650-memory medium)
+
+Three compounding fixes, found by profiling (`KANNAKA_TIME=1`, new):
+
+- **Batched recall observation** — `observe_wavefront` materialized the full
+  N×N coherence matrix (O(N²·dim)) to read ONE row of it, then ran a full
+  field-settling `apply_dynamics` pass — per recall result. A top-8 recall
+  paid ~16 quadratic field passes for the observation side-effect alone. Now:
+  each observation computes only its own coherence row (O(N·dim), identical
+  values), and the settle pass runs once per recall batch. All three recall
+  paths (beam, cluster-prefiltered, chiral) route through the batch.
+- **Gram-matrix kernels are real matrix multiplications** — `coherence_matrix`,
+  `compute_interference_matrix`, and Ξ's Gram loop each rebuilt H·Hᵀ with
+  naive per-element loops (~40s each at 650×1024). They now share one
+  `gram_matrix()` (ndarray `dot`, matrixmultiply-backed, ~100ms) plus
+  cos/sin phase vectors (angle-difference identity instead of N² trig).
+  This makes the whole assess suite (Φ, Ξ, clusters) ~18× faster — which
+  matters beyond ask: every ask's observation mutates the field and saves,
+  so the metrics/cluster fingerprint caches MISS on the next invocation by
+  design; the recompute they guard had to be cheap.
+- **`KANNAKA_TIME=1`** prints per-phase wall times (beam / recall /
+  system_prompt / llm_turn) to stderr — the ask path has now had two silent
+  multi-minute regressions; keep the seams instrumented.
+
+Measured (650 memories, Windows box): recall 42.3s → 2.5s, assess 54.7s →
+3.1s, LLM turn ~2-5s. `--no-recall` unchanged (~7s).
+
+## [0.6.19] — 2026-06-10
+
+### Fixed
+- **`swarm tail` defaults now work for anonymous connections** — the swarm
+  server's anonymous user (ADR-0026 #73 public read-only mirror) denies the
+  broad `KANNAKA.>`/`RADIO.>`/`KAX.>`/`EYE.>` wildcards at SUB time, so the
+  statusline pulse has only ever received `QUEEN.>` traffic when running
+  without credentials. Credential-less tails now default to the curated
+  anon-visible subject set (`QUEEN.>`, `KANNAKA.activity.>`,
+  `KANNAKA.events.>`, `consciousness`, `dreams`, `exemplar.>`,
+  `presence.>`); with NATS_USER or `user:pass@` in the URL the broad set is
+  unchanged. Server-side, `KANNAKA.activity.>` was added to the anonymous
+  publish+subscribe allowlists so v0.6.18's ask-activity events actually
+  reach the pulse. Verified end-to-end: `kannaka ask` → statusline PULSE.
+
+## [0.6.18] — 2026-06-10
+
+Comms-hardening release: full-pass bug hunt over the NATS transport, the CLI
+arg surface, and the serve daemons.
+
+### Added
+- **`kannaka ask` now pulses the constellation** — successful local asks
+  publish a best-effort `KANNAKA.activity.<agent_id>` event
+  (`{agent_id, display_name, kind:"ask", preview, ts}`) after the answer is
+  printed, so asks show up in `swarm tail` and the statusline PULSE marquee.
+  Only fires when a NATS URL is explicitly configured; never delays the answer
+  or changes the exit code.
+- **`NatsSubscription::next_event() -> SubEvent {Msg|Timeout|Closed}`** —
+  serve loops can finally tell "nothing arrived, poll again" from "the socket
+  is dead". All daemons (`swarm serve/listen/worker`, `inbox serve/tail`,
+  `attention serve`, `substrate run`) now exit 1 on a closed connection so
+  systemd `Restart=on-failure` works, instead of hot-spinning at 100% CPU.
+
+### Fixed — NATS transport (`src/nats.rs`, near-total rewrite)
+- **Reconnect no longer drops auth**: `connect()` and `reconnect()` share one
+  authenticated handshake (NATS_USER/NATS_PASSWORD, or `nats://user:pass@host`).
+  Previously every reconnect downgraded to anonymous read-only and all
+  subsequent publishes were silently rejected.
+- **`-ERR` server lines are read and logged everywhere**; authorization errors
+  mark the connection dead instead of being skipped as noise.
+- Dynamic sids from the (previously dead) `next_sid` counter replace the
+  hard-coded sids 94-99/1-4; RPC replies are matched by inbox subject, so a
+  phase-gossip frame can no longer be returned as a `request_one`/`kv_get`
+  reply.
+- `request_one`/`request_many`/`ping` restore the previous read timeout on all
+  paths (an RPC could leave the shared socket at 500 ms forever); `ping()`
+  actually reads the PONG, so `is_connected()` detects dead sockets.
+- One persistent `BufReader` per connection: per-iteration reader recreation in
+  `get_all_phases_jetstream`/`kv_keys` discarded pre-read bytes (the documented
+  "returned 0 rows" desync).
+- Unparseable MSG headers are protocol errors instead of silently desyncing
+  the stream; `request_many` no longer hot-spins on hard read errors.
+- Publish buffer: replay is strict FIFO with push-front requeue on failure
+  (was: failures re-appended out of order), drops and replay failures are
+  logged, and poisoned mutexes recover via `into_inner()` instead of silently
+  disabling disconnect buffering.
+- TLS-required servers fail with a clear message; inbox names include
+  pid+counter (two same-instant processes could collide and receive each
+  other's replies); base64 decode uses a 256-byte LUT.
+
+### Fixed — CLI
+- **`kannaka remember "x" --importance 0.8` no longer drops importance** when
+  `--category` is absent (new `remember_with_importance`).
+- **`swarm serve` / `attention serve` force readonly on their HRM store** —
+  the single-writer policy is now a code invariant, not a systemd-env
+  convention; mutating verbs warn loudly when readonly is active (writes were
+  silently dropped).
+- `swarm serve`'s directed-only fallback no longer exits silently after 250 ms
+  idle; replies thread the actually-resolved NATS URL instead of falling back
+  to `127.0.0.1`; `--agent-id` overrides are honored in reply `from` fields;
+  `ask --remote` resolves its URL via `resolve_nats_url` (honors `--nats-url`,
+  no hardcoded host).
+- `events restore --from-url` works on a fresh host (no longer requires a NATS
+  manifest lookup first); `events snapshot --interval <typo>` errors instead
+  of silently degrading to a one-shot run.
+- `export` → `import` round-trips are lossless: `import` now preserves
+  id/frequency/phase/decay_rate/created_at/vector/xi_signature (shared
+  implementation with `import-json`).
+- Arg-parse hardening: unknown `--flags` in text-collecting commands (`ask`,
+  `remember`, `recall`, `search`, `enqueue`) are errors instead of being
+  swallowed into the prompt/query text; a trailing flag with a missing value
+  errors instead of vanishing (`export --output` used to dump the HRM to
+  stdout); strict numeric parsing replaces `unwrap_or(default)` typo-masking
+  (`market buy`, `bias`, timeouts, top-k, thresholds).
+- Exit codes: `invariant`, `cmf`, `bias` error paths exit 1; `inbox send
+  --wait` exits nonzero on a handler-failure reply; `voice --out` reports
+  write failures instead of panicking.
+- `swarm worker` multi-kind mode subscribes once per kind on dedicated
+  connections instead of leaking a server-side subscription every 5 s.
+- `inbox serve` validates inbound `reply_to` against the
+  `KANNAKA.inbox.reply.` prefix — a peer can no longer direct handler output
+  to arbitrary subjects.
+- Stale usage strings updated (`ask`, `swarm`, `recall`, `remember`).
+
 ## [0.6.17] — 2026-06-09
 
 ### Fixed

@@ -58,6 +58,9 @@ pub mod cli;
 
 pub mod agent;
 
+// SpaceChild SSO identity for swarm agents (spacechild-auth client + token store).
+pub mod identity;
+
 // Grounded scholarly research (OpenAlex) for the curiosity loop.
 pub mod openalex;
 

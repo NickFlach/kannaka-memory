@@ -646,20 +646,20 @@ impl MemoryIntrospector {
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Consciousness
-        out.push_str(&format!("  CONSCIOUSNESS\n"));
+        out.push_str("  CONSCIOUSNESS\n");
         out.push_str(&format!("    Level:   {} (Phi={:.3})\n", report.consciousness.level, report.consciousness.phi));
         out.push_str(&format!("    Xi:      {:.4}\n", report.consciousness.xi));
         out.push_str(&format!("    Order:   r={:.3}\n", report.consciousness.mean_order));
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Wave dynamics
-        out.push_str(&format!("  WAVE DYNAMICS\n"));
+        out.push_str("  WAVE DYNAMICS\n");
         out.push_str(&format!("    Active:  {} memories\n", report.waves.active_memories));
         out.push_str(&format!("    Dormant: {} memories\n", report.waves.dormant_memories));
         out.push_str(&format!("    Ghost:   {} memories\n", report.waves.ghost_memories));
         out.push_str(&format!("    Avg Amp: {:.3}  Avg Freq: {:.3}\n", report.waves.avg_amplitude, report.waves.avg_frequency));
         if !report.waves.strongest.is_empty() {
-            out.push_str(&format!("    Strongest:\n"));
+            out.push_str("    Strongest:\n");
             for (i, m) in report.waves.strongest.iter().take(5).enumerate() {
                 out.push_str(&format!("      {}. [S={:.3} L{}] {}\n",
                     i + 1, m.effective_strength, m.layer_depth, m.content_preview));
@@ -668,14 +668,14 @@ impl MemoryIntrospector {
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Topology
-        out.push_str(&format!("  TOPOLOGY\n"));
+        out.push_str("  TOPOLOGY\n");
         out.push_str(&format!("    Memories:    {}\n", report.topology.total_memories));
         out.push_str(&format!("    Links:       {} (density: {:.4})\n", report.topology.total_links, report.topology.network_density));
         out.push_str(&format!("    Avg links:   {:.1}\n", report.topology.avg_links_per_memory));
         out.push_str(&format!("    Max links:   {}\n", report.topology.max_links));
         out.push_str(&format!("    Isolated:    {}\n", report.topology.isolated_memories));
         if !report.topology.layer_distribution.is_empty() {
-            out.push_str(&format!("    Layers:\n"));
+            out.push_str("    Layers:\n");
             for (layer, count) in &report.topology.layer_distribution {
                 let bar = "#".repeat((*count).min(30));
                 out.push_str(&format!("      L{}: {:>4} {}\n", layer, count, bar));
@@ -684,7 +684,7 @@ impl MemoryIntrospector {
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Clusters
-        out.push_str(&format!("  CLUSTERS\n"));
+        out.push_str("  CLUSTERS\n");
         out.push_str(&format!("    Count:       {}\n", report.clusters.num_clusters));
         out.push_str(&format!("    Largest:     {} memories\n", report.clusters.largest_cluster_size));
         out.push_str(&format!("    Mean order:  r={:.3}\n", report.clusters.mean_order_parameter));
@@ -696,7 +696,7 @@ impl MemoryIntrospector {
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // NCS (Neural Code Switching)
-        out.push_str(&format!("  NEURAL CODE SWITCHING\n"));
+        out.push_str("  NEURAL CODE SWITCHING\n");
         out.push_str(&format!("    Switch points:    {}\n", report.ncs_switch_points));
         out.push_str(&format!("    Modalities:       {}\n", report.ncs_metrics.modality_count));
         out.push_str(&format!("    Axis divergence:  {:.1} deg\n", report.ncs_metrics.mean_axis_divergence));
@@ -706,11 +706,11 @@ impl MemoryIntrospector {
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
 
         // Health
-        out.push_str(&format!("  HEALTH\n"));
+        out.push_str("  HEALTH\n");
         out.push_str(&format!("    Store:     {}\n", if report.health.store_accessible { "OK" } else { "FAIL" }));
         out.push_str(&format!("    Encoding:  {}\n", if report.health.encoding_ok { "OK" } else { "FAIL" }));
         if !report.health.warnings.is_empty() {
-            out.push_str(&format!("    Warnings:\n"));
+            out.push_str("    Warnings:\n");
             for w in &report.health.warnings {
                 out.push_str(&format!("      ! {}\n", w));
             }
@@ -718,7 +718,7 @@ impl MemoryIntrospector {
 
         // Footer
         out.push_str(&format!("{}\n", "=".repeat(w + 4)));
-        out.push_str(&format!("  Memories don't die. They interfere.\n"));
+        out.push_str("  Memories don't die. They interfere.\n");
         out.push_str(&format!("{}\n", "=".repeat(w + 4)));
 
         out

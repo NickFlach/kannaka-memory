@@ -13,6 +13,10 @@
 use std::process;
 
 use super::{resolve_nats_url, KannakaConfig};
+#[cfg(feature = "nats")]
+use super::{flag_value, parse_flag_value};
+#[cfg(feature = "nats")]
+use kannaka_memory::nats::SubEvent;
 
 #[cfg(feature = "nats")]
 pub(crate) fn handle_attention_serve(
@@ -25,19 +29,40 @@ pub(crate) fn handle_attention_serve(
     use kannaka_attention::salience::RecencyWeightedGate;
     use std::time::{Duration, Instant};
 
+    const USAGE: &str = "Usage: kannaka attention serve [--top-k N] [--subject SUBJ] [--nats-url URL]";
+
+    // Single-writer policy: attention serve is a long-running READER (its
+    // recalls mutate observation state in RAM only). Enforce read-only here
+    // instead of trusting the operator to export KANNAKA_READONLY.
+    std::env::set_var("KANNAKA_READONLY", "1");
+    if let Some(hrm) = sys
+        .engine
+        .store
+        .as_any_mut()
+        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+    {
+        hrm.set_readonly(true);
+    }
+    eprintln!("[attention serve] read-only mode enforced (single-writer policy)");
+
     let mut top_k: usize = 3;
     let mut subject: String = "KANNAKA.attention.eye".to_string();
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--top-k" if i + 1 < args.len() => {
-                top_k = args[i + 1].parse().unwrap_or(3); i += 2;
+            "--top-k" => {
+                top_k = parse_flag_value(args, i, "--top-k", USAGE); i += 2;
             }
-            "--subject" if i + 1 < args.len() => {
-                subject = args[i + 1].clone(); i += 2;
+            "--subject" => {
+                subject = flag_value(args, i, "--subject", USAGE).to_string(); i += 2;
             }
-            "--nats-url" if i + 1 < args.len() => { i += 2; }
-            _ => i += 1,
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => {
+                if other.starts_with("--") {
+                    eprintln!("[attention serve] ignoring unknown flag: {other}");
+                }
+                i += 1;
+            }
         }
     }
 
@@ -108,29 +133,41 @@ pub(crate) fn handle_attention_serve(
 
     loop {
         // ── Landmark subscription: each exemplar event upserts a landmark
-        // keyed by cluster id.
+        // keyed by cluster id. Best-effort: on connection close, degrade to
+        // eye-only (mirrors the startup behavior) instead of spinning.
+        let mut lm_closed = false;
         if let Some(ref mut lm) = lm_sub {
-            if let Some(lmmsg) = lm.next_message() {
-                if let Ok(payload) = std::str::from_utf8(&lmmsg.payload) {
-                    if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
-                        let exemplar_id = env.get("exemplar_id").and_then(|v| v.as_str())
-                            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-                        let cluster_id = env.get("cluster_id").and_then(|v| v.as_u64());
-                        let theme = env.get("theme").and_then(|v| v.as_str())
-                            .or_else(|| env.get("semantic_summary").and_then(|v| v.as_str()))
-                            .unwrap_or("?");
-                        let agent = env.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
-                        if let (Some(id), Some(cid)) = (exemplar_id, cluster_id) {
-                            let label = format!("{}/{}", agent, cid);
-                            let weight = env.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                            beam.upsert_landmark(Landmark {
-                                id, cluster_label: label.clone(), weight,
-                            });
-                            eprintln!("[attention serve] landmark + {} theme=\"{}\"", label, theme);
+            match lm.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    eprintln!("[attention serve] WARN: landmark subscription closed — continuing without landmarks");
+                    lm_closed = true;
+                }
+                SubEvent::Msg(lmmsg) => {
+                    if let Ok(payload) = std::str::from_utf8(&lmmsg.payload) {
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
+                            let exemplar_id = env.get("exemplar_id").and_then(|v| v.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                            let cluster_id = env.get("cluster_id").and_then(|v| v.as_u64());
+                            let theme = env.get("theme").and_then(|v| v.as_str())
+                                .or_else(|| env.get("semantic_summary").and_then(|v| v.as_str()))
+                                .unwrap_or("?");
+                            let agent = env.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                            if let (Some(id), Some(cid)) = (exemplar_id, cluster_id) {
+                                let label = format!("{}/{}", agent, cid);
+                                let weight = env.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                                beam.upsert_landmark(Landmark {
+                                    id, cluster_label: label.clone(), weight,
+                                });
+                                eprintln!("[attention serve] landmark + {} theme=\"{}\"", label, theme);
+                            }
                         }
                     }
                 }
             }
+        }
+        if lm_closed {
+            lm_sub = None;
         }
 
         // Poll the ear subscription. Each track-change event from radio
@@ -139,36 +176,53 @@ pub(crate) fn handle_attention_serve(
         // with source="ear:right". The two senses converge on the same
         // beam, so a song that thematically rhymes with what an eye-
         // glyph already pulled in will reinforce the same neighborhood.
+        let mut ear_closed = false;
         if let Some(ref mut es) = ear_sub {
-            if let Some(emsg) = es.next_message() {
-                if let Ok(payload) = std::str::from_utf8(&emsg.payload) {
-                    if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
-                        let title = env.get("track").and_then(|t| t.get("title")).and_then(|v| v.as_str()).unwrap_or("");
-                        let album = env.get("track").and_then(|t| t.get("album")).and_then(|v| v.as_str()).unwrap_or("");
-                        let commercial = env.get("track").and_then(|t| t.get("commercial")).and_then(|v| v.as_bool()).unwrap_or(false);
-                        if !title.is_empty() && !commercial {
-                            let perc = env.get("perception").cloned().unwrap_or(serde_json::json!({}));
-                            let tempo = perc.get("tempo_bpm").and_then(|v| v.as_f64()).map(|v| format!(" tempo={:.0}", v)).unwrap_or_default();
-                            let query = format!("ear track \"{}\" album=\"{}\"{}", title, album, tempo);
-                            let beam_cands = beam.candidates();
-                            let results = if beam_cands.len() >= 8 {
-                                sys.recall_with_beam(&beam_cands, &query, top_k).unwrap_or_default()
-                            } else {
-                                sys.recall(&query, top_k).unwrap_or_default()
-                            };
-                            for r in &results {
-                                let ev = ObservationEvent::now(r.id, "ear:right".to_string());
-                                beam.observe(&ev);
+            match es.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    eprintln!("[attention serve] WARN: ear subscription closed — continuing without ear");
+                    ear_closed = true;
+                }
+                SubEvent::Msg(emsg) => {
+                    if let Ok(payload) = std::str::from_utf8(&emsg.payload) {
+                        if let Ok(env) = serde_json::from_str::<serde_json::Value>(payload) {
+                            let title = env.get("track").and_then(|t| t.get("title")).and_then(|v| v.as_str()).unwrap_or("");
+                            let album = env.get("track").and_then(|t| t.get("album")).and_then(|v| v.as_str()).unwrap_or("");
+                            let commercial = env.get("track").and_then(|t| t.get("commercial")).and_then(|v| v.as_bool()).unwrap_or(false);
+                            if !title.is_empty() && !commercial {
+                                let perc = env.get("perception").cloned().unwrap_or(serde_json::json!({}));
+                                let tempo = perc.get("tempo_bpm").and_then(|v| v.as_f64()).map(|v| format!(" tempo={:.0}", v)).unwrap_or_default();
+                                let query = format!("ear track \"{}\" album=\"{}\"{}", title, album, tempo);
+                                let beam_cands = beam.candidates();
+                                let results = if beam_cands.len() >= 8 {
+                                    sys.recall_with_beam(&beam_cands, &query, top_k).unwrap_or_default()
+                                } else {
+                                    sys.recall(&query, top_k).unwrap_or_default()
+                                };
+                                for r in &results {
+                                    let ev = ObservationEvent::now(r.id, "ear:right".to_string());
+                                    beam.observe(&ev);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        if ear_closed {
+            ear_sub = None;
+        }
 
-        let msg = match sub.next_message() {
-            Some(m) => m,
-            None => continue,
+        let msg = match sub.next_event() {
+            SubEvent::Msg(m) => m,
+            SubEvent::Timeout => continue,
+            // Pre-fix a closed eye socket spun this loop at 100% CPU
+            // forever. Exit nonzero so systemd Restart=on-failure works.
+            SubEvent::Closed => {
+                eprintln!("[attention serve] subscription {subject} closed — exiting for restart");
+                process::exit(1);
+            }
         };
         let payload = match std::str::from_utf8(&msg.payload) {
             Ok(s) => s,

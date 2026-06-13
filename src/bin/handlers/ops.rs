@@ -6,7 +6,7 @@
 
 use std::process;
 
-use super::{check_kannaktopus_installed, KannakaConfig};
+use super::{check_kannaktopus_installed, flag_value, parse_flag_value, warn_if_readonly, KannakaConfig};
 
 pub(crate) fn handle_orchestrate(args: &[String]) {
     if !check_kannaktopus_installed() {
@@ -270,8 +270,9 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_search(sys: &kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    const USAGE: &str = "Usage: kannaka search \"query\" [--limit N] [--json]";
     if args.len() < 2 {
-        eprintln!("Usage: kannaka search \"query\" [--limit N] [--json]");
+        eprintln!("{USAGE}");
         eprintln!();
         eprintln!("Literal text search over memory content. For semantic/");
         eprintln!("resonance recall use `kannaka recall` instead.");
@@ -282,15 +283,28 @@ pub(crate) fn handle_search(sys: &kannaka_memory::openclaw::KannakaMemorySystem,
     let mut query_parts = Vec::new();
     let mut i = 1;
     while i < args.len() {
-        if (args[i] == "--limit" || args[i] == "--top-k") && i + 1 < args.len() {
-            limit = args[i + 1].parse().unwrap_or(20);
-            i += 2;
-        } else if args[i] == "--json" {
-            json_out = true;
-            i += 1;
-        } else {
-            query_parts.push(args[i].as_str());
-            i += 1;
+        match args[i].as_str() {
+            "--limit" | "--top-k" => {
+                limit = parse_flag_value(args, i, args[i].as_str(), USAGE);
+                i += 2;
+            }
+            "--json" => {
+                json_out = true;
+                i += 1;
+            }
+            // Accepted everywhere for consistency; search itself never
+            // touches NATS.
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other if other.starts_with("--") => {
+                // A typo'd flag must NOT silently become part of the query.
+                eprintln!("search: unknown flag: {other}");
+                eprintln!("{USAGE}");
+                process::exit(2);
+            }
+            _ => {
+                query_parts.push(args[i].as_str());
+                i += 1;
+            }
         }
     }
     let query = query_parts.join(" ");
@@ -340,17 +354,28 @@ pub(crate) fn handle_search(sys: &kannaka_memory::openclaw::KannakaMemorySystem,
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    const USAGE: &str = "Usage: kannaka export [--output FILE] [--format json]";
     let mut output_path: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
-        if (args[i] == "--output" || args[i] == "-o") && i + 1 < args.len() {
-            output_path = Some(args[i + 1].clone());
-            i += 2;
-        } else if args[i] == "--format" && i + 1 < args.len() {
-            // Only JSON is supported, but accept the flag
-            i += 2;
-        } else {
-            i += 1;
+        match args[i].as_str() {
+            // flag_value errors on a trailing `--output` — pre-fix it was
+            // silently dropped and the full HRM JSON went to stdout.
+            "--output" | "-o" => {
+                output_path = Some(flag_value(args, i, args[i].as_str(), USAGE).to_string());
+                i += 2;
+            }
+            "--format" => {
+                // Only JSON is supported, but accept the flag
+                let _ = flag_value(args, i, "--format", USAGE);
+                i += 2;
+            }
+            other => {
+                if other.starts_with("--") {
+                    eprintln!("[export] ignoring unknown flag: {other}");
+                }
+                i += 1;
+            }
         }
     }
 
@@ -403,15 +428,24 @@ pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
 // Import command
 // ---------------------------------------------------------------------------
 
-pub(crate) fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
-    let path = match args.get(1) {
-        Some(p) => p,
-        None => {
-            eprintln!("Usage: kannaka import <file.json>");
-            process::exit(1);
-        }
-    };
+/// Outcome counters from a JSON memory import.
+pub(crate) struct ImportSummary {
+    pub imported: u32,
+    pub skipped: u32,
+    pub errors: u32,
+    pub total: usize,
+}
 
+/// Lossless JSON import shared by `kannaka import` and `kannaka import-json`.
+/// Preserves the full wave state written by `export` (amplitude, frequency,
+/// phase, decay_rate, created_at, layer_depth, hallucinated, parents,
+/// vector, xi_signature). Pre-fix `kannaka import` re-absorbed content +
+/// amplitude only, so an export→import round-trip silently rebuilt every
+/// memory's wave state.
+pub(crate) fn import_memories_from_file(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    path: &str,
+) -> ImportSummary {
     let file_data = std::fs::read_to_string(path)
         .unwrap_or_else(|e| { eprintln!("Failed to read {}: {}", path, e); process::exit(1); });
     let memories: Vec<serde_json::Value> = serde_json::from_str(&file_data)
@@ -440,16 +474,100 @@ pub(crate) fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
         if content.is_empty() { skipped += 1; continue; }
 
         let amplitude = val["amplitude"].as_f64().unwrap_or(0.5) as f32;
+        let frequency = val["frequency"].as_f64().unwrap_or(1.0) as f32;
+        let phase = val["phase"].as_f64().unwrap_or(0.0) as f32;
+        let decay_rate = val["decay_rate"].as_f64().unwrap_or(0.001) as f32;
+        let created_at = val["created_at"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+        let hallucinated = val["hallucinated"].as_bool().unwrap_or(false);
 
-        match sys.engine.store.absorb(&content, amplitude, None) {
-            Ok(_) => { imported += 1; }
+        // Reconstruct vector from JSON array if present, otherwise re-encode
+        let vector: Option<Vec<f32>> = val["vector"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect()
+        });
+
+        let vector = match vector {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                // No vector in JSON — use absorb which encodes internally
+                match sys.engine.store.absorb(&content, amplitude, None) {
+                    Ok(_new_id) => {
+                        imported += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        if errors < 5 {
+                            eprintln!("  Error absorbing {}: {}", id_str, e);
+                        }
+                        errors += 1;
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let xi_sig: Vec<f32> = val["xi_signature"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let content_clone = content.clone();
+        let mut mem = kannaka_memory::memory::HyperMemory::new(vector, content);
+        mem.id = id;
+        mem.amplitude = amplitude;
+        mem.frequency = frequency;
+        mem.phase = phase;
+        mem.decay_rate = decay_rate;
+        mem.created_at = created_at;
+        mem.layer_depth = val["layer_depth"].as_u64().unwrap_or(0) as u8;
+        mem.hallucinated = hallucinated;
+        mem.parents = val["parents"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        mem.xi_signature = xi_sig;
+
+        match sys.engine.store.insert(mem) {
+            Ok(_) => imported += 1,
             Err(e) => {
-                if errors < 5 { eprintln!("  Error importing {}: {}", id_str, e); }
-                errors += 1;
+                // Dimension mismatch — fall back to absorb (re-encodes the text)
+                let err_str = format!("{}", e);
+                if err_str.contains("dimension mismatch") {
+                    match sys.engine.store.absorb(&content_clone, amplitude, None) {
+                        Ok(_) => {
+                            imported += 1;
+                        }
+                        Err(e2) => {
+                            if errors < 5 {
+                                eprintln!("  Error re-encoding {}: {}", id_str, e2);
+                            }
+                            errors += 1;
+                        }
+                    }
+                } else {
+                    if errors < 5 {
+                        eprintln!("  Error importing {}: {}", id_str, e);
+                    }
+                    errors += 1;
+                }
             }
         }
     }
 
+    // Save
     if imported > 0 {
         if let Err(e) = sys.save() {
             eprintln!("Failed to save: {}", e);
@@ -457,9 +575,23 @@ pub(crate) fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
         }
     }
 
+    ImportSummary { imported, skipped, errors, total: memories.len() }
+}
+
+pub(crate) fn handle_import(sys: &mut kannaka_memory::openclaw::KannakaMemorySystem, args: &[String]) {
+    let path = match args.get(1) {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: kannaka import <file.json>");
+            process::exit(1);
+        }
+    };
+    warn_if_readonly("import");
+    let s = import_memories_from_file(sys, path);
+
     println!("  \u{2713} Import complete");
-    println!("    Imported: {}", imported);
-    println!("    Skipped:  {} (duplicates)", skipped);
-    println!("    Errors:   {}", errors);
-    println!("    Total:    {} in file", memories.len());
+    println!("    Imported: {}", s.imported);
+    println!("    Skipped:  {} (duplicates)", s.skipped);
+    println!("    Errors:   {}", s.errors);
+    println!("    Total:    {} in file", s.total);
 }

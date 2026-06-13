@@ -322,8 +322,16 @@ impl KannakaMemorySystem {
     /// Uses the HRM-native absorb path (ChiralMedium handles encoding,
     /// SGA classification, Fano fold routing, and callosal transfer).
     pub fn remember(&mut self, text: &str) -> Result<Uuid, SystemError> {
+        self.remember_with_importance(text, 0.5)
+    }
+
+    /// Absorb a memory with auto-detected category but explicit importance.
+    /// Pre-fix, `kannaka remember --importance N` without `--category`
+    /// silently dropped the importance because the CLI could only reach
+    /// importance through `remember_with_category`.
+    pub fn remember_with_importance(&mut self, text: &str, importance: f64) -> Result<Uuid, SystemError> {
         let category = self.categorize_text(text);
-        self.remember_with_category(text, &category, 0.5)
+        self.remember_with_category(text, &category, importance)
     }
     
     /// Absorb a memory with explicit category and importance.

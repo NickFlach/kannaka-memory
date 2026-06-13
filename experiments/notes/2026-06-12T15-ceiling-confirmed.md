@@ -1,0 +1,1 @@
+No new test worth running — T14 ceiling analysis confirmed: total improvable (~0.002615) < keep threshold (0.002627); all parametric axes (alpha_base, envelope_depth, relax_steps, chain_depth, chiral_p_bp, xi_eval_relax, kuramoto_coupling, drive freq/scope) exhausted at confirmed optima; architecture is at fitness ceiling (3-trial avg 0.007627).
