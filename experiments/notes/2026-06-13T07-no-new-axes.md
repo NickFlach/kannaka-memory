@@ -1,0 +1,1 @@
+All six system-prompt research questions answered in prior fires; architectural ceiling confirmed at fitness 0.007627 (total remaining improvable 0.002615 < keep threshold 0.002627); no new axes worth testing this fire.
