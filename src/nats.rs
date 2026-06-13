@@ -64,6 +64,73 @@ fn add_envelope(value: &mut serde_json::Value) {
     }
 }
 
+/// Identity block attached to swarm announces/presence when the operator
+/// has logged in via `kannaka identity` (swarm agent identity, step 2).
+/// user_id + email ONLY — tokens never cross the NATS boundary.
+///
+/// Compatibility: the block rides as an OPTIONAL `"identity"` key on
+/// payloads that production v0.6.19/0.6.20 agents parse as loose JSON
+/// (`serde_json::Value`), so old agents ignore it and new agents see
+/// `None` on old payloads. With no stored identity the payloads are
+/// byte-identical to the pre-identity shape.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnnounceIdentity {
+    pub user_id: String,
+    pub email: String,
+}
+
+impl AnnounceIdentity {
+    /// Build from the stored identity file (`<data_dir>/identity.json`).
+    /// Not logged in → `None`. Present-but-unreadable → warn and `None`
+    /// (the swarm announce must never fail because of a bad identity file).
+    pub fn from_store() -> Option<Self> {
+        let path = crate::identity::identity_path();
+        match crate::identity::IdentityStore::load(&path) {
+            Ok(Some(s)) => Some(Self { user_id: s.user_id, email: s.email }),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("[nats] Warning: ignoring unreadable identity file: {e}");
+                None
+            }
+        }
+    }
+
+    /// Insert the `"identity": {user_id, email}` block into a JSON object
+    /// payload. No-op on non-objects.
+    pub fn attach_to(&self, payload: &mut serde_json::Value) {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "identity".to_string(),
+                serde_json::json!({ "user_id": self.user_id, "email": self.email }),
+            );
+        }
+    }
+
+    /// Read the identity email out of an announce/presence payload.
+    /// Old-shape payloads (no `"identity"` key) → `None`.
+    pub fn email_from(payload: &serde_json::Value) -> Option<&str> {
+        payload.get("identity")?.get("email")?.as_str()
+    }
+}
+
+/// Build the legacy `QUEEN.announce` payload (pre-envelope), optionally
+/// enriched with the identity block. `identity = None` reproduces the
+/// pre-identity shape exactly.
+fn legacy_announce_payload(
+    event: &str,
+    agent_id: &str,
+    identity: Option<&AnnounceIdentity>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "event": event,
+        "agent_id": agent_id,
+    });
+    if let Some(idn) = identity {
+        idn.attach_to(&mut payload);
+    }
+    payload
+}
+
 pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
 const EVENTS_STREAM_NAME: &str = "QUEEN_EVENTS";
@@ -1629,13 +1696,25 @@ impl SwarmTransport {
     /// Publishes to both the new event stream (`QUEEN.event.join`) and the
     /// legacy `QUEEN.announce` subject for backward compatibility.
     pub fn announce_join(&self, agent_id: &str) -> Result<(), NatsError> {
-        let event_payload = serde_json::json!({ "agent_id": agent_id });
+        self.announce_join_with_identity(agent_id, None)
+    }
+
+    /// Announce joining the swarm, optionally carrying the operator's
+    /// stored identity (swarm agent identity, step 2). `identity = None`
+    /// publishes payloads byte-identical to `announce_join` pre-identity,
+    /// so v0.6.19/0.6.20 peers see no change.
+    pub fn announce_join_with_identity(
+        &self,
+        agent_id: &str,
+        identity: Option<&AnnounceIdentity>,
+    ) -> Result<(), NatsError> {
+        let mut event_payload = serde_json::json!({ "agent_id": agent_id });
+        if let Some(idn) = identity {
+            idn.attach_to(&mut event_payload);
+        }
         self.announce_event("join", &event_payload)?;
 
-        let mut legacy = serde_json::json!({
-            "event": "join",
-            "agent_id": agent_id,
-        });
+        let mut legacy = legacy_announce_payload("join", agent_id, identity);
         add_envelope(&mut legacy);
         let bytes = serde_json::to_vec(&legacy)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -2324,6 +2403,86 @@ mod tests {
             assert_eq!(guard.len(), PUBLISH_BUFFER_LIMIT);
             assert_eq!(guard.front().unwrap().subject, "test.20");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Announce identity (swarm agent identity, step 2)
+    // -----------------------------------------------------------------------
+
+    fn sample_identity() -> AnnounceIdentity {
+        AnnounceIdentity {
+            user_id: "user-123".into(),
+            email: "agent@spacechild.love".into(),
+        }
+    }
+
+    #[test]
+    fn announce_payload_without_identity_is_byte_compatible() {
+        // No stored identity → exactly the payload v0.6.19/0.6.20 publish.
+        let new = legacy_announce_payload("join", "agent-a", None);
+        let old = serde_json::json!({ "event": "join", "agent_id": "agent-a" });
+        assert_eq!(
+            serde_json::to_string(&new).unwrap(),
+            serde_json::to_string(&old).unwrap(),
+        );
+    }
+
+    #[test]
+    fn announce_payload_with_identity_adds_optional_block() {
+        let payload = legacy_announce_payload("join", "agent-a", Some(&sample_identity()));
+        // Existing fields untouched (old agents read these by name).
+        assert_eq!(payload["event"], "join");
+        assert_eq!(payload["agent_id"], "agent-a");
+        // Identity block carries user_id/email ONLY — never tokens.
+        assert_eq!(payload["identity"]["user_id"], "user-123");
+        assert_eq!(payload["identity"]["email"], "agent@spacechild.love");
+        let block = payload["identity"].as_object().unwrap();
+        assert_eq!(block.len(), 2, "identity block must be user_id + email only");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("token"), "no token material on the wire");
+    }
+
+    #[test]
+    fn old_shape_announce_still_deserializes() {
+        // What a v0.6.19/0.6.20 agent publishes today (post-envelope).
+        let old = r#"{"event":"join","agent_id":"agent-old","schema_version":"1.0","ts":1765400000000}"#;
+        let v: serde_json::Value = serde_json::from_str(old).expect("old payload parses");
+        assert_eq!(v["agent_id"], "agent-old");
+        // New code sees no identity on old payloads — no error, just None.
+        assert_eq!(AnnounceIdentity::email_from(&v), None);
+    }
+
+    #[test]
+    fn new_shape_announce_keeps_legacy_fields_intact() {
+        // Old agents parse announces as loose JSON by field name — verify
+        // the fields they use survive the identity enrichment + envelope.
+        let mut payload = legacy_announce_payload("join", "agent-new", Some(&sample_identity()));
+        add_envelope(&mut payload);
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["event"], "join");
+        assert_eq!(v["agent_id"], "agent-new");
+        assert_eq!(v["schema_version"], "1.0");
+        assert!(v["ts"].is_number());
+        assert_eq!(AnnounceIdentity::email_from(&v), Some("agent@spacechild.love"));
+    }
+
+    #[test]
+    fn presence_identity_email_extraction() {
+        // Presence record from a pre-identity agent: no identity key.
+        let old = serde_json::json!({ "agent_id": "a", "memory_count": 5 });
+        assert_eq!(AnnounceIdentity::email_from(&old), None);
+
+        // Presence record with an attached identity.
+        let mut new = serde_json::json!({ "agent_id": "a", "memory_count": 5 });
+        sample_identity().attach_to(&mut new);
+        assert_eq!(new["agent_id"], "a", "existing fields untouched");
+        assert_eq!(AnnounceIdentity::email_from(&new), Some("agent@spacechild.love"));
+
+        // attach_to on a non-object is a no-op, not a panic.
+        let mut not_obj = serde_json::json!("scalar");
+        sample_identity().attach_to(&mut not_obj);
+        assert_eq!(AnnounceIdentity::email_from(&not_obj), None);
     }
 
     // -----------------------------------------------------------------------

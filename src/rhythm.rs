@@ -178,29 +178,21 @@ impl RhythmEngine {
         eta
     }
 
+    // hi_ms at t=0, lo_ms at t=1 (higher arousal → lower t-parameter → longer interval).
+    fn interval_lerp(hi_ms: f64, lo_ms: f64, t: f64) -> u64 {
+        (hi_ms - t * (hi_ms - lo_ms)) as u64
+    }
+
     /// Map arousal to interval.
     fn compute_interval(&self) -> u64 {
         let a = self.state.arousal_level;
-        let ms = if a > 0.7 {
-            // 2-5 min: linear interpolation
-            let t = (a - 0.7) / 0.3; // 0..1
-            let min_ms = 120_000.0;
-            let max_ms = 300_000.0;
-            max_ms - t * (max_ms - min_ms)
+        if a > 0.7 {
+            Self::interval_lerp(300_000.0, 120_000.0, (a - 0.7) / 0.3) // 2-5 min
         } else if a > 0.3 {
-            // 5-15 min
-            let t = (a - 0.3) / 0.4;
-            let min_ms = 300_000.0;
-            let max_ms = 900_000.0;
-            max_ms - t * (max_ms - min_ms)
+            Self::interval_lerp(900_000.0, 300_000.0, (a - 0.3) / 0.4) // 5-15 min
         } else {
-            // 15-60 min
-            let t = a / 0.3;
-            let min_ms = 900_000.0;
-            let max_ms = 3_600_000.0;
-            max_ms - t * (max_ms - min_ms)
-        };
-        ms as u64
+            Self::interval_lerp(3_600_000.0, 900_000.0, a / 0.3)        // 15-60 min
+        }
     }
 
     /// Persist state to disk.

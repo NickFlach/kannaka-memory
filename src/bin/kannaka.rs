@@ -56,6 +56,10 @@ use handlers_inbox::{handle_inbox_send, handle_inbox_serve, handle_inbox_tail};
 mod handlers_services;
 use handlers_services::{handle_constellation, handle_market, handle_radio};
 
+#[path = "handlers/identity.rs"]
+mod handlers_identity;
+use handlers_identity::handle_identity;
+
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
@@ -206,6 +210,7 @@ fn usage_lines() -> &'static [&'static str] {
         "Tools:",
         "  orchestrate run \"task\"    Kannaktopus task orchestration",
         "  config show|set|path      Configuration management",
+        "  identity register|login|whoami|logout   SpaceChild SSO identity",
         "  init                      Re-run setup wizard",
         "  update                    Check for updates",
         "",
@@ -308,6 +313,7 @@ fn swarm_publish_heartbeat(
     display_name: &str,
     transport: &kannaka_memory::nats::SwarmTransport,
     label: &str,
+    identity: Option<&kannaka_memory::nats::AnnounceIdentity>,
 ) -> f32 {
     let mut queen =
         kannaka_memory::QueenSync::new(kannaka_memory::QueenConfig::default(), my_agent_id);
@@ -340,7 +346,7 @@ fn swarm_publish_heartbeat(
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
     }
-    let presence = serde_json::json!({
+    let mut presence = serde_json::json!({
         "agent_id": my_agent_id,
         "display_name": display_name,
         "capabilities": {
@@ -352,6 +358,12 @@ fn swarm_publish_heartbeat(
         "memory_count": sys.engine.store.count(),
         "kannaka_version": kannaka_memory::config::VERSION,
     });
+    // Optional identity block (user_id/email only, never tokens) so peers
+    // can render who operates this node. Absent identity → presence
+    // payload unchanged from pre-identity versions.
+    if let Some(idn) = identity {
+        idn.attach_to(&mut presence);
+    }
     if let Err(e) = transport.publish_presence(my_agent_id, &presence) {
         eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
     }
@@ -409,6 +421,8 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "ask" | "chat" | "voice"
         // swarm / nats
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
+        // identity (SpaceChild SSO)
+        | "identity"
         // constellation services
         | "radio" | "market" | "constellation"
         // ops / data movement
@@ -698,6 +712,12 @@ fn main() {
         }
         "config" => {
             handle_config(&cfg, &args[command_start..]);
+            return;
+        }
+        // SpaceChild SSO identity — pure HTTP + identity.json, never
+        // touches the HRM (keep it out of the 21 MB load below).
+        "identity" => {
+            handle_identity(&args[command_start..]);
             return;
         }
         _ => {}
@@ -2367,7 +2387,19 @@ fn main() {
                         }
                     };
 
-                    if let Err(e) = transport.announce_join(&my_agent_id) {
+                    // Stored SSO identity (swarm agent identity, step 2):
+                    // when the operator is logged in via `kannaka identity`,
+                    // announce + presence carry an optional identity block
+                    // (user_id/email only). Not logged in → payloads are
+                    // byte-identical to pre-identity versions.
+                    let identity = kannaka_memory::nats::AnnounceIdentity::from_store();
+                    if let Some(ref idn) = identity {
+                        println!("[identity] Joining as {} ({})", idn.email, idn.user_id);
+                    }
+
+                    if let Err(e) =
+                        transport.announce_join_with_identity(&my_agent_id, identity.as_ref())
+                    {
                         eprintln!("[nats] Warning: announce failed: {}", e);
                     }
                     let _ = transport.ensure_presence_stream();
@@ -2378,6 +2410,7 @@ fn main() {
                         &display_name,
                         &transport,
                         "initial",
+                        identity.as_ref(),
                     );
                     println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
                     println!(
@@ -2441,6 +2474,7 @@ fn main() {
                             &display_name,
                             &transport,
                             "heartbeat",
+                            identity.as_ref(),
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
@@ -3487,7 +3521,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
 
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("title: Dream Journal\n"));
+    out.push_str("title: Dream Journal\n");
     out.push_str(&format!(
         "date: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
@@ -3556,7 +3590,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
             ));
         }
     }
-    out.push_str("\n");
+    out.push('\n');
 
     if !is_hrm {
         // Most connected — the hubs (graph mode only)
@@ -3572,7 +3606,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Dream-generated memories
@@ -3591,7 +3625,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     if !is_hrm {
@@ -3621,7 +3655,7 @@ fn voice_dream_journal(sys: &mut KannakaMemorySystem) -> String {
                 link.strength, link.span, from_preview, to_preview
             ));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Wave dynamics
@@ -3699,14 +3733,14 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     ));
 
     out.push_str("## Network Overview\n\n");
-    out.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+    out.push_str("| Metric | Value |\n|--------|-------|\n");
     out.push_str(&format!(
         "| Total memories | {} |\n",
         report.topology.total_memories
     ));
 
     if is_hrm {
-        out.push_str(&format!("| Field mode | HRM (tensor interference) |\n"));
+        out.push_str("| Field mode | HRM (tensor interference) |\n");
         out.push_str(&format!(
             "| Coherence density | {:.3} |\n",
             report.topology.network_density
@@ -3747,7 +3781,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
         let bar = "█".repeat((*count).min(50));
         out.push_str(&format!("Layer {} | {:>4} | {}\n", layer, count, bar));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out.push_str("## Clusters\n\n");
     for (i, c) in report.clusters.clusters.iter().enumerate() {
@@ -3759,7 +3793,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
             c.order_parameter
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out
 }
@@ -3810,7 +3844,7 @@ fn voice_status(sys: &mut KannakaMemorySystem) -> String {
             c.order_parameter * 100.0
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
 
     out
 }
