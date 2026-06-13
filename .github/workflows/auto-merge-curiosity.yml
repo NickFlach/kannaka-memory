@@ -3,18 +3,26 @@ name: Auto-merge curiosity research
 # Closes the autonomous-research → automated-improvement loop.
 #
 # The hourly curiosity loop opens kannaka-curiosity/* PRs (append-only research
-# logs + occasional validated param tweaks). They used to pile up waiting for a
-# human merge — the bottleneck. This workflow merges the GREEN ones into master
-# so improvements land without a human in the loop. (The 02:00 autoresearch
-# param-tuner already pushes its kept changes straight to master.)
+# logs + occasionally a param tweak). They used to pile up waiting for a human
+# merge — the bottleneck. This workflow merges the GREEN, NOTES-ONLY ones into
+# master so the research log lands without a human in the loop.
 #
 # Safety model:
 #   - Only kannaka-curiosity/* branches are touched.
 #   - Only merged after ALL checks are green (`gh pr checks` exits 0 = all pass).
+#   - SCOPE GUARD (#330): a curiosity PR may ONLY change research notes
+#     (experiments/notes/**) and the append-only experiments/results-L{3,4,5}.tsv.
+#     Code and config reach master a DIFFERENT way — the 02:00 autoresearch
+#     param-tuner runs keep/revert experiments and pushes confirmed keepers
+#     straight to master. By the time a curiosity PR's param tweak is seen here
+#     it is almost always already-in-master or superseded, so auto-merging it
+#     would silently REGRESS the tuned parameters (this happened latently with
+#     PR #272: alpha=0.13/chiral=0.10 vs master's chiral=0.15/alpha=0.12). Any
+#     PR touching paths outside the allowlist is labeled `needs-review` and left
+#     open for a human — never auto-merged.
 #   - The append-only results-L{3,4,5}.tsv conflicts are auto-resolved with the
 #     built-in `union` merge driver (exactly the manual flow).
-#   - Any PR with a NON-union conflict (e.g. two source edits) is skipped and
-#     left open for human review — never force-merged.
+#   - Any PR with a NON-union conflict is skipped and left open — never forced.
 #   - Disable by deleting this file or via the Actions tab.
 
 on:
@@ -25,6 +33,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write   # needed to create/apply the needs-review label
 
 concurrency:
   group: auto-merge-curiosity
@@ -39,7 +48,7 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Merge green curiosity PRs (union-resolve append-only TSVs)
+      - name: Merge green curiosity PRs (notes + append-only TSVs only)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -51,6 +60,10 @@ jobs:
           git fetch origin master
           git checkout -B master origin/master
 
+          # Ensure the review label exists (idempotent).
+          gh label create needs-review --color FBCA04 \
+            --description "Curiosity PR carries code/config; needs a human merge decision" 2>/dev/null || true
+
           merged=0
           declare -a done_branches=()
           for num in $(gh pr list --state open --limit 100 --json number,headRefName \
@@ -59,6 +72,28 @@ jobs:
               echo "skip #$num — checks not all green yet"
               continue
             fi
+
+            # SCOPE GUARD (#330): allow only research notes + append-only result TSVs.
+            offlimits=$(gh pr view "$num" --json files --jq '
+              .files[].path
+              | select((startswith("experiments/notes/")
+                        or . == "experiments/results-L5.tsv"
+                        or . == "experiments/results-L4.tsv"
+                        or . == "experiments/results-L3.tsv") | not)')
+            if [ -n "$offlimits" ]; then
+              echo "::notice title=Needs review::#$num changes non-note files; routed to a human"
+              # Label + comment ONCE (don't re-spam on every 3h run).
+              if ! gh pr view "$num" --json labels --jq '.labels[].name' | grep -qx needs-review; then
+                gh pr edit "$num" --add-label needs-review 2>/dev/null || true
+                body=$(printf '%s\n' \
+                  'Auto-merge skipped by policy (issue #330): this curiosity PR changes files outside experiments/notes/ and the append-only results-L{3,4,5}.tsv:' \
+                  '' '```' "$offlimits" '```' '' \
+                  'Code and config reach master only through the autoresearch param-tuner (which pushes confirmed keepers directly); curiosity PRs contribute research notes and TSV rows only. A maintainer should check whether this code is already in master or superseded (the usual case), then keep the note and close, or merge deliberately.')
+                gh pr comment "$num" --body "$body" 2>/dev/null || true
+              fi
+              continue
+            fi
+
             br=$(gh pr view "$num" --json headRefName --jq .headRefName)
             git fetch origin "$br" || { echo "fetch failed for #$num ($br)"; continue; }
             if git merge --no-ff FETCH_HEAD -m "Auto-merge PR #$num ($br): curiosity research"; then
