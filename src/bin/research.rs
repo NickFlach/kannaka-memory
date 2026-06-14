@@ -3192,6 +3192,30 @@ fn run_l5_dream_chain(
     let mut injected_ids_per_event: Vec<Vec<uuid::Uuid>> = Vec::new();
     let mut injection_counter = 0usize;
 
+    // DREAM_GRAVITY: capture the PRE-dream phase topology ONCE. The associative
+    // gravity pass must reinforce memories that were phase-aligned with the attractor
+    // in the STORED topology — which is exactly what query_gravity measures (it groups
+    // by pre-dream phase). Anchoring to live phases fails because the dream's Kuramoto
+    // relaxation moves phases every cycle, so "neighbors" drift away from the metric's.
+    let gravity_gain: f32 = std::env::var("DREAM_GRAVITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let (gravity_ref, gravity_query_phase): (
+        std::collections::HashMap<uuid::Uuid, f32>,
+        f32,
+    ) = if gravity_gain > 0.0 {
+        let snap = engine.store.all_memories().unwrap_or_default();
+        let qphase = snap
+            .iter()
+            .max_by(|a, b| a.amplitude.total_cmp(&b.amplitude))
+            .map(|m| m.phase)
+            .unwrap_or(0.0);
+        (snap.iter().map(|m| (m.id, m.phase)).collect(), qphase)
+    } else {
+        (std::collections::HashMap::new(), 0.0)
+    };
+
     for cycle_idx in 0..depth {
         // Snapshot amplitudes before this cycle
         let amps_before: Vec<(uuid::Uuid, f32)> = engine
@@ -3313,6 +3337,40 @@ fn run_l5_dream_chain(
         // Apply frequency decay (L5.4) — high-amp memories keep freq,
         // low-amp memories decay toward storage band
         apply_freq_decay(engine);
+
+        // DREAM_GRAVITY (default 0.0 = OFF, behavior byte-identical to before).
+        // Associative phase-gravity: AFTER consolidation, redistribute amplitude
+        // toward the phase-neighbors of the attractor (the highest-amplitude memory).
+        // This is the core wave-interference recall property — phase-aligned memories
+        // reinforce, phase-opposed ones fade — and it directly counters the amplitude
+        // mean-reversion inside consolidation that otherwise lifts low-amplitude,
+        // phase-DISTANT noise/sparse memories and drives query_gravity below the 0.5
+        // chance line. Multiplicative and compounding across the dream's cycles. This
+        // is a recall-sharpening term (not strictly energy-conserving), so it is an
+        // env-gated experiment knob: A/B it via keep/revert and keep only if it lifts
+        // query_gravity > 0.5 without regressing the scored metrics. Sweep {0.25,0.5,1.0}.
+        if gravity_gain > 0.0 {
+            let two_pi = 2.0 * std::f32::consts::PI;
+            // Reinforce by PRE-dream phase alignment to the PRE-dream attractor
+            // (gravity_ref / gravity_query_phase captured before the loop). Newly
+            // injected memories aren't in the snapshot and are left untouched.
+            let ids: Vec<uuid::Uuid> = gravity_ref.keys().copied().collect();
+            for id in ids {
+                let phase0 = match gravity_ref.get(&id) {
+                    Some(p) => *p,
+                    None => continue,
+                };
+                let raw = (phase0 - gravity_query_phase).abs();
+                let dphi = raw.min(two_pi - raw); // 0..pi
+                // align: 1.0 at the attractor phase, 0.0 anti-phase, 0.5 a quarter turn.
+                let align = 1.0 - dphi / std::f32::consts::PI;
+                // neighbors (align>0.5) grow, phase-distant (align<0.5) shrink.
+                let g = (1.0 + gravity_gain * (align - 0.5)).max(0.0);
+                if let Ok(Some(m)) = engine.store.get_mut(&id) {
+                    m.amplitude = (m.amplitude * g).max(0.0);
+                }
+            }
+        }
 
         // L5.5: inject online memories at designated cycle points
         if injection_cycles.contains(&cycle_idx) {
