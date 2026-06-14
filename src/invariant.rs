@@ -49,9 +49,8 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
     }
 
     // Compute the best linear reconstruction of this memory from neighbors
-    let mut _best_reconstruction = vec![0.0; dim];
     let mut min_residual = f32::INFINITY;
-    
+
     // Try different linear combinations (simplified version of least squares)
     // In the full version, we'd solve the linear system, but this approximation
     // captures the essential idea
@@ -59,18 +58,17 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
         if neighbor.vector.len() != dim {
             continue;
         }
-        
+
         // Try simple weighted combinations
         for &weight in &[0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
             let mut reconstruction = neighbor.vector.clone();
             for val in &mut reconstruction {
                 *val *= weight;
             }
-            
+
             let residual = compute_residual(memory_vec, &reconstruction);
             if residual < min_residual {
                 min_residual = residual;
-                _best_reconstruction = reconstruction;
             }
         }
     }
@@ -97,7 +95,6 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
                     let residual = compute_residual(memory_vec, &reconstruction);
                     if residual < min_residual {
                         min_residual = residual;
-                        _best_reconstruction = reconstruction;
                     }
                 }
             }
