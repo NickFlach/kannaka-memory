@@ -734,13 +734,16 @@ impl Medium {
             } else {
                 0.0
             };
+            // total_cmp is NaN-safe (#358): a NaN energy from dream perturbation
+            // would make partial_cmp return None and .unwrap() panic, taking down
+            // observe()/assess()/status on this hot read path.
             let min = *active_e
                 .iter()
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .min_by(|a, b| a.total_cmp(b))
                 .unwrap_or(&0.0);
             let max = *active_e
                 .iter()
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .max_by(|a, b| a.total_cmp(b))
                 .unwrap_or(&0.0);
             (mean, std, min, max)
         } else {
