@@ -1,4 +1,4 @@
-run	fitness	noise_removal	signal_preservation	phase_coherence	speed	consciousness	encoding_entropy	transfer_score	frequency_transfer	online_retention	catastrophic_forgetting	temporal_separation	carrier_emergence	xi_robustness_v2	total_ms
+run	fitness	noise_removal	signal_preservation	phase_coherence	speed	consciousness	encoding_entropy	transfer_score	frequency_transfer	online_retention	catastrophic_forgetting	temporal_separation	carrier_emergence	xi_robustness_v2	total_ms	query_gravity
 L5.9-stub	0.157847	1.0000	1.0000	0.6946	0.8378	0.8813	1.0000	0.751977	0.9991	1.0000	1.0000	1.0000	0.0000	0.9598	44030
 L5.9-stub	0.230687	1.0000	1.0000	0.6946	0.8273	0.8813	1.0000	0.598110	0.9988	1.0000	1.0000	1.0000	0.0000	0.6304	59509
 L5.hyp-flat_only-A0.1	0.258415	1.0000	1.0000	0.7006	0.8858	0.8771	1.0000	0.644837	0.9901	1.0000	1.0000	1.0000	0.5588	0.0205	55871

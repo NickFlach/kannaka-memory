@@ -87,13 +87,17 @@ echo "baseline avg=$BASELINE_AVG runs=$BASELINE_RUNS"
 # repeat. Heavy-hitting changes (chain redesign, encoder tweaks) need the
 # interactive sub-agent — this cron only nudges existing knobs.
 DAY=$(date +%j)
-case $((DAY % 6)) in
+case $((DAY % 7)) in
     0) PARAM="kuramoto_steps";        FROM=20;    TO=22 ;;
     1) PARAM="kuramoto_threshold";    FROM=0.35;  TO=0.32 ;;
     2) PARAM="prune_threshold";       FROM=0.095; TO=0.105 ;;
     3) PARAM="constructive_boost";    FROM=0.45;  TO=0.50 ;;
     4) PARAM="destructive_penalty";   FROM=0.35;  TO=0.40 ;;
     5) PARAM="chain_carry_strength";  FROM=0.5;   TO=0.6 ;;
+    # L6 seed: associative-recall gravity. query_gravity is now a tracked TSV
+    # column, so the keep/revert sees whether sharpening recall helps fitness
+    # (watch the gravity<->carrier_emergence tension). Sweeps 0.0 -> 0.25 first.
+    6) PARAM="dream_gravity";         FROM=0.0;   TO=0.25 ;;
 esac
 echo "--- hypothesis: $PARAM $FROM -> $TO ---"
 

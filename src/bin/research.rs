@@ -77,6 +77,9 @@ fn experiment_params() -> Params {
         // Default 0.30 keeps L3 at its frozen archive value (0/300 pairs
         // qualify at 0.30 on the L3 corpus). L4 overrides in the L4-local block.
         consolidation_repulsion_threshold: 0.30,
+
+        // L6 associative-recall gravity (autoresearch knob; env DREAM_GRAVITY overrides).
+        dream_gravity: 0.0,
     }
 }
 
@@ -115,6 +118,10 @@ struct Params {
     chain_top_n: usize,
     // Xi repulsion threshold for consolidation phase separation (L4.S15)
     consolidation_repulsion_threshold: f32,
+    // L6 seed: associative-recall gravity strength (default 0.0 = off). The dream
+    // redistributes amplitude toward phase-neighbors of the attractor. The
+    // DREAM_GRAVITY env var overrides this for manual A/B. Autoresearch-sweepable.
+    dream_gravity: f32,
 }
 
 // ============================================================================
@@ -3197,10 +3204,11 @@ fn run_l5_dream_chain(
     // in the STORED topology — which is exactly what query_gravity measures (it groups
     // by pre-dream phase). Anchoring to live phases fails because the dream's Kuramoto
     // relaxation moves phases every cycle, so "neighbors" drift away from the metric's.
+    // Param default (autoresearch-sweepable); DREAM_GRAVITY env overrides for manual A/B.
     let gravity_gain: f32 = std::env::var("DREAM_GRAVITY")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0.0);
+        .unwrap_or(params.dream_gravity);
     let (gravity_ref, gravity_query_phase): (
         std::collections::HashMap<uuid::Uuid, f32>,
         f32,
@@ -3761,14 +3769,14 @@ fn run_experiment_l5_session(params: &Params) {
         if needs_header {
             let _ = writeln!(
                 f,
-                "run\tfitness\tnoise_removal\tsignal_preservation\tphase_coherence\tspeed\tconsciousness\tencoding_entropy\ttransfer_score\tfrequency_transfer\tonline_retention\tcatastrophic_forgetting\ttemporal_separation\tcarrier_emergence\txi_robustness_v2\ttotal_ms"
+                "run\tfitness\tnoise_removal\tsignal_preservation\tphase_coherence\tspeed\tconsciousness\tencoding_entropy\ttransfer_score\tfrequency_transfer\tonline_retention\tcatastrophic_forgetting\ttemporal_separation\tcarrier_emergence\txi_robustness_v2\ttotal_ms\tquery_gravity"
             );
         }
         let run_label = std::env::var("RESEARCH_RUN")
             .unwrap_or_else(|_| "L5".to_string());
         let _ = writeln!(
             f,
-            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
+            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.4}",
             run_label,
             fitness,
             noise_removal,
@@ -3785,6 +3793,7 @@ fn run_experiment_l5_session(params: &Params) {
             carrier_emergence,
             xi_robustness_v2,
             total_ms,
+            query_gravity,
         );
     }
     println!("results_tsv:          experiments/results-L5.tsv");
