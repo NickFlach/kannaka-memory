@@ -143,17 +143,28 @@ pub fn classify_memory_health(s: &MemorySignals, t: &Thresholds) -> HealthVerdic
 }
 
 /// The amplitude multiplier an action applies (Task 2.2). `None` = no mutation
-/// (the memory is only flagged). All factors are reversible — a later `boost`
-/// restores the memory; `Expire` ghosts it at zero amplitude (the existing
-/// soft-delete), never a hard delete.
+/// (the memory is only flagged). All factors are **reversible** — a later
+/// `boost` can restore the memory; none is a hard delete.
+///
+/// `Expire` multiplies down to a tiny recoverable floor ([`EXPIRE_FACTOR`])
+/// rather than exactly `0.0`. A true-zero factor was the bug in #357: once
+/// `amplitude == 0.0`, every subsequent `boost` (a multiply) is a no-op
+/// (`0.0 * factor == 0.0`), so the "boost it back up to restore" contract was
+/// false for Expire alone. A small non-zero factor still ghosts the memory out
+/// of recall ranking while leaving a multiplicative path back.
 pub fn amplitude_factor(action: Action) -> Option<f32> {
     match action {
         Action::DownRank => Some(0.5),
         Action::Quarantine => Some(0.1),
-        Action::Expire => Some(0.0),
+        Action::Expire => Some(EXPIRE_FACTOR),
         Action::Clean | Action::MarkForReview => None,
     }
 }
+
+/// Expire's amplitude multiplier (#357). Small enough that an expired memory
+/// drops below any `low_amp` recall threshold, but non-zero so a later `boost`
+/// can recover it (multiplying by zero is irreversible).
+pub const EXPIRE_FACTOR: f32 = 0.02;
 
 /// One memory's signals plus the content/phase needed for the contradiction pass.
 #[derive(Clone, Debug)]
@@ -274,6 +285,27 @@ mod tests {
         assert!(v.flags.contains(&HealthFlag::LowConfidence));
         assert!(v.flags.contains(&HealthFlag::Hallucinated));
         assert_eq!(v.action, Action::Expire); // severity >= 0.70
+    }
+
+    // #357: Expire must ghost the memory deep below any recall threshold yet stay
+    // recoverable — a true-zero factor was irreversible because every later boost
+    // (a multiply) is a no-op once amplitude hits exactly 0.0.
+    #[test]
+    fn expire_factor_is_recoverable_not_a_true_zero() {
+        let f = amplitude_factor(Action::Expire).expect("Expire mutates amplitude");
+        assert!(f > 0.0, "Expire factor must be non-zero to remain recoverable");
+        let t = Thresholds::default();
+        assert!(f < t.low_amp, "Expire must drop below the low-amp recall floor");
+
+        // Ghost a strong memory, then prove a later boost recovers it.
+        let mut amp = 1.0_f32 * f; // post-expire amplitude
+        assert!(amp > 0.0);
+        amp *= 5.0; // a subsequent boost
+        assert!(amp > 0.0, "boost must be able to raise an expired memory");
+
+        // DownRank and Quarantine were already reversible; keep them so.
+        assert_eq!(amplitude_factor(Action::DownRank), Some(0.5));
+        assert_eq!(amplitude_factor(Action::Quarantine), Some(0.1));
     }
 
     #[test]
