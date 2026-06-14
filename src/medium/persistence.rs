@@ -15,8 +15,11 @@ use super::types::*;
 
 impl Medium {
     /// Save the medium to a .hrm file (atomic: writes to .tmp then renames).
-    /// Note: callers should call `compact()` before saving if the medium has
-    /// excess capacity from amortized growth. `save_and_commit` handles this.
+    /// Note: only the `wavefront_count()` active rows are serialized, so excess
+    /// in-RAM capacity from amortized growth never reaches disk. Calling
+    /// `compact()` first is a memory optimization, not a correctness
+    /// requirement. (`save_and_commit` takes `&self` and so cannot compact —
+    /// #362.)
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
         let path_ref = path.as_ref();
         let tmp_path = path_ref.with_extension("hrm.tmp");
@@ -490,6 +493,18 @@ impl Medium {
             );
         }
         // If no checksum present (old format / 0 bytes read), skip verification gracefully
+
+        // #362: same independent-section-size guard as the chiral read path.
+        // energy/frequency/phase/wavefronts/timestamps are sized by `n`; the
+        // metadata Vec is sized by its own bincode length. A mismatch would let
+        // index-by-`n` accesses run off the metadata Vec — surface it as
+        // CorruptHrm rather than trusting one section.
+        if metadata.len() != n || timestamps.len() != n {
+            return Err(MediumError::CorruptHrm(format!(
+                "v1 medium section-size desync: count={} metadata={} timestamps={}",
+                n, metadata.len(), timestamps.len()
+            )));
+        }
 
         // Build ID -> index mapping
         let mut id_to_index = HashMap::new();

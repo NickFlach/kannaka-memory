@@ -308,9 +308,14 @@ impl Medium {
         // but only across the candidate set.
         let mut resonances: Vec<(usize, Resonance)> = Vec::with_capacity(cand_slice.len());
         let effective_strengths = self.effective_strength(None);
+        // #362: `effective_strengths` is sized by `timestamps.len()`, which can
+        // drift below `wavefront_count()` (the documented count=142/ts=139 Oracle
+        // desync). Clamp the iteration to the smaller of the two so `i` can never
+        // index `effective_strengths` out of bounds and panic mid-recall.
+        let safe_count = self.wavefront_count().min(effective_strengths.len());
 
         for &i in cand_slice {
-            if i >= self.wavefront_count() { continue; } // guard against stale beam indices
+            if i >= safe_count { continue; } // guard against stale beam indices / section desync
             let wavefront = self.store.wavefronts.row(i);
 
             // Dot product (similarity)

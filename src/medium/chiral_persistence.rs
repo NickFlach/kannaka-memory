@@ -492,13 +492,27 @@ impl ChiralMedium {
             }
         };
 
+        // #362: section sizes come from independent sources — `n` (the on-disk
+        // count) sizes wavefronts/energy/frequency/phase/timestamps, while the
+        // metadata Vec is sized by its own bincode length. If they disagree,
+        // `len = metadata.len()` would let `energy[i]`/`wavefronts.row(i)` for
+        // `i in 0..len` index out of bounds and panic on load. Surface the
+        // structural desync as CorruptHrm instead of trusting one section over
+        // the others (the checksum guard only catches byte drift, not this).
+        if metadata.len() != n || timestamps.len() != n {
+            return Err(MediumError::CorruptHrm(format!(
+                "hemisphere {:?} section-size desync: count={} metadata={} timestamps={}",
+                hand, n, metadata.len(), timestamps.len()
+            )));
+        }
+
         // Build ID index
         let mut id_to_index = HashMap::new();
         for (i, meta) in metadata.iter().enumerate() {
             id_to_index.insert(meta.id, i);
         }
 
-        let len = metadata.len();
+        let len = n;
         Ok(Hemisphere {
             hand,
             wavefronts,
@@ -699,6 +713,35 @@ mod tests {
         assert_eq!(loaded.right.count(), right_count);
         assert_eq!(loaded.right.timestamps.len(), right_count);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // #362: a file whose section sizes disagree (count != metadata.len()) must
+    // be rejected as CorruptHrm on load, NOT trusted into an out-of-bounds panic
+    // when later code indexes energy[i]/wavefronts.row(i) for i in 0..len.
+    #[test]
+    fn load_rejects_section_size_desync() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        for i in 0..6 {
+            cm.store(&format!("desync probe {}", i), 0.8, &pipeline).unwrap();
+        }
+        // Drop one metadata entry without touching `len` (count()). The writer
+        // serializes n=count() rows of energy/timestamps but only metadata.len()
+        // metadata entries → the exact independent-section desync.
+        let n_before = cm.right.count();
+        cm.right.metadata.pop();
+        assert_eq!(cm.right.count(), n_before);
+        assert_eq!(cm.right.metadata.len(), n_before - 1);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_chiral_section_desync.hrm");
+        cm.save(&path).unwrap();
+
+        match ChiralMedium::load(&path) {
+            Err(MediumError::CorruptHrm(_)) => {}
+            other => panic!("expected CorruptHrm on section-size desync, got {:?}", other),
+        }
         let _ = std::fs::remove_file(&path);
     }
 
