@@ -2,15 +2,25 @@
 
 **Date:** 2026-06-14
 **ADR:** [ADR-0035](../adr/ADR-0035-swarm-sensemaking-architecture.md)
-**Repos:** `kannaka-steward` (sensemaking/governance engine) · `kannaka-memory`
-(single-agent substrate + L6 autoresearch) · `kannaka-observatory` (visualization)
+**Repos:** `kannaka-memory` (the sensemaking engine itself — pure logic in
+`src/sensemaking.rs`, exposed via the `kannaka swarm` CLI + NATS; plus the L6
+autoresearch) · `kannaka-observatory` (visualization) · `kannaka-steward` is the
+**separate** Intent & Reliability Kernel and is *not* the sensemaking home.
+
+> **Home correction (2026-06-14):** ADR-0035 specifies these as `kannaka swarm
+> <subcommand>` (e.g. `kannaka swarm brief`), so the sensemaking engine lives in
+> kannaka-memory's swarm layer, not in kannaka-steward. The steward (intent /
+> faithfulness for *actions*) and sensemaking (collective *knowledge*) are
+> orthogonal concerns that happened to be requested together.
 
 ## Strategy
 
 Build the sensemaking layer **alongside** the existing swarm transport (NATS +
 QueenSync), not by replacing it — the same incremental, backward-compatible
 approach used for the chiral mirror (ADR-0021). The swarm keeps working as a
-messaging fabric throughout; `kannaka-steward` adds the cognitive layer on top.
+messaging fabric throughout; the new `kannaka-memory/src/sensemaking.rs` module
+holds pure, transport-agnostic cognition (unit-tested, no I/O) and the swarm CLI +
+NATS layer feeds it.
 
 **Hard ordering constraint:** the swarm's collective capabilities are built on
 single-agent primitives that must work first. The headline example — *Collective
@@ -28,60 +38,115 @@ The ADR's four delivery phases map directly to four waves.
 
 **Theme:** Give the swarm a first voice — ask it what it knows, let it disagree,
 let it vote. All read-only over the existing NATS recall/observe primitives.
-**Repo:** `kannaka-steward` (Sensemaking state) + thin `kannaka-memory` CLI hooks.
+**Repo:** `kannaka-memory` — pure cognition in `src/sensemaking.rs`, exposed via
+the `kannaka swarm` CLI + NATS fan-out.
 
 Deliverables: `swarm brief` · collective recall voting · peer expertise scoring ·
 contradiction detection.
 
+> **Status (2026-06-14):** the pure, transport-agnostic CORE of all four tasks is
+> landed and unit-tested in `src/sensemaking.rs` (4 tests passing):
+> `score_peer_expertise` (1.1), `merge_recall_votes` (1.2), `detect_contradictions`
+> (1.3), `compose_brief` (1.4). What remains per task is the **NATS fan-out + CLI
+> wiring** — feeding these functions with live peer responses.
+
 ### Task 1.1 — Peer expertise scoring (Discovery/resonance)
-**Files:** `kannaka-steward/src/discovery.rs`
-Score each peer for a topic from signals already on the swarm bus: memory
-similarity to the query, cluster coverage, historical success, consciousness
-metrics (Φ/R), local confidence. Pure function over peer status snapshots.
-**Tests:** ranking is stable and monotonic in similarity; a peer with zero
-coverage scores ~0. **Success:** `steward peers --topic X` returns ranked peers.
+**Core: DONE** — `sensemaking::score_peer_expertise(&ExpertiseSignals)`.
+Weighted [0,1] score over similarity (0.35), coverage (0.25), historical success
+(0.20), confidence (0.15), Φ (0.05) — topical fit dominates so a high-Φ off-topic
+peer can't outrank an on-topic one (tested). **Remaining:** populate
+`ExpertiseSignals` from peer status snapshots on the swarm bus; `kannaka swarm
+peers --topic X`.
 
 ### Task 1.2 — Collective recall voting
-**Files:** `kannaka-steward/src/sensemaking.rs` (`recall_vote`)
-Fan a recall out to the top-K peers (from 1.1) over `KANNAKA.recall.<agent>`
-(daemon-served recall already exists, see oracle-hrm-single-writer). Rank, merge,
-and confidence-score the responses (agreement → confidence; lone outliers →
-flagged). **Depends on:** single-agent recall being associative (DONE,
-`DREAM_GRAVITY`). **Tests:** quorum agreement raises confidence; one hallucinated
-response is down-weighted, not merged. **Success:** consensus recall beats the
-best single agent on a held-out probe set (this becomes an L6 fitness metric).
+**Core: DONE** — `sensemaking::merge_recall_votes(&[PeerRecall], n_peers, agree)`.
+Groups peer responses by an `agree` predicate, scores consensus confidence as
+breadth × mean similarity × mean peer-confidence, sorts desc; lone outliers kept
+but low-confidence (tested: 3-of-4 consensus beats the 1 outlier). **Remaining:**
+fan recall out to top-K peers over `KANNAKA.recall.<agent>` (daemon-served recall
+exists, see oracle-hrm-single-writer); supply a real `agree` (embedding cosine).
+**Depends on:** single-agent associative recall (DONE, `DREAM_GRAVITY`).
+**L6 hook:** consensus-vs-best-single becomes the `recall_vote_gain` fitness term.
 
 ### Task 1.3 — Contradiction detection
-**Files:** `kannaka-steward/src/governance.rs` (`detect_contradictions`)
-Given a topic's merged recall set, find pairs that are semantically close
-(content) but phase/claim-opposed — the wave-native signal for "same subject,
-opposite stance." Surface as a ranked disagreement list. **Tests:** an injected
-contradictory pair is detected; agreeing duplicates are not flagged.
-**Success:** `steward contradictions --topic X` lists real conflicts.
+**Core: DONE** — `sensemaking::detect_contradictions(items, sim, sim_thr, gap)`.
+Flags pairs that are content-similar but phase-opposed (|Δφ| near π) — the
+wave-native "same subject, opposite stance"; agreeing duplicates excluded
+(tested). **Remaining:** wire a real `sim` (content embedding); `kannaka swarm
+contradictions --topic X`.
 
 ### Task 1.4 — `swarm brief`
-**Files:** `kannaka-steward/src/sensemaking.rs` (`brief`), `src/cli.ts`/CLI hook
-Compose 1.1–1.3 into one artifact: known facts, unknowns (gap signal, Wave 3),
-relevant peers, contradictions, recent changes, recommended actions, confidence.
-**Tests:** brief is deterministic for a fixed swarm snapshot; degrades gracefully
-when peers are offline. **Success:** `kannaka swarm brief "<topic>"` returns the
-structured brief.
+**Core: DONE** — `sensemaking::compose_brief(topic, known, contradictions, peers)`
+→ `SwarmBrief { known, contradictions, relevant_peers, confidence }`; confidence =
+mean of top-k consensus, penalized per unresolved contradiction (tested).
+**Remaining:** the `kannaka swarm brief "<topic>"` CLI subcommand in
+`src/bin/handlers/swarm.rs` that runs 1.1–1.3 over live peers and prints/JSON-emits
+the brief; add unknowns (gap signal, Wave 3) and recent-changes fields.
 
 **Wave 1 dependency order:** 1.1 → 1.2 → 1.3 → 1.4 (1.2 and 1.3 both consume 1.1;
-1.4 composes all three).
+1.4 composes all three). The pure cores are done in that order; the CLI/NATS layer
+follows the same order.
 
 ---
 
 ## Wave 2: Cognitive Hygiene & Collaboration (ADR-0035 Phase 2)
 
 **Theme:** Keep the shared mind healthy and let agents build artifacts together.
-**Repo:** `kannaka-steward` (Governance state).
-Deliverables: **swarm blackboard** (shared reasoning artifacts: facts/assumptions/
-risks/open-questions/decisions/evidence) · **memory immune system** (detect &
-quarantine/down-rank/expire duplicate, contradictory, stale, low-confidence,
-hallucinated memories — Cap 4, builds on Wave 1 contradiction detection) ·
-**apprenticeship workflows** (APPRENTICE state, exemplar absorption, shadow-and-
-evaluate, threshold promotion). *ADR-0035 Cap 4/7/9 describe Wave 3 direction.*
+**Repo:** `kannaka-memory` (Governance state) — new `src/immune.rs` and
+`src/blackboard.rs` modules + `kannaka swarm` subcommands. Builds directly on
+Wave 1's `sensemaking` module (the immune system reuses `detect_contradictions`).
+Deliverables: memory immune system · swarm blackboard · apprenticeship workflows.
+
+### Task 2.1 — Memory health classifier (Cap 4, detection half)
+**Files:** `src/immune.rs` (`classify_memory_health`, pure).
+Score each memory against five health flags from signals the HRM already has:
+**duplicate** (cosine ≥ dedup_threshold to a higher-amplitude sibling),
+**contradictory** (reuse Wave 1 `detect_contradictions`), **stale** (age past a
+decay horizon with low recent access — needs Cap 8 temporal fields, Wave 3, so
+start with last-access age), **low-confidence** (amplitude below a floor),
+**hallucinated** (flagged at dream time / no corpus support). Output a per-memory
+`HealthVerdict { flags, severity, recommended_action }`.
+**Depends on:** Wave 1 `sensemaking`. **Tests:** an injected duplicate/contradiction
+is flagged; a healthy high-amplitude memory is `Clean`; thresholds are boundary-tested.
+**Success:** `kannaka swarm health` prints a ranked at-risk list (dry-run, no mutation).
+
+### Task 2.2 — Immune actions / memory lifecycle (Cap 4, action half)
+**Files:** `src/immune.rs` (`apply_action`), HRM store hooks.
+Map verdicts to reversible lifecycle actions: **quarantine** (move to a held set,
+excluded from recall but not deleted), **down-rank** (amplitude penalty),
+**mark-for-review** (tag, surface to operator), **expire** (ghost at zero amplitude
+— the existing soft-delete). Default to the *least* destructive action for a given
+severity; never hard-delete. **Depends on:** 2.1. **Tests:** quarantine round-trips
+(restore returns the memory); down-rank is bounded; expire uses the existing ghost
+path. **Success:** `kannaka swarm immune --apply` quarantines/expires with an audit
+line per action; `--dry-run` is the default.
+
+### Task 2.3 — Swarm blackboard (Cap 9)
+**Files:** `src/blackboard.rs` (artifact model + merge), NATS subject
+`KANNAKA.blackboard.<id>`.
+A shared reasoning artifact with typed entries: facts, assumptions, risks,
+open-questions, decisions, evidence — each with an author agent and timestamp.
+CRDT-style append + last-writer-wins on entry edits so multiple agents contribute
+without a lock (reuse the `crdt`/`collective` patterns already in the repo).
+**Depends on:** existing NATS transport. **Tests:** concurrent appends from two
+agents converge; entry typing is enforced. **Success:** `kannaka swarm blackboard
+<id> add --kind risk "<text>"` and `... show` render the shared artifact.
+
+### Task 2.4 — Apprenticeship workflow (Cap 7)
+**Files:** `src/apprentice.rs` (state machine), peer status field `state`.
+An `AgentState { Apprentice, Journeyman, Master }` machine. In APPRENTICE: absorb
+exemplars (existing exemplar exchange), shadow directed tasks (compute a would-be
+answer without acting), and score it against the master's answer; track a rolling
+competence. Promote on `competence ≥ threshold over N tasks`. Pure state-transition
+logic + a thin NATS reporting layer. **Depends on:** Wave 1 expertise scoring
+(competence reuses the same signal shape). **Tests:** promotion fires only after N
+sustained passes; a regression demotes; transitions are monotonic per evaluation.
+**Success:** a fresh agent joins as Apprentice and auto-promotes after meeting the
+bar on a shadow-task set.
+
+**Wave 2 dependency order:** 2.1 → 2.2 (actions need verdicts); 2.3 and 2.4 are
+independent of the immune pair and of each other → parallelizable.
+*ADR-0035 Cap 1/6/8 describe Wave 3 direction.*
 
 ---
 
