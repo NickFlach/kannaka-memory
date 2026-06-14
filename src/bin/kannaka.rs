@@ -2309,7 +2309,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief>");
                 process::exit(1);
             }
 
@@ -2317,6 +2317,73 @@ fn main() {
             let agent_id = cfg.agent.id.clone();
 
             match args[command_start + 1].as_str() {
+                // ADR-0035 Cap 5 (Wave 1): swarm brief. LOCAL-FIRST — builds a
+                // brief from this agent's own recall. Consensus voting and
+                // contradiction detection require the multi-peer NATS fan-out
+                // (next increment), so they are reported as pending. Exercises
+                // the pure `sensemaking` module end-to-end.
+                "brief" => {
+                    let want_json = args.iter().any(|a| a == "--json");
+                    let topic: String = args[command_start + 2..]
+                        .iter()
+                        .filter(|a| !a.starts_with("--"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if topic.trim().is_empty() {
+                        eprintln!("Usage: kannaka swarm brief \"<topic>\" [--json]");
+                        process::exit(1);
+                    }
+                    match sys.recall(&topic, 8) {
+                        Ok(results) => {
+                            let known: Vec<kannaka_memory::sensemaking::ConsensusItem> = results
+                                .iter()
+                                .map(|r| kannaka_memory::sensemaking::ConsensusItem {
+                                    content: r.content.clone(),
+                                    support: 1,
+                                    confidence: (r.similarity * r.strength).clamp(0.0, 1.0),
+                                    mean_similarity: r.similarity,
+                                })
+                                .collect();
+                            let brief = kannaka_memory::sensemaking::compose_brief(
+                                &topic,
+                                known,
+                                vec![],
+                                vec![(agent_id.clone(), 1.0)],
+                            );
+                            if want_json {
+                                let known_json: Vec<_> = brief
+                                    .known
+                                    .iter()
+                                    .map(|c| serde_json::json!({
+                                        "content": c.content,
+                                        "confidence": c.confidence,
+                                    }))
+                                    .collect();
+                                println!("{}", serde_json::json!({
+                                    "topic": brief.topic,
+                                    "confidence": brief.confidence,
+                                    "known": known_json,
+                                    "contradictions": [],
+                                    "scope": "local",
+                                    "note": "local-first; run against a live swarm for consensus + contradictions",
+                                }));
+                            } else {
+                                println!("Swarm brief — \"{}\"  (local-first; peers pending)", brief.topic);
+                                println!("  confidence: {:.2}", brief.confidence);
+                                println!("  known ({}):", brief.known.len());
+                                for (i, c) in brief.known.iter().enumerate() {
+                                    println!("    {}. [{:.2}] {}", i + 1, c.confidence, c.content);
+                                }
+                                println!("  consensus voting + contradiction detection require a live swarm");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("brief: recall error: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
                 "join" => {
                     // `kannaka swarm join` is the user-facing "run a node"
                     // command. Historically it was one-shot: announce, publish

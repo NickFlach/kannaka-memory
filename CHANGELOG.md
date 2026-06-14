@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.6.21] — 2026-06-14
+
+### Fixed — associative recall was anti-associative
+
+The L5 dream amplified memories phase-DISTANT from the query more than its
+phase-neighbors (`query_gravity` ~0.37, below the 0.5 chance line) — the opposite
+of wave-interference recall. New **`DREAM_GRAVITY`** lever (default off, behavior
+unchanged): after each dream cycle, redistribute amplitude toward the
+phase-neighbors of the attractor, anchored to a pre-dream phase snapshot. Lifts
+`query_gravity` to 1.0; at 0.5 it also improved fitness/transfer/xi in testing
+(cost lands on `carrier_emergence` — the gravity↔carrier tension is now an L6
+research axis). Exposed as the `dream_gravity` Params field and an autoresearch
+rotation knob; `query_gravity` is now a tracked column in `results-L5.tsv`.
+
+### Added — swarm sensemaking (ADR-0035 Wave 1)
+
+- New pure, unit-tested `sensemaking` module: peer expertise scoring, collective
+  recall vote merging, contradiction detection, and brief composition.
+- `kannaka swarm brief "<topic>"` (local-first; multi-peer fan-out is next) —
+  composes a brief from local recall via the sensemaking module.
+- ADR-0035 (Swarm Sensemaking Architecture) + wave execution plan added under
+  `docs/`.
+
 ## [0.6.20] — 2026-06-10
 
 ### Performance — `kannaka ask` 6m35s → ~17s end-to-end (650-memory medium)
