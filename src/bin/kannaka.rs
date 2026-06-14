@@ -2454,7 +2454,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan|loop>");
                 process::exit(1);
             }
 
@@ -2764,6 +2764,62 @@ fn main() {
                         }
                         println!("  next: assign to best-fit peers + enqueue research workers");
                     }
+                }
+                // ADR-0035 Wave 4 Task 4.3 — self-directed sensemaking loop. Runs
+                // the five-state machine over a SwarmContext (local gap count;
+                // peers/coherence/contradictions overridable via flags). The daemon
+                // that EXECUTES each state's action is the next increment.
+                "loop" => {
+                    let flagf = |name: &str, def: f64| -> f64 {
+                        args.iter()
+                            .position(|a| a == name)
+                            .and_then(|i| args.get(i + 1))
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(def)
+                    };
+                    let steps = (flagf("--steps", 5.0) as usize).clamp(1, 50);
+                    // Local gap count (cheap signal from this agent's clusters).
+                    let report = sys.observe();
+                    let clusters: Vec<kannaka_memory::gap::DomainCluster> = report
+                        .clusters
+                        .clusters
+                        .iter()
+                        .filter(|c| !c.theme.trim().is_empty())
+                        .map(|c| kannaka_memory::gap::DomainCluster {
+                            agent_id: agent_id.clone(),
+                            theme: c.theme.clone(),
+                            size: c.size.max(1),
+                            coherence: c.coherence,
+                            mean_amplitude: c.mean_amplitude,
+                        })
+                        .collect();
+                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
+                        a.trim().eq_ignore_ascii_case(b.trim())
+                    });
+                    let gap_count = kannaka_memory::gap::detect_gaps(&map, 0.4).len();
+                    let ctx = kannaka_memory::swarm_loop::SwarmContext {
+                        peer_count: flagf("--peers", 0.0) as usize,
+                        order_parameter: flagf("--coherence", 0.0) as f32,
+                        open_contradictions: flagf("--contradictions", 0.0) as usize,
+                        gap_count,
+                        at_risk_memories: flagf("--at-risk", 0.0) as usize,
+                    };
+                    let mut state = kannaka_memory::swarm_loop::SwarmState::Discovery;
+                    println!(
+                        "Swarm loop — {} steps  (peers={}, coherence={:.2}, gaps={}, contradictions={})",
+                        steps, ctx.peer_count, ctx.order_parameter, ctx.gap_count, ctx.open_contradictions
+                    );
+                    for n in 1..=steps {
+                        let outcome = kannaka_memory::swarm_loop::next_state(state, &ctx);
+                        println!(
+                            "  {}. {:<16} -> {}",
+                            n,
+                            state.name(),
+                            outcome.action
+                        );
+                        state = outcome.next;
+                    }
+                    println!("  (daemon execution of each state's action is the next increment)");
                 }
                 "join" => {
                     // `kannaka swarm join` is the user-facing "run a node"

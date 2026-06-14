@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.6.27] — 2026-06-14
+
+### Added — hive formation + self-directed loop (ADR-0035 Wave 4 Tasks 4.2, 4.3)
+
+- New `hive_formation` module (5 tests): resonance-clusters peers into purposive
+  hives — peers co-hive only when phase-coherent AND sharing knowledge domains
+  (extends `queen::detect_hives`, which is phase-only). Pure; CLI wiring (peer
+  domains via exemplars) is the next increment.
+- New `swarm_loop` module (6 tests) + **`kannaka swarm loop`**: the five ADR-0035
+  swarm states as an explicit deterministic machine (Discovery → Synchronization →
+  Sensemaking → Dreaming → Governance → Discovery). `swarm loop --steps N --peers N
+  --coherence X` runs the cycle for inspection; the daemon that executes each
+  state's action (brief/gaps/plan/dream/immune) is the next increment.
+
+Wave 4 status: 4.1 (research planner), 4.2 (hive formation), 4.3 (self-directed
+loop) cores shipped; 4.4 (L6 swarm-fitness research arm) remains.
+
 ## [0.6.26] — 2026-06-14
 
 ### Added — cross-agent dreaming core (Wave 3 Task 3.1) + research planner (Wave 4 Task 4.1)
