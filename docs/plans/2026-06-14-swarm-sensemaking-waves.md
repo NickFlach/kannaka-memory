@@ -201,6 +201,12 @@ Expired, Superseded}` and `effective_confidence(mem, now)`. No I/O.
 memory with no temporal fields behaves exactly as today; future `effective_at`
 yields Future; boundary at `now == expires_at`. **Success:** `kannaka swarm brief`
 labels each fact's temporal status and excludes Expired/Future from confidence.
+> **Status (2026-06-14):** the pure reasoning core shipped as `src/temporal.rs`
+> (5 tests) operating on a `TemporalSpec` (`from_memory` derives observed=created_at,
+> bounds unknown → everything reads Current = no behavior change). **Task 3.2b**
+> (remaining) persists `effective_at`/`observed_at`/`expires_at` on `HyperMemory`
+> — deliberately split out because it touches ~20 struct-literal sites; once
+> landed, `TemporalSpec::from_memory` reads them and brief/gap filtering activates.
 
 ### Task 3.3 — Gap detection engine (Cap 1)
 **Files:** `src/gap.rs` (pure `build_coverage_map`, `detect_gaps`);

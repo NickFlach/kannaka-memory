@@ -43,6 +43,7 @@ pub mod nats;
 pub mod collective;
 pub mod sensemaking;
 pub mod immune;
+pub mod temporal;
 pub mod paradox;
 pub mod queen;
 pub mod invariant;

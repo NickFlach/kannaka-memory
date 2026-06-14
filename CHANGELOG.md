@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.6.24] — 2026-06-14
+
+### Added — temporal truth reasoning core (ADR-0035 Wave 3 Task 3.2)
+
+- New unit-tested `temporal` module: `temporal_status` (Current / Future /
+  Expired) and `effective_confidence` (amplitude folded with temporal validity,
+  fading toward expiry). Operates on a `TemporalSpec` so the reasoning ships
+  decoupled from persistence — no behavior change yet (every existing memory
+  reads Current). Persisting the temporal fields on `HyperMemory` is the focused
+  follow-up (Task 3.2b).
+
 ## [0.6.23] — 2026-06-14
 
 ### Added — immune actions + real cross-peer sensemaking (ADR-0035 Wave 2.2 + Wave 1 finish)
