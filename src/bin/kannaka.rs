@@ -2454,7 +2454,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps>");
                 process::exit(1);
             }
 
@@ -2649,6 +2649,59 @@ fn main() {
                         if verdicts.len() > 25 {
                             println!("  ... and {} more", verdicts.len() - 25);
                         }
+                    }
+                }
+                // ADR-0035 Cap 1 / Wave 3 Task 3.3 — knowledge gap detection.
+                // LOCAL-FIRST: maps THIS agent's clusters into a coverage map and
+                // flags weakly-represented / low-confidence domains. Multi-peer
+                // coverage (via swarm exemplars) is the next increment.
+                "gaps" => {
+                    let want_json = args.iter().any(|a| a == "--json");
+                    let report = sys.observe();
+                    let clusters: Vec<kannaka_memory::gap::DomainCluster> = report
+                        .clusters
+                        .clusters
+                        .iter()
+                        .filter(|c| !c.theme.trim().is_empty())
+                        .map(|c| kannaka_memory::gap::DomainCluster {
+                            agent_id: agent_id.clone(),
+                            theme: c.theme.clone(),
+                            size: c.size.max(1),
+                            coherence: c.coherence,
+                            mean_amplitude: c.mean_amplitude,
+                        })
+                        .collect();
+                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
+                        a.trim().eq_ignore_ascii_case(b.trim())
+                    });
+                    let gaps = kannaka_memory::gap::detect_gaps(&map, 0.4);
+                    if want_json {
+                        let arr: Vec<_> = gaps
+                            .iter()
+                            .map(|g| serde_json::json!({
+                                "domain": g.domain,
+                                "coverage": g.coverage,
+                                "kind": format!("{:?}", g.kind),
+                                "peers_holding": g.peers_holding,
+                            }))
+                            .collect();
+                        println!("{}", serde_json::json!({
+                            "scope": "local",
+                            "domains": map.len(),
+                            "gaps": arr,
+                            "note": "local-first; multi-peer coverage via swarm exemplars is next",
+                        }));
+                    } else {
+                        println!(
+                            "Knowledge gaps — {} domain(s), {} gap(s)  (local-first)",
+                            map.len(),
+                            gaps.len()
+                        );
+                        for g in gaps.iter().take(20) {
+                            let dom: String = g.domain.chars().take(60).collect();
+                            println!("  [{:.2}] {:<18} {}", g.coverage, format!("{:?}", g.kind), dom);
+                        }
+                        println!("  multi-peer coverage (swarm exemplars) is the next increment");
                     }
                 }
                 "join" => {

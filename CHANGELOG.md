@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.6.25] — 2026-06-14
+
+### Added — knowledge gap detection (ADR-0035 Wave 3 Task 3.3)
+
+- New unit-tested `gap` module: `build_coverage_map` (bins clusters into domains;
+  coverage = breadth × depth × confidence) + `detect_gaps` (flags
+  WeaklyRepresented / LowConfidence domains).
+- **`kannaka swarm gaps [--json]`** — local-first knowledge-gap report over this
+  agent's clusters (the collective successor to the single-agent curiosity loop;
+  multi-peer coverage via swarm exemplars is the next increment). Its
+  `gap_detection_precision` is a candidate L6 fitness metric.
+- Wave 4 (autonomous research planning, hive formation, self-directed sensemaking
+  loop, L6 swarm-fitness arm) broken into tasks 4.1–4.4 in the wave plan.
+
 ## [0.6.24] — 2026-06-14
 
 ### Added — temporal truth reasoning core (ADR-0035 Wave 3 Task 3.2)

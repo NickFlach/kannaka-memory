@@ -243,11 +243,118 @@ self-directed sensemaking loops) is Wave 4.*
 
 ## Wave 4: Self-Directed Sensemaking (ADR-0035 Phase 4)
 
-**Theme:** Close the loop — the swarm plans its own research and forms hives.
-Deliverables: **autonomous research planning** (gap map → directed research tasks)
-· **emergent hive formation** (resonance-clustered sub-swarms) · **self-directed
-sensemaking loops** (the OODA generalizes from one agent's autoresearch to the
-collective — this is where L6 OODA and the swarm meet).
+**Theme:** Close the loop — the swarm plans its own research, clusters into hives,
+and runs the OODA continuously, generalizing the single-agent curiosity loop to
+the collective.
+**Repo:** `kannaka-memory` — pure cores in new `src/research_planner.rs`,
+`src/hive_formation.rs`, `src/swarm_loop.rs` (on top of existing `src/queen.rs`
+hive detection), wired via `kannaka swarm` subcommands over the presence/exemplar/
+work-queue NATS layer, plus an `L6` arm in `src/bin/research.rs`.
+
+Deliverables: **autonomous research planning** · **emergent hive formation** ·
+**self-directed sensemaking loops**.
+
+> **Grounding (2026-06-14):** richer substrate than the ADR assumed. Hive
+> *detection* already ships — `queen::detect_hives`/`detect_hives_domain_aware`
+> BFS-cluster peers by phase and infer role + bridge agents (`kannaka swarm hives`).
+> The five Swarm States are purely conceptual (no `SwarmState` enum). The
+> single-agent curiosity loop already does gap→research→PR (`research-suggest` →
+> `research --ingest` → scope-guarded auto-merged PR). Wave 4 *generalizes* each
+> from one agent to the collective.
+
+### Task 4.1 — Autonomous research planner (gap map → directed tasks)
+**Files:** `src/research_planner.rs` (pure `plan_research`, `dedupe_against_peers`,
+`assign_to_peers`); `src/bin/handlers/swarm.rs` (`swarm plan`); hook in
+`research/research-refresh.sh`.
+Turn each Wave 3.3 `CoverageGap` into a `ResearchTask { domain, theme_query, kind,
+priority, assignee, rationale }`, ordered by severity × kind (BlindSpot >
+WeaklyRepresented > LowConfidence). `assign_to_peers` routes via Wave 1
+`sensemaking::score_peer_expertise` over `swarm peers` presence; `dedupe_against_peers`
+drops gaps peers already cover. Thin wrapper enqueues onto `KANNAKA.work.research`
+(reuse `swarm enqueue`/`worker`), where a worker runs `research --ingest` + opens its
+scope-guarded curiosity PR as today.
+**Depends on:** Wave 3.3 `gap::CoverageGap`, Wave 1 `score_peer_expertise`, `swarm
+peers`, Wave 3.2 `temporal::effective_confidence` (re-research stale domains); L6.
+**Tests:** BlindSpot outranks WeaklyRepresented of equal coverage; task assigned to
+highest-expertise peer not already holding it; fully-covered gap yields no task;
+stale (low effective_confidence) domain is re-planned not skipped.
+**Success:** `kannaka swarm plan [--assign] [--json]` prints the directed plan;
+`--assign` enqueues. Collective ingests literature into exactly its blind spots
+(measurable as `gap_detection_precision` rising across cycles).
+
+### Task 4.2 — Emergent hive formation (resonance-clustered sub-swarms)
+**Files:** `src/hive_formation.rs` (pure `form_hives`, `score_hive_membership`,
+`hive_research_focus`); `src/bin/handlers/swarm.rs` (`swarm hive` — extend read-only
+`swarm hives` into form/route).
+Make `queen::detect_hives_domain_aware` (phase clustering) **resonance-aware and
+purposive**: `score_hive_membership` blends phase coherence with memory-domain
+resonance (reuse `sensemaking` content-sim over `swarm exemplars` `{theme,
+semantic_summary,coherence}`), so peers join a hive because they *know the same
+things*. `hive_research_focus` derives a hive's collective gap (Task 4.1 scoped to
+one hive). Thin layer writes hive role to presence + a hive work subject.
+**Depends on:** `queen::detect_hives_domain_aware`/`HiveInfo`/`AgentPhase`, exemplar
+exchange, Wave 1 `sensemaking`, Task 4.1.
+**Tests:** two peers sharing a domain co-resonate into one hive at moderate phase
+gap; a bridge peer is detected (parity with `detect_hives_domain_aware`); one
+off-topic high-Φ peer doesn't absorb a hive; empty swarm = singleton hives.
+**Success:** `kannaka swarm hive [--form] [--json]` reports resonance hives with a
+`focus_domain`; `--form` writes roles so `swarm plan --assign` routes each hive's
+blind spots to its queue.
+
+### Task 4.3 — Self-directed sensemaking loop (explicit Swarm-State machine)
+**Files:** `src/swarm_loop.rs` (pure `next_state`, `StateOutcome`, `SwarmState`
+enum); `src/bin/handlers/swarm.rs` (`swarm loop` daemon beside `serve`/`worker`).
+Make the five ADR states real: `enum SwarmState { Discovery, Synchronization,
+Sensemaking, Dreaming, Governance }`. Pure `next_state(state, &SwarmContext)` is a
+deterministic transition over a snapshot (peer count, order parameter, open
+contradictions, gap count, immune at-risk). The daemon wires each state to
+already-built actions: Discovery = `swarm hive --form` (4.2); Sync = QueenSync step;
+Sensemaking = `swarm brief`/`gaps`/`plan` (4.1); Dreaming = Wave 3.1 cross-agent
+dream; Governance = Wave 2 `immune --apply` + contradiction resolution.
+**Depends on:** `queen::QueenState`/sync (Sync), Wave 1 brief (Sensemaking), Task 4.1
++ Wave 3.3 (Sensemaking), Task 4.2 (Discovery), Wave 3.1 (Dreaming), Wave 2 immune
+(Governance); L6 (the loop *is* the swarm OODA).
+**Tests:** lone agent stays in Discovery; rising coherence drives
+Discovery→Sync→Sensemaking in order; injected contradictions force a Governance
+visit; the transition table is total; empty context = no-op (no panic).
+**Success:** `kannaka swarm loop [--interval SECS] [--once]` runs the swarm
+autonomously through the five states with no operator in the loop.
+
+### Task 4.4 — L6 swarm-fitness arm (autoresearch generalizes to the collective)
+**Files:** `src/bin/research.rs` (`run_experiment_l6_session`, `6 => …` dispatch);
+`experiments/results-L6.tsv`; `experiments/ooda-state.json` (`.level` versioned
+state); `research/autoresearch-cron.sh` (read level from state; rotate a swarm knob);
+`.github/workflows/auto-merge-curiosity.yml` (allow `results-L6.tsv`).
+Graduate the OODA from single-agent (L5, saturated ~0.0074) to swarm fitness:
+simulate an N-agent partitioned-corpus swarm, score **`gap_detection_precision`**
+(prime metric), **`recall_vote_gain`** (Cap 2), **`contradiction_recall`** (Cap 10),
+and promote **`query_gravity`** to a scored axis. Add the plateau detector that
+writes `SOLVED_ARCHIVED` + increments `.level`.
+**Depends on:** the L5 harness as template; Tasks 4.1–4.3 supply the metrics;
+`DREAM_GRAVITY` (`Params.dream_gravity`) already landed.
+**Tests:** `--level 6` writes a well-formed `results-L6.tsv` row;
+`gap_detection_precision` is 1.0 on a correctly-flagged held-out domain; plateau
+detector fires only after N no-new-axis cycles; legacy `ooda-state.json` parses.
+**Success:** `cargo run --release --bin research -- --level 6` reports a swarm
+fitness; `autoresearch-cron.sh` keep/reverts swarm knobs against L6 and auto-advances
+`.level` on plateau — the autoresearch now optimizes *collective* intelligence.
+
+**Wave 4 dependency order:** 4.2 → 4.1 → 4.3 → 4.4. Hive formation (4.2) gives the
+planner (4.1) routing targets; the planner feeds the Sensemaking state of the loop
+(4.3); the L6 arm (4.4) scores the whole machine. 4.1 and 4.2 share the `sensemaking`
+content-sim hook + `swarm peers`/exemplar presence — cores writable in parallel,
+joined at the CLI; 4.4 depends only on 4.1–4.3's metrics being computable.
+
+**Closing the North Star loop.** Waves 1–3 built the organs (voice, immune system,
+cross-agent dreaming, temporal truth, coverage map). Wave 4 wires them into a closed
+metabolism: the gap map (3.3) becomes directed curiosity (4.1); phase-locked peers
+become specialized hives (4.2); the five states become an autonomously-cycling
+machine (4.3) that surveys → synchronizes → makes sense → dreams → governs →
+re-surveys. This is where **L6 OODA and the swarm meet** (4.4): the single-agent
+autoresearch is generalized so the *swarm* picks its gaps, routes research to the
+best-fit hive, and the OODA optimizes `gap_detection_precision`/`recall_vote_gain`
+instead of one agent's `query_gravity`. Experience in → collective intelligence out,
+on a loop that tunes itself.
 
 ---
 
