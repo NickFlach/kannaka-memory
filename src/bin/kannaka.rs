@@ -530,6 +530,119 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
     }
 }
 
+/// `kannaka swarm brief --peers` (ADR-0035 Wave 1 fan-out): fan a recall out to
+/// live swarm peers, run consensus voting (`sensemaking::merge_recall_votes`),
+/// and print the brief. Returns true if peers responded and a brief was printed;
+/// false to fall back to the local brief.
+///
+/// NOTE: cross-peer agreement is currently exact (case-insensitive) content
+/// match. High-quality semantic consensus needs peers to return a cluster-id or
+/// a shared embedding, and contradiction detection needs phase in the recall
+/// response — both are responder-side protocol extensions tracked for the next
+/// increment.
+fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool {
+    let nats_url = cfg.swarm.nats_url.clone();
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("brief --peers: NATS connect failed: {e}; using local");
+            return false;
+        }
+    };
+    let peers = transport.get_presence().unwrap_or_default();
+    let peer_ids: Vec<String> = peers
+        .iter()
+        .filter_map(|p| p.get("agent_id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    if peer_ids.is_empty() {
+        eprintln!("brief --peers: no peers present; using local");
+        return false;
+    }
+    let req = serde_json::json!({ "query": topic, "top_k": 5 }).to_string();
+    let mut recalls: Vec<kannaka_memory::sensemaking::PeerRecall> = Vec::new();
+    let mut responded = 0usize;
+    for pid in &peer_ids {
+        let subject = format!("KANNAKA.recall.{pid}");
+        if let Ok(reply) =
+            transport.request_one(&subject, req.as_bytes(), std::time::Duration::from_secs(4))
+        {
+            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&reply) {
+                let items = parsed
+                    .get("results")
+                    .and_then(|r| r.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if !items.is_empty() {
+                    responded += 1;
+                }
+                for item in items {
+                    let content = item
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    let sim = item.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    let strength =
+                        item.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+                    recalls.push(kannaka_memory::sensemaking::PeerRecall {
+                        peer_id: pid.clone(),
+                        content,
+                        similarity: sim,
+                        amplitude: 1.0,
+                        phase: 0.0,
+                        confidence: strength.clamp(0.0, 1.0),
+                    });
+                }
+            }
+        }
+    }
+    if responded == 0 {
+        eprintln!("brief --peers: no peers responded within timeout; using local");
+        return false;
+    }
+    let agree = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+    let known = kannaka_memory::sensemaking::merge_recall_votes(&recalls, peer_ids.len(), agree);
+    let peers_scored: Vec<(String, f32)> = peer_ids.iter().map(|p| (p.clone(), 1.0)).collect();
+    let brief = kannaka_memory::sensemaking::compose_brief(topic, known, vec![], peers_scored);
+    if want_json {
+        let known_json: Vec<_> = brief
+            .known
+            .iter()
+            .map(|c| serde_json::json!({
+                "content": c.content,
+                "support": c.support,
+                "confidence": c.confidence,
+            }))
+            .collect();
+        println!("{}", serde_json::json!({
+            "topic": brief.topic,
+            "confidence": brief.confidence,
+            "scope": "swarm",
+            "peers_responded": responded,
+            "peers_total": peer_ids.len(),
+            "known": known_json,
+            "note": "consensus by exact content match; contradiction detection pending phase-in-response",
+        }));
+    } else {
+        println!(
+            "Swarm brief — \"{}\"  ({}/{} peers responded)",
+            brief.topic,
+            responded,
+            peer_ids.len()
+        );
+        println!("  confidence: {:.2}", brief.confidence);
+        println!("  consensus ({}):", brief.known.len());
+        for (i, c) in brief.known.iter().take(10).enumerate() {
+            let preview: String = c.content.chars().take(80).collect();
+            println!("    {}. [{:.2}] x{} {}", i + 1, c.confidence, c.support, preview);
+        }
+    }
+    true
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -2309,7 +2422,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health>");
                 process::exit(1);
             }
 
@@ -2331,9 +2444,16 @@ fn main() {
                         .collect::<Vec<_>>()
                         .join(" ");
                     if topic.trim().is_empty() {
-                        eprintln!("Usage: kannaka swarm brief \"<topic>\" [--json]");
+                        eprintln!("Usage: kannaka swarm brief \"<topic>\" [--json] [--peers]");
                         process::exit(1);
                     }
+                    // --peers (Wave 1 fan-out): fan recall out to live swarm peers
+                    // and run consensus voting. Falls back to local on no peers.
+                    let mut handled = false;
+                    if args.iter().any(|a| a == "--peers") {
+                        handled = swarm_brief_peers(&cfg, &topic, want_json);
+                    }
+                    if !handled {
                     match sys.recall(&topic, 8) {
                         Ok(results) => {
                             let known: Vec<kannaka_memory::sensemaking::ConsensusItem> = results
@@ -2381,6 +2501,97 @@ fn main() {
                         Err(e) => {
                             eprintln!("brief: recall error: {e}");
                             process::exit(1);
+                        }
+                    }
+                    }
+                }
+                // ADR-0035 Cap 4 / Wave 2 Task 2.1 — memory immune system
+                // (DETECTION, dry-run). Classifies local memories for duplicate /
+                // stale / low-confidence / hallucinated and prints the at-risk list.
+                // No mutation — lifecycle actions are Task 2.2.
+                "health" => {
+                    let want_json = args.iter().any(|a| a == "--json");
+                    let all = sys.engine.store.all_memories().unwrap_or_default();
+                    let now = chrono::Utc::now();
+                    let t = kannaka_memory::immune::Thresholds::default();
+                    // Pairwise cosine for duplicate detection; skipped for very
+                    // large stores to bound the O(N²) cost.
+                    let do_pairwise = all.len() <= 2000;
+                    let mut verdicts: Vec<(kannaka_memory::immune::HealthVerdict, String)> =
+                        Vec::new();
+                    for (i, m) in all.iter().enumerate() {
+                        let (mut max_sim, mut sib_hi) = (0.0f32, false);
+                        if do_pairwise && !m.vector.is_empty() {
+                            for (j, other) in all.iter().enumerate() {
+                                if i == j || other.vector.is_empty() {
+                                    continue;
+                                }
+                                let s = kannaka_memory::wave::cosine_similarity(
+                                    &m.vector,
+                                    &other.vector,
+                                );
+                                if s > max_sim {
+                                    max_sim = s;
+                                    sib_hi = other.amplitude > m.amplitude;
+                                }
+                            }
+                        }
+                        let age_days = (now - m.created_at).num_days().max(0) as f32;
+                        let sig = kannaka_memory::immune::MemorySignals {
+                            id: m.id.to_string(),
+                            amplitude: m.amplitude,
+                            age_days,
+                            // Proxy: active memories carry amplitude (no last-access field).
+                            recent_access: m.amplitude >= 0.3,
+                            hallucinated: m.hallucinated,
+                            max_sibling_similarity: max_sim,
+                            sibling_higher_amp: sib_hi,
+                        };
+                        let v = kannaka_memory::immune::classify_memory_health(&sig, &t);
+                        if !v.is_clean() {
+                            verdicts.push((v, m.content.clone()));
+                        }
+                    }
+                    verdicts.sort_by(|a, b| b.0.severity.total_cmp(&a.0.severity));
+                    if want_json {
+                        let arr: Vec<_> = verdicts
+                            .iter()
+                            .map(|(v, content)| {
+                                serde_json::json!({
+                                    "id": v.id,
+                                    "severity": v.severity,
+                                    "action": format!("{:?}", v.action),
+                                    "flags": v.flags.iter().map(|f| format!("{:?}", f)).collect::<Vec<_>>(),
+                                    "preview": content.chars().take(80).collect::<String>(),
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::json!({
+                            "at_risk": verdicts.len(),
+                            "total": all.len(),
+                            "dry_run": true,
+                            "memories": arr,
+                        }));
+                    } else {
+                        println!(
+                            "Memory immune report — {} at-risk / {} total  (dry-run; no mutation)",
+                            verdicts.len(),
+                            all.len()
+                        );
+                        for (v, content) in verdicts.iter().take(25) {
+                            let flags: Vec<String> =
+                                v.flags.iter().map(|f| format!("{:?}", f)).collect();
+                            let preview: String = content.chars().take(70).collect();
+                            println!(
+                                "  [{:.2}] {:<13} {:<26} {}",
+                                v.severity,
+                                format!("{:?}", v.action),
+                                flags.join(","),
+                                preview
+                            );
+                        }
+                        if verdicts.len() > 25 {
+                            println!("  ... and {} more", verdicts.len() - 25);
                         }
                     }
                 }

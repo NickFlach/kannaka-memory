@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.6.22] — 2026-06-14
+
+### Added — memory immune system + multi-peer brief (ADR-0035 Wave 1 finish + Wave 2 start)
+
+- **`kannaka swarm health`** (ADR-0035 Cap 4 / Wave 2 Task 2.1) — dry-run memory
+  immune report. New unit-tested `immune` module classifies each memory for
+  duplicate / stale / low-confidence / hallucinated (+ batch contradiction via the
+  Wave 1 detector) and recommends the least-destructive action (mark / down-rank /
+  quarantine / expire — never hard-delete). Detection only; lifecycle actions are
+  Task 2.2.
+- **`kannaka swarm brief --peers`** — completes Wave 1's fan-out: requests recall
+  from every live swarm peer and runs consensus voting (`merge_recall_votes`).
+  Falls back to the local brief when no peers respond. (Cross-peer agreement is
+  currently exact content match; semantic consensus + over-the-wire contradiction
+  detection need a responder-side protocol extension — tracked.)
+
 ## [0.6.21] — 2026-06-14
 
 ### Fixed — associative recall was anti-associative
