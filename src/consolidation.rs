@@ -29,6 +29,15 @@ use crate::wave::{cosine_similarity, normalize};
 #[cfg(feature = "collective")]
 use rayon::prelude::*;
 
+/// Amplitude ceiling for the particle-consolidation strengthen path (#360).
+/// The wave-native observe path already caps wavefront energy at 2.0
+/// (`consciousness.rs`); this path grew amplitude unbounded, so repeated
+/// constructive-heavy dreams could inflate energies without limit and distort
+/// resonance ranking + Φ/Kuramoto metrics. Clamp every additive boost to the
+/// same ceiling. `HrmStore::sync_cache_to_medium` copies amplitude straight
+/// into `store.energy`, so this also bounds the on-disk energy.
+const AMPLITUDE_CEILING: f32 = 2.0;
+
 /// Classification of interference between two memories.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Interference {
@@ -99,6 +108,8 @@ pub struct ConsolidationReport {
     pub kannaktopus_actions: usize,
     /// Cluster indices targeted by Kannaktopus (weakest, strongest, isolated)
     pub kannaktopus_targets: Vec<usize>,
+    /// Long-ghosted (zero-amplitude) memories hard-deleted this cycle (#361).
+    pub ghosts_reclaimed: usize,
 }
 
 /// Report from modality-aware dream consolidation (NCS Phase 3.2, #48).
@@ -287,6 +298,13 @@ impl ConsolidationEngine {
 
         // Stage 6b: TRANSFER -- promote old memories to deeper layers
         report.memories_transferred = self.stage_transfer(engine);
+
+        // Stage 6c: COMPACT -- reclaim long-ghosted memories (#361). Pruning only
+        // soft-deletes (amplitude=0.0); without this sweep ghosts re-serialize
+        // and reload forever, inflating total_memories and dragging the O(n²)/
+        // O(n³) recall + eigendecomp. Deletes only ghosts that have stayed at
+        // zero past the recovery window, never pinned/summary memories.
+        report.ghosts_reclaimed = self.stage_compact_ghosts(engine);
 
         // Stage 7: WIRE -- create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
@@ -504,7 +522,7 @@ impl ConsolidationEngine {
             // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude += self.constructive_boost;
+                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
                     mem.phase = avg_phase;
                     count += 1;
                 }
@@ -512,7 +530,7 @@ impl ConsolidationEngine {
             // Boost amplitude and align phase for memory B (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude += self.constructive_boost;
+                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
                     mem.phase = avg_phase;
                     count += 1;
                 }
@@ -577,7 +595,7 @@ impl ConsolidationEngine {
             if let Some(mem) = engine.store.get_mut(&bridge_id).ok().flatten() {
                 let bonus_factor = 0.1 + (bridge_strength - 3.0) * 0.03; // 10% for 3 clusters, +3% per additional
                 let amplitude_bonus = bonus_factor.min(0.2); // Cap at 20%
-                mem.amplitude += amplitude_bonus;
+                mem.amplitude = (mem.amplitude + amplitude_bonus).min(AMPLITUDE_CEILING);
                 count += 1;
             }
         }
@@ -954,12 +972,12 @@ impl ConsolidationEngine {
             if let Ok(Some(mem_a)) = engine.store.get_mut(&id_a) {
                 // Boost amplitude of memory with higher initial amplitude
                 if mem_a.amplitude > 0.5 {
-                    mem_a.amplitude += amplitude_separation;
+                    mem_a.amplitude = (mem_a.amplitude + amplitude_separation).min(AMPLITUDE_CEILING);
                 }
             }
             if let Ok(Some(mem_b)) = engine.store.get_mut(&id_b) {
                 if mem_b.amplitude > 0.5 {
-                    mem_b.amplitude += amplitude_separation;
+                    mem_b.amplitude = (mem_b.amplitude + amplitude_separation).min(AMPLITUDE_CEILING);
                 }
             }
         }
@@ -1022,6 +1040,69 @@ impl ConsolidationEngine {
         }
 
         count
+    }
+
+    /// Stage 6c: Reclaim long-ghosted memories (#361).
+    ///
+    /// `stage_prune` soft-deletes by setting `amplitude = 0.0` ("ghost") so a
+    /// later `boost` can recover it, but it never calls `engine.delete()`. Over
+    /// many dream cycles ghosts accumulate: re-serialized on every save, counted
+    /// by `count()`/`all_memories()`, reloaded each restart, and dragging the
+    /// quadratic/cubic recall + eigendecomp. This sweep hard-deletes ghosts that
+    /// have stayed at zero past a recovery window, so the soft-delete stays
+    /// recoverable in the short term but is genuinely reclaimed in the long term.
+    ///
+    /// Protected (never reclaimed):
+    /// - non-ghosts (`amplitude != 0.0`),
+    /// - `Pinned` memories (explicit user retention),
+    /// - consolidation summaries (`__consolidation`/`__summary` content),
+    /// - ghosts still inside the recovery window (last activity newer than the
+    ///   retention horizon).
+    ///
+    /// Retention horizon defaults to 7 days; override with
+    /// `KANNAKA_GHOST_RETAIN_DAYS` (0 reclaims every ghost immediately — treats
+    /// ghost as a true delete).
+    fn stage_compact_ghosts(&self, engine: &mut ResonanceEngine) -> usize {
+        let retain_days: i64 = std::env::var("KANNAKA_GHOST_RETAIN_DAYS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7);
+        let now = Utc::now();
+        let horizon = now - Duration::days(retain_days.max(0));
+
+        let all = match engine.store.all_memories() {
+            Ok(m) => m,
+            Err(_) => return 0,
+        };
+        let mut doomed: Vec<Uuid> = Vec::new();
+        for mem in &all {
+            if mem.amplitude != 0.0 {
+                continue; // not a ghost
+            }
+            if mem.tier == crate::medium::types::Tier::Pinned {
+                continue; // explicit retention
+            }
+            // Consolidation summaries are structural, not user memories.
+            if mem.content.starts_with("__consolidation") || mem.content.starts_with("__summary") {
+                continue;
+            }
+            // Last meaningful activity: when it was last mutated, else when it
+            // was created. Reclaim only once that is older than the window, so a
+            // freshly-ghosted memory stays recoverable.
+            let last_active = mem.updated_at.unwrap_or(mem.created_at);
+            if last_active <= horizon {
+                doomed.push(mem.id);
+            }
+        }
+        drop(all);
+
+        let mut reclaimed = 0;
+        for id in doomed {
+            if engine.delete(&id).unwrap_or(false) {
+                reclaimed += 1;
+            }
+        }
+        reclaimed
     }
 
     /// Stage 6: Transfer old memories to deeper temporal layers.
