@@ -57,13 +57,27 @@ cd "$REPO" || { echo "repo $REPO not found"; exit 1; }
 git fetch origin master 2>&1 | tail -3
 git reset --hard origin/master 2>&1 | tail -3
 
+# ── Level: versioned source of truth in experiments/ooda-state.json (.level) ──
+# Wave 4 Task 4.4 (#356): the OODA level is owned by ooda-state.json so the cron
+# and the curiosity loop graduate together when a level is solved. An explicit
+# OODA_LEVEL env still overrides for manual runs; a legacy state file that lacks
+# the field (or is absent) falls back to the previous static default of 4.
+OODA_STATE="$REPO/experiments/ooda-state.json"
+STATE_LEVEL=""
+if [[ -f "$OODA_STATE" ]]; then
+    STATE_LEVEL=$(grep -oE '"level"[[:space:]]*:[[:space:]]*[0-9]+' "$OODA_STATE" \
+                  | grep -oE '[0-9]+' | tail -1)
+fi
+LEVEL="${OODA_LEVEL:-${STATE_LEVEL:-4}}"
+echo "resolved OODA level=$LEVEL (state=${STATE_LEVEL:-none}, env=${OODA_LEVEL:-unset})"
+
 # ── Baseline ──────────────────────────────────────────────────────────────
 echo "--- baseline ---"
 BASELINE_SUM=0
 BASELINE_RUNS=0
 for i in $(seq 1 "$RUNS"); do
     RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
-             | awk '/^fitness:/ { print $2; exit }')
+             | awk '/^fitness:|^l6_fitness:/ { print $2; exit }')
     if [[ -n "$RESULT" ]]; then
         BASELINE_SUM=$(echo "$BASELINE_SUM + $RESULT" | bc -l)
         BASELINE_RUNS=$((BASELINE_RUNS + 1))
@@ -127,7 +141,7 @@ HYP_SUM=0
 HYP_RUNS=0
 for i in $(seq 1 "$RUNS"); do
     RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
-             | awk '/^fitness:/ { print $2; exit }')
+             | awk '/^fitness:|^l6_fitness:/ { print $2; exit }')
     if [[ -n "$RESULT" ]]; then
         HYP_SUM=$(echo "$HYP_SUM + $RESULT" | bc -l)
         HYP_RUNS=$((HYP_RUNS + 1))
@@ -174,5 +188,59 @@ if [[ "$STATUS" == "keep" ]]; then
         commit -m "log(ooda-cron): row for $PARAM $FROM->$TO ($STATUS)" 2>&1 | tail -3
     git push origin master 2>&1 | tail -3
 fi
+
+# ── Plateau detector / auto-advance (Wave 4 Task 4.4 / #356) ───────────────
+# Codify the curiosity loop's own arithmetic: once a level has gone N
+# consecutive cycles without surfacing a new research axis (the curiosity loop
+# drops a `*-no-new-axes.md` note each such cycle), the level is solved.
+# Archive it (SOLVED_ARCHIVED block) and increment ooda-state.json `.level` so
+# the next night's cron AND the curiosity loop both graduate to the next level.
+# Conservative: only fires at/above the threshold, never double-bumps a level
+# another writer already advanced, and is a no-op without python3.
+maybe_advance_level() {
+    local n_required="${OODA_PLATEAU_N:-3}"
+    local notes
+    notes=$(find research -name '*-no-new-axes.md' 2>/dev/null | wc -l | tr -d ' ')
+    echo "plateau: $notes no-new-axes note(s); need >= $n_required to advance L$LEVEL"
+    if (( notes < n_required )); then
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "plateau: python3 absent — cannot rewrite ooda-state; skipping advance"
+        return 0
+    fi
+    python3 - "$OODA_STATE" "$LEVEL" "${BASELINE_AVG:-NA}" "$notes" <<'PY'
+import json, sys, datetime
+path, level, best, notes = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+try:
+    state = json.load(open(path))
+except Exception:
+    state = {}
+# Backward compat: legacy state files may lack `.level` — establish it.
+state.setdefault("level", level)
+if int(state.get("level", level)) != level:
+    print("plateau: state already advanced past L%d; no-op" % level)
+    sys.exit(0)
+key = "l%d" % level
+block = state.get(key, {})
+block["status"] = "SOLVED_ARCHIVED"
+block["archived_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+block["archived_reason"] = (
+    "L%d plateaued: %s consecutive no-new-axes cycles (>= threshold); "
+    "best_fitness=%s." % (level, notes, best)
+)
+state[key] = block
+state["level"] = level + 1
+json.dump(state, open(path, "w"), indent=2)
+print("plateau: L%d SOLVED_ARCHIVED -> advanced .level to %d" % (level, level + 1))
+PY
+    if ! git diff --quiet -- "$OODA_STATE"; then
+        git add "$OODA_STATE"
+        git -c user.name=autoresearch-cron -c user.email=autoresearch@kannaka.local \
+            commit -m "ooda(plateau): L${LEVEL} SOLVED_ARCHIVED, advance .level (auto)" 2>&1 | tail -3
+        git push origin master 2>&1 | tail -3
+    fi
+}
+maybe_advance_level
 
 echo "=== autoresearch end: $(date -Iseconds) status=$STATUS ==="

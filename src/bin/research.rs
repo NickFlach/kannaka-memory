@@ -3800,6 +3800,204 @@ fn run_experiment_l5_session(params: &Params) {
     println!("---");
 }
 
+/// Wave 4 Task 4.4 (#356) — L6 swarm-fitness session (collective OODA).
+///
+/// Graduates the autoresearch OODA from single-agent L5 fitness (saturated
+/// ≈0.0074) to **collective** fitness: it scores how well a small N-agent swarm
+/// with partitioned corpora detects its own knowledge gaps, reaches recall
+/// consensus, surfaces contradictions, and concentrates query gravity. This
+/// closes the ADR-0035 North Star loop — the loop now optimizes collective
+/// intelligence, not one agent's `query_gravity`.
+///
+/// The ground-truthable scoring lives in `kannaka_memory::swarm_fitness` (pure,
+/// `cargo test --lib`-covered); here we build the inputs and write the TSV row.
+/// Fitness is a weighted `1 - metric` loss like L5 (weights sum to 1.0).
+fn run_experiment_l6_session(params: &Params) {
+    use kannaka_memory::swarm_fitness as sf;
+    use kannaka_memory::gap::DomainCluster;
+    use kannaka_memory::sensemaking::PeerRecall;
+
+    let dim = 128;
+    let mut l6 = params.clone();
+    // query_gravity axis knob, promoted to first-class (DREAM_GRAVITY overrides).
+    l6.dream_gravity = std::env::var("DREAM_GRAVITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(params.dream_gravity);
+    let params = &l6;
+    let n_agents = std::env::var("L6_AGENTS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(4)
+        .max(2);
+    let seed = params.encoder_seed;
+    let same_domain = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+
+    println!("=== L6 swarm-fitness session (collective OODA) ===");
+    println!("l6_agents:            {}", n_agents);
+    println!("l6_dream_gravity:     {:.4}", params.dream_gravity);
+
+    // --- Metric 1: gap_detection_precision (PRIME, ground-truthable) ---
+    // Every well-covered domain is broadly + deeply held by all agents; the
+    // held-out domain is left as a single-agent trace so the swarm "knows it
+    // exists" yet it reads as a gap. detect_gaps must flag exactly the held-out.
+    let well = ["dense", "sparse", "bridge", "decoy"];
+    let held_out = ["memory"];
+    let mut clusters: Vec<DomainCluster> = Vec::new();
+    for a in 0..n_agents {
+        let agent_id = format!("agent{a}");
+        for d in well {
+            clusters.push(DomainCluster {
+                agent_id: agent_id.clone(),
+                theme: d.to_string(),
+                size: 10,
+                coherence: 0.85,
+                mean_amplitude: 0.75,
+            });
+        }
+        if a == 0 {
+            for d in held_out {
+                clusters.push(DomainCluster {
+                    agent_id: agent_id.clone(),
+                    theme: d.to_string(),
+                    size: 1,
+                    coherence: 0.15,
+                    mean_amplitude: 0.08,
+                });
+            }
+        }
+    }
+    let gap_report = sf::gap_detection_precision(&clusters, n_agents, &held_out, 0.4, same_domain);
+    println!(
+        "gap_detection_precision: {:.4} ({}/{} flagged correct, {} tasks)",
+        gap_report.precision, gap_report.correct, gap_report.flagged, gap_report.tasks_planned
+    );
+
+    // --- Metric 2: recall_vote_gain (Cap 2) ---
+    // A probe of T truths, each backed by every agent at modest confidence, plus
+    // one distinct high-confidence WRONG claim per agent. Consensus should rank
+    // the broadly-backed truths above any single agent's confident error.
+    let truths: Vec<String> = (0..3).map(|t| format!("truth-{t}")).collect();
+    let mut recalls: Vec<PeerRecall> = Vec::new();
+    for a in 0..n_agents {
+        let peer = format!("agent{a}");
+        for (t, truth) in truths.iter().enumerate() {
+            recalls.push(PeerRecall {
+                peer_id: peer.clone(),
+                content: truth.clone(),
+                similarity: 0.9,
+                amplitude: 0.7,
+                phase: 0.0,
+                confidence: 0.45 + 0.01 * t as f32,
+            });
+        }
+        recalls.push(PeerRecall {
+            peer_id: peer.clone(),
+            content: format!("wrong-{a}"),
+            similarity: 0.9,
+            amplitude: 0.7,
+            phase: 0.0,
+            confidence: 0.95,
+        });
+    }
+    let vote_report = sf::recall_vote_gain(&recalls, n_agents, &truths, same_domain);
+    println!(
+        "recall_vote_gain:     {:.4} (consensus {:.2} vs best single {:.2})",
+        vote_report.gain, vote_report.consensus_acc, vote_report.best_single_acc
+    );
+
+    // --- Metric 3: contradiction_recall (Cap 10) ---
+    // Inject K opposed pairs across agents (same subject, ~π phase apart).
+    let k_contra = 3usize;
+    let injected: Vec<String> = (0..k_contra).map(|i| format!("claim-{i}")).collect();
+    let mut contra_recalls: Vec<PeerRecall> = Vec::new();
+    for (i, subj) in injected.iter().enumerate() {
+        let pa = format!("agent{}", (2 * i) % n_agents);
+        let pb = format!("agent{}", (2 * i + 1) % n_agents);
+        contra_recalls.push(PeerRecall {
+            peer_id: pa, content: subj.clone(), similarity: 0.95, amplitude: 0.8, phase: 0.0, confidence: 0.8,
+        });
+        contra_recalls.push(PeerRecall {
+            peer_id: pb, content: subj.clone(), similarity: 0.95, amplitude: 0.8, phase: PI, confidence: 0.8,
+        });
+    }
+    let sim = |x: &str, y: &str| if same_domain(x, y) { 1.0 } else { 0.0 };
+    let contra_report = sf::contradiction_recall(&contra_recalls, &injected, sim, 0.5, PI / 2.0);
+    println!(
+        "contradiction_recall: {:.4} ({}/{} detected)",
+        contra_report.recall, contra_report.detected, contra_report.injected
+    );
+
+    // --- Metric 4: query_gravity (promoted L5 instrumentation) ---
+    // Build agent 0's disjoint partition of the L5 corpus, dream with the
+    // gravity knob, and measure how the dream concentrates amplitude onto
+    // phase-neighbors of the strongest query.
+    let corpus = build_corpus_l5_a(dim, 2, seed);
+    let partition: Vec<_> = corpus
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % n_agents == 0)
+        .map(|(_, x)| x.clone())
+        .collect();
+    println!("l6_partition_size:    {}", partition.len());
+    let mut engine = build_l5_engine(&partition, params, dim);
+    let pre_state: Vec<(uuid::Uuid, f32, f32)> = engine
+        .store
+        .all_memories()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| (m.id, m.amplitude, m.phase))
+        .collect();
+    std::env::set_var("DRIVE_CONTEXT", "engine_l6");
+    let _ = run_l5_dream_chain(params, &mut engine);
+    std::env::remove_var("DRIVE_CONTEXT");
+    let query_gravity = eval_query_gravity(&pre_state, &engine);
+    println!("query_gravity:        {:.4}", query_gravity);
+
+    // --- Collective fitness: weighted 1 - metric loss (weights sum to 1.0) ---
+    let weights = sf::L6Weights::default();
+    let fitness = sf::l6_fitness(
+        gap_report.precision,
+        vote_report.gain,
+        contra_report.recall,
+        query_gravity,
+        &weights,
+    );
+    println!("l6_fitness:           {:.6}", fitness);
+
+    // --- Write results-L6.tsv (header + per-run row) ---
+    let tsv_path = Path::new("experiments/results-L6.tsv");
+    let needs_header = !tsv_path.exists();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tsv_path)
+    {
+        use std::io::Write;
+        if needs_header {
+            let _ = writeln!(
+                f,
+                "run\tfitness\tgap_detection_precision\trecall_vote_gain\tcontradiction_recall\tquery_gravity\tn_agents\ttasks_planned"
+            );
+        }
+        let run_label = std::env::var("RESEARCH_RUN").unwrap_or_else(|_| "L6".to_string());
+        let _ = writeln!(
+            f,
+            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}",
+            run_label,
+            fitness,
+            gap_report.precision,
+            vote_report.gain,
+            contra_report.recall,
+            query_gravity,
+            n_agents,
+            gap_report.tasks_planned,
+        );
+    }
+    println!("results_tsv:          experiments/results-L6.tsv");
+    println!("---");
+}
+
 /// Placeholder L5 fitness using L4 evaluators. Computes a sub-fitness
 /// for transfer comparison purposes. Uses the L4 inherited core at
 /// L5 weights (program-l5.md §2).
@@ -3869,6 +4067,7 @@ fn main() {
     };
 
     match level {
+        6 => run_experiment_l6_session(&params),
         5 => run_experiment_l5_session(&params),
         4 => {
             if cli.chain_sessions > 0 {

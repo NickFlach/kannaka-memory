@@ -1,0 +1,2 @@
+run	fitness	gap_detection_precision	recall_vote_gain	contradiction_recall	query_gravity	n_agents	tasks_planned
+L6-baseline	0.242961	1.0000	0.3333	1.0000	0.4914	4	1

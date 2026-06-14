@@ -11,7 +11,7 @@ name: Auto-merge curiosity research
 #   - Only kannaka-curiosity/* branches are touched.
 #   - Only merged after ALL checks are green (`gh pr checks` exits 0 = all pass).
 #   - SCOPE GUARD (#330): a curiosity PR may ONLY change research notes
-#     (experiments/notes/**) and the append-only experiments/results-L{3,4,5}.tsv.
+#     (experiments/notes/**) and the append-only experiments/results-L{3,4,5,6}.tsv.
 #     Code and config reach master a DIFFERENT way — the 02:00 autoresearch
 #     param-tuner runs keep/revert experiments and pushes confirmed keepers
 #     straight to master. By the time a curiosity PR's param tweak is seen here
@@ -20,7 +20,7 @@ name: Auto-merge curiosity research
 #     PR #272: alpha=0.13/chiral=0.10 vs master's chiral=0.15/alpha=0.12). Any
 #     PR touching paths outside the allowlist is labeled `needs-review` and left
 #     open for a human — never auto-merged.
-#   - The append-only results-L{3,4,5}.tsv conflicts are auto-resolved with the
+#   - The append-only results-L{3,4,5,6}.tsv conflicts are auto-resolved with the
 #     built-in `union` merge driver (exactly the manual flow).
 #   - Any PR with a NON-union conflict is skipped and left open — never forced.
 #   - Disable by deleting this file or via the Actions tab.
@@ -55,7 +55,7 @@ jobs:
           set -uo pipefail
           git config user.name "kannaka-curiosity-bot"
           git config user.email "noreply@github.com"
-          printf 'experiments/results-L5.tsv merge=union\nexperiments/results-L4.tsv merge=union\nexperiments/results-L3.tsv merge=union\n' \
+          printf 'experiments/results-L6.tsv merge=union\nexperiments/results-L5.tsv merge=union\nexperiments/results-L4.tsv merge=union\nexperiments/results-L3.tsv merge=union\n' \
             > .git/info/attributes
           git fetch origin master
           git checkout -B master origin/master
@@ -77,6 +77,7 @@ jobs:
             offlimits=$(gh pr view "$num" --json files --jq '
               .files[].path
               | select((startswith("experiments/notes/")
+                        or . == "experiments/results-L6.tsv"
                         or . == "experiments/results-L5.tsv"
                         or . == "experiments/results-L4.tsv"
                         or . == "experiments/results-L3.tsv") | not)')
@@ -86,7 +87,7 @@ jobs:
               if ! gh pr view "$num" --json labels --jq '.labels[].name' | grep -qx needs-review; then
                 gh pr edit "$num" --add-label needs-review 2>/dev/null || true
                 body=$(printf '%s\n' \
-                  'Auto-merge skipped by policy (issue #330): this curiosity PR changes files outside experiments/notes/ and the append-only results-L{3,4,5}.tsv:' \
+                  'Auto-merge skipped by policy (issue #330): this curiosity PR changes files outside experiments/notes/ and the append-only results-L{3,4,5,6}.tsv:' \
                   '' '```' "$offlimits" '```' '' \
                   'Code and config reach master only through the autoresearch param-tuner (which pushes confirmed keepers directly); curiosity PRs contribute research notes and TSV rows only. A maintainer should check whether this code is already in master or superseded (the usual case), then keep the note and close, or merge deliberately.')
                 gh pr comment "$num" --body "$body" 2>/dev/null || true
