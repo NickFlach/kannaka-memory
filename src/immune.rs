@@ -142,6 +142,19 @@ pub fn classify_memory_health(s: &MemorySignals, t: &Thresholds) -> HealthVerdic
     }
 }
 
+/// The amplitude multiplier an action applies (Task 2.2). `None` = no mutation
+/// (the memory is only flagged). All factors are reversible — a later `boost`
+/// restores the memory; `Expire` ghosts it at zero amplitude (the existing
+/// soft-delete), never a hard delete.
+pub fn amplitude_factor(action: Action) -> Option<f32> {
+    match action {
+        Action::DownRank => Some(0.5),
+        Action::Quarantine => Some(0.1),
+        Action::Expire => Some(0.0),
+        Action::Clean | Action::MarkForReview => None,
+    }
+}
+
 /// One memory's signals plus the content/phase needed for the contradiction pass.
 #[derive(Clone, Debug)]
 pub struct MemoryForReview {

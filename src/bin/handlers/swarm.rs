@@ -181,13 +181,21 @@ pub(crate) fn handle_swarm_serve(
                         } else {
                             sys.recall_with_beam(&beam, &query, top_k)
                         };
-                        let results: Vec<serde_json::Value> = recall.map(|rs| rs.iter().map(|r| serde_json::json!({
-                            "id": r.id.to_string(),
-                            "content": r.content,
-                            "similarity": r.similarity,
-                            "strength": r.strength,
-                            "age_hours": r.age_hours,
-                        })).collect()).unwrap_or_default();
+                        let results: Vec<serde_json::Value> = recall.map(|rs| rs.iter().map(|r| {
+                            // Include the memory's wave phase so swarm-side
+                            // sensemaking (contradiction detection) can use the
+                            // wave-native stance signal across peers (ADR-0035).
+                            let phase = sys.engine.store.get(&r.id).ok().flatten()
+                                .map(|m| m.phase).unwrap_or(0.0);
+                            serde_json::json!({
+                                "id": r.id.to_string(),
+                                "content": r.content,
+                                "similarity": r.similarity,
+                                "strength": r.strength,
+                                "age_hours": r.age_hours,
+                                "phase": phase,
+                            })
+                        }).collect()).unwrap_or_default();
                         if let Some(ref rt) = recall_transport {
                             let payload = serde_json::json!({ "from": agent_id, "query": query, "results": results });
                             let _ = rt.reply(&reply, payload.to_string().as_bytes());

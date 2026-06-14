@@ -152,13 +152,86 @@ independent of the immune pair and of each other → parallelizable.
 
 ## Wave 3: Emergent Cognition (ADR-0035 Phase 3)
 
-**Theme:** The swarm starts generating understanding, not just managing it.
-**Repo:** `kannaka-steward` (Dreaming/Sensemaking) + `kannaka-memory` (dream hooks).
-Deliverables: **cross-agent dreaming** (dream over shared wavefronts + peer
-cluster summaries; only reinforced hypotheses survive — Cap 6) · **gap detection
-engine** (coverage map → "the swarm develops curiosity" — Cap 1, the collective
-successor to the single-agent curiosity loop) · **temporal truth reasoning**
-(effective/observation/expiration dates + confidence decay — Cap 8).
+**Theme:** The swarm starts generating understanding, not just managing it — it
+dreams across agents, reasons about *when* knowledge was true, and notices what it
+collectively doesn't know.
+**Repo:** `kannaka-memory` — pure cores in new `src/gap.rs` and `src/temporal.rs`,
+cross-agent dream wiring in `src/consolidation.rs` + `src/bin/handlers/swarm.rs`,
+all exposed via `kannaka swarm` subcommands over the existing exemplar/presence
+NATS layer.
+
+Deliverables: **cross-agent dreaming** (Cap 6) · **gap detection engine** (Cap 1)
+· **temporal truth reasoning** (Cap 8).
+
+> **Grounding (2026-06-14):** the hooks already exist. `consolidate_swarm_aware`
+> already takes peer phases; exemplar broadcasts (`swarm exemplars`/`absorb`) carry
+> per-cluster `{theme, semantic_summary, coherence, xi_diversity, mean_amplitude,
+> size}`; `swarm peers` exposes `memory_count` per peer; `observe().clusters` gives
+> local cluster summaries. Temporal truth is the only capability needing a new
+> persisted field set on `HyperMemory` (today only `created_at` + `decay_rate` →
+> `effective_strength`). Wave 3 adds pure cores + thin wiring on top.
+
+### Task 3.1 — Cross-agent dreaming (Cap 6)
+**Files:** `src/consolidation.rs` (new `dream_cross_agent`, beside
+`consolidate_swarm_aware`); `src/sensemaking.rs` (pure `reinforce_hypotheses`);
+`src/bin/handlers/swarm.rs` (`swarm dream`).
+Seed a dream with absorbed peer cluster exemplars (reuse the `swarm absorb`
+ingestion path). After the local dream produces candidate hypotheses (existing
+`hallucinated` + `parents` lineage), score each against peer cluster summaries: a
+hypothesis is **reinforced** if it resonates (content sim + phase coherence) with
+≥ K peers, **speculative** if only local. Reinforced keep full amplitude;
+speculative are down-ranked (reuse Wave 2.2 down-rank), not deleted. Keep scoring
+pure in `sensemaking::reinforce_hypotheses`.
+**Depends on:** Wave 1 `sensemaking`, Wave 2.2 immune down-rank, exemplar exchange,
+`DREAM_GRAVITY`. **Tests:** a hypothesis matching 3-of-4 injected peer clusters is
+Reinforced; a purely-local hallucination is Speculative + down-ranked; empty peer
+set = today's local-only dream (no regression). **Success:** `kannaka swarm dream`
+reports `{reinforced, speculative, down_ranked}`.
+
+### Task 3.2 — Temporal truth fields + confidence decay (Cap 8)
+**Files:** `src/memory.rs` (new `#[serde(default)]` fields on `HyperMemory`);
+`src/temporal.rs` (pure: `effective_confidence`, `is_current`, `temporal_status`).
+Add `effective_at` / `observed_at` / `expires_at: Option<DateTime<Utc>>`, all
+serde-defaulted for backward compat with existing `.hrm` snapshots. In
+`temporal.rs`, compute a temporal confidence layered on the existing
+`effective_strength` decay: `temporal_status(mem, now) -> {Current, Future,
+Expired, Superseded}` and `effective_confidence(mem, now)`. No I/O.
+**Depends on:** none (extends `HyperMemory`); consumed by 3.1 and 3.3.
+**Tests:** a memory with past `expires_at` is Expired (~zero confidence); a legacy
+memory with no temporal fields behaves exactly as today; future `effective_at`
+yields Future; boundary at `now == expires_at`. **Success:** `kannaka swarm brief`
+labels each fact's temporal status and excludes Expired/Future from confidence.
+
+### Task 3.3 — Gap detection engine (Cap 1)
+**Files:** `src/gap.rs` (pure `build_coverage_map`, `detect_gaps`);
+`src/bin/handlers/swarm.rs` (`swarm gaps`).
+Consume (a) local cluster summaries from `observe().clusters`, (b) absorbed peer
+cluster exemplars, (c) per-peer `memory_count`. `build_coverage_map` bins clusters
+into domains (by theme/summary sim, reusing the `sensemaking` content-sim hook),
+coverage = breadth (agents holding it) × depth (size/amplitude) × confidence
+(coherence, discounted by `temporal::effective_confidence`). `detect_gaps` flags
+**weakly-represented**, **blind-spot** (zero agents, adjacent to populated domains
+in xi/phase), or **low-confidence** (incoherent/contradicted — reuse Wave 1
+`detect_contradictions`) domains. Optionally cross-reference the kannaka-prime
+96-class space as the domain prior. Output ranked `CoverageGap`.
+**Depends on:** Wave 1 `sensemaking`, Task 3.2 (`effective_confidence`), exemplar
+exchange + `swarm peers`. **Tests:** a held-out domain removed from all peers is
+flagged BlindSpot; a domain held by 1-of-5 ranks above 5-of-5; a coherent
+well-covered domain isn't flagged; injected contradictions lower domain
+confidence. **Success:** `kannaka swarm gaps [--json]` ranks weakly-represented
+domains; `gap_detection_precision` is computable on a partitioned-corpus swarm.
+
+**Wave 3 dependency order:** 3.2 → 3.1, 3.3 (temporal fields underpin both
+reinforced-dream truth-filtering and stale-domain coverage); 3.1 and 3.3 are
+otherwise independent and parallelizable once 3.2's fields land.
+
+**L6 OODA bridge:** Task 3.3's coverage map is the collective successor to the
+single-agent curiosity loop — it *is* the swarm "developing curiosity." Its
+`gap_detection_precision` is a candidate L6 fitness metric, and the ranked
+`CoverageGap` list is the direct input to Wave 4's autonomous research planning.
+
+*ADR-0035 Phase 4 (autonomous research planning, emergent hive formation,
+self-directed sensemaking loops) is Wave 4.*
 
 ---
 

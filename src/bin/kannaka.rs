@@ -587,12 +587,15 @@ fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool 
                     let sim = item.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                     let strength =
                         item.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+                    // phase is present from v0.6.23 responders; absent -> 0.0 (no
+                    // contradiction signal from older peers, degrades gracefully).
+                    let phase = item.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                     recalls.push(kannaka_memory::sensemaking::PeerRecall {
                         peer_id: pid.clone(),
                         content,
                         similarity: sim,
                         amplitude: 1.0,
-                        phase: 0.0,
+                        phase,
                         confidence: strength.clamp(0.0, 1.0),
                     });
                 }
@@ -605,8 +608,20 @@ fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool 
     }
     let agree = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
     let known = kannaka_memory::sensemaking::merge_recall_votes(&recalls, peer_ids.len(), agree);
+    // Cross-peer contradiction: same claim (content), opposed wave phase. Uses the
+    // phase now carried in the recall response (v0.6.23+ responders).
+    let sim = |a: &str, b: &str| {
+        if a.trim().eq_ignore_ascii_case(b.trim()) { 1.0 } else { 0.0 }
+    };
+    let contradictions = kannaka_memory::sensemaking::detect_contradictions(
+        &recalls,
+        sim,
+        0.8,
+        std::f32::consts::FRAC_PI_2,
+    );
     let peers_scored: Vec<(String, f32)> = peer_ids.iter().map(|p| (p.clone(), 1.0)).collect();
-    let brief = kannaka_memory::sensemaking::compose_brief(topic, known, vec![], peers_scored);
+    let brief =
+        kannaka_memory::sensemaking::compose_brief(topic, known, contradictions, peers_scored);
     if want_json {
         let known_json: Vec<_> = brief
             .known
@@ -617,6 +632,15 @@ fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool 
                 "confidence": c.confidence,
             }))
             .collect();
+        let contra_json: Vec<_> = brief
+            .contradictions
+            .iter()
+            .map(|c| serde_json::json!({
+                "a": c.a,
+                "b": c.b,
+                "phase_gap": c.phase_gap,
+            }))
+            .collect();
         println!("{}", serde_json::json!({
             "topic": brief.topic,
             "confidence": brief.confidence,
@@ -624,7 +648,8 @@ fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool 
             "peers_responded": responded,
             "peers_total": peer_ids.len(),
             "known": known_json,
-            "note": "consensus by exact content match; contradiction detection pending phase-in-response",
+            "contradictions": contra_json,
+            "note": "consensus by exact content match; contradiction uses cross-peer wave phase",
         }));
     } else {
         println!(
@@ -638,6 +663,13 @@ fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool 
         for (i, c) in brief.known.iter().take(10).enumerate() {
             let preview: String = c.content.chars().take(80).collect();
             println!("    {}. [{:.2}] x{} {}", i + 1, c.confidence, c.support, preview);
+        }
+        if !brief.contradictions.is_empty() {
+            println!("  contradictions ({}):", brief.contradictions.len());
+            for c in brief.contradictions.iter().take(5) {
+                let pa: String = c.a.chars().take(50).collect();
+                println!("    ⚡ (gap {:.2}) {}", c.phase_gap, pa);
+            }
         }
     }
     true
@@ -2553,6 +2585,29 @@ fn main() {
                         }
                     }
                     verdicts.sort_by(|a, b| b.0.severity.total_cmp(&a.0.severity));
+                    // Capture before the mutable boost below: all_memories()
+                    // borrows the store, so release it before sys.boost().
+                    let total = all.len();
+                    // Task 2.2 — apply reversible lifecycle actions. Default is
+                    // dry-run; --apply mutates amplitude (down-rank/quarantine/expire
+                    // via boost). All reversible: boost the id back up to restore.
+                    let apply = args.iter().any(|a| a == "--apply");
+                    if apply {
+                        warn_if_readonly("swarm health --apply");
+                        let mut applied = 0usize;
+                        for (v, _c) in &verdicts {
+                            if let Some(factor) = kannaka_memory::immune::amplitude_factor(v.action) {
+                                if let Ok(id) = uuid::Uuid::parse_str(&v.id) {
+                                    if sys.boost(&id, factor as f64).is_ok() {
+                                        applied += 1;
+                                    }
+                                }
+                            }
+                        }
+                        eprintln!(
+                            "immune: applied {applied} reversible action(s); boost the id back up to restore"
+                        );
+                    }
                     if want_json {
                         let arr: Vec<_> = verdicts
                             .iter()
@@ -2568,15 +2623,16 @@ fn main() {
                             .collect();
                         println!("{}", serde_json::json!({
                             "at_risk": verdicts.len(),
-                            "total": all.len(),
-                            "dry_run": true,
+                            "total": total,
+                            "dry_run": !apply,
                             "memories": arr,
                         }));
                     } else {
                         println!(
-                            "Memory immune report — {} at-risk / {} total  (dry-run; no mutation)",
+                            "Memory immune report — {} at-risk / {} total  ({})",
                             verdicts.len(),
-                            all.len()
+                            total,
+                            if apply { "actions applied" } else { "dry-run; no mutation" }
                         );
                         for (v, content) in verdicts.iter().take(25) {
                             let flags: Vec<String> =

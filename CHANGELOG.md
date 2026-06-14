@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.6.23] — 2026-06-14
+
+### Added — immune actions + real cross-peer sensemaking (ADR-0035 Wave 2.2 + Wave 1 finish)
+
+- **`kannaka swarm health --apply`** (Wave 2 Task 2.2) — applies the immune
+  verdicts as *reversible* amplitude actions (down-rank ×0.5, quarantine ×0.1,
+  expire ×0.0 / ghost) via `boost`; default stays dry-run, and a later `boost`
+  restores any memory. Never hard-deletes.
+- **Recall responses now carry wave `phase`** (`swarm serve` responder) so
+  swarm-side sensemaking has the wave-native stance signal across peers.
+- **`kannaka swarm brief --peers`** now does **real cross-peer contradiction
+  detection** (same claim, opposed phase) in addition to consensus voting, using
+  the phase in peer responses.
+
+### Planned
+
+- Wave 3 (cross-agent dreaming, temporal truth, gap detection) broken into tasks
+  3.1–3.3 in the wave execution plan.
+
 ## [0.6.22] — 2026-06-14
 
 ### Added — memory immune system + multi-peer brief (ADR-0035 Wave 1 finish + Wave 2 start)
