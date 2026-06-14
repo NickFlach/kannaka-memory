@@ -39,15 +39,15 @@ pub struct TemporalSpec {
 }
 
 impl TemporalSpec {
-    /// Derive a spec from a memory. Until the temporal fields are persisted on
-    /// `HyperMemory` (Task 3.2b), `observed_at` = `created_at` and the
-    /// effective/expiry bounds are unknown — so the memory reads as `Current`.
+    /// Derive a spec from a memory (Task 3.2b: temporal fields now persisted on
+    /// `HyperMemory`). `observed_at` falls back to `created_at` when unset, so a
+    /// memory with no temporal bounds reads as `Current` exactly as before.
     pub fn from_memory(mem: &HyperMemory) -> Self {
         Self {
             amplitude: mem.amplitude,
-            observed_at: mem.created_at,
-            effective_at: None,
-            expires_at: None,
+            observed_at: mem.observed_at.unwrap_or(mem.created_at),
+            effective_at: mem.effective_at,
+            expires_at: mem.expires_at,
         }
     }
 }

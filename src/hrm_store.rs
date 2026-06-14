@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
@@ -178,6 +179,9 @@ impl HrmStore {
                     retrieval_count: 0,
                     modality: meta.modality,
                     tier: meta.tier,
+                    effective_at: meta.effective_at,
+                    observed_at: meta.observed_at,
+                    expires_at: meta.expires_at,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -209,6 +213,9 @@ impl HrmStore {
                     retrieval_count: 0,
                     modality: meta.modality,
                     tier: meta.tier,
+                    effective_at: meta.effective_at,
+                    observed_at: meta.observed_at,
+                    expires_at: meta.expires_at,
                 };
                 self.memory_cache.insert(meta.id, memory);
             }
@@ -654,6 +661,58 @@ impl HrmStore {
         }
         if let Some(mem) = self.memory_cache.get_mut(id) {
             mem.tier = tier;
+            found = true;
+        }
+        if found {
+            self.mark_dirty();
+        }
+        found
+    }
+
+    /// Set the temporal-truth bounds of a memory (Wave 3 Task 3.2b). Tags the
+    /// flat medium, both chiral hemispheres, and the cache — the canonical
+    /// `WavefrontMeta` is what the next save serializes, so this is the
+    /// persistence write path (mirrors [`set_tier`]). Each `Some` overwrites;
+    /// `None` leaves the existing value untouched so callers can set one bound
+    /// without clearing the others. Returns false if the id is unknown.
+    pub fn set_temporal(
+        &mut self,
+        id: &Uuid,
+        effective_at: Option<DateTime<Utc>>,
+        observed_at: Option<DateTime<Utc>>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> bool {
+        fn apply(
+            meta: &mut crate::medium::types::WavefrontMeta,
+            eff: Option<DateTime<Utc>>,
+            obs: Option<DateTime<Utc>>,
+            exp: Option<DateTime<Utc>>,
+        ) {
+            if eff.is_some() { meta.effective_at = eff; }
+            if obs.is_some() { meta.observed_at = obs; }
+            if exp.is_some() { meta.expires_at = exp; }
+        }
+
+        let mut found = false;
+        if let Some(&idx) = self.medium.store.id_to_index.get(id) {
+            apply(&mut self.medium.store.metadata[idx], effective_at, observed_at, expires_at);
+            found = true;
+        }
+        if let Some(ref mut chiral) = self.chiral {
+            if let Some(&idx) = chiral.right.id_to_index.get(id) {
+                apply(&mut chiral.right.metadata[idx], effective_at, observed_at, expires_at);
+                found = true;
+            }
+            if let Some(left_id) = chiral.right_to_left.get(id).copied() {
+                if let Some(&idx) = chiral.left.id_to_index.get(&left_id) {
+                    apply(&mut chiral.left.metadata[idx], effective_at, observed_at, expires_at);
+                }
+            }
+        }
+        if let Some(mem) = self.memory_cache.get_mut(id) {
+            if effective_at.is_some() { mem.effective_at = effective_at; }
+            if observed_at.is_some() { mem.observed_at = observed_at; }
+            if expires_at.is_some() { mem.expires_at = expires_at; }
             found = true;
         }
         if found {

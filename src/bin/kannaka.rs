@@ -942,7 +942,7 @@ fn main() {
 
     match args[command_start].as_str() {
         "remember" => {
-            const REMEMBER_USAGE: &str = "Usage: kannaka remember <text> [--importance N] [--category CAT] [--modality MOD] [--tags T1,T2] [--substrate] [--nats-url URL]";
+            const REMEMBER_USAGE: &str = "Usage: kannaka remember <text> [--importance N] [--category CAT] [--modality MOD] [--tags T1,T2] [--effective ISO8601] [--observed ISO8601] [--expires ISO8601] [--substrate] [--nats-url URL]";
             if args.len() < command_start + 2 {
                 eprintln!("{REMEMBER_USAGE}");
                 process::exit(1);
@@ -956,12 +956,39 @@ fn main() {
             // a successful remember. Off by default; opt-in until trust /
             // rate-limit (Phase 4) lands.
             let mut substrate_publish = false;
+            // Wave 3 Task 3.2b — optional temporal-truth bounds (ISO 8601 / RFC 3339).
+            let mut effective_at: Option<chrono::DateTime<chrono::Utc>> = None;
+            let mut observed_at: Option<chrono::DateTime<chrono::Utc>> = None;
+            let mut expires_at: Option<chrono::DateTime<chrono::Utc>> = None;
+            // Parse an RFC3339 timestamp flag or exit(2) with a clear message.
+            let parse_ts = |args: &[String], i: usize, flag: &str| -> chrono::DateTime<chrono::Utc> {
+                let raw = flag_value(args, i, flag, REMEMBER_USAGE);
+                match chrono::DateTime::parse_from_rfc3339(raw) {
+                    Ok(dt) => dt.with_timezone(&chrono::Utc),
+                    Err(e) => {
+                        eprintln!("remember: {flag} expects an RFC3339 timestamp (e.g. 2026-07-01T00:00:00Z): {e}");
+                        process::exit(2);
+                    }
+                }
+            };
             let mut text_parts = Vec::new();
             let mut i = command_start + 1;
             while i < args.len() {
                 match args[i].as_str() {
                     "--importance" => {
                         importance = Some(parse_flag_value(&args, i, "--importance", REMEMBER_USAGE));
+                        i += 2;
+                    }
+                    "--effective" => {
+                        effective_at = Some(parse_ts(&args, i, "--effective"));
+                        i += 2;
+                    }
+                    "--observed" => {
+                        observed_at = Some(parse_ts(&args, i, "--observed"));
+                        i += 2;
+                    }
+                    "--expires" => {
+                        expires_at = Some(parse_ts(&args, i, "--expires"));
                         i += 2;
                     }
                     "--category" => {
@@ -1043,6 +1070,10 @@ fn main() {
                         .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
                     {
                         hrm.set_modality(&id, modality);
+                        // Persist temporal-truth bounds if any were supplied.
+                        if effective_at.is_some() || observed_at.is_some() || expires_at.is_some() {
+                            hrm.set_temporal(&id, effective_at, observed_at, expires_at);
+                        }
                     }
                     println!("{id}");
 
@@ -2488,8 +2519,22 @@ fn main() {
                     if !handled {
                     match sys.recall(&topic, 8) {
                         Ok(results) => {
+                            // Wave 3 Task 3.2b — discount temporal validity: a
+                            // fact past its `expires_at` (Expired) or before its
+                            // `effective_at` (Future) is not true *now*, so it is
+                            // excluded from the brief's consensus + confidence.
+                            // Memories with no temporal bounds read as Current
+                            // (unchanged behavior).
+                            let now = chrono::Utc::now();
                             let known: Vec<kannaka_memory::sensemaking::ConsensusItem> = results
                                 .iter()
+                                .filter(|r| match sys.engine.store.get(&r.id) {
+                                    Ok(Some(m)) => kannaka_memory::temporal::is_current(
+                                        &kannaka_memory::temporal::TemporalSpec::from_memory(&m),
+                                        now,
+                                    ),
+                                    _ => true,
+                                })
                                 .map(|r| kannaka_memory::sensemaking::ConsensusItem {
                                     content: r.content.clone(),
                                     support: 1,

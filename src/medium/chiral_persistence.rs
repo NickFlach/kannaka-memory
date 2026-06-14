@@ -47,6 +47,9 @@ impl From<WavefrontMetaLegacy> for WavefrontMeta {
             category: None,
             modality: Modality::Unknown,
             tier: crate::medium::types::Tier::default(),
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
         }
     }
 }
@@ -81,6 +84,49 @@ impl From<WavefrontMetaPreTier> for WavefrontMeta {
             category: None,
             modality: p.modality,
             tier: crate::medium::types::Tier::default(),
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
+        }
+    }
+}
+
+/// Pre-temporal WavefrontMeta (after ADR-0031 tier, before Wave 3 Task 3.2b
+/// temporal-truth fields). Matches the on-disk layout of every `.hrm` written
+/// between the tier addition and the temporal addition — the newest legacy
+/// shape. Used as the first fallback step in the
+/// new → pre-temporal → pre-tier → legacy deserialize chain.
+#[derive(Deserialize)]
+pub(crate) struct WavefrontMetaPreTemporal {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub hallucinated: bool,
+    pub is_self_referential: bool,
+    #[serde(default)]
+    pub modality: Modality,
+    #[serde(default)]
+    pub tier: crate::medium::types::Tier,
+}
+
+impl From<WavefrontMetaPreTemporal> for WavefrontMeta {
+    fn from(p: WavefrontMetaPreTemporal) -> Self {
+        WavefrontMeta {
+            id: p.id,
+            content: p.content,
+            tags: p.tags,
+            created_at: p.created_at,
+            hallucinated: p.hallucinated,
+            is_self_referential: p.is_self_referential,
+            sga_class: None,
+            fano_group: None,
+            category: None,
+            modality: p.modality,
+            tier: p.tier,
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
         }
     }
 }
@@ -426,15 +472,21 @@ impl ChiralMedium {
         let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&meta_bytes) {
             Ok(m) => m,
             Err(_) => {
-                // ADR-0031: pre-tier format (has modality, lacks tier). Try that
-                // before falling all the way back to the pre-NCS legacy layout.
-                match bincode::deserialize::<Vec<WavefrontMetaPreTier>>(&meta_bytes) {
+                // Task 3.2b: pre-temporal format (has tier, lacks the temporal
+                // fields). Newest legacy shape — try it before older layouts.
+                match bincode::deserialize::<Vec<WavefrontMetaPreTemporal>>(&meta_bytes) {
                     Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
                     Err(_) => {
-                        // Pre-NCS format: no modality and no tier — add defaults.
-                        let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
-                            .map_err(|e| MediumError::Serialization(e))?;
-                        legacy.into_iter().map(|l| l.into()).collect()
+                        // ADR-0031: pre-tier format (has modality, lacks tier).
+                        match bincode::deserialize::<Vec<WavefrontMetaPreTier>>(&meta_bytes) {
+                            Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
+                            Err(_) => {
+                                // Pre-NCS format: no modality and no tier — defaults.
+                                let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
+                                    .map_err(|e| MediumError::Serialization(e))?;
+                                legacy.into_iter().map(|l| l.into()).collect()
+                            }
+                        }
                     }
                 }
             }
@@ -522,6 +574,92 @@ mod tests {
         let bytes = bincode::serialize(&vec![m]).unwrap();
         let back: Vec<WavefrontMeta> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back[0].tier, Tier::Pinned);
+    }
+
+    // Wave 3 Task 3.2b: locks the bincode back-compat invariant for the temporal
+    // fields. Pre-temporal metadata bytes (modality + tier, NO temporal fields —
+    // the layout of every .hrm written before this change) MUST fail the new
+    // struct deserialize and succeed via the WavefrontMetaPreTemporal fallback
+    // with the temporal bounds defaulting to None. A regression here would
+    // silently corrupt existing HRM files.
+    #[test]
+    fn pretemporal_metadata_decodes_via_fallback_with_none_bounds() {
+        use chrono::Utc;
+        use serde::Serialize;
+        use uuid::Uuid;
+
+        // Exact on-disk layout of pre-temporal WavefrontMeta: tier is the last
+        // field (sga/fano/category are #[serde(skip)] and never hit the wire).
+        #[derive(Serialize)]
+        struct OldMeta {
+            id: Uuid,
+            content: String,
+            tags: Vec<String>,
+            created_at: chrono::DateTime<Utc>,
+            hallucinated: bool,
+            is_self_referential: bool,
+            modality: Modality,
+            tier: Tier,
+        }
+        let old = vec![OldMeta {
+            id: Uuid::nil(),
+            content: "pre-temporal".to_string(),
+            tags: vec![],
+            created_at: Utc::now(),
+            hallucinated: false,
+            is_self_referential: false,
+            modality: Modality::Audio,
+            tier: Tier::Pinned,
+        }];
+        let bytes = bincode::serialize(&old).unwrap();
+
+        // New struct (with the 3 temporal fields appended) must NOT decode old
+        // bytes — this is what makes the loader fall through to the pre-temporal
+        // path instead of mis-reading trailing bytes.
+        assert!(bincode::deserialize::<Vec<WavefrontMeta>>(&bytes).is_err());
+
+        // Pre-temporal fallback decodes cleanly, preserves tier+modality, and
+        // defaults all temporal bounds to None.
+        let pre: Vec<WavefrontMetaPreTemporal> = bincode::deserialize(&bytes).unwrap();
+        let conv: Vec<WavefrontMeta> = pre.into_iter().map(Into::into).collect();
+        assert_eq!(conv.len(), 1);
+        assert_eq!(conv[0].modality, Modality::Audio);
+        assert_eq!(conv[0].tier, Tier::Pinned);
+        assert!(conv[0].effective_at.is_none());
+        assert!(conv[0].observed_at.is_none());
+        assert!(conv[0].expires_at.is_none());
+    }
+
+    // Wave 3 Task 3.2b acceptance: a memory created with temporal bounds must
+    // survive a full ChiralMedium save → reload round-trip on disk.
+    #[test]
+    fn temporal_fields_survive_save_reload() {
+        use chrono::{Duration, Utc};
+
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        let id = cm.store("temporal roundtrip subject", 0.9, &pipeline).unwrap();
+
+        let effective = Utc::now() - Duration::days(1);
+        let expires = Utc::now() + Duration::days(30);
+        {
+            let idx = *cm.right.id_to_index.get(&id).unwrap();
+            cm.right.metadata[idx].effective_at = Some(effective);
+            cm.right.metadata[idx].expires_at = Some(expires);
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_chiral_temporal_roundtrip.hrm");
+        cm.save(&path).unwrap();
+        let loaded = ChiralMedium::load(&path).unwrap();
+
+        let idx = *loaded.right.id_to_index.get(&id).unwrap();
+        let meta = &loaded.right.metadata[idx];
+        assert_eq!(meta.effective_at, Some(effective), "effective_at must round-trip");
+        assert_eq!(meta.expires_at, Some(expires), "expires_at must round-trip");
+        assert!(meta.observed_at.is_none(), "unset observed_at stays None");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     fn test_pipeline() -> EncodingPipeline {

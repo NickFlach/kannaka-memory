@@ -113,6 +113,19 @@ pub struct HyperMemory {
     /// reaching into the medium. Not the persistence source of truth.
     #[serde(default)]
     pub tier: crate::medium::types::Tier,
+    /// Wave 3 Task 3.2b — temporal-truth bounds, mirrored from the canonical
+    /// `WavefrontMeta` when the cache is built (same pattern as `tier`). Not the
+    /// persistence source of truth. Consumed by [`crate::temporal::TemporalSpec`]
+    /// to discount Expired/Future facts in sensemaking.
+    /// When the fact became true (None = always / unknown).
+    #[serde(default)]
+    pub effective_at: Option<DateTime<Utc>>,
+    /// When this agent observed the fact (None = fall back to `created_at`).
+    #[serde(default)]
+    pub observed_at: Option<DateTime<Utc>>,
+    /// When the fact stops being true (None = no known expiry).
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl HyperMemory {
@@ -143,6 +156,9 @@ impl HyperMemory {
             retrieval_count: 0,
             modality: Modality::default(),
             tier: crate::medium::types::Tier::default(),
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
         }
     }
 

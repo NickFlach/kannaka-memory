@@ -350,12 +350,27 @@ pub struct WavefrontMeta {
     /// Sensory modality of this wavefront (NCS Phase 1.1)
     #[serde(default)]
     pub modality: Modality,
-    /// Retention tier (ADR-0031). MUST stay the last serialized field — the
-    /// bincode back-compat fallback in chiral_persistence/persistence relies on
-    /// `tier` being appended after `modality`, so older files (which lack these
-    /// trailing bytes) fail the new-struct deserialize and hit the legacy path.
+    /// Retention tier (ADR-0031). Appended after `modality`; the bincode
+    /// back-compat fallback in chiral_persistence/persistence relies on this
+    /// trailing-field ordering, so older files (which lack these bytes) fail
+    /// the new-struct deserialize and hit the pre-tier/legacy path.
     #[serde(default)]
     pub tier: Tier,
+    /// Wave 3 Task 3.2b — temporal-truth bounds (ADR-0035 Cap 8). These MUST
+    /// stay the LAST serialized fields, appended after `tier`: the bincode
+    /// fallback chain relies on `.hrm` files written before this change lacking
+    /// these trailing bytes, so they fail the new-struct deserialize and drop
+    /// to `WavefrontMetaPreTemporal`. Order (effective/observed/expires) must
+    /// match the fallback struct and stay stable.
+    /// When the fact became true (None = always / unknown).
+    #[serde(default)]
+    pub effective_at: Option<DateTime<Utc>>,
+    /// When this agent observed/learned the fact (None = fall back to created_at).
+    #[serde(default)]
+    pub observed_at: Option<DateTime<Utc>>,
+    /// When the fact is known to stop being true (None = no known expiry).
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl WavefrontMeta {
@@ -372,6 +387,9 @@ impl WavefrontMeta {
             category: None,
             modality: Modality::Unknown,
             tier: Tier::default(),
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
         }
     }
 
