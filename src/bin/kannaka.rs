@@ -2607,9 +2607,21 @@ fn main() {
                                     &m.vector,
                                     &other.vector,
                                 );
+                                // #359: deterministic tie-break so an equal-amplitude
+                                // duplicate cluster keeps exactly one copy. Strict `>`
+                                // on amplitude alone left every copy seeing its sibling
+                                // as "not higher" → none flagged. A sibling "beats" m if
+                                // it has higher amplitude, or equal amplitude and a
+                                // greater id (only the max-id copy has no beater → it is
+                                // the unique keeper). Accumulate across all maximally
+                                // similar siblings, not just the first one scanned.
+                                let beats = other.amplitude > m.amplitude
+                                    || (other.amplitude == m.amplitude && other.id > m.id);
                                 if s > max_sim {
                                     max_sim = s;
-                                    sib_hi = other.amplitude > m.amplitude;
+                                    sib_hi = beats;
+                                } else if s == max_sim && beats {
+                                    sib_hi = true;
                                 }
                             }
                         }
