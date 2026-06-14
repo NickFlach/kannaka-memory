@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.6.26] — 2026-06-14
+
+### Added — cross-agent dreaming core (Wave 3 Task 3.1) + research planner (Wave 4 Task 4.1)
+
+- `sensemaking::reinforce_hypotheses` (2 tests): scores dreamed hypotheses against
+  peer cluster summaries — Reinforced (resonates with ≥k distinct peers, content +
+  phase) keeps amplitude, Speculative is down-ranked. The pure core of cross-agent
+  dreaming; the dream-seeding NATS wiring is the next increment.
+- New `research_planner` module (4 tests) + **`kannaka swarm plan [--json]`**: turns
+  the Wave 3.3 gap map into ranked research tasks (collective generalization of the
+  single-agent curiosity loop). Local-first; peer assignment + work-queue enqueue
+  is next.
+
+### Note
+
+- Wave 3 Task 3.2b (persist temporal fields) is deferred to its own careful pass —
+  it's a bincode `.hrm` format migration needing a versioned-fallback struct, not a
+  simple field add. See the wave plan for the exact steps.
+
 ## [0.6.25] — 2026-06-14
 
 ### Added — knowledge gap detection (ADR-0035 Wave 3 Task 3.3)

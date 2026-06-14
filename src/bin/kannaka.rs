@@ -2454,7 +2454,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan>");
                 process::exit(1);
             }
 
@@ -2702,6 +2702,67 @@ fn main() {
                             println!("  [{:.2}] {:<18} {}", g.coverage, format!("{:?}", g.kind), dom);
                         }
                         println!("  multi-peer coverage (swarm exemplars) is the next increment");
+                    }
+                }
+                // ADR-0035 Wave 4 Task 4.1 — autonomous research planner. Turns the
+                // local gap map into ranked research tasks (the collective
+                // generalization of the single-agent curiosity loop). Local-first;
+                // peer assignment + enqueue onto KANNAKA.work.research is the next step.
+                "plan" => {
+                    let want_json = args.iter().any(|a| a == "--json");
+                    let report = sys.observe();
+                    let clusters: Vec<kannaka_memory::gap::DomainCluster> = report
+                        .clusters
+                        .clusters
+                        .iter()
+                        .filter(|c| !c.theme.trim().is_empty())
+                        .map(|c| kannaka_memory::gap::DomainCluster {
+                            agent_id: agent_id.clone(),
+                            theme: c.theme.clone(),
+                            size: c.size.max(1),
+                            coherence: c.coherence,
+                            mean_amplitude: c.mean_amplitude,
+                        })
+                        .collect();
+                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
+                        a.trim().eq_ignore_ascii_case(b.trim())
+                    });
+                    let gaps = kannaka_memory::gap::detect_gaps(&map, 0.4);
+                    let tasks = kannaka_memory::research_planner::plan_research(&gaps, 0);
+                    if want_json {
+                        let arr: Vec<_> = tasks
+                            .iter()
+                            .map(|t| serde_json::json!({
+                                "domain": t.domain,
+                                "theme_query": t.theme_query,
+                                "kind": format!("{:?}", t.kind),
+                                "priority": t.priority,
+                                "peers_holding": t.peers_holding,
+                                "rationale": t.rationale,
+                            }))
+                            .collect();
+                        println!("{}", serde_json::json!({
+                            "scope": "local",
+                            "tasks": arr,
+                            "note": "local-first; peer assignment + enqueue onto KANNAKA.work.research is next",
+                        }));
+                    } else {
+                        println!(
+                            "Research plan — {} task(s) from {} gap(s)  (local-first)",
+                            tasks.len(),
+                            gaps.len()
+                        );
+                        for (i, t) in tasks.iter().take(15).enumerate() {
+                            let q: String = t.theme_query.chars().take(56).collect();
+                            println!(
+                                "  {}. [p{:.2}] {:<18} {}",
+                                i + 1,
+                                t.priority,
+                                format!("{:?}", t.kind),
+                                q
+                            );
+                        }
+                        println!("  next: assign to best-fit peers + enqueue research workers");
                     }
                 }
                 "join" => {

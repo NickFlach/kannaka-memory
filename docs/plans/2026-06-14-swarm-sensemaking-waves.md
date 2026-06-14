@@ -204,9 +204,18 @@ labels each fact's temporal status and excludes Expired/Future from confidence.
 > **Status (2026-06-14):** the pure reasoning core shipped as `src/temporal.rs`
 > (5 tests) operating on a `TemporalSpec` (`from_memory` derives observed=created_at,
 > bounds unknown → everything reads Current = no behavior change). **Task 3.2b**
-> (remaining) persists `effective_at`/`observed_at`/`expires_at` on `HyperMemory`
-> — deliberately split out because it touches ~20 struct-literal sites; once
-> landed, `TemporalSpec::from_memory` reads them and brief/gap filtering activates.
+> (remaining) persists `effective_at`/`observed_at`/`expires_at` so brief/gap
+> filtering activates. **DEFERRED as its own careful pass — it is a binary-format
+> migration, not just field additions.** Findings: (1) `HyperMemory` adds the 3
+> fields + updates ~20 struct-literal sites (compiler-guided); (2) crucially, the
+> `.hrm` format serializes `WavefrontMeta` (`src/medium/types.rs`) with **bincode**
+> (`src/medium/persistence.rs:69`), a *positional* format where `#[serde(default)]`
+> does NOT make added fields backward-compatible — adding temporal to `WavefrontMeta`
+> breaks loading every existing `.hrm` unless a **versioned-fallback struct** is added
+> to the deserialize chain (the codebase already does this: `new → pre-tier → legacy`
+> in `chiral_persistence.rs`); (3) `rebuild_cache` (`hrm_store.rs`) must copy
+> `meta.temporal → memory` and the store path must populate `meta` from the memory.
+> Execute with a `.hrm` backup first + a save→reload round-trip test before shipping.
 
 ### Task 3.3 — Gap detection engine (Cap 1)
 **Files:** `src/gap.rs` (pure `build_coverage_map`, `detect_gaps`);

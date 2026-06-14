@@ -45,6 +45,7 @@ pub mod sensemaking;
 pub mod immune;
 pub mod temporal;
 pub mod gap;
+pub mod research_planner;
 pub mod paradox;
 pub mod queen;
 pub mod invariant;

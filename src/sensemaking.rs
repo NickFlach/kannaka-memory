@@ -198,6 +198,83 @@ pub fn compose_brief(
     }
 }
 
+/// A candidate hypothesis produced by a dream cycle (a hallucinated/synthesized
+/// memory), to be cross-checked against the swarm (Cap 6 / Wave 3 Task 3.1).
+#[derive(Clone, Debug)]
+pub struct Hypothesis {
+    pub content: String,
+    pub phase: f32,
+}
+
+/// A peer's cluster summary, broadcast via exemplar exchange.
+#[derive(Clone, Debug)]
+pub struct PeerCluster {
+    pub agent_id: String,
+    pub summary: String,
+    pub phase: f32,
+}
+
+/// Whether a dreamed hypothesis is corroborated across the swarm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HypothesisStatus {
+    /// Resonates with ≥ k distinct peers → keep full amplitude.
+    Reinforced,
+    /// Only local support → down-rank (Wave 2.2), don't delete.
+    Speculative,
+}
+
+/// The verdict on one hypothesis.
+#[derive(Clone, Debug)]
+pub struct HypothesisVerdict {
+    pub content: String,
+    pub status: HypothesisStatus,
+    pub supporting_peers: usize,
+}
+
+/// Cross-agent dreaming (Cap 6): a hypothesis is **Reinforced** when it resonates
+/// — content-similar (`sim >= sim_threshold`) AND phase-coherent (|Δφ| <=
+/// `phase_tol`) — with at least `k_peers` *distinct* peers' cluster summaries;
+/// otherwise **Speculative**. Empty peer set → everything Speculative (degrades to
+/// today's local-only dream). Pure: the consolidation/NATS layer feeds it absorbed
+/// peer exemplars and applies the down-rank to Speculative results.
+pub fn reinforce_hypotheses(
+    hypotheses: &[Hypothesis],
+    peer_clusters: &[PeerCluster],
+    sim: impl Fn(&str, &str) -> f32,
+    sim_threshold: f32,
+    phase_tol: f32,
+    k_peers: usize,
+) -> Vec<HypothesisVerdict> {
+    let two_pi = 2.0 * std::f32::consts::PI;
+    hypotheses
+        .iter()
+        .map(|h| {
+            let mut peers: Vec<&str> = peer_clusters
+                .iter()
+                .filter(|c| {
+                    let raw = (h.phase - c.phase).abs();
+                    let dphi = raw.min(two_pi - raw);
+                    dphi <= phase_tol && sim(&h.content, &c.summary) >= sim_threshold
+                })
+                .map(|c| c.agent_id.as_str())
+                .collect();
+            peers.sort_unstable();
+            peers.dedup();
+            let supporting_peers = peers.len();
+            let status = if supporting_peers >= k_peers.max(1) {
+                HypothesisStatus::Reinforced
+            } else {
+                HypothesisStatus::Speculative
+            };
+            HypothesisVerdict {
+                content: h.content.clone(),
+                status,
+                supporting_peers,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +370,33 @@ mod tests {
             vec![("a".into(), 0.9)],
         );
         assert!(clean.confidence > conflicted.confidence);
+    }
+
+    #[test]
+    fn hypothesis_reinforced_by_multiple_peers_else_speculative() {
+        let hyps = vec![
+            Hypothesis { content: "rates rise".into(), phase: 0.0 },
+            Hypothesis { content: "local fancy".into(), phase: 0.0 },
+        ];
+        let peers = vec![
+            PeerCluster { agent_id: "a".into(), summary: "rates rise".into(), phase: 0.05 },
+            PeerCluster { agent_id: "b".into(), summary: "rates rise".into(), phase: 0.1 },
+            PeerCluster { agent_id: "c".into(), summary: "rates rise".into(), phase: 3.14 }, // anti-phase, excluded
+        ];
+        let sim = |a: &str, b: &str| if a == b { 1.0 } else { 0.0 };
+        let v = reinforce_hypotheses(&hyps, &peers, sim, 0.8, std::f32::consts::FRAC_PI_2, 2);
+        // "rates rise" supported by a,b (c is anti-phase) -> Reinforced.
+        assert_eq!(v[0].status, HypothesisStatus::Reinforced);
+        assert_eq!(v[0].supporting_peers, 2);
+        // "local fancy" has no peer support -> Speculative.
+        assert_eq!(v[1].status, HypothesisStatus::Speculative);
+        assert_eq!(v[1].supporting_peers, 0);
+    }
+
+    #[test]
+    fn empty_peers_makes_everything_speculative() {
+        let hyps = vec![Hypothesis { content: "x".into(), phase: 0.0 }];
+        let v = reinforce_hypotheses(&hyps, &[], |_, _| 1.0, 0.8, 1.0, 1);
+        assert_eq!(v[0].status, HypothesisStatus::Speculative);
     }
 }
