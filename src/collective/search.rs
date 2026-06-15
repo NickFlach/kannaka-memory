@@ -166,6 +166,7 @@ pub fn collective_search(
     store: &GlyphStore,
     query_vector: &[f64],
     request: &SearchRequest,
+    own_vectors: &std::collections::HashMap<String, Vec<f64>>,
 ) -> Vec<SearchResult> {
     let query_hash = hash_query(query_vector);
     let mut results = Vec::new();
@@ -185,16 +186,18 @@ pub fn collective_search(
             }
         }
 
-        // For own glyphs (have openings), compute similarity directly
-        // For remote glyphs, check if a similarity proof is already attached
-        let similarity = if let Some(_openings) = &stored.openings {
-            // We own this glyph — we can compute similarity locally
-            // (in production, this would use the actual stored vector)
-            // For now, use the committed amplitude as a proxy signal
-            check_existing_similarity_proof(stored, query_hash)
-        } else {
-            // Remote glyph — check if we have a verified similarity proof
-            check_existing_similarity_proof(stored, query_hash)
+        // #369: for a glyph we own, compute the REAL cosine similarity from the
+        // owner-supplied raw vector (the sealed glyph itself does not carry the
+        // vector — `own_vector` is provided separately, exactly as
+        // `respond_to_proof_request` takes it). Previously the own-glyph branch
+        // also went through `check_existing_similarity_proof`, which only matches
+        // a query whose hash equals a previously-attached proof's — so an
+        // agent's own glyphs were unreachable for any novel query. Remote glyphs
+        // (and own glyphs without a supplied vector) still fall back to the
+        // verified-proof path.
+        let similarity = match own_vectors.get(hash) {
+            Some(v) => Some(cosine_similarity(v, query_vector)),
+            None => check_existing_similarity_proof(stored, query_hash),
         };
 
         let similarity = match similarity {
@@ -388,7 +391,7 @@ mod tests {
             max_results: None,
         };
 
-        let results = collective_search(&store, &query, &request);
+        let results = collective_search(&store, &query, &request, &std::collections::HashMap::new());
         assert_eq!(results.len(), 3);
         // All should have similarity 0.85
         for r in &results {
@@ -409,7 +412,7 @@ mod tests {
             max_results: None,
         };
 
-        let results = collective_search(&store, &query, &request);
+        let results = collective_search(&store, &query, &request, &std::collections::HashMap::new());
         assert_eq!(results.len(), 0);
     }
 
@@ -426,7 +429,7 @@ mod tests {
             max_results: None,
         };
 
-        let results = collective_search(&store, &query, &request);
+        let results = collective_search(&store, &query, &request, &std::collections::HashMap::new());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].agent_id, "alice");
     }
@@ -444,8 +447,42 @@ mod tests {
             max_results: Some(2),
         };
 
-        let results = collective_search(&store, &query, &request);
+        let results = collective_search(&store, &query, &request, &std::collections::HashMap::new());
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_collective_search_matches_own_glyph_on_novel_query() {
+        // #369 regression: a glyph the searcher OWNS must be matchable for a
+        // novel query (one with no pre-attached proof) when its raw vector is
+        // supplied — previously the own-glyph branch only matched a query whose
+        // hash equalled an existing proof's, so own glyphs were unreachable.
+        let mut store = GlyphStore::new();
+        let mem = test_memory("my own private note"); // vector = [0.1; 100]
+        let result = seal_with_commitments(&mem, 0, "self");
+        let hash = result.glyph.glyph_hash.clone();
+        store.insert(result);
+
+        // A novel query (never proven) that is identical to the owned vector.
+        let query = vec![0.1; 100];
+        let request = SearchRequest {
+            query_hash: hash_query(&query),
+            min_similarity: 0.5,
+            requester: "self".to_string(),
+            target_agents: None,
+            max_results: None,
+        };
+
+        // Without the owner's vector: no proof exists → no match (the old bug).
+        let none = collective_search(&store, &query, &request, &std::collections::HashMap::new());
+        assert_eq!(none.len(), 0, "no proof + no vector → unmatched (baseline)");
+
+        // With the owner's vector supplied: real cosine similarity → match.
+        let mut own = std::collections::HashMap::new();
+        own.insert(hash.clone(), vec![0.1; 100]);
+        let found = collective_search(&store, &query, &request, &own);
+        assert_eq!(found.len(), 1, "own glyph must match a novel query via its vector");
+        assert!((found[0].similarity - 1.0).abs() < 1e-9, "identical vectors → similarity 1.0");
     }
 
     #[test]
