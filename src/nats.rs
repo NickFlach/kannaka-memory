@@ -1127,7 +1127,14 @@ impl SwarmTransport {
                 break; // typically "no message found" — end of matches
             }
             let Some(msg) = resp.get("message") else { break };
-            let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) else { break };
+            // #371: a single stored message without a usable seq must NOT
+            // truncate the whole forward walk. Advance the cursor past it and
+            // keep going — the strictly-increasing `next_seq` + finite stream
+            // guarantees termination at the next no-match.
+            let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) else {
+                next_seq += 1;
+                continue;
+            };
             // Bookkeeping first so non-decodable payloads don't stall the
             // iteration (older test data in front of real manifests).
             next_seq = seq + 1;
