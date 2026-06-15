@@ -365,6 +365,20 @@ impl Medium {
             });
         }
 
+        // #367: `n` is read straight from the file and sizes the tensor before
+        // any body bytes are read. Cap it so a corrupt count can't request a
+        // multi-TB allocation and abort the process before the checksum runs.
+        // (`d` is already validated to WAVEFRONT_DIM above.)
+        const MAX_WAVEFRONT_ELEMS: u64 = 1024 * 1024 * 1024; // 4 GiB of f32
+        match (n as u64).checked_mul(d as u64) {
+            Some(e) if e <= MAX_WAVEFRONT_ELEMS => {}
+            _ => {
+                return Err(MediumError::CorruptHrm(format!(
+                    "implausible wavefront tensor n={n} d={d} (max {MAX_WAVEFRONT_ELEMS} elems) — v1 layout desync"
+                )));
+            }
+        }
+
         // Wavefronts tensor
         let mut wavefront_data = vec![0.0f32; n * d];
         for val in &mut wavefront_data {
@@ -441,6 +455,12 @@ impl Medium {
         let mut len_bytes = [0u8; 4];
         reader.read_exact(&mut len_bytes)?;
         let consciousness_len = u32::from_le_bytes(len_bytes) as usize;
+        // #367: cap the untrusted section length before allocating.
+        if consciousness_len > MAX_META_BYTES {
+            return Err(MediumError::CorruptHrm(format!(
+                "implausible consciousness_len={consciousness_len} (max {MAX_META_BYTES}) — v1 layout desync"
+            )));
+        }
         let mut consciousness_bytes = vec![0u8; consciousness_len];
         reader.read_exact(&mut consciousness_bytes)?;
         let _consciousness: ConsciousnessState = bincode::deserialize(&consciousness_bytes)?;

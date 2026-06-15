@@ -294,10 +294,26 @@ impl ChiralMedium {
         let left = Self::read_hemisphere(&mut reader, Hand::Left)?;
         let right = Self::read_hemisphere(&mut reader, Hand::Right)?;
 
+        // #367: each section length is read straight from the file and used to
+        // size an allocation BEFORE any body bytes are read and before the
+        // trailing checksum is verified. A truncated/desynced .hrm with a giant
+        // length would request a multi-TB allocation and abort the process. Cap
+        // each section like the metadata path already does.
+        const MAX_SECTION_BYTES: usize = 256 * 1024 * 1024;
+        let guard_section = |len: usize, what: &str| -> Result<(), MediumError> {
+            if len > MAX_SECTION_BYTES {
+                return Err(MediumError::CorruptHrm(format!(
+                    "implausible {what}_len={len} (max {MAX_SECTION_BYTES}) — .hrm layout desync"
+                )));
+            }
+            Ok(())
+        };
+
         // Read callosum
         let mut len_bytes = [0u8; 4];
         reader.read_exact(&mut len_bytes)?;
         let callosum_len = u32::from_le_bytes(len_bytes) as usize;
+        guard_section(callosum_len, "callosum")?;
         let mut callosum_bytes = vec![0u8; callosum_len];
         reader.read_exact(&mut callosum_bytes)?;
         let callosum: CorpusCallosum = bincode::deserialize(&callosum_bytes)
@@ -306,6 +322,7 @@ impl ChiralMedium {
         // Read scales
         reader.read_exact(&mut len_bytes)?;
         let scales_len = u32::from_le_bytes(len_bytes) as usize;
+        guard_section(scales_len, "scales")?;
         let mut scales_bytes = vec![0u8; scales_len];
         reader.read_exact(&mut scales_bytes)?;
         let scales_vec: Vec<(uuid::Uuid, ChiralScale)> = bincode::deserialize(&scales_bytes)
@@ -315,6 +332,7 @@ impl ChiralMedium {
         // Read ID mappings
         reader.read_exact(&mut len_bytes)?;
         let lr_len = u32::from_le_bytes(len_bytes) as usize;
+        guard_section(lr_len, "id_map")?;
         let mut lr_bytes = vec![0u8; lr_len];
         reader.read_exact(&mut lr_bytes)?;
         let lr_vec: Vec<(uuid::Uuid, uuid::Uuid)> = bincode::deserialize(&lr_bytes)
@@ -411,6 +429,21 @@ impl ChiralMedium {
         let mut n_bytes = [0u8; 4];
         r.read_exact(&mut n_bytes)?;
         let n = u32::from_le_bytes(n_bytes) as usize;
+
+        // #367: `n` and `dims` come straight from the file. Validate the tensor
+        // size before allocating so a corrupt count can't request a multi-TB
+        // Vec and abort the process before the checksum can reject the file.
+        // 1 billion f32 = 4 GiB ceiling — far above any real hemisphere.
+        const MAX_WAVEFRONT_ELEMS: u64 = 1024 * 1024 * 1024;
+        let wf_elems = (n as u64).checked_mul(dims as u64);
+        match wf_elems {
+            Some(e) if e <= MAX_WAVEFRONT_ELEMS => {}
+            _ => {
+                return Err(MediumError::CorruptHrm(format!(
+                    "implausible wavefront tensor n={n} dims={dims} (max {MAX_WAVEFRONT_ELEMS} elems) — .hrm layout desync"
+                )));
+            }
+        }
 
         // Wavefronts tensor
         let mut wf_data = vec![0.0f32; n * dims];
