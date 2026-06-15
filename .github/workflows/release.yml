@@ -19,15 +19,16 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: kannaka-windows-x86_64.exe
-          # Pinned to ubuntu-22.04 (glibc 2.35) rather than ubuntu-latest
-          # (currently 24.04, glibc 2.39). 2.39 is too new — Oracle Linux 9,
-          # Debian 12, Fedora ≤39, RHEL 9, and stock Ubuntu 22.04 all fail
-          # with `version GLIBC_2.39 not found`. Linking against 2.35 runs
-          # on every mainstream distro released in the last 3 years.
-          - target: x86_64-unknown-linux-gnu
+          # MUSL static binaries — NO glibc dependency at all. The previous
+          # glibc-gnu builds failed at runtime on any distro with an older
+          # glibc than the build host (e.g. ubuntu-22.04 → GLIBC_2.35, but
+          # Oracle Linux 9 / RHEL 9 ship glibc 2.34 → "version GLIBC_2.35 not
+          # found"). A musl-static `kannaka` runs on every Linux regardless of
+          # glibc version. Artifact names are unchanged so installer URLs hold.
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             artifact: kannaka-linux-x86_64
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-22.04
             artifact: kannaka-linux-aarch64
           - target: x86_64-apple-darwin
@@ -62,12 +63,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (aarch64-linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      # Sets up the cross/musl toolchain + linker env for the linux-musl targets
+      # (handles both x86_64- and aarch64-unknown-linux-musl, native build — so
+      # the sibling path-deps checked out as ../consciousness-core and
+      # ../kannaka-attention are still visible, unlike a docker-based cross).
+      - name: Set up musl cross toolchain (linux)
+        if: contains(matrix.target, 'linux-musl')
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
 
       - name: Build CLI
         working-directory: kannaka-memory
