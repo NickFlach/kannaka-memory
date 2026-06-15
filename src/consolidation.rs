@@ -792,7 +792,7 @@ impl ConsolidationEngine {
         let initial_r = self.compute_category_order_parameter(&initial_memories);
 
         let alpha_base: f32 = 0.20;
-        let relax_steps: usize = 8;
+        let relax_steps: usize = 12;
         let envelope_depth: f32 = 0.15;  // "quiet wave" amplitude on alpha
         let two_pi = 2.0 * std::f32::consts::PI;
 
