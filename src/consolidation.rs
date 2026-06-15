@@ -2661,7 +2661,9 @@ impl ConsolidationEngine {
                     // Gentle phase alignment toward the modality mean (5% per cycle)
                     mem.phase = 0.95 * mem.phase + 0.05 * mean_phase;
                     // Small amplitude boost for correctly-classified memories
-                    mem.amplitude += 0.02;
+                    // (#368: clamp like every other strengthen site — this path
+                    // was missed by the #360 ceiling fix).
+                    mem.amplitude = (mem.amplitude + 0.02).min(AMPLITUDE_CEILING);
                     report.memories_strengthened += 1;
                 }
             }
