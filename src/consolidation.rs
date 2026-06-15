@@ -38,6 +38,7 @@ use rayon::prelude::*;
 /// into `store.energy`, so this also bounds the on-disk energy.
 const AMPLITUDE_CEILING: f32 = 2.0;
 
+
 /// Classification of interference between two memories.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Interference {
@@ -270,13 +271,14 @@ impl ConsolidationEngine {
         // Stage 4: STRENGTHEN -- boost constructive pairs
         report.memories_strengthened = self.stage_strengthen(engine, &pairs);
 
-        // Stage 4.5: SYNC -- Kuramoto phase synchronization, OR
-        //                    interference-driven phase relaxation (env-gated).
-        // DREAM_MODE=interference_relax bypasses the category-Kuramoto sync and
-        // does a relaxation step driven by the constructive interference pairs
-        // already detected in stage 2. No new params, no categorization.
+        // Stage 4.5: SYNC -- interference-driven phase relaxation (default), OR
+        //                    Kuramoto phase synchronization (legacy, env-gated).
+        // interference_relax: relaxes phases toward constructive-pair neighbors;
+        // confirmed 2x better L5 fitness than stage_sync in the post-ceiling-fix
+        // amplitude regime. Override to Kuramoto via DREAM_MODE=stage_sync.
         // See research/intersections/05-magic-gives-it-gravity.md.
-        let dream_mode = std::env::var("DREAM_MODE").unwrap_or_default();
+        let dream_mode = std::env::var("DREAM_MODE")
+            .unwrap_or_else(|_| "interference_relax".to_string());
         let (clusters_synced, order_improvement) = if dream_mode == "interference_relax" {
             self.stage_interference_relax(engine, &working_set, &pairs)
         } else {
