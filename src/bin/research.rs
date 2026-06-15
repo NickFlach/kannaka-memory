@@ -3238,7 +3238,7 @@ fn run_l5_dream_chain(
         //   DRIVE_A         = amplitude (0.0 disables, default 0.15)
         //   DRIVE_TOP_FRAC  = fraction of top-amplitude memories to modulate
         //                     (1.0 = all, 0.25 = top 25%, default 1.0)
-        //   DRIVE_FREQ_HZ   = drive frequency (default 2.0)
+        //   DRIVE_FREQ_HZ   = drive frequency (default 0.5 Hz)
         // A=0.15 confirmed L5 optimum (2026-06-06T08): carrier_emergence 0.5684→0.5842,
         // avg fitness 0.1322 vs 0.1384 at A=0.1 (3-trial, K=1.0, DRIVE_SCOPE=all).
         {
@@ -3307,7 +3307,6 @@ fn run_l5_dream_chain(
                 }
             }
         }
-
 
         let threshold_scale = if cycle_idx == 0 {
             1.0
