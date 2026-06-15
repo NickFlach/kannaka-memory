@@ -192,25 +192,33 @@ pub fn apply_constructive(local: &mut HyperMemory, remote: &HyperMemory, result:
     let a2 = remote.amplitude;
     let total = a1 + a2;
 
-    // Amplitude-weighted vector average, re-normalized to unit length.
-    // Cosine similarity assumes unit vectors; blending two unit vectors
-    // produces a sub-unit vector that must be re-normalized.
-    if !local.vector.is_empty() && local.vector.len() == remote.vector.len() {
-        for (lv, rv) in local.vector.iter_mut().zip(remote.vector.iter()) {
-            *lv = (*lv * a1 + *rv * a2) / total;
-        }
-        let norm = local.vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if norm > 1e-8 {
-            for v in local.vector.iter_mut() {
-                *v /= norm;
+    // #370: guard the amplitude-weighted blends against total == 0.0 (both
+    // memories decayed/ghosted to zero amplitude). Dividing by zero would write
+    // NaN into the vector and phase — and the `norm > 1e-8` check below does NOT
+    // rescue it (the NaN is already in `local.vector`, it just skips
+    // re-normalization). A NaN-poisoned vector then corrupts every later
+    // cosine_similarity. When there's no amplitude mass, leave vector/phase as-is.
+    if total > 1e-8 {
+        // Amplitude-weighted vector average, re-normalized to unit length.
+        // Cosine similarity assumes unit vectors; blending two unit vectors
+        // produces a sub-unit vector that must be re-normalized.
+        if !local.vector.is_empty() && local.vector.len() == remote.vector.len() {
+            for (lv, rv) in local.vector.iter_mut().zip(remote.vector.iter()) {
+                *lv = (*lv * a1 + *rv * a2) / total;
+            }
+            let norm = local.vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if norm > 1e-8 {
+                for v in local.vector.iter_mut() {
+                    *v /= norm;
+                }
             }
         }
-    }
 
-    // Amplitude-weighted circular mean phase
-    let sin_mean = (a1 * local.phase.sin() + a2 * remote.phase.sin()) / total;
-    let cos_mean = (a1 * local.phase.cos() + a2 * remote.phase.cos()) / total;
-    local.phase = sin_mean.atan2(cos_mean);
+        // Amplitude-weighted circular mean phase
+        let sin_mean = (a1 * local.phase.sin() + a2 * remote.phase.sin()) / total;
+        let cos_mean = (a1 * local.phase.cos() + a2 * remote.phase.cos()) / total;
+        local.phase = sin_mean.atan2(cos_mean);
+    }
 
     local.amplitude = result.resulting_amplitude;
     local.sync_version += 1;
