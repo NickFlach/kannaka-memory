@@ -3612,11 +3612,26 @@ fn run_experiment_l5_session(params: &Params) {
     // run dream chain, measure whether 2 Hz emerges from uniform input.
     let corpus_flat = build_corpus_l5_a_flat(dim, 2, params.encoder_seed);
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
+    // Pre-saturate flat corpus to ceiling (2.0): eliminates the cycle-0 constructive-boost
+    // spike that otherwise dominates amplitude_deltas and spreads DFT power flat across all
+    // non-DC bins (score ≈ 0.5). With memories at ceiling, cycles 0-4 (positive drive arc,
+    // factor ≥ 1.0) produce zero delta; only cycles 5-6 (negative arc: factor 0.894/0.85)
+    // create real amplitude drops for non-paired memories. chain_depth=7 keeps quiescence
+    // disabled (only enabled at depth ≥ 8) so the full negative arc runs.
+    {
+        let ids: Vec<uuid::Uuid> = engine_flat.store.all_ids().unwrap_or_default();
+        for id in &ids {
+            if let Ok(Some(m)) = engine_flat.store.get_mut(id) {
+                m.amplitude = 2.0;
+            }
+        }
+    }
+    let flat_params = { let mut p = (*params).clone(); p.chain_depth = 7; p };
     let start_flat = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_flat");
     let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, amp_deltas_flat,
          _inj_flat, _orig_flat, _init_amp_flat) =
-        run_l5_dream_chain(params, &mut engine_flat);
+        run_l5_dream_chain(&flat_params, &mut engine_flat);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
