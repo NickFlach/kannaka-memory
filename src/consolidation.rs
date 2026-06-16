@@ -505,7 +505,19 @@ impl ConsolidationEngine {
     /// Stage 4: Strengthen constructive interference pairs and Xi-aware bridge nodes.
     fn stage_strengthen(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
         let mut count = 0;
-        
+
+        // FLAT_UNCAP=1: engine_flat measurement runs without amplitude ceiling so the drive's
+        // sinusoidal modulation is not masked by ceiling saturation. Only applies when
+        // DRIVE_CONTEXT=engine_flat (set by research.rs around the flat-corpus chain).
+        // All production engines (a, b_primed, b_naive, clean, adv) always use AMPLITUDE_CEILING.
+        let amp_ceiling = if std::env::var("FLAT_UNCAP").as_deref() == Ok("1")
+            && std::env::var("DRIVE_CONTEXT").as_deref() == Ok("engine_flat")
+        {
+            f32::MAX
+        } else {
+            AMPLITUDE_CEILING
+        };
+
         // Traditional constructive interference strengthening
         for pair in pairs.iter().filter(|p| p.kind == Interference::Constructive) {
             // Get phases for averaging
@@ -522,7 +534,7 @@ impl ConsolidationEngine {
             // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(amp_ceiling);
                     mem.phase = avg_phase;
                     count += 1;
                 }
@@ -530,16 +542,16 @@ impl ConsolidationEngine {
             // Boost amplitude and align phase for memory B (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(amp_ceiling);
                     mem.phase = avg_phase;
                     count += 1;
                 }
             }
         }
-        
+
         // Xi-aware bridge node strengthening
         count += self.stage_strengthen_bridge_nodes(engine);
-        
+
         count
     }
 
@@ -590,16 +602,23 @@ impl ConsolidationEngine {
         }
         
         // Apply amplitude boosts to bridge nodes (10-20% bonus, scaled by bridge strength)
+        let amp_ceiling = if std::env::var("FLAT_UNCAP").as_deref() == Ok("1")
+            && std::env::var("DRIVE_CONTEXT").as_deref() == Ok("engine_flat")
+        {
+            f32::MAX
+        } else {
+            AMPLITUDE_CEILING
+        };
         let mut count = 0;
         for (bridge_id, bridge_strength) in bridge_nodes {
             if let Some(mem) = engine.store.get_mut(&bridge_id).ok().flatten() {
                 let bonus_factor = 0.1 + (bridge_strength - 3.0) * 0.03; // 10% for 3 clusters, +3% per additional
                 let amplitude_bonus = bonus_factor.min(0.2); // Cap at 20%
-                mem.amplitude = (mem.amplitude + amplitude_bonus).min(AMPLITUDE_CEILING);
+                mem.amplitude = (mem.amplitude + amplitude_bonus).min(amp_ceiling);
                 count += 1;
             }
         }
-        
+
         count
     }
 
