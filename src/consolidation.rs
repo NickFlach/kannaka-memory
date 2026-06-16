@@ -504,8 +504,20 @@ impl ConsolidationEngine {
 
     /// Stage 4: Strengthen constructive interference pairs and Xi-aware bridge nodes.
     fn stage_strengthen(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
+        use std::collections::HashSet;
         let mut count = 0;
-        
+
+        // STRENGTHEN_MAX_PAIRS: cap the number of constructive boosts per memory per cycle.
+        // 0 = unlimited (current behaviour). Setting to 1 spreads strengthening across cycles:
+        // with boost=0.45 and 49 partners, unlimited gives cycle-0 saturation (all 49 pairs
+        // hit ceiling immediately). With max=1, each memory gets exactly one boost per cycle
+        // → amplitude ramp [0.45, 0.45, 0.10, 0] → carrier_e ~0.97 instead of ~0.53.
+        let max_pairs: usize = std::env::var("STRENGTHEN_MAX_PAIRS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let mut boost_counts: HashSet<Uuid> = HashSet::new();
+
         // Traditional constructive interference strengthening
         for pair in pairs.iter().filter(|p| p.kind == Interference::Constructive) {
             // Get phases for averaging
@@ -520,26 +532,34 @@ impl ConsolidationEngine {
             let avg_phase = (phase_a + phase_b) / 2.0;
 
             // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
-            if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
-                if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
-                    mem.phase = avg_phase;
-                    count += 1;
+            let a_capped = max_pairs > 0 && boost_counts.contains(&pair.id_a);
+            if !a_capped {
+                if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
+                    if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
+                        mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                        mem.phase = avg_phase;
+                        count += 1;
+                        if max_pairs > 0 { boost_counts.insert(pair.id_a); }
+                    }
                 }
             }
             // Boost amplitude and align phase for memory B (skip ghosts and sub-noise-floor)
-            if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
-                if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
-                    mem.phase = avg_phase;
-                    count += 1;
+            let b_capped = max_pairs > 0 && boost_counts.contains(&pair.id_b);
+            if !b_capped {
+                if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
+                    if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
+                        mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                        mem.phase = avg_phase;
+                        count += 1;
+                        if max_pairs > 0 { boost_counts.insert(pair.id_b); }
+                    }
                 }
             }
         }
-        
+
         // Xi-aware bridge node strengthening
         count += self.stage_strengthen_bridge_nodes(engine);
-        
+
         count
     }
 
