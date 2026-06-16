@@ -504,8 +504,15 @@ impl ConsolidationEngine {
 
     /// Stage 4: Strengthen constructive interference pairs and Xi-aware bridge nodes.
     fn stage_strengthen(&self, engine: &mut ResonanceEngine, pairs: &[InterferencePair]) -> usize {
+        use std::collections::HashSet;
         let mut count = 0;
-        
+        // Cap at one constructive boost per memory per cycle. Under dense irx phase
+        // coherence, each memory participates in 40+ constructive pairs and would
+        // saturate to AMPLITUDE_CEILING in cycle 0 — killing cycles 1-3 amplitude
+        // delta and collapsing carrier spectral concentration. Deduplication spreads
+        // the amplitude growth across chain cycles so the drive modulation is visible.
+        let mut boosted: HashSet<Uuid> = HashSet::new();
+
         // Traditional constructive interference strengthening
         for pair in pairs.iter().filter(|p| p.kind == Interference::Constructive) {
             // Get phases for averaging
@@ -519,18 +526,24 @@ impl ConsolidationEngine {
             };
             let avg_phase = (phase_a + phase_b) / 2.0;
 
-            // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
+            // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor).
+            // Phase alignment always applied (preserves coherence); amplitude boost once per
+            // memory per cycle to prevent ceiling saturation killing carrier signal.
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    if boosted.insert(pair.id_a) {
+                        mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    }
                     mem.phase = avg_phase;
                     count += 1;
                 }
             }
-            // Boost amplitude and align phase for memory B (skip ghosts and sub-noise-floor)
+            // Boost amplitude and align phase for memory B (same dedup for amplitude).
             if let Some(mem) = engine.store.get_mut(&pair.id_b).ok().flatten() {
                 if mem.amplitude > 0.0 && (self.noise_floor == 0.0 || mem.amplitude >= self.noise_floor) {
-                    mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    if boosted.insert(pair.id_b) {
+                        mem.amplitude = (mem.amplitude + self.constructive_boost).min(AMPLITUDE_CEILING);
+                    }
                     mem.phase = avg_phase;
                     count += 1;
                 }
