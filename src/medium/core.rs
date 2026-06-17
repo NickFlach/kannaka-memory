@@ -237,6 +237,25 @@ impl Medium {
         self.recall_against(None, query, top_k, pipeline)
     }
 
+    /// All memory ids whose content folds onto Fano `line` (0..6), capped at
+    /// `limit`. This is the **gravity-well lookup**: given a glyph's dominant
+    /// line (e.g. from a kannaka-eye event), pull the same-line memories into
+    /// the attention beam so subsequent recall is both sparse and on-theme.
+    /// O(N) over metadata (one glyph encode per memory); scan stops at `limit`.
+    #[cfg(feature = "glyph")]
+    pub fn ids_by_fano_line(&self, line: u8, limit: usize) -> Vec<uuid::Uuid> {
+        let mut out = Vec::new();
+        for m in &self.store.metadata {
+            if out.len() >= limit {
+                break;
+            }
+            if crate::glyph_bridge::fano_line_of(&m.content) == line {
+                out.push(m.id);
+            }
+        }
+        out
+    }
+
     /// Recall against an attention beam expressed as memory IDs.
     ///
     /// The kannaka-attention crate tracks beam membership in Uuids (stable
@@ -314,6 +333,24 @@ impl Medium {
         // index `effective_strengths` out of bounds and panic mid-recall.
         let safe_count = self.wavefront_count().min(effective_strengths.len());
 
+        // ── Glyph-gravity (attention-as-gravity) ──────────────────────────
+        // When KANNAKA_GLYPH_GRAVITY=<gain> (>0), memories whose dominant Fano
+        // line matches the query's are pulled harder — same-line wavefronts
+        // gravitate toward the query, so recall converges on the right
+        // neighborhood faster (the "folded information IS gravity" idea).
+        // Default 0.0 = byte-for-byte the pre-glyph behavior, so this is fully
+        // inert unless a service opts in. Per-candidate line is cached so the
+        // stage-1 scan and the stage-2 xi re-rank don't double-compute it.
+        let glyph_gain: f32 = std::env::var("KANNAKA_GLYPH_GRAVITY")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        #[cfg(feature = "glyph")]
+        let query_line: Option<u8> = if glyph_gain > 0.0 {
+            Some(crate::glyph_bridge::fano_line_of(query))
+        } else { None };
+        #[cfg(not(feature = "glyph"))]
+        let query_line: Option<u8> = None;
+        let mut line_cache: std::collections::HashMap<usize, u8> = std::collections::HashMap::new();
+
         for &i in cand_slice {
             if i >= safe_count { continue; } // guard against stale beam indices / section desync
             let wavefront = self.store.wavefronts.row(i);
@@ -328,7 +365,17 @@ impl Medium {
             // Modulate by wave dynamics (energy, phase, temporal decay)
             let effective_strength = effective_strengths[i];
             let phase_modulation = self.store.phase[i].cos(); // Phase affects resonance
-            let resonance_strength = similarity * effective_strength * phase_modulation;
+            let mut resonance_strength = similarity * effective_strength * phase_modulation;
+
+            #[cfg(feature = "glyph")]
+            if let Some(ql) = query_line {
+                let cl = *line_cache.entry(i).or_insert_with(|| {
+                    crate::glyph_bridge::fano_line_of(&self.store.metadata[i].content)
+                });
+                if cl == ql {
+                    resonance_strength *= 1.0 + glyph_gain;
+                }
+            }
 
             resonances.push((i, Resonance {
                 id: self.store.metadata[i].id,
@@ -353,8 +400,17 @@ impl Medium {
                 let wf_xi = compute_xi_signature(&wf_vec);
                 let boosted_sim = xi_diversity_boost(r.similarity, &query_xi, &wf_xi);
                 r.similarity = boosted_sim;
-                r.resonance_strength = boosted_sim * r.effective_strength
+                let mut rs = boosted_sim * r.effective_strength
                     * self.store.phase[i].cos();
+                // Re-apply glyph-gravity after the xi re-rank so it survives
+                // into the final ordering (line cached from stage 1).
+                #[cfg(feature = "glyph")]
+                if let Some(ql) = query_line {
+                    if line_cache.get(&i).copied() == Some(ql) {
+                        rs *= 1.0 + glyph_gain;
+                    }
+                }
+                r.resonance_strength = rs;
                 r
             })
             .collect();

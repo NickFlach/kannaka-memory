@@ -269,6 +269,50 @@ pub(crate) fn handle_attention_serve(
             beam.observe(&ev);
         }
 
+        // ── Glyph-gravity pull ────────────────────────────────────────────
+        // The eye saw a glyph on a dominant Fano line. Pull the SAME-line
+        // memories into the beam so this perception's whole neighborhood is
+        // "in attention" for O(K) recall — folded information acting as gravity.
+        // Gated by the same switch as recall-side gravity (KANNAKA_GLYPH_GRAVITY).
+        #[cfg(feature = "glyph")]
+        {
+            let gravity_on = std::env::var("KANNAKA_GLYPH_GRAVITY")
+                .ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) > 0.0;
+            if gravity_on {
+                // Dominant Fano line = argmax of the 7-element energy signature.
+                let line = glyph.get("fano_signature").and_then(|v| v.as_array()).map(|a| {
+                    let mut best = 0u8;
+                    let mut best_v = f64::MIN;
+                    for (idx, x) in a.iter().enumerate() {
+                        let val = x.as_f64().unwrap_or(0.0);
+                        if val > best_v {
+                            best_v = val;
+                            best = idx as u8;
+                        }
+                    }
+                    best
+                });
+                if let Some(l) = line {
+                    let pull_limit = top_k.saturating_mul(8).max(16);
+                    if let Some(hrm) = sys
+                        .engine
+                        .store
+                        .as_any_mut()
+                        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                    {
+                        let ids = hrm.ids_by_fano_line(l, pull_limit);
+                        let n = ids.len();
+                        for id in ids {
+                            beam.observe(&ObservationEvent::now(id, "eye:gravity".to_string()));
+                        }
+                        if n > 0 {
+                            eprintln!("[attention serve] glyph-gravity: line {l} pulled {n} same-line memories into beam");
+                        }
+                    }
+                }
+            }
+        }
+
         // Periodic stats line so an operator can watch the beam shape up.
         if last_stats_at.elapsed() >= stats_interval {
             let stats = beam.stats();
