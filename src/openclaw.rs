@@ -1200,14 +1200,54 @@ impl KannakaMemorySystem {
         use crate::ear::AudioPipeline;
 
         let pipeline = AudioPipeline::new();
-        let (mem, features) = pipeline
+        let (_mem, features) = pipeline
             .encode_file(path)
             .map_err(|e| SystemError::Engine(EngineError::Encoding(
                 crate::encoding::EncodingError::Other(e.to_string()),
             )))?;
 
+        // Build a perceptually-descriptive content string and absorb THAT,
+        // rather than the ephemeral "audio:/tmp/<hash>.mp3" path the encoder
+        // produces. absorb() embeds the content text, so the old path-only
+        // content embedded every hear to ~the same point (the random hash is
+        // noise, the prefix is constant) — collapsing all audio memories into
+        // one Kuramoto hive with xi_diversity 0. Describing what was HEARD
+        // (tempo band + brightness/energy/texture) makes hears with similar
+        // character cluster together and gives the memory a readable identity.
+        // Keeps the "audio:" prefix so the consciousness importance weighting
+        // (audio: 1.5) and prune-by-prefix maintenance still apply.
+        let tempo_word = if features.tempo_bpm <= 0.0 {
+            "arrhythmic"
+        } else if features.tempo_bpm < 90.0 {
+            "slow"
+        } else if features.tempo_bpm < 130.0 {
+            "midtempo"
+        } else if features.tempo_bpm < 170.0 {
+            "fast"
+        } else {
+            "veryfast"
+        };
+        // feature_tags already carries an exact "<N>bpm" tag — drop it from the
+        // descriptive head (high-cardinality numbers fragment clustering) and
+        // keep the categorical descriptors (bright/dark/loud/quiet/tonal/noisy).
+        let descriptors: Vec<&str> = features
+            .feature_tags
+            .iter()
+            .filter(|t| !t.ends_with("bpm"))
+            .map(|s| s.as_str())
+            .collect();
+        let content = format!(
+            "audio:heard {} {} | {:.0}bpm centroid {:.2}kHz energy {:.3} dur {:.1}s",
+            tempo_word,
+            descriptors.join(" "),
+            features.tempo_bpm,
+            features.spectral_centroid_khz,
+            features.rms_mean,
+            features.duration_secs,
+        );
+
         // Absorb through HRM-native path
-        let id = self.engine.store.absorb(&mem.content, 0.6, Some("experience"))
+        let id = self.engine.store.absorb(&content, 0.6, Some("experience"))
             .map_err(|e| SystemError::Store(e))?;
 
         if self.auto_save {
