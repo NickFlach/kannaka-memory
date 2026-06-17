@@ -1,0 +1,37 @@
+# /etc/systemd/system/kannaka-attention.service
+#
+# Runs `kannaka attention serve` — the sparse-attention beam over the HRM and
+# the consumer of kannaka-eye's glyph events (attention-as-gravity). The
+# `attention serve` command is PART OF THE KANNAKA BINARY: the kannaka-attention
+# crate is a path dependency compiled in, so installing the binary already
+# installs this capability. This unit just runs it as a daemon.
+#
+# Uses the installed binary at ~/.local/bin/kannaka. On a build node where the
+# binary lives in the cargo target dir, point ExecStart there instead.
+[Unit]
+Description=Kannaka Attention Serve — sparse-attention beam over the HRM
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=%h
+# NATS auth (kannaka_internal) — needed to subscribe to KANNAKA.attention.eye.
+EnvironmentFile=-%h/.kannaka-nats.env
+# Single-writer policy: attention serve is a long-running READER.
+Environment=KANNAKA_READONLY=1
+# Beam dump the observatory polls (persist outside volatile /tmp).
+Environment=KANNAKA_ATTENTION_BEAM_FILE=%h/.kannaka/attention-beam.json
+# Glyph-gravity: pull same-Fano-line memories into the beam on each eye glyph
+# and boost same-line memories in recall. 0 = disabled.
+Environment=KANNAKA_GLYPH_GRAVITY=0.5
+ExecStartPre=/bin/mkdir -p %h/.kannaka
+ExecStart=%h/.local/bin/kannaka attention serve --top-k 3
+Restart=always
+RestartSec=10
+MemoryMax=4G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
