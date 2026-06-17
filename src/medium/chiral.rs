@@ -267,6 +267,35 @@ impl ChiralMedium {
             )))
         })?;
 
+        // ── Glyph-gravity (attention-as-gravity), chiral path ─────────────
+        // When KANNAKA_GLYPH_GRAVITY=<gain> (>0), results whose dominant Fano
+        // line matches the query's are pulled harder. We over-fetch (3×) so a
+        // same-line memory the raw resonance ranked just outside top_k can be
+        // promoted in by gravity, then re-sort and truncate. Default 0.0 =
+        // byte-identical to the prior chiral recall (inert until opted in).
+        #[cfg(feature = "glyph")]
+        {
+            let gain: f32 = std::env::var("KANNAKA_GLYPH_GRAVITY")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            if gain > 0.0 {
+                let query_line = crate::glyph_bridge::fano_line_of(query);
+                let pool = top_k.saturating_mul(3).max(top_k);
+                let mut results = self.recall_vector(&vector, pool);
+                for r in &mut results {
+                    if crate::glyph_bridge::fano_line_of(&r.content) == query_line {
+                        r.resonance_strength *= 1.0 + gain;
+                    }
+                }
+                results.sort_by(|a, b| {
+                    b.resonance_strength
+                        .partial_cmp(&a.resonance_strength)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                results.truncate(top_k);
+                return Ok(results);
+            }
+        }
+
         Ok(self.recall_vector(&vector, top_k))
     }
 
