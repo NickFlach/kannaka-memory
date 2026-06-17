@@ -686,19 +686,9 @@ fn eval_xi_diversity(engine: &ResonanceEngine) -> f32 {
         }
     }
     
-    println!("DEBUG Xi thresholds: max_sim_with_repulsion={:.3}, max_repulsion_with_sim={:.3}", 
-             max_sim_with_repulsion, max_repulsion_with_sim);
-    
-    println!("DEBUG Xi details: high_sim_count={}, high_repulsion_count={}, boost_count={}", 
-             high_sim_count, high_repulsion_count, boost_count);
-
     if count == 0 { return 0.0; }
     let avg_boost = total_boost / count as f32;
-    
-    // DEBUG: Print Xi diversity details
-    println!("DEBUG Xi diversity: active_memories={}, pairwise_comparisons={}, total_boost={:.6}, avg_boost={:.6}", 
-             active.len(), count, total_boost, avg_boost);
-    
+
     // Normalize: 0.05+ average boost = good diversity
     (avg_boost / 0.05).min(1.0)
 }
