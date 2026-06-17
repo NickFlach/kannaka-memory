@@ -314,15 +314,19 @@ impl AttentionField {
                 .unwrap_or(Modality::Unknown)
         };
 
-        // Compute attention coherence from amplitude variance
-        let attention_coherence = if wavefronts.len() >= 2 {
-            let energies: Vec<f32> = wavefronts.iter().map(|(_, e, _)| *e).collect();
-            let mean = energies.iter().sum::<f32>() / energies.len() as f32;
-            let variance = energies.iter().map(|e| (e - mean).powi(2)).sum::<f32>() / energies.len() as f32;
-            // Low variance = high coherence (attention focused)
-            1.0 / (1.0 + variance)
-        } else {
-            0.0
+        // Compute attention coherence from amplitude variance.
+        // A single wavefront has zero variance — coherence is 1.0 (perfectly focused).
+        // An empty field has no defined coherence — 0.0.
+        let attention_coherence = match wavefronts.len() {
+            0 => 0.0,
+            1 => 1.0,
+            _ => {
+                let energies: Vec<f32> = wavefronts.iter().map(|(_, e, _)| *e).collect();
+                let mean = energies.iter().sum::<f32>() / energies.len() as f32;
+                let variance = energies.iter().map(|e| (e - mean).powi(2)).sum::<f32>() / energies.len() as f32;
+                // Low variance = high coherence (attention focused)
+                1.0 / (1.0 + variance)
+            }
         };
 
         AttentionProjection {
@@ -413,6 +417,25 @@ mod tests {
         let proj = af.project_attention(&store);
         assert!(proj.active_wavefronts.is_empty());
         assert_eq!(proj.attention_coherence, 0.0);
+    }
+
+    #[test]
+    fn attention_projection_single_wavefront_is_coherent() {
+        // A single active wavefront has zero amplitude variance;
+        // attention_coherence must be 1.0, not 0.0.
+        use crate::store::MediumBackend; // bring `insert` (trait method) into scope
+        let af = make_af();
+        let mut store = crate::store::TestMedium::new();
+        let mut mem = crate::memory::HyperMemory::new(vec![1.0; 4], "only wavefront".to_string());
+        mem.amplitude = 0.8;
+        store.insert(mem).unwrap();
+        let proj = af.project_attention(&store);
+        assert_eq!(proj.active_wavefronts.len(), 1);
+        assert_eq!(
+            proj.attention_coherence, 1.0,
+            "single wavefront must be perfectly coherent, got {}",
+            proj.attention_coherence
+        );
     }
 
     #[test]
