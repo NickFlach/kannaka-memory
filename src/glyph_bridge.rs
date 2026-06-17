@@ -637,6 +637,35 @@ impl GlyphDecoder {
 // Integration with HyperMemory
 // ============================================================================
 
+/// Dominant **Fano line** (0..6) of arbitrary text — the argmax of the glyph's
+/// 7-line energy signature.
+///
+/// This is the *gravity class*: memories that fold onto the same Fano line are
+/// pulled together. It is computed the same way `kannaka classify` derives its
+/// `fano_signature`, so a glyph emitted by kannaka-eye and a memory classified
+/// here agree on the line. Cheap (one glyph encode of the content bytes);
+/// returns 0 on empty/edge input so callers never have to special-case.
+pub fn fano_line_of(text: &str) -> u8 {
+    let data: Vec<f64> = text.bytes().map(|b| b as f64 / 255.0).collect();
+    if data.is_empty() {
+        return 0;
+    }
+    match GlyphEncoder::default().encode(&data) {
+        Ok(g) => {
+            let mut best = 0u8;
+            let mut best_v = f64::MIN;
+            for (i, &v) in g.fano_signature.iter().enumerate() {
+                if v > best_v {
+                    best_v = v;
+                    best = i as u8;
+                }
+            }
+            best
+        }
+        Err(_) => 0,
+    }
+}
+
 /// Encode a HyperMemory as a glyph
 pub fn encode_memory_as_glyph(memory: &HyperMemory) -> Result<Glyph, GlyphError> {
     let encoder = GlyphEncoder::default();

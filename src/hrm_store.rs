@@ -57,6 +57,14 @@ impl HrmStore {
         self.readonly = ro;
     }
 
+    /// Gravity-well lookup: memory ids whose content folds onto Fano `line`
+    /// (0..6), capped at `limit`. Used by `attention serve` to pull same-line
+    /// memories into the beam when kannaka-eye emits a glyph on that line.
+    #[cfg(feature = "glyph")]
+    pub fn ids_by_fano_line(&self, line: u8, limit: usize) -> Vec<uuid::Uuid> {
+        self.medium.ids_by_fano_line(line, limit)
+    }
+
     /// Create a new HRM store with the given encoding pipeline and file path.
     pub fn new(pipeline: EncodingPipeline, hrm_path: PathBuf) -> Self {
         Self {

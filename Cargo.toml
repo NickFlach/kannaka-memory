@@ -71,7 +71,10 @@ ctrlc = { version = "3", features = ["termination"] }
 flate2 = "1"
 
 [features]
-default = ["hrm", "nats"]
+# glyph is now default: the SGA glyph path (fano_line_of, classify, glyph-
+# gravity recall) is load-bearing for attention-as-gravity. Keeping it in
+# default means every build — including the autoresearch cron — ships it.
+default = ["hrm", "nats", "glyph"]
 nats = []
 # mcp removed — CLI is the canonical interface
 # audio feature retained as a no-op alias so external Cargo.toml entries
