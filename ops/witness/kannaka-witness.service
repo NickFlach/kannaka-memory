@@ -1,0 +1,19 @@
+# /etc/systemd/system/kannaka-witness.service
+# Witness perception agent — hears the radio stream + phase-syncs with the swarm.
+# Install: copy to /etc/systemd/system/, `sudo systemctl daemon-reload`,
+#          `sudo systemctl enable --now kannaka-witness`.
+[Unit]
+Description=Kannaka Witness — radio-stream perception agent
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc
+EnvironmentFile=/etc/kannaka-witness.env
+ExecStart=/home/opc/bin/kannaka-witness-loop.sh
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
