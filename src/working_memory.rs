@@ -423,6 +423,7 @@ mod tests {
     fn attention_projection_single_wavefront_is_coherent() {
         // A single active wavefront has zero amplitude variance;
         // attention_coherence must be 1.0, not 0.0.
+        use crate::store::MediumBackend; // bring `insert` (trait method) into scope
         let af = make_af();
         let mut store = crate::store::TestMedium::new();
         let mut mem = crate::memory::HyperMemory::new(vec![1.0; 4], "only wavefront".to_string());
