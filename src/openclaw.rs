@@ -410,6 +410,16 @@ impl KannakaMemorySystem {
                 });
             }
         }
+        // ADR-0036 Phase 1: record reactivation on the hits. This is the
+        // production recall path; it previously never bumped retrieval_count
+        // (only the legacy ResonanceEngine::recall did), so the replay signal
+        // for tier promotion never accrued. get_mut marks dirty — inert under
+        // readonly (save_medium no-ops) and harmless for short-lived CLI.
+        for r in &out {
+            if let Ok(Some(m)) = self.engine.store.get_mut(&r.id) {
+                m.record_retrieval();
+            }
+        }
         Ok(out)
     }
 
@@ -536,6 +546,13 @@ impl KannakaMemorySystem {
                     age_hours,
                     layer: m.layer_depth,
                 });
+            }
+        }
+        // ADR-0036 Phase 1: record reactivation on the beam-recall hits too
+        // (the serve daemon's main path), so promotion has durable signal.
+        for r in &out {
+            if let Ok(Some(m)) = self.engine.store.get_mut(&r.id) {
+                m.record_retrieval();
             }
         }
         Ok(out)
