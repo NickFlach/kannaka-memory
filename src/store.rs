@@ -209,6 +209,19 @@ pub trait MediumBackend: Send + Sync {
     /// Only meaningful for HrmStore with a chiral medium. Default is a no-op.
     fn chiral_dream(&mut self, _deep: bool, _cycles: usize) {}
 
+    /// ADR-0036: plan (and, from Phase 2, apply) resonance-merge consolidation.
+    /// Default is a no-op returning an "off" report; only HrmStore implements it.
+    /// Takes `&mut self` to accommodate the future apply path; Phase 0 never mutates.
+    fn consolidate_resonance(
+        &mut self,
+        _opts: &crate::medium::types::ConsolidateOpts,
+    ) -> crate::medium::types::ConsolidateReport {
+        crate::medium::types::ConsolidateReport {
+            mode: "off".to_string(),
+            ..Default::default()
+        }
+    }
+
     /// Downcasting support.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;

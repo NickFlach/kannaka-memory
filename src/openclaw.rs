@@ -692,6 +692,22 @@ impl KannakaMemorySystem {
             wave_report.cycles_completed, wave_report.wavefronts_dissolved,
             wave_report.wavefronts_strengthened, wave_report.wavefronts_hallucinated);
 
+        // Phase 1.5 (ADR-0036): resonance-merge consolidation. Default mode is
+        // DRY-RUN — it computes the merge/decay plan and logs it WITHOUT touching
+        // the substrate, so the projections can be observed nightly on
+        // kannaka-prime before any destructive apply (Phase 2) is enabled via
+        // KANNAKA_CONSOLIDATE=on.
+        let consolidate_opts = crate::medium::types::ConsolidateOpts::from_env();
+        let consolidate_report = self.engine.store.consolidate_resonance(&consolidate_opts);
+        if consolidate_report.mode != "off" {
+            eprintln!(
+                "[dream] Consolidation plan ({}): {} memories → {} redundant groups would merge, absorbing {} wavefronts; ShortTerm {}/{} would evict → projected {} memories (applied={})",
+                consolidate_report.mode, consolidate_report.memories_examined,
+                consolidate_report.groups_found, consolidate_report.would_absorb,
+                consolidate_report.would_evict, consolidate_report.shortterm_total,
+                consolidate_report.projected_memories, consolidate_report.applied);
+        }
+
         // Phase 2: Consolidation engine (interference detection, skip links, pruning)
         // This uses the particle-based pipeline on the memory cache for topology effects.
         let consol_report = self.dream_state.engine.consolidate(&mut self.engine, 0, 2);

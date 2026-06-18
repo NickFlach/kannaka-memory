@@ -99,6 +99,101 @@ pub enum Tier {
     Pinned,
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// ADR-0036: Consolidation as resonance-merge.
+// Phase 0 is dry-run ONLY — the planner computes what it WOULD merge/decay and
+// reports it; it never mutates the substrate. Apply (mutation) lands in Phase 2.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// How the resonance-merge consolidation pass behaves during a dream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolidateMode {
+    /// Skip entirely.
+    Off,
+    /// Compute and report the merge/decay plan WITHOUT mutating anything.
+    DryRun,
+    /// Apply the plan. NOT implemented until ADR-0036 Phase 2 — treated as
+    /// dry-run for now so enabling it early can never delete memories.
+    Apply,
+}
+
+/// Tunables for the consolidation planner, sourced from env so the dry-run can
+/// be observed and the thresholds tuned before any destructive apply lands.
+#[derive(Debug, Clone)]
+pub struct ConsolidateOpts {
+    pub mode: ConsolidateMode,
+    /// Cosine-similarity threshold above which two wavefronts are "redundant".
+    pub merge_sim: f32,
+    /// Minimum cos(Δphase) for two wavefronts to count as constructively
+    /// phase-locked (default ≈ cos(π/4) ≈ 0.707 — the "Constructive" band).
+    pub merge_phase_cos: f32,
+    /// ShortTerm energy below which an unreactivated trace would be evicted (M3).
+    pub shortterm_evict: f32,
+}
+
+impl Default for ConsolidateOpts {
+    fn default() -> Self {
+        ConsolidateOpts {
+            mode: ConsolidateMode::DryRun,
+            merge_sim: 0.92,
+            merge_phase_cos: std::f32::consts::FRAC_1_SQRT_2, // cos(π/4)
+            shortterm_evict: 0.15,
+        }
+    }
+}
+
+impl ConsolidateOpts {
+    /// Build from environment. `KANNAKA_CONSOLIDATE` selects the mode
+    /// (`off` | `dryrun` | `on`); default is `dryrun` so merging is always
+    /// opt-in. Thresholds override via `KANNAKA_MERGE_SIM`,
+    /// `KANNAKA_MERGE_PHASE_DEG`, `KANNAKA_SHORTTERM_EVICT`.
+    pub fn from_env() -> Self {
+        let mut o = ConsolidateOpts::default();
+        match std::env::var("KANNAKA_CONSOLIDATE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "off" | "0" | "false" => o.mode = ConsolidateMode::Off,
+            "on" | "apply" => o.mode = ConsolidateMode::Apply,
+            _ => o.mode = ConsolidateMode::DryRun,
+        }
+        if let Ok(v) = std::env::var("KANNAKA_MERGE_SIM") {
+            if let Ok(f) = v.parse() { o.merge_sim = f; }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_MERGE_PHASE_DEG") {
+            if let Ok(deg) = v.parse::<f32>() { o.merge_phase_cos = deg.to_radians().cos(); }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_SHORTTERM_EVICT") {
+            if let Ok(f) = v.parse() { o.shortterm_evict = f; }
+        }
+        o
+    }
+}
+
+/// What a consolidation pass did — or, in dry-run, WOULD do. Surfaced in the
+/// dream log (and, from Phase 1, `observe --json`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ConsolidateReport {
+    pub mode: String,
+    pub memories_examined: usize,
+    /// Redundant, phase-locked groups of size ≥ 2.
+    pub groups_found: usize,
+    /// Carriers that would remain (one per merged group).
+    pub would_merge: usize,
+    /// Wavefronts that would be absorbed (removed) by merging.
+    pub would_absorb: usize,
+    pub shortterm_total: usize,
+    /// ShortTerm traces subject to salience decay (M3).
+    pub would_decay: usize,
+    /// ShortTerm traces that would fall below the evict threshold (unreactivated).
+    pub would_evict: usize,
+    /// Projected memory count after a merge+evict apply.
+    pub projected_memories: usize,
+    /// False in Phase 0 (planning only); true once Phase 2 apply lands.
+    pub applied: bool,
+}
+
 impl Default for Tier {
     fn default() -> Self {
         Tier::LongTerm

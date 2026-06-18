@@ -13,6 +13,7 @@ use crate::memory::HyperMemory;
 use crate::store::{MediumBackend, StoreError};
 use crate::encoding::EncodingPipeline;
 use crate::medium::{Medium, Resonance};
+use crate::medium::types::{Tier, ConsolidateOpts, ConsolidateMode, ConsolidateReport};
 use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
 
 /// HRM-backed memory store that implements the MediumBackend trait.
@@ -526,6 +527,143 @@ impl HrmStore {
     /// * `cycles` - Number of annealing cycles
     /// * `temperature` - Initial temperature for annealing (None = 1.0)
     /// * `chiral_eta` - Optional chiral perturbation strength (0.0 = none)
+    /// ADR-0036 Phase 0: read-only resonance-merge PLANNER.
+    ///
+    /// Computes which redundant, phase-locked wavefronts WOULD be merged into a
+    /// single carrier, and which ShortTerm traces WOULD decay/evict — WITHOUT
+    /// mutating anything. Operates on the unified `memory_cache` (so counts match
+    /// the user-facing total, regardless of the chiral/flat split underneath).
+    ///
+    /// Redundancy criterion mirrors the eventual merge (ADR-0036 M1): two
+    /// wavefronts are redundant iff their vectors are near-parallel
+    /// (cosine ≥ `merge_sim`) AND they are constructively phase-locked
+    /// (cos Δphase ≥ `merge_phase_cos`). `Pinned` wavefronts are never grouped.
+    pub fn plan_consolidation(&self, opts: &ConsolidateOpts) -> ConsolidateReport {
+        use ndarray::Array2;
+
+        let mode_str = match opts.mode {
+            ConsolidateMode::Off => "off",
+            ConsolidateMode::DryRun => "dryrun",
+            ConsolidateMode::Apply => "apply(dryrun)", // Phase 0: apply not yet implemented
+        };
+        let mut report = ConsolidateReport {
+            mode: mode_str.to_string(),
+            ..Default::default()
+        };
+
+        let entries: Vec<(&Uuid, &HyperMemory)> = self.memory_cache.iter().collect();
+        let n = entries.len();
+        report.memories_examined = n;
+        report.projected_memories = n;
+        if n < 2 {
+            return report;
+        }
+
+        // Vector dimension from the first usable row.
+        let dim = entries
+            .iter()
+            .map(|(_, m)| m.vector.len())
+            .find(|&l| l > 0)
+            .unwrap_or(0);
+        if dim == 0 {
+            return report;
+        }
+
+        // Build the N×D matrix; rows with a mismatched/empty vector are marked unusable.
+        let mut mat = Array2::<f32>::zeros((n, dim));
+        let mut usable = vec![true; n];
+        for (i, (_, m)) in entries.iter().enumerate() {
+            if m.vector.len() == dim {
+                for (d, &v) in m.vector.iter().enumerate() {
+                    mat[[i, d]] = v;
+                }
+            } else {
+                usable[i] = false;
+            }
+        }
+
+        // One fast matmul for all pairwise dot products; norms from the diagonal.
+        let gram = mat.dot(&mat.t());
+        let norms: Vec<f32> = (0..n).map(|i| gram[[i, i]].max(0.0).sqrt()).collect();
+        let cos_p: Vec<f32> = entries.iter().map(|(_, m)| m.phase.cos()).collect();
+        let sin_p: Vec<f32> = entries.iter().map(|(_, m)| m.phase.sin()).collect();
+        let is_pinned: Vec<bool> = entries.iter().map(|(_, m)| m.tier == Tier::Pinned).collect();
+
+        // Union-find over redundant, phase-locked, non-pinned pairs.
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut parent: Vec<usize> = (0..n).collect();
+        let eps = 1e-6_f32;
+        for i in 0..n {
+            if !usable[i] || is_pinned[i] || norms[i] < eps {
+                continue;
+            }
+            for j in (i + 1)..n {
+                if !usable[j] || is_pinned[j] || norms[j] < eps {
+                    continue;
+                }
+                let cos_sim = gram[[i, j]] / (norms[i] * norms[j]);
+                if cos_sim < opts.merge_sim {
+                    continue;
+                }
+                let phase_coh = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
+                if phase_coh < opts.merge_phase_cos {
+                    continue;
+                }
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri.max(rj)] = ri.min(rj);
+                }
+            }
+        }
+
+        // Tally redundant-group sizes.
+        let mut group_size: HashMap<usize, usize> = HashMap::new();
+        for i in 0..n {
+            if !usable[i] || is_pinned[i] {
+                continue;
+            }
+            let r = find(&mut parent, i);
+            *group_size.entry(r).or_insert(0) += 1;
+        }
+        let mut groups = 0usize;
+        let mut absorb = 0usize;
+        for &sz in group_size.values() {
+            if sz >= 2 {
+                groups += 1;
+                absorb += sz - 1; // all but the representative carrier
+            }
+        }
+        report.groups_found = groups;
+        report.would_merge = groups;
+        report.would_absorb = absorb;
+
+        // ShortTerm decay/evict projection (M3). Reactivation is not persisted
+        // until ADR-0036 Phase 1, so "evict" uses the session-local
+        // retrieval_count == 0 — a conservative undercount until then.
+        let mut st_total = 0usize;
+        let mut st_evict = 0usize;
+        for (_, m) in &entries {
+            if m.tier == Tier::ShortTerm {
+                st_total += 1;
+                if m.amplitude < opts.shortterm_evict && m.retrieval_count == 0 {
+                    st_evict += 1;
+                }
+            }
+        }
+        report.shortterm_total = st_total;
+        report.would_decay = st_total;
+        report.would_evict = st_evict;
+        report.projected_memories = n.saturating_sub(absorb).saturating_sub(st_evict);
+
+        report
+    }
+
     pub fn dream_native(
         &mut self,
         cycles: usize,
@@ -986,6 +1124,14 @@ impl MediumBackend for HrmStore {
 
     fn chiral_dream(&mut self, deep: bool, cycles: usize) {
         Self::chiral_dream(self, deep, cycles);
+    }
+
+    fn consolidate_resonance(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {
+        // ADR-0036 Phase 0: planning only — never mutates, whatever the mode.
+        if opts.mode == ConsolidateMode::Off {
+            return ConsolidateReport { mode: "off".to_string(), ..Default::default() };
+        }
+        Self::plan_consolidation(self, opts)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
