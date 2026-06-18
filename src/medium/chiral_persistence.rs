@@ -241,6 +241,38 @@ impl ChiralMedium {
         drop(file);
 
         std::fs::rename(&tmp_path, path_ref)?;
+
+        // Sweep orphaned tmp files. The per-pid/nanos tmp names above avoid
+        // concurrent-save corruption, but interrupted or concurrent saves (a
+        // killed dream, the lite-dream double-writer) leave their
+        // `kannaka.hrm.tmp.<pid>.<nanos>` behind — nothing reclaimed them, and
+        // at ~100 MB each they accumulated to ~3 GB and filled the root disk to
+        // 100% on 2026-06-18 (SQLITE_CANTOPEN cascade). A save takes seconds, so
+        // any sibling tmp older than 5 min is a dead orphan; never delete a
+        // fresh one (it could be another writer's in-flight save).
+        if let (Some(dir), Some(stem)) = (
+            path_ref.parent(),
+            path_ref.file_name().and_then(|s| s.to_str()),
+        ) {
+            let tmp_prefix = format!("{}.tmp.", stem);
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let now = std::time::SystemTime::now();
+                for entry in entries.flatten() {
+                    if !entry.file_name().to_string_lossy().starts_with(&tmp_prefix) {
+                        continue;
+                    }
+                    let old = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .map(|t| now.duration_since(t).map(|d| d.as_secs() > 300).unwrap_or(false))
+                        .unwrap_or(false);
+                    if old {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
