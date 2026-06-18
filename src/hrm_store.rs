@@ -116,6 +116,7 @@ impl HrmStore {
                 store.sync_medium_from_chiral();
                 store.rebuild_cache()?;
                 store.load_link_graph();
+                store.load_reactivation();
                 Ok(store)
             }
             Err(chiral_err) => {
@@ -143,6 +144,7 @@ impl HrmStore {
                 };
                 store.rebuild_cache()?;
                 store.load_link_graph();
+                store.load_reactivation();
                 Ok(store)
             }
         }
@@ -156,6 +158,16 @@ impl HrmStore {
             self.memory_cache.iter()
                 .filter(|(_, m)| !m.connections.is_empty())
                 .map(|(id, m)| (*id, m.connections.clone()))
+                .collect();
+
+        // ADR-0036 Phase 1: reactivation (recall access) is the replay signal for
+        // tier promotion. rebuild_cache runs after every dream/absorb, so without
+        // this snapshot the count would reset to 0 on each rebuild. Preserve it
+        // across the clear, exactly like connections above.
+        let saved_reactivation: std::collections::HashMap<uuid::Uuid, (u32, Option<DateTime<Utc>>)> =
+            self.memory_cache.iter()
+                .filter(|(_, m)| m.retrieval_count > 0)
+                .map(|(id, m)| (*id, (m.retrieval_count, m.updated_at)))
                 .collect();
 
         self.memory_cache.clear();
@@ -237,6 +249,16 @@ impl HrmStore {
             }
         }
 
+        // Restore reactivation counts (ADR-0036 Phase 1).
+        for (id, (count, last)) in saved_reactivation {
+            if let Some(mem) = self.memory_cache.get_mut(&id) {
+                mem.retrieval_count = count;
+                if last.is_some() {
+                    mem.updated_at = last;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -283,6 +305,8 @@ impl HrmStore {
 
         // Save link graph sidecar (connections not stored in HRM binary)
         self.save_link_graph();
+        // Save reactivation sidecar (ADR-0036 Phase 1; not in the HRM binary).
+        self.save_reactivation();
 
         self.dirty = false;
         Ok(())
@@ -321,6 +345,57 @@ impl HrmStore {
                         if !mem.connections.iter().any(|l| l.target_id == link.target_id) {
                             mem.connections.push(link);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Save per-memory reactivation (recall access) as a sidecar JSON, mirroring
+    /// the link-graph sidecar. Reactivation is deliberately NOT in the `.hrm`
+    /// binary — appending fields to the bincode `WavefrontMeta` layout is risky
+    /// (positional format + a fallback-struct chain), and a sidecar matches the
+    /// existing pattern (`.links.json`, `.clusters.json`) with zero format risk.
+    /// ADR-0036 Phase 1. (Read-only processes never reach here, so reactivation
+    /// recorded in read replicas is not persisted — a known limitation tracked
+    /// for a later swarm-aggregation phase.)
+    fn save_reactivation(&self) {
+        let path = self.hrm_path.with_extension("reactivation.json");
+        let map: std::collections::HashMap<String, (u32, Option<DateTime<Utc>>)> = self
+            .memory_cache
+            .iter()
+            .filter(|(_, m)| m.retrieval_count > 0)
+            .map(|(id, m)| (id.to_string(), (m.retrieval_count, m.updated_at)))
+            .collect();
+        if map.is_empty() {
+            return;
+        }
+        if let Ok(json) = serde_json::to_vec(&map) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Load reactivation counts from the sidecar into the cache. ADR-0036 Phase 1.
+    fn load_reactivation(&mut self) {
+        let path = self.hrm_path.with_extension("reactivation.json");
+        if !path.exists() {
+            return;
+        }
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let map: std::collections::HashMap<String, (u32, Option<DateTime<Utc>>)> =
+            match serde_json::from_slice(&data) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+        for (id_str, (count, last)) in map {
+            if let Ok(id) = id_str.parse::<uuid::Uuid>() {
+                if let Some(mem) = self.memory_cache.get_mut(&id) {
+                    mem.retrieval_count = count;
+                    if last.is_some() {
+                        mem.updated_at = last;
                     }
                 }
             }
@@ -1307,6 +1382,58 @@ mod tests {
             let memories = store.all_memories().unwrap();
             assert_eq!(memories[0].content, "persistent content");
         }
+    }
+
+    #[test]
+    fn reactivation_persists_across_reload() {
+        // ADR-0036 Phase 1: a recall-reactivation count must survive a reload
+        // via the `.reactivation.json` sidecar (it is not in the .hrm binary).
+        let pipeline1 = make_test_pipeline();
+        let pipeline2 = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let id;
+        {
+            let mut store = HrmStore::new(pipeline1, path.clone());
+            let memory = HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "reactivated content".to_string());
+            id = store.insert(memory).unwrap();
+            // Ensure the cache holds the inserted memory, then simulate a recall
+            // reactivation on it.
+            store.rebuild_cache().unwrap();
+            let m = store.memory_cache.get_mut(&id).expect("inserted memory in cache");
+            m.retrieval_count = 5;
+            m.updated_at = Some(chrono::Utc::now());
+            store.mark_dirty();
+            store.flush().unwrap(); // save_medium → save_reactivation writes the sidecar
+        }
+
+        // A fresh load must rehydrate the reactivation count from the sidecar.
+        {
+            let store = HrmStore::load(pipeline2, path).unwrap();
+            let m = store.memory_cache.get(&id).expect("memory present after reload");
+            assert_eq!(
+                m.retrieval_count, 5,
+                "reactivation count should survive reload via the sidecar"
+            );
+        }
+    }
+
+    #[test]
+    fn reactivation_survives_rebuild_cache() {
+        // rebuild_cache runs after every dream/absorb; it must preserve the
+        // reactivation count instead of resetting it to 0 (ADR-0036 Phase 1).
+        let pipeline = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp_file.path().to_path_buf());
+        let memory = HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "rebuild content".to_string());
+        let id = store.insert(memory).unwrap();
+        store.rebuild_cache().unwrap();
+        store.memory_cache.get_mut(&id).unwrap().retrieval_count = 7;
+
+        store.rebuild_cache().unwrap(); // would previously wipe the count to 0
+
+        assert_eq!(store.memory_cache.get(&id).unwrap().retrieval_count, 7);
     }
 
     #[test]
