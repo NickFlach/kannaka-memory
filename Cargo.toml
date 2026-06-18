@@ -6,6 +6,9 @@ description = "Hypervector memory system for Kannaka — wave-modulated holograp
 license = "MIT"
 
 [dependencies]
+# Advisory flock for the single-writer dream/write lock (ADR-0036). Already in
+# the tree transitively; flock auto-releases on process exit (no stale locks).
+libc = "0.2"
 dirs = "5"
 rand = "0.8"
 rand_chacha = "0.3"

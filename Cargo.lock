@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "kannaka-memory"
-version = "0.6.30"
+version = "0.6.31"
 dependencies = [
  "bincode",
  "blake3",
@@ -1021,6 +1021,7 @@ dependencies = [
  "image",
  "kannaka-attention",
  "lazy_static",
+ "libc",
  "ndarray",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

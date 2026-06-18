@@ -87,6 +87,61 @@ fn dirs_or_default() -> PathBuf {
     PathBuf::from(".kannaka")
 }
 
+/// Holds an exclusive advisory lock on the HRM write session. Dropping it (or
+/// the process exiting) releases the lock — so a crashed/killed holder never
+/// leaves a stale lock (unlike a pid-file). ADR-0036: serializes writers so a
+/// rogue `dream --mode lite` can't run concurrently with the writer service or
+/// another dream (the double-writer that orphaned tmp files and filled disk).
+pub(crate) struct WriteLock {
+    #[allow(dead_code)]
+    file: std::fs::File,
+}
+
+fn write_lock_path() -> PathBuf {
+    data_dir().join(".kannaka-write.lock")
+}
+
+/// Try to acquire the write lock without blocking. Returns `None` if another
+/// process holds it. On non-Unix (local dev) this is a no-op that always
+/// succeeds — the double-writer scenario is a Linux-deployment concern.
+fn try_acquire_write_lock() -> Option<WriteLock> {
+    let path = write_lock_path();
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&path)
+        .ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            return None; // EWOULDBLOCK — held by another writer
+        }
+    }
+    Some(WriteLock { file })
+}
+
+/// Acquire the write lock, retrying for up to `timeout_secs`. If it still can't
+/// be taken (a dream is unexpectedly long), log and return `None` so the caller
+/// can proceed anyway — a writer that refuses to run is worse than the rare
+/// double-write the per-pid tmp naming + sweep already defang.
+fn acquire_write_lock_blocking(timeout_secs: u64) -> Option<WriteLock> {
+    let deadline = timeout_secs * 2; // poll every 500ms
+    for attempt in 0..deadline.max(1) {
+        if let Some(lock) = try_acquire_write_lock() {
+            return Some(lock);
+        }
+        if attempt == 0 {
+            eprintln!("[lock] write lock held by another process — waiting up to {timeout_secs}s…");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    eprintln!("[lock] WARN: could not acquire write lock within {timeout_secs}s — proceeding (per-pid tmp + sweep guard against corruption)");
+    None
+}
+
 fn init_with_hrm(
     data_dir: PathBuf,
     quiet: bool,
@@ -2029,6 +2084,20 @@ fn main() {
                 }
             }
 
+            // ADR-0036: serialize the write session. A dream is a heavy writer;
+            // if the writer service or another dream already holds the lock,
+            // skip rather than double-write (the bug that orphaned tmp files and
+            // filled the disk). dream-cron stops the writer first, so the nightly
+            // deep dream acquires cleanly; a rogue `dream --mode lite` from a
+            // Node service while the writer runs now no-ops instead of colliding.
+            let _write_lock = match try_acquire_write_lock() {
+                Some(lock) => lock,
+                None => {
+                    eprintln!("[dream] another writer/dream holds the write lock — skipping (single-writer policy)");
+                    process::exit(0);
+                }
+            };
+
             let dream_result = if dream_mode == "lite" {
                 sys.dream_lite()
             } else {
@@ -2934,6 +3003,24 @@ fn main() {
                     if display_name.is_empty() {
                         display_name = my_agent_id.clone();
                     }
+
+                    // ADR-0036: the continuous writer (kannaka-memory.service runs
+                    // `swarm join`) is the sole HRM writer — hold the write lock
+                    // for its lifetime so a concurrent `dream` (especially the
+                    // Node-triggered lite dream) skips instead of double-writing.
+                    // Readonly replicas don't write, so they must NOT take the
+                    // lock (they'd block dreams forever). flock auto-releases on
+                    // process exit, so a crash never leaves a stale lock.
+                    let _join_write_lock: Option<WriteLock> = {
+                        let readonly = std::env::var("KANNAKA_READONLY")
+                            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                            .unwrap_or(false);
+                        if readonly {
+                            None
+                        } else {
+                            acquire_write_lock_blocking(60)
+                        }
+                    };
 
                     // Persist agent_id for subsequent commands
                     let id_file = data_dir().join("agent_id");
