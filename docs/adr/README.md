@@ -48,3 +48,4 @@ ADR-0001 (Biomimetic Memory)
 | [0006](ADR-0006-cochlear-audio-processing.md) | Cochlear Audio Processing | Ancestor | 2026-02-22 |
 | [0007](ADR-0007-audio-perception.md) | Audio Perception (kannaka-ear) | Built | 2026-02-28 |
 | [0008](ADR-0008-video-perception.md) | Video Perception (kannaka-eye) | Proposed | 2026-03-01 |
+| [0036](ADR-0036-consolidation-as-resonance-merge.md) | Consolidation as Resonance-Merge (replace energy-prune) | Proposed | 2026-06-18 |
