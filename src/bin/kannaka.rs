@@ -1273,6 +1273,9 @@ fn main() {
                     } else {
                         println!("{}", serde_json::to_string(&json_results).unwrap());
                     }
+                    // ADR-0036 Phase 1: persist this recall's reactivation bump
+                    // (the process exits without saving the .hrm otherwise).
+                    sys.flush_reactivation();
                 }
                 Err(e) => {
                     if envelope {

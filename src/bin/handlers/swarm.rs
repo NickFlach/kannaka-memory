@@ -132,6 +132,12 @@ pub(crate) fn handle_swarm_serve(
         None => eprintln!("[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"),
     }
 
+    // ADR-0036 Phase 1: this daemon is read-only and never saves the .hrm, but
+    // it serves the bulk of recall traffic — so its reactivation bumps must be
+    // flushed to the sidecar (sidecar-only write, safe under readonly) or the
+    // replay signal is lost. Flush at most once a minute.
+    let mut last_reactivation_flush = std::time::Instant::now();
+
     loop {
         // Round-robin: try directed first, then broadcast. Timeout means
         // "nothing right now — poll the next subject"; Closed means the
@@ -206,6 +212,10 @@ pub(crate) fn handle_swarm_serve(
         }
         if recall_closed {
             recall_sub = None;
+        }
+        if last_reactivation_flush.elapsed() >= Duration::from_secs(60) {
+            sys.flush_reactivation();
+            last_reactivation_flush = std::time::Instant::now();
         }
     }
 }

@@ -378,6 +378,15 @@ impl KannakaMemorySystem {
     /// Goes straight to `resonate_query()` which is the canonical read path:
     /// reading IS observation, attention boosts recalled wavefronts, and the
     /// medium is permanently changed by the act of recall.
+    /// ADR-0036 Phase 1: persist accumulated reactivation counts to the
+    /// `.reactivation.json` sidecar. Recall bumps `retrieval_count` in-cache but
+    /// short-lived CLI / readonly daemon processes never save the `.hrm`; this
+    /// writes only the sidecar (safe under readonly) so the replay signal
+    /// survives for the next dream's promotion pass.
+    pub fn flush_reactivation(&self) {
+        self.engine.store.flush_reactivation();
+    }
+
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<RecallResult>, SystemError> {
         let results = self.engine.store.resonate_query(query, top_k)
             .map_err(|e| SystemError::Store(e))?;

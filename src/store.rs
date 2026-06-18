@@ -209,6 +209,12 @@ pub trait MediumBackend: Send + Sync {
     /// Only meaningful for HrmStore with a chiral medium. Default is a no-op.
     fn chiral_dream(&mut self, _deep: bool, _cycles: usize) {}
 
+    /// ADR-0036 Phase 1: flush per-memory reactivation counts to the sidecar.
+    /// Default no-op; HrmStore writes `.reactivation.json` (sidecar only, safe
+    /// under readonly). Called by the serve daemon and CLI `recall` so recall
+    /// reactivation survives even though those processes never persist the .hrm.
+    fn flush_reactivation(&self) {}
+
     /// ADR-0036: plan (and, from Phase 2, apply) resonance-merge consolidation.
     /// Default is a no-op returning an "off" report; only HrmStore implements it.
     /// Takes `&mut self` to accommodate the future apply path; Phase 0 never mutates.

@@ -306,7 +306,8 @@ impl HrmStore {
         // Save link graph sidecar (connections not stored in HRM binary)
         self.save_link_graph();
         // Save reactivation sidecar (ADR-0036 Phase 1; not in the HRM binary).
-        self.save_reactivation();
+        // The single writer holds the full cache, so it may prune stale ids.
+        self.save_reactivation_merge(true);
 
         self.dirty = false;
         Ok(())
@@ -359,20 +360,60 @@ impl HrmStore {
     /// ADR-0036 Phase 1. (Read-only processes never reach here, so reactivation
     /// recorded in read replicas is not persisted — a known limitation tracked
     /// for a later swarm-aggregation phase.)
-    fn save_reactivation(&self) {
+    /// Merge this process's reactivation counts into the sidecar (read existing
+    /// → take the MAX per id → write back). Merge-on-write is required because
+    /// several processes touch the sidecar — the single writer on dream-save,
+    /// the readonly serve daemon, and short-lived CLI `recall` — and a plain
+    /// overwrite would let them clobber each other's counts. Counts are
+    /// monotonic, so MAX is the correct reconciliation for a heuristic.
+    ///
+    /// `prune_stale` drops entries whose id is absent from this cache; only the
+    /// single writer (which holds the full cache) may prune — partial-cache
+    /// callers (daemon/CLI) must pass `false` or they would delete other
+    /// memories' counts.
+    fn save_reactivation_merge(&self, prune_stale: bool) {
         let path = self.hrm_path.with_extension("reactivation.json");
-        let map: std::collections::HashMap<String, (u32, Option<DateTime<Utc>>)> = self
-            .memory_cache
-            .iter()
-            .filter(|(_, m)| m.retrieval_count > 0)
-            .map(|(id, m)| (id.to_string(), (m.retrieval_count, m.updated_at)))
-            .collect();
-        if map.is_empty() {
+        let mut merged: std::collections::HashMap<String, (u32, Option<DateTime<Utc>>)> =
+            std::fs::read(&path)
+                .ok()
+                .and_then(|d| serde_json::from_slice(&d).ok())
+                .unwrap_or_default();
+
+        for (id, m) in &self.memory_cache {
+            if m.retrieval_count == 0 {
+                continue;
+            }
+            let entry = merged.entry(id.to_string()).or_insert((0, None));
+            if m.retrieval_count > entry.0 {
+                entry.0 = m.retrieval_count;
+            }
+            if m.updated_at.is_some() && (entry.1.is_none() || m.updated_at > entry.1) {
+                entry.1 = m.updated_at;
+            }
+        }
+
+        if prune_stale {
+            merged.retain(|k, _| {
+                k.parse::<uuid::Uuid>()
+                    .map(|id| self.memory_cache.contains_key(&id))
+                    .unwrap_or(false)
+            });
+        }
+
+        if merged.is_empty() {
             return;
         }
-        if let Ok(json) = serde_json::to_vec(&map) {
+        if let Ok(json) = serde_json::to_vec(&merged) {
             let _ = std::fs::write(&path, json);
         }
+    }
+
+    /// Flush reactivation to the sidecar from a possibly-readonly, partial-cache
+    /// process (the serve daemon or a CLI `recall`). ADR-0036 Phase 1. This is
+    /// intentionally NOT gated by `readonly`: it writes only the heuristic
+    /// sidecar, never the `.hrm`, so it does not violate single-writer.
+    pub fn flush_reactivation(&self) {
+        self.save_reactivation_merge(false);
     }
 
     /// Load reactivation counts from the sidecar into the cache. ADR-0036 Phase 1.
@@ -1201,6 +1242,10 @@ impl MediumBackend for HrmStore {
         Self::chiral_dream(self, deep, cycles);
     }
 
+    fn flush_reactivation(&self) {
+        Self::flush_reactivation(self);
+    }
+
     fn consolidate_resonance(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {
         // ADR-0036 Phase 0: planning only — never mutates, whatever the mode.
         if opts.mode == ConsolidateMode::Off {
@@ -1434,6 +1479,42 @@ mod tests {
         store.rebuild_cache().unwrap(); // would previously wipe the count to 0
 
         assert_eq!(store.memory_cache.get(&id).unwrap().retrieval_count, 7);
+    }
+
+    #[test]
+    fn reactivation_sidecar_merges_max_no_clobber() {
+        // Several processes touch the sidecar; a flush must MERGE (max), never
+        // overwrite a higher count with a lower one (ADR-0036 Phase 1).
+        fn sidecar_count(hrm_path: &std::path::Path, id: &uuid::Uuid) -> u32 {
+            let p = hrm_path.with_extension("reactivation.json");
+            let data = std::fs::read(&p).unwrap();
+            let map: std::collections::HashMap<String, (u32, Option<DateTime<Utc>>)> =
+                serde_json::from_slice(&data).unwrap();
+            map.get(&id.to_string()).map(|e| e.0).unwrap_or(0)
+        }
+
+        let pipeline = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+        let mut store = HrmStore::new(pipeline, path.clone());
+        let id = store
+            .insert(HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "m".to_string()))
+            .unwrap();
+        store.rebuild_cache().unwrap();
+
+        store.memory_cache.get_mut(&id).unwrap().retrieval_count = 4;
+        store.flush_reactivation();
+        assert_eq!(sidecar_count(&path, &id), 4);
+
+        // A lower count must not clobber the higher one.
+        store.memory_cache.get_mut(&id).unwrap().retrieval_count = 1;
+        store.flush_reactivation();
+        assert_eq!(sidecar_count(&path, &id), 4, "merge=max: lower must not win");
+
+        // A higher count advances it.
+        store.memory_cache.get_mut(&id).unwrap().retrieval_count = 9;
+        store.flush_reactivation();
+        assert_eq!(sidecar_count(&path, &id), 9);
     }
 
     #[test]
