@@ -656,27 +656,41 @@ impl KannakaMemorySystem {
             .unwrap_or_default()
     }
 
-    /// ADR-0031 Phase 2b: promote short-term memories whose amplitude grew by at
-    /// least `KANNAKA_PROMOTE_DELTA` (default 0.05) across the dream — i.e. the
-    /// consolidation strengthened them, so they graduate to long-term and are no
-    /// longer eviction-eligible by `triage`. Returns the number promoted.
+    /// Promote short-term memories that have earned long-term retention, by
+    /// either gate:
+    ///   - ADR-0031 Phase 2b: amplitude grew by ≥ `KANNAKA_PROMOTE_DELTA`
+    ///     (default 0.05) across the dream — consolidation strengthened them; OR
+    ///   - ADR-0036 replay-gated: reactivated (recalled) ≥ `KANNAKA_PROMOTE_HITS`
+    ///     times (default 3). Recall IS replay — a memory the owner keeps
+    ///     reaching for is worth keeping, independent of dream strengthening.
+    ///     Uses the now-persisted `retrieval_count` (loaded from the
+    ///     `.reactivation.json` sidecar at dream startup).
+    /// Promoted memories are no longer eviction-eligible by `triage`. Returns
+    /// the number promoted.
     fn promote_strengthened_short_term(&mut self, before: &std::collections::HashMap<Uuid, f32>) -> usize {
         use crate::medium::types::Tier;
-        if before.is_empty() {
-            return 0;
-        }
         let eps: f32 = std::env::var("KANNAKA_PROMOTE_DELTA")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.05);
+        let promote_hits: u32 = std::env::var("KANNAKA_PROMOTE_HITS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
         // Collect ids first (immutable borrow), then mutate.
         let to_promote: Vec<Uuid> = match self.engine.store.all_memories() {
             Ok(mems) => mems.iter().filter_map(|m| {
-                if m.tier == Tier::ShortTerm {
-                    if let Some(&amp0) = before.get(&m.id) {
-                        if m.amplitude >= amp0 + eps {
-                            return Some(m.id);
-                        }
+                if m.tier != Tier::ShortTerm {
+                    return None;
+                }
+                // Replay-gated: recalled enough to have earned retention.
+                if m.retrieval_count >= promote_hits {
+                    return Some(m.id);
+                }
+                // Strengthening-gated: the dream consolidation grew its amplitude.
+                if let Some(&amp0) = before.get(&m.id) {
+                    if m.amplitude >= amp0 + eps {
+                        return Some(m.id);
                     }
                 }
                 None
@@ -1534,6 +1548,45 @@ mod tests {
         sys.remember("memory two").unwrap();
         let report = sys.dream().unwrap();
         assert!(report.cycles > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reactivation_promotes_short_term() {
+        // ADR-0036 replay-gated promotion: a ShortTerm memory recalled enough
+        // times graduates to LongTerm via promote_strengthened_short_term, with
+        // NO amplitude growth (empty before-snapshot) — the reactivation gate
+        // alone drives it. Exercises the full chain: recall → record_retrieval
+        // → promote reads retrieval_count.
+        let dir = temp_dir("reactpromote");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        let id = sys.remember("a memory worth recalling often").unwrap();
+
+        // Force ShortTerm (remember defaults to LongTerm in-lib).
+        {
+            let hrm = sys
+                .engine
+                .store
+                .as_any_mut()
+                .downcast_mut::<crate::hrm_store::HrmStore>()
+                .unwrap();
+            assert!(hrm.set_tier(&id, crate::medium::types::Tier::ShortTerm));
+        }
+
+        // Recall it KANNAKA_PROMOTE_HITS (default 3) times — each bumps
+        // retrieval_count via the production recall path.
+        for _ in 0..3 {
+            let hits = sys.recall("a memory worth recalling often", 5).unwrap();
+            assert!(hits.iter().any(|r| r.id == id), "recall should return the memory");
+        }
+
+        // Empty before-snapshot → only the reactivation gate can promote.
+        let promoted = sys.promote_strengthened_short_term(&std::collections::HashMap::new());
+        assert!(promoted >= 1, "reactivated short-term memory should be promoted");
+
+        let mems = sys.engine.store.all_memories().unwrap();
+        let m = mems.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(m.tier, crate::medium::types::Tier::LongTerm);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
