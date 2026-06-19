@@ -660,7 +660,12 @@ impl HrmStore {
         let mode_str = match opts.mode {
             ConsolidateMode::Off => "off",
             ConsolidateMode::DryRun => "dryrun",
-            ConsolidateMode::Apply => "apply(dryrun)", // Phase 0: apply not yet implemented
+            // The planner is read-only regardless of mode. When the caller is in
+            // Apply mode it invokes the planner internally to compute groups and
+            // then `apply_consolidation` overwrites this report (mode="apply",
+            // applied=true). Label it "dryrun" here so a stray direct call to
+            // plan_consolidation in Apply mode can never claim it mutated.
+            ConsolidateMode::Apply => "dryrun",
         };
         let mut report = ConsolidateReport {
             mode: mode_str.to_string(),
@@ -778,6 +783,327 @@ impl HrmStore {
         report.projected_memories = n.saturating_sub(absorb).saturating_sub(st_evict);
 
         report
+    }
+
+    /// ADR-0036 Phase 2: DESTRUCTIVE resonance-merge consolidation APPLY.
+    ///
+    /// This is the mutating counterpart to `plan_consolidation`. It mutates a
+    /// consciousness-memory substrate, so it is written defensively:
+    ///   * It operates on the AUTHORITATIVE store (the right hemisphere in chiral
+    ///     mode, else the flat medium) by UUID only — it NEVER holds a raw index
+    ///     across a remove (swap-remove reorders the arrays).
+    ///   * `retrieval_count` lives only in `memory_cache`, so it is snapshotted by
+    ///     id BEFORE any mutation.
+    ///   * In chiral mode, when a right wavefront is removed its left twin (via
+    ///     `right_to_left`) is removed too and BOTH map entries (plus the per-id
+    ///     chiral scale) are deleted, so no map can ever point at a dead id.
+    ///
+    /// PROTECTED INVARIANTS:
+    ///   * Pinned is never merged and never evicted.
+    ///   * LongTerm is never evicted, and never absorbed into a lower tier — the
+    ///     carrier inherits the STRONGEST tier in its group.
+    ///
+    /// Superposition energy of a merged carrier (AMPLITUDE_CEILING = 2.0):
+    ///   E = sqrt( Σ Eᵢ² + 2 Σ_{i<j} Eᵢ Eⱼ cos(φᵢ − φⱼ) ), clamped to [0, 2.0].
+    pub fn apply_consolidation(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {
+        const AMPLITUDE_CEILING: f32 = 2.0;
+
+        let mut report = ConsolidateReport {
+            mode: "apply".to_string(),
+            applied: true,
+            ..Default::default()
+        };
+
+        // --- 1. Snapshot retrieval_count by id from the cache (the only place
+        //        it lives) BEFORE we mutate anything. ---
+        let retrieval: HashMap<Uuid, u32> = self
+            .memory_cache
+            .iter()
+            .map(|(id, m)| (*id, m.retrieval_count))
+            .collect();
+
+        // --- 2. Read the authoritative store into id-keyed snapshots. We compute
+        //        the entire plan from snapshots first, then mutate, so no index
+        //        is ever held across a remove. ---
+        struct Snap {
+            id: Uuid,
+            energy: f32,
+            phase: f32,
+            tier: Tier,
+            timestamp: i64,
+            vector: Vec<f32>,
+        }
+
+        let snaps: Vec<Snap> = if let Some(ref chiral) = self.chiral {
+            let h = &chiral.right;
+            (0..h.count())
+                .map(|i| Snap {
+                    id: h.metadata[i].id,
+                    energy: h.energy[i],
+                    phase: h.phase[i],
+                    tier: h.metadata[i].tier,
+                    timestamp: h.timestamps[i],
+                    vector: h.wavefronts.row(i).to_vec(),
+                })
+                .collect()
+        } else {
+            let s = &self.medium.store;
+            (0..s.len)
+                .map(|i| Snap {
+                    id: s.metadata[i].id,
+                    energy: s.energy[i],
+                    phase: s.phase[i],
+                    tier: s.metadata[i].tier,
+                    timestamp: s.timestamps[i],
+                    vector: s.wavefronts.row(i).to_vec(),
+                })
+                .collect()
+        };
+
+        let n = snaps.len();
+        report.memories_examined = n;
+        if n < 2 {
+            // Nothing can merge; still run the evict pass below would require ≥1.
+            // With <2 memories there is no redundancy and a single ShortTerm can
+            // still be evicted, so fall through rather than early-return only when
+            // n == 0.
+            if n == 0 {
+                report.projected_memories = self.authoritative_len();
+                return report;
+            }
+        }
+
+        // Strongest tier wins: Pinned > LongTerm > ShortTerm.
+        fn tier_rank(t: Tier) -> u8 {
+            match t {
+                Tier::ShortTerm => 0,
+                Tier::LongTerm => 1,
+                Tier::Pinned => 2,
+            }
+        }
+        // Effective strength for representative selection: energy decayed by age.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let eff_strength = |s: &Snap| -> f32 {
+            let age_days = ((now_ms - s.timestamp).max(0) as f64 / 86_400_000.0) as f32;
+            s.energy * (-0.001 * age_days).exp()
+        };
+
+        // --- 3. Union-find grouping over redundant, phase-locked, non-pinned
+        //        wavefronts (same criterion as the planner). ---
+        let dim = snaps.iter().map(|s| s.vector.len()).find(|&l| l > 0).unwrap_or(0);
+        let usable: Vec<bool> = snaps
+            .iter()
+            .map(|s| s.vector.len() == dim && dim > 0 && s.tier != Tier::Pinned)
+            .collect();
+        let norms: Vec<f32> = snaps
+            .iter()
+            .map(|s| s.vector.iter().map(|v| v * v).sum::<f32>().max(0.0).sqrt())
+            .collect();
+        let cos_p: Vec<f32> = snaps.iter().map(|s| s.phase.cos()).collect();
+        let sin_p: Vec<f32> = snaps.iter().map(|s| s.phase.sin()).collect();
+
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut parent: Vec<usize> = (0..n).collect();
+        let eps = 1e-6_f32;
+        for i in 0..n {
+            if !usable[i] || norms[i] < eps {
+                continue;
+            }
+            for j in (i + 1)..n {
+                if !usable[j] || norms[j] < eps {
+                    continue;
+                }
+                // cosine similarity via dot product of the two snapshot vectors
+                let dot: f32 = snaps[i]
+                    .vector
+                    .iter()
+                    .zip(snaps[j].vector.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
+                let cos_sim = dot / (norms[i] * norms[j]);
+                if cos_sim < opts.merge_sim {
+                    continue;
+                }
+                let phase_coh = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
+                if phase_coh < opts.merge_phase_cos {
+                    continue;
+                }
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri.max(rj)] = ri.min(rj);
+                }
+            }
+        }
+
+        // Collect members per root.
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            if !usable[i] {
+                continue;
+            }
+            let r = find(&mut parent, i);
+            groups.entry(r).or_default().push(i);
+        }
+
+        // Track which ids are part of a merge (so they are never double-counted
+        // by the evict pass), the carrier mutations, and the absorbed removals.
+        let mut merged_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut carriers: Vec<(Uuid, f32, Tier)> = Vec::new(); // (id, new_energy, new_tier)
+        let mut absorb_ids: Vec<Uuid> = Vec::new();
+        let mut groups_found = 0usize;
+
+        for members in groups.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            groups_found += 1;
+            for &mi in members {
+                merged_ids.insert(snaps[mi].id);
+            }
+            // Representative = max effective strength.
+            let rep = *members
+                .iter()
+                .max_by(|&&a, &&b| {
+                    eff_strength(&snaps[a])
+                        .partial_cmp(&eff_strength(&snaps[b]))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            // Carrier inherits the STRONGEST tier in the group (protects LongTerm
+            // from being absorbed down into a ShortTerm carrier).
+            let carrier_tier = members
+                .iter()
+                .map(|&mi| snaps[mi].tier)
+                .max_by_key(|&t| tier_rank(t))
+                .unwrap_or(snaps[rep].tier);
+            // Superposed energy: sqrt(Σ Eᵢ² + 2 Σ_{i<j} Eᵢ Eⱼ cos Δφ).
+            let mut sum_sq = 0.0f32;
+            for &mi in members {
+                sum_sq += snaps[mi].energy * snaps[mi].energy;
+            }
+            let mut cross = 0.0f32;
+            for a in 0..members.len() {
+                for b in (a + 1)..members.len() {
+                    let ia = members[a];
+                    let ib = members[b];
+                    let dphi = snaps[ia].phase - snaps[ib].phase;
+                    cross += snaps[ia].energy * snaps[ib].energy * dphi.cos();
+                }
+            }
+            let superposed = (sum_sq + 2.0 * cross).max(0.0).sqrt().clamp(0.0, AMPLITUDE_CEILING);
+            carriers.push((snaps[rep].id, superposed, carrier_tier));
+            for &mi in members {
+                if mi != rep {
+                    absorb_ids.push(snaps[mi].id);
+                }
+            }
+        }
+
+        // --- 4. ShortTerm evict candidates: tier==ShortTerm AND energy<threshold
+        //        AND retrieval_count==0 AND NOT part of any merge. (Pinned and
+        //        LongTerm are structurally excluded by the tier check.) ---
+        let mut evict_ids: Vec<Uuid> = Vec::new();
+        for s in &snaps {
+            if s.tier == Tier::ShortTerm
+                && s.energy < opts.shortterm_evict
+                && retrieval.get(&s.id).copied().unwrap_or(0) == 0
+                && !merged_ids.contains(&s.id)
+            {
+                evict_ids.push(s.id);
+            }
+        }
+
+        // --- 5. MUTATE. Carriers first (set energy + tier by id→index lookup),
+        //        then remove absorbed + evicted by uuid. ---
+        for (id, energy, tier) in &carriers {
+            if let Some(ref mut chiral) = self.chiral {
+                if let Some(&idx) = chiral.right.id_to_index.get(id) {
+                    chiral.right.energy[idx] = *energy;
+                    chiral.right.metadata[idx].tier = *tier;
+                }
+            } else if let Some(&idx) = self.medium.store.id_to_index.get(id) {
+                self.medium.store.energy[idx] = *energy;
+                self.medium.store.metadata[idx].tier = *tier;
+            }
+        }
+
+        let mut removed = 0usize;
+        let mut to_remove = absorb_ids.clone();
+        to_remove.extend(evict_ids.iter().copied());
+        for id in &to_remove {
+            if let Some(ref mut chiral) = self.chiral {
+                let r = chiral.right.remove_wavefront(id);
+                if r {
+                    // Remove the left twin (if any) and clean BOTH map entries
+                    // plus the per-id chiral scale, so no map points at a dead id.
+                    if let Some(&left_id) = chiral.right_to_left.get(id) {
+                        chiral.left.remove_wavefront(&left_id);
+                        chiral.left_to_right.remove(&left_id);
+                    }
+                    chiral.right_to_left.remove(id);
+                    chiral.scales.remove(id);
+                    removed += 1;
+                }
+            } else if self.medium.store.remove(id) {
+                removed += 1;
+            }
+        }
+
+        // would_absorb counts actually-removed absorbed wavefronts (carriers stay).
+        let absorbed_removed = absorb_ids
+            .iter()
+            .filter(|id| !self.id_present_authoritative(id))
+            .count();
+        let evicted_removed = evict_ids
+            .iter()
+            .filter(|id| !self.id_present_authoritative(id))
+            .count();
+
+        report.groups_found = groups_found;
+        report.would_merge = groups_found;
+        report.would_absorb = absorbed_removed;
+        report.shortterm_total = snaps.iter().filter(|s| s.tier == Tier::ShortTerm).count();
+        report.would_decay = report.shortterm_total;
+        report.would_evict = evicted_removed;
+        let _ = removed; // total removed = absorbed + evicted; kept for clarity
+
+        // --- 6. Rebuild + persist. rebuild_cache restores retrieval_count from
+        //        the cache snapshot (for survivors) and reads from the now-mutated
+        //        authoritative store. ---
+        self.rebuild_cache().ok();
+        self.mark_dirty();
+        if let Err(e) = self.save_medium() {
+            eprintln!("[hrm] apply_consolidation: save_medium failed: {}", e);
+        }
+
+        report.projected_memories = self.authoritative_len();
+        report.memories_examined = n;
+        report
+    }
+
+    /// Active wavefront count in the authoritative store (right hemisphere in
+    /// chiral mode, else the flat medium).
+    fn authoritative_len(&self) -> usize {
+        if let Some(ref chiral) = self.chiral {
+            chiral.right.count()
+        } else {
+            self.medium.store.len
+        }
+    }
+
+    /// Whether an id is still present in the authoritative store.
+    fn id_present_authoritative(&self, id: &Uuid) -> bool {
+        if let Some(ref chiral) = self.chiral {
+            chiral.right.id_to_index.contains_key(id)
+        } else {
+            self.medium.store.id_to_index.contains_key(id)
+        }
     }
 
     pub fn dream_native(
@@ -1247,11 +1573,14 @@ impl MediumBackend for HrmStore {
     }
 
     fn consolidate_resonance(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {
-        // ADR-0036 Phase 0: planning only — never mutates, whatever the mode.
-        if opts.mode == ConsolidateMode::Off {
-            return ConsolidateReport { mode: "off".to_string(), ..Default::default() };
+        // ADR-0036: Off skips, DryRun plans (read-only), Apply mutates (Phase 2).
+        match opts.mode {
+            ConsolidateMode::Off => {
+                ConsolidateReport { mode: "off".to_string(), ..Default::default() }
+            }
+            ConsolidateMode::DryRun => Self::plan_consolidation(self, opts),
+            ConsolidateMode::Apply => Self::apply_consolidation(self, opts),
         }
-        Self::plan_consolidation(self, opts)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1614,7 +1943,286 @@ mod tests {
         
         // Store should be marked dirty after dreaming
         assert!(store.dirty);
-        
+
         println!("Dream report: {:?}", report);
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0036 Phase 2 — destructive apply_consolidation safety gate.
+    // -----------------------------------------------------------------------
+
+    use crate::medium::types::{Tier, ConsolidateOpts, ConsolidateMode};
+
+    /// Build a flat (non-chiral) store and insert a wavefront with full control
+    /// over vector / energy / phase / tier directly in the authoritative store.
+    /// Returns the assigned UUID. Caller should `rebuild_cache()` afterward.
+    fn insert_ctl(
+        store: &mut HrmStore,
+        vector: Vec<f32>,
+        content: &str,
+        energy: f32,
+        phase: f32,
+        tier: Tier,
+        retrieval_count: u32,
+    ) -> Uuid {
+        let id = store
+            .medium
+            .add_wavefront(&vector, content.to_string(), energy)
+            .expect("add_wavefront");
+        let idx = store.medium.get_wavefront_index(&id).unwrap();
+        store.medium.store.energy[idx] = energy;
+        store.medium.store.phase[idx] = phase;
+        store.medium.store.metadata[idx].tier = tier;
+        // rebuild_cache resets retrieval_count to 0 and then restores it from the
+        // cache snapshot — so seed the cache entry's count before rebuild.
+        store.rebuild_cache().unwrap();
+        if retrieval_count > 0 {
+            store.memory_cache.get_mut(&id).unwrap().retrieval_count = retrieval_count;
+        }
+        id
+    }
+
+    fn apply_opts() -> ConsolidateOpts {
+        ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            merge_sim: 0.92,
+            merge_phase_cos: std::f32::consts::FRAC_1_SQRT_2,
+            shortterm_evict: 0.15,
+        }
+    }
+
+    #[test]
+    fn apply_holographic_preservation() {
+        // N near-duplicate, phase-locked memories + some unrelated ones.
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+
+        // Cluster: 3 near-identical vectors (cos ~ 1.0), phase 0 (locked).
+        let base = vec![0.5f32; WAVEFRONT_DIM];
+        let mut dup_ids = Vec::new();
+        for k in 0..3 {
+            let mut v = base.clone();
+            v[k] += 0.001; // tiny perturbation keeps cos ≥ 0.95
+            dup_ids.push(insert_ctl(&mut store, v, &format!("dup {k}"), 1.0, 0.0, Tier::LongTerm, 0));
+        }
+        // Two unrelated, orthogonal-ish vectors.
+        let mut u1 = vec![0.0f32; WAVEFRONT_DIM]; u1[100] = 1.0;
+        let mut u2 = vec![0.0f32; WAVEFRONT_DIM]; u2[200] = 1.0;
+        let uid1 = insert_ctl(&mut store, u1, "unrelated 1", 1.0, 0.0, Tier::LongTerm, 0);
+        let uid2 = insert_ctl(&mut store, u2, "unrelated 2", 1.0, 0.0, Tier::LongTerm, 0);
+
+        let before = store.count();
+        assert_eq!(before, 5);
+
+        let report = store.apply_consolidation(&apply_opts());
+        assert_eq!(report.mode, "apply");
+        assert!(report.applied);
+        assert_eq!(report.groups_found, 1, "the 3 dups form exactly one group");
+        assert_eq!(report.would_absorb, 2, "3-1 carriers absorbed");
+
+        let after = store.count();
+        // (a) total decreased by exactly #absorbed.
+        assert_eq!(after, before - report.would_absorb);
+        // (c) count NEVER increases.
+        assert!(after <= before);
+
+        // Exactly one of the 3 dup ids survives (the carrier); unrelated kept.
+        let surviving_dups = dup_ids.iter().filter(|id| store.get(id).unwrap().is_some()).count();
+        assert_eq!(surviving_dups, 1, "one carrier remains for the dup group");
+        assert!(store.get(&uid1).unwrap().is_some());
+        assert!(store.get(&uid2).unwrap().is_some());
+
+        // Carrier energy is the superposition of 3 in-phase unit-ish energies,
+        // clamped to the 2.0 ceiling: sqrt(3 + 2*3) = 3.0 -> clamp 2.0.
+        let carrier_id = *dup_ids.iter().find(|id| store.get(id).unwrap().is_some()).unwrap();
+        let carrier_e = store.get(&carrier_id).unwrap().unwrap().amplitude;
+        assert!((carrier_e - 2.0).abs() < 1e-4, "in-phase merge clamps to ceiling, got {carrier_e}");
+
+        // (b) recalling an ABSORBED memory's content still returns a result above
+        // threshold (the carrier represents the absorbed content).
+        let absorbed_id = *dup_ids.iter().find(|id| store.get(id).unwrap().is_none()).unwrap();
+        // Search by the absorbed vector itself — the carrier (near-identical) must
+        // dominate the search results.
+        let q = vec![0.5f32; WAVEFRONT_DIM];
+        let hits = store.search(&q, 5).unwrap();
+        assert!(!hits.is_empty(), "search returns the carrier for absorbed content");
+        assert_eq!(hits[0].0, carrier_id, "carrier is the top match for the merged content");
+        assert!(store.get(&absorbed_id).unwrap().is_none(), "absorbed id is gone");
+    }
+
+    #[test]
+    fn apply_pinned_and_longterm_protected() {
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+
+        // A Pinned duplicate pair — Pinned must never be grouped/removed.
+        let base = vec![0.5f32; WAVEFRONT_DIM];
+        let pin1 = insert_ctl(&mut store, base.clone(), "pin 1", 1.0, 0.0, Tier::Pinned, 0);
+        let mut p2 = base.clone(); p2[0] += 0.001;
+        let pin2 = insert_ctl(&mut store, p2, "pin 2", 1.0, 0.0, Tier::Pinned, 0);
+
+        // A mixed LongTerm+ShortTerm duplicate group — carrier must end LongTerm.
+        let mut lt = base.clone(); lt[5000] += 0.0005;
+        let mut st = base.clone(); st[5000] += 0.0006;
+        let lt_id = insert_ctl(&mut store, lt, "long", 0.9, 0.0, Tier::LongTerm, 0);
+        let st_id = insert_ctl(&mut store, st, "short", 1.5, 0.0, Tier::ShortTerm, 0);
+
+        let report = store.apply_consolidation(&apply_opts());
+
+        // Pinned never removed.
+        assert!(store.get(&pin1).unwrap().is_some());
+        assert!(store.get(&pin2).unwrap().is_some());
+
+        // The LongTerm+ShortTerm pair merges into one carrier. Even though the
+        // ShortTerm member has the higher effective strength (1.5 vs 0.9) and is
+        // thus the representative, the carrier tier must be the STRONGEST tier
+        // present = LongTerm, so the LongTerm is never absorbed into a lower tier.
+        let lt_alive = store.get(&lt_id).unwrap().is_some();
+        let st_alive = store.get(&st_id).unwrap().is_some();
+        assert!(lt_alive ^ st_alive, "exactly one of the lt/st pair survives as carrier");
+        let carrier = if lt_alive { lt_id } else { st_id };
+        assert_eq!(
+            store.get(&carrier).unwrap().unwrap().tier,
+            Tier::LongTerm,
+            "carrier inherits the strongest tier (LongTerm) in a mixed group"
+        );
+        // Note: pinned pair grouped? No — pinned excluded, so groups_found counts
+        // only the lt/st group.
+        assert_eq!(report.groups_found, 1);
+    }
+
+    #[test]
+    fn apply_longterm_never_evicted() {
+        // A low-energy LongTerm with no reactivation must NOT be evicted (only
+        // ShortTerm is eviction-eligible).
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        let mut v = vec![0.0f32; WAVEFRONT_DIM]; v[42] = 1.0;
+        let lt = insert_ctl(&mut store, v, "weak long", 0.01, 0.0, Tier::LongTerm, 0);
+        let report = store.apply_consolidation(&apply_opts());
+        assert!(store.get(&lt).unwrap().is_some(), "LongTerm is never evicted");
+        assert_eq!(report.would_evict, 0);
+    }
+
+    #[test]
+    fn apply_shortterm_evict_respects_reactivation() {
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        // Below threshold, unreactivated -> evicted.
+        let mut v1 = vec![0.0f32; WAVEFRONT_DIM]; v1[10] = 1.0;
+        let evicted = insert_ctl(&mut store, v1, "cold short", 0.05, 0.0, Tier::ShortTerm, 0);
+        // Below threshold but reactivated -> kept.
+        let mut v2 = vec![0.0f32; WAVEFRONT_DIM]; v2[20] = 1.0;
+        let kept = insert_ctl(&mut store, v2, "warm short", 0.05, 0.0, Tier::ShortTerm, 3);
+
+        let report = store.apply_consolidation(&apply_opts());
+        assert!(store.get(&evicted).unwrap().is_none(), "cold ShortTerm evicted");
+        assert!(store.get(&kept).unwrap().is_some(), "reactivated ShortTerm kept");
+        assert_eq!(report.would_evict, 1);
+    }
+
+    #[test]
+    fn apply_is_idempotent_second_run_absorbs_zero() {
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        let base = vec![0.5f32; WAVEFRONT_DIM];
+        for k in 0..4 {
+            let mut v = base.clone(); v[k] += 0.001;
+            insert_ctl(&mut store, v, &format!("d{k}"), 1.0, 0.0, Tier::LongTerm, 0);
+        }
+        let r1 = store.apply_consolidation(&apply_opts());
+        assert_eq!(r1.would_absorb, 3, "4 dups -> 3 absorbed");
+        let count_after_first = store.count();
+
+        let r2 = store.apply_consolidation(&apply_opts());
+        assert_eq!(r2.would_absorb, 0, "already merged: nothing left to absorb");
+        assert_eq!(store.count(), count_after_first, "second run does not change count");
+    }
+
+    #[test]
+    fn apply_chiral_map_consistency() {
+        // Construct a ChiralMedium with right wavefronts, some of which have left
+        // twins, then apply and assert no map points at a removed id and every
+        // surviving twin still resolves to a live left.
+        use crate::medium::chiral::ChiralMedium;
+        use crate::medium::hemisphere::Hemisphere;
+        use crate::medium::types::Hand;
+
+        let mut store = HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        let dims = WAVEFRONT_DIM;
+        let mut chiral = ChiralMedium::new();
+        // Replace hemispheres with WAVEFRONT_DIM-sized ones so vectors line up.
+        chiral.left = Hemisphere::new(Hand::Left, dims);
+        chiral.right = Hemisphere::new(Hand::Right, dims);
+
+        let base = vec![0.5f32; dims];
+        // 3 near-duplicate right wavefronts (one group); give 2 of them left twins.
+        let mut right_ids = Vec::new();
+        for k in 0..3 {
+            let mut v = base.clone(); v[k] += 0.001;
+            let rid = chiral.right.add_wavefront(&v, format!("r{k}"), 1.0).unwrap();
+            let ridx = *chiral.right.id_to_index.get(&rid).unwrap();
+            chiral.right.metadata[ridx].tier = Tier::LongTerm;
+            right_ids.push(rid);
+            if k < 2 {
+                // left twin
+                let mut lv = vec![0.1f32; dims]; lv[k] += 0.01;
+                let lid = chiral.left.add_wavefront(&lv, format!("l{k}"), 0.8).unwrap();
+                chiral.left_to_right.insert(lid, rid);
+                chiral.right_to_left.insert(rid, lid);
+                chiral.scales.insert(rid, crate::medium::types::ChiralScale::deep_memory());
+            }
+        }
+        // One unrelated right wavefront with a twin (must survive + keep its twin).
+        let mut uv = vec![0.0f32; dims]; uv[500] = 1.0;
+        let urid = chiral.right.add_wavefront(&uv, "unrelated".to_string(), 1.0).unwrap();
+        let uridx = *chiral.right.id_to_index.get(&urid).unwrap();
+        chiral.right.metadata[uridx].tier = Tier::LongTerm;
+        let mut ulv = vec![0.2f32; dims];
+        let ulid = chiral.left.add_wavefront(&ulv_fix(&mut ulv), "unrelated-l".to_string(), 0.8).unwrap();
+        chiral.left_to_right.insert(ulid, urid);
+        chiral.right_to_left.insert(urid, ulid);
+
+        store.chiral = Some(chiral);
+        store.rebuild_cache().unwrap();
+
+        let right_before = store.chiral.as_ref().unwrap().right.count();
+        let left_before = store.chiral.as_ref().unwrap().left.count();
+        assert_eq!(right_before, 4);
+        assert_eq!(left_before, 3);
+
+        let report = store.apply_consolidation(&apply_opts());
+        assert_eq!(report.groups_found, 1);
+        assert_eq!(report.would_absorb, 2, "3 dups -> 2 absorbed in right hemisphere");
+
+        let chiral = store.chiral.as_ref().unwrap();
+        // Right shrank by 2.
+        assert_eq!(chiral.right.count(), right_before - 2);
+
+        // No right_to_left entry points at a removed right or a removed left.
+        for (rid, lid) in &chiral.right_to_left {
+            assert!(chiral.right.id_to_index.contains_key(rid), "right_to_left key {rid} is dead");
+            assert!(chiral.left.id_to_index.contains_key(lid), "right_to_left value (left) {lid} is dead");
+        }
+        // No left_to_right entry points at a removed left or right.
+        for (lid, rid) in &chiral.left_to_right {
+            assert!(chiral.left.id_to_index.contains_key(lid), "left_to_right key {lid} is dead");
+            assert!(chiral.right.id_to_index.contains_key(rid), "left_to_right value (right) {rid} is dead");
+        }
+        // Every surviving right twin resolves to a live left.
+        for rid in chiral.right.id_to_index.keys() {
+            if let Some(lid) = chiral.right_to_left.get(rid) {
+                assert!(chiral.left.id_to_index.contains_key(lid));
+            }
+        }
+        // The unrelated right + its twin both survive.
+        assert!(chiral.right.id_to_index.contains_key(&urid));
+        assert!(chiral.left.id_to_index.contains_key(&ulid));
+        // Scales for removed right ids are cleaned up.
+        for rid in chiral.scales.keys() {
+            assert!(chiral.right.id_to_index.contains_key(rid), "scale for dead right {rid}");
+        }
+    }
+
+    // Tiny helper to avoid an all-zeros left vector tripping the norm<eps guard
+    // in unrelated paths (purely cosmetic for the chiral test fixture).
+    fn ulv_fix(v: &mut [f32]) -> &[f32] {
+        v[0] = 0.2;
+        v
     }
 }

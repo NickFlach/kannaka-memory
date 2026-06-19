@@ -5,6 +5,26 @@ use ndarray::{Array2, s};
 use super::Medium;
 use super::types::*;
 
+/// ADR-0036 Phase 2 (piece #1): tier-aware annealing energy floor.
+///
+/// The annealing/dream passes floor energy at the "bias voltage" (0.5) so the
+/// field stays hot enough to amplify small attention signals. That floor is
+/// correct for LongTerm/Pinned memory, but it prevents ShortTerm traces from
+/// ever decaying below the consolidation evict threshold (0.15) — so an
+/// unreactivated ShortTerm trace could never become eviction-eligible. Give
+/// ShortTerm a lower floor (0.1) so salience decay can actually pull it under
+/// the evict threshold; everything else keeps the 0.5 bias voltage.
+const DREAM_ENERGY_FLOOR_DEFAULT: f32 = 0.5;
+const DREAM_ENERGY_FLOOR_SHORTTERM: f32 = 0.1;
+
+#[inline]
+fn tier_energy_floor(tier: Tier) -> f32 {
+    match tier {
+        Tier::ShortTerm => DREAM_ENERGY_FLOOR_SHORTTERM,
+        _ => DREAM_ENERGY_FLOOR_DEFAULT,
+    }
+}
+
 impl Medium {
     /// Apply the ghostmagicOS dynamics equation: dx/dt = f(x) - Inx
     ///
@@ -49,9 +69,12 @@ impl Medium {
             // Track total energy dampened for wisdom calculation
             self.total_energy_dampened += dampening;
 
-            // dx/dt = f(x) - Iηx  
-            // Floor at 0.5 — the "bias voltage". Field stays hot for amplification.
-            self.store.energy[i] = (self.store.energy[i] + growth - dampening).max(0.5);
+            // dx/dt = f(x) - Iηx
+            // Floor at the "bias voltage" — field stays hot for amplification.
+            // Tier-aware (ADR-0036 Phase 2): ShortTerm floors lower (0.1) so it
+            // can decay below the consolidation evict threshold; others = 0.5.
+            let floor = tier_energy_floor(self.store.metadata[i].tier);
+            self.store.energy[i] = (self.store.energy[i] + growth - dampening).max(floor);
 
             // Phase coupling - frequencies converge when strongly coupled
             if growth > dampening * 0.5 {
@@ -458,11 +481,13 @@ impl Medium {
         let consolidation_strength = 0.02 * (1.0 + temperature);
         let noise_reduction = 0.005 * (2.0 - temperature); // 10x gentler than before
         
-        // Energy floor: memories never drop below this during dreams
-        // This IS the bias voltage — the resting potential that enables amplification
-        let dream_energy_floor = 0.5;
-        
+        // Energy floor: memories never drop below this during dreams.
+        // This IS the bias voltage — the resting potential that enables
+        // amplification. Tier-aware (ADR-0036 Phase 2): computed per-wavefront
+        // inside the loop so ShortTerm can decay below the evict threshold.
+
         for i in 0..n {
+            let dream_energy_floor = tier_energy_floor(self.store.metadata[i].tier);
             let alignment = eigenstructure.wavefront_alignments[i].abs();
             
             // High alignment = pattern = boost energy + phase align
