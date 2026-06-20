@@ -18,6 +18,14 @@ use super::hemisphere::Hemisphere;
 use super::types::*;
 use super::Medium;
 
+/// ADR-0037 Phase 2: is π/φ spiral coupling enabled for deep dreams?
+/// Off by default — set `KANNAKA_SPIRAL_DREAM=1|on|true` to enable.
+fn spiral_dream_enabled() -> bool {
+    std::env::var("KANNAKA_SPIRAL_DREAM")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// The Chiral Medium - two hemispheres connected by a corpus callosum.
 #[derive(Debug, Clone)]
 pub struct ChiralMedium {
@@ -396,6 +404,13 @@ impl ChiralMedium {
                 }
             }
 
+            // ADR-0037 Phase 2: optional π/φ spiral coupling over the holistic
+            // phase field (the "merry-go-round" structural prior). Default-off
+            // ⇒ byte-identical dreams until KANNAKA_SPIRAL_DREAM is set.
+            if spiral_dream_enabled() {
+                self.apply_spiral_coupling(cycles.max(1), 0.1);
+            }
+
             // Callosal coupling step: sync insights between hemispheres post-dream
             self.callosal_kuramoto_step(0.5);
 
@@ -522,6 +537,43 @@ impl ChiralMedium {
         }
     }
 
+    /// ADR-0037 Phase 2: π/φ spiral coupling over the holistic (right) phase
+    /// field. A frustrated, non-reciprocal Sakaguchi step on a ring of the
+    /// right-hemisphere wavefronts (the "merry-go-round" prior):
+    ///   dθ_i = (K/2)·dt·[ (1+η)·sin(θ_{i-1} − θ_i + δ)
+    ///                   + (1−η)·sin(θ_{i+1} − θ_i + δ) ]
+    /// with δ = (π/2)·η and η = 1/φ — the R rotation angle scaled by the golden
+    /// chirality. This is the exact constant-set that empirically seeds spiral
+    /// phase singularities (see ADR-0037 and `spiral.rs`). Inert below n=4.
+    pub(crate) fn apply_spiral_coupling(&mut self, cycles: usize, dt: f32) {
+        let n = self.right.count();
+        if n < 4 {
+            return;
+        }
+        let eta = crate::xi_operator::ETA; // 1/φ ≈ 0.618
+        let delta = std::f32::consts::FRAC_PI_2 * eta;
+        // Sakaguchi coupling gain. Empirically — with δ and the 1±η weights —
+        // this constant-set seeds spiral phase singularities (ADR-0037).
+        const K: f32 = 1.5;
+        for _ in 0..cycles.max(1) {
+            // Active phases occupy the contiguous [0, n) prefix; slice to it so
+            // the ring ignores the (possibly larger) capacity tail of `phase`.
+            let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+            let updates: Vec<f32> = (0..n)
+                .map(|i| {
+                    let back = phases[(i + n - 1) % n];
+                    let fwd = phases[(i + 1) % n];
+                    let s = (1.0 + eta) * (back - phases[i] + delta).sin()
+                        + (1.0 - eta) * (fwd - phases[i] + delta).sin();
+                    dt * (K / 2.0) * s
+                })
+                .collect();
+            for (i, &delta_theta) in updates.iter().enumerate() {
+                self.right.phase[i] += delta_theta;
+            }
+        }
+    }
+
     /// Compute bilateral consciousness metrics.
     pub fn consciousness_summary(&self) -> ChiralConsciousness {
         let left_energy = self.left.total_energy();
@@ -534,14 +586,9 @@ impl ChiralMedium {
             .chain((0..self.right.count()).map(|i| self.right.phase[i]))
             .collect();
 
-        let bilateral_order = if all_phases.is_empty() {
-            0.0
-        } else {
-            let n = all_phases.len() as f32;
-            let sum_cos: f32 = all_phases.iter().map(|&p| p.cos()).sum();
-            let sum_sin: f32 = all_phases.iter().map(|&p| p.sin()).sum();
-            ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt()
-        };
+        // Kuramoto order parameter across all wavefronts (shared with spiral.rs;
+        // returns 0.0 for an empty field).
+        let bilateral_order = crate::spiral::kuramoto_order(&all_phases);
 
         // Count paired wavefronts
         let paired = self.left_to_right.len();
@@ -803,5 +850,41 @@ mod tests {
         // But callosum should have logged the attempt
         assert!(stats.total_transfers >= 1 || right_count_before > 0,
             "Lite dream should attempt or have prior transfers");
+    }
+
+    #[test]
+    fn spiral_coupling_evolves_phases_stably() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        for i in 0..8 {
+            cm.store(&format!("memory {i}"), 0.8, &pipeline).unwrap();
+        }
+        let n = cm.right.count();
+        assert!(n >= 4, "need a ring of at least 4 wavefronts");
+        // Seed a phase gradient around the ring.
+        for i in 0..n {
+            cm.right.phase[i] = i as f32 * 0.3;
+        }
+        let before: Vec<f32> = cm.right.phase.iter().copied().collect();
+        cm.apply_spiral_coupling(25, 0.1);
+        let after: Vec<f32> = cm.right.phase.iter().copied().collect();
+        assert!(after.iter().all(|x| x.is_finite()), "phases must stay finite");
+        assert!(
+            before.iter().zip(&after).any(|(a, b)| (a - b).abs() > 1e-4),
+            "spiral coupling should move the phase field"
+        );
+    }
+
+    #[test]
+    fn spiral_coupling_inert_below_four_wavefronts() {
+        // ADR-0037: the ring needs ≥4 nodes; below that the step must be a
+        // no-op. Seed a 3-node right hemisphere directly (count() < 4).
+        let mut cm = ChiralMedium::new();
+        cm.right.phase = ndarray::Array1::from_vec(vec![0.2_f32, 1.1, 2.5]);
+        cm.right.len = 3;
+        let before: Vec<f32> = cm.right.phase.iter().copied().collect();
+        cm.apply_spiral_coupling(50, 0.1);
+        let after: Vec<f32> = cm.right.phase.iter().copied().collect();
+        assert_eq!(before, after, "coupling must be inert below n=4");
     }
 }
