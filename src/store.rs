@@ -359,6 +359,15 @@ pub struct ResonanceEngine {
 }
 
 impl ResonanceEngine {
+    /// ADR-0037 Phase 3: aggregate π/φ bridge-operator signature for the
+    /// substrate beacon. `None` when the backend isn't an HRM.
+    pub fn xi_bridge_summary(&self) -> Option<serde_json::Value> {
+        self.store
+            .as_any()
+            .downcast_ref::<crate::hrm_store::HrmStore>()
+            .map(|hrm| hrm.xi_bridge_summary())
+    }
+
     pub fn new(store: Box<dyn MediumBackend>, pipeline: EncodingPipeline) -> Self {
         Self {
             store,
@@ -638,6 +647,34 @@ mod tests {
 
         let fake = Uuid::new_v4();
         assert!(engine.get_memory(&fake).unwrap().is_none());
+    }
+
+    #[test]
+    fn engine_xi_bridge_summary_some_for_hrm_none_otherwise() {
+        // ADR-0037 Phase 3: the substrate beacon stops publishing
+        // `xi_signature: null` for HRM backends. Guard the downcast contract:
+        // a non-HRM backend must stay None (prior behavior), an HRM backend
+        // must yield Some with the bridge keys. A broken downcast would
+        // silently restore the null beacon while staying green elsewhere.
+        let none_engine = ResonanceEngine::new(Box::new(TestMedium::new()), make_pipeline());
+        assert!(
+            none_engine.xi_bridge_summary().is_none(),
+            "non-HRM backend must yield None"
+        );
+
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut hrm = crate::hrm_store::HrmStore::new(make_pipeline(), temp.path().to_path_buf());
+        for i in 0..4 {
+            hrm.insert(make_memory(vec![0.1 + i as f32 * 0.15; 10_000], "m"))
+                .unwrap();
+        }
+        let hrm_engine = ResonanceEngine::new(Box::new(hrm), make_pipeline());
+        let summary = hrm_engine
+            .xi_bridge_summary()
+            .expect("HRM backend must yield Some(xi_signature)");
+        assert!(summary["n"].as_u64().is_some(), "summary must carry n");
+        assert!(summary["residue"].as_f64().unwrap().is_finite());
+        assert!(summary["spectral_xi"].as_f64().unwrap().is_finite());
     }
 
     // Skip link tests removed — associations now emergent from ChiralMedium interference
