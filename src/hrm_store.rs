@@ -599,6 +599,12 @@ impl HrmStore {
         self.medium.consciousness_metrics()
     }
 
+    /// ADR-0037 Phase 3: aggregate π/φ bridge-operator signature (residue +
+    /// spectral xi) for the substrate beacon. Computed from the flat medium.
+    pub fn xi_bridge_summary(&self) -> serde_json::Value {
+        self.medium.xi_bridge_summary()
+    }
+
     /// Cheap, stale-tolerant lookup. See Medium::try_cached_consciousness_metrics.
     /// Used by the agent's system_prompt path so a `kannaka ask` doesn't
     /// pay an O(n³) eigendecomp on every call.
@@ -626,6 +632,25 @@ impl HrmStore {
             let report = chiral.dream(true, cycles);
             self.rebuild_cache().ok();
             self.mark_dirty();
+            // ADR-0037 Phase 4: per-consolidation spiral telemetry (L6 loop).
+            // The cortical spiral wave (Ye et al.) spans BOTH hemispheres, so
+            // the headline metric is the cross-hemisphere ring; the right ring
+            // (which the Phase-2 coupling directly rotates) is reported beside
+            // it. Gated on the same flag as the coupling: with
+            // KANNAKA_SPIRAL_DREAM off the field is untouched, so logging it
+            // would be a misleading, byte-noisy no-op.
+            if crate::medium::chiral::spiral_dream_enabled() {
+                if let Some(ref chiral) = self.chiral {
+                    let x = chiral.bilateral_ring_report();
+                    if x.n > 0 {
+                        let right = chiral.holistic_ring_report();
+                        eprintln!(
+                            "[spiral] deep dream: cross-hemi winding={:.3} order={:.3} n={} (right winding={:.3})",
+                            x.winding, x.order, x.n, right.winding
+                        );
+                    }
+                }
+            }
             report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
