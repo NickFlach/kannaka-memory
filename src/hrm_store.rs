@@ -645,9 +645,10 @@ impl HrmStore {
                     if x.n > 0 {
                         let right = chiral.holistic_ring_report();
                         // Phase 4b (#415 task 1): localize genuine 2-D spiral
-                        // cores in the PCA-embedded holistic field (self.medium
-                        // is synced from the right hemisphere by rebuild_cache).
-                        let c = self.medium.spiral_cloud_report();
+                        // cores in the PCA-embedded HOLISTIC field — read the
+                        // right hemisphere directly (the field the coupling
+                        // rotates), not the stale flat medium (cf. #416 fix).
+                        let c = chiral.holistic_cloud_report();
                         eprintln!(
                             "[spiral] deep dream: cross-hemi winding={:.3} order={:.3} n={} (right winding={:.3}, 2D cores={} net={})",
                             x.winding, x.order, x.n, right.winding, c.singularities.len(), c.net_charge

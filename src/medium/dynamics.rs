@@ -135,22 +135,20 @@ impl Medium {
         h.dot(&h.t())
     }
 
-    /// ADR-0037 Phase 4b (#415 task 1): project the wavefront field to 2-D via
-    /// top-2 PCA of the Gram matrix (power iteration + deflation, dependency-
-    /// free; classical-MDS sample-space coordinates) and pair each memory with
-    /// its phase → `(x, y, theta)`. Gives `cloud_singularities` a spatial
-    /// manifold to find genuine 2-D spiral cores in (not just the 1-D ring).
-    /// Empty below 4 wavefronts.
-    pub fn spiral_field_2d(&self) -> Vec<(f32, f32, f32)> {
-        let n = self.wavefront_count();
-        if n < 4 {
+    /// ADR-0037 Phase 4b: top-2 PCA of a wavefront matrix (power iteration +
+    /// deflation, dependency-free; classical-MDS sample-space coordinates) →
+    /// 2-D coords paired with `phases` as `(x, y, theta)`. Shared by `Medium`
+    /// (synced flat field) and `ChiralMedium::holistic_cloud_report` (the right
+    /// hemisphere — the field the Phase-2 coupling actually rotates). Empty
+    /// below 4 rows or when `phases` is shorter than the row count.
+    pub(crate) fn pca_field_2d(wavefronts: &Array2<f32>, phases: &[f32]) -> Vec<(f32, f32, f32)> {
+        let n = wavefronts.nrows();
+        if n < 4 || phases.len() < n {
             return Vec::new();
         }
-        let gram = self.gram_matrix();
+        let gram = wavefronts.dot(&wavefronts.t());
         let matvec = |v: &[f32]| -> Vec<f32> {
-            (0..n)
-                .map(|i| (0..n).map(|j| gram[[i, j]] * v[j]).sum())
-                .collect()
+            (0..n).map(|i| (0..n).map(|j| gram[[i, j]] * v[j]).sum()).collect()
         };
         let normalize = |v: &mut [f32]| -> f32 {
             let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -171,7 +169,6 @@ impl Medium {
                 .collect()
         };
 
-        // Top eigenvector.
         let mut v1 = seed(1);
         normalize(&mut v1);
         for _ in 0..80 {
@@ -183,7 +180,6 @@ impl Medium {
         }
         let l1 = dot(&v1, &matvec(&v1));
 
-        // Second eigenvector, deflated against v1 each step.
         let mut v2 = seed(7);
         let p0 = dot(&v2, &v1);
         for i in 0..n {
@@ -205,25 +201,43 @@ impl Medium {
 
         let s1 = l1.max(0.0).sqrt();
         let s2 = l2.max(0.0).sqrt();
-        (0..n)
-            .map(|i| (s1 * v1[i], s2 * v2[i], self.store.phase[i]))
-            .collect()
+        (0..n).map(|i| (s1 * v1[i], s2 * v2[i], phases[i])).collect()
     }
 
-    /// ADR-0037 Phase 4b: full 2-D spiral report — runs `cloud_singularities`
-    /// over the PCA-embedded phase field. The richer companion to the 1-D ring
-    /// reports; use when you want localized 2-D cores.
-    pub fn spiral_cloud_report(&self) -> crate::spiral::SpiralReport {
-        let pts = self.spiral_field_2d();
+    /// ADR-0037 Phase 4b: 2-D spiral report over a PCA-embedded wavefront/phase
+    /// field — runs `cloud_singularities` and tallies cores + net charge.
+    pub(crate) fn cloud_report_2d(
+        wavefronts: &Array2<f32>,
+        phases: &[f32],
+    ) -> crate::spiral::SpiralReport {
+        let pts = Self::pca_field_2d(wavefronts, phases);
         let singularities = crate::spiral::cloud_singularities(&pts, 8);
-        let phases: Vec<f32> = pts.iter().map(|p| p.2).collect();
         let net_charge = singularities.iter().map(|s| s.charge).sum();
+        let field_phases: Vec<f32> = pts.iter().map(|p| p.2).collect();
         crate::spiral::SpiralReport {
             n: pts.len(),
-            order: crate::spiral::kuramoto_order(&phases),
+            order: crate::spiral::kuramoto_order(&field_phases),
             singularities,
             net_charge,
         }
+    }
+
+    /// ADR-0037 Phase 4b (#415 task 1): 2-D PCA projection of this (synced flat)
+    /// medium's field. For the holistic field during a dream use
+    /// `ChiralMedium::holistic_cloud_report` (reads the right hemisphere).
+    pub fn spiral_field_2d(&self) -> Vec<(f32, f32, f32)> {
+        let n = self.wavefront_count();
+        let wf = self.store.wavefronts.slice(ndarray::s![..n, ..]).to_owned();
+        let phases: Vec<f32> = self.store.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        Self::pca_field_2d(&wf, &phases)
+    }
+
+    /// ADR-0037 Phase 4b: full 2-D spiral report over this medium's field.
+    pub fn spiral_cloud_report(&self) -> crate::spiral::SpiralReport {
+        let n = self.wavefront_count();
+        let wf = self.store.wavefronts.slice(ndarray::s![..n, ..]).to_owned();
+        let phases: Vec<f32> = self.store.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        Self::cloud_report_2d(&wf, &phases)
     }
 
     /// Cached-per-call cos/sin of every wavefront phase, for building

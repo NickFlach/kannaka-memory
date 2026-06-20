@@ -587,6 +587,18 @@ impl ChiralMedium {
         crate::spiral::ring_report(&phases)
     }
 
+    /// ADR-0037 Phase 4b: 2-D spiral cores over the holistic (right) field — the
+    /// cloud-detector companion to `holistic_ring_report`. Reads the right
+    /// hemisphere directly (the field the Phase-2 coupling rotates), NOT the
+    /// stale flat medium, mirroring the #416 holistic fix. Projects the right
+    /// wavefronts to 2-D (PCA) and localizes singularities.
+    pub fn holistic_cloud_report(&self) -> crate::spiral::SpiralReport {
+        let n = self.right.count();
+        let wf = self.right.wavefronts.slice(ndarray::s![..n, ..]).to_owned();
+        let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        Medium::cloud_report_2d(&wf, &phases)
+    }
+
     /// ADR-0037 Phase 4: cross-hemisphere ring report. The cortical spiral wave
     /// in Ye et al. (Science 2026) spans BOTH hemispheres, not one — so the L6
     /// instrument joins the active left ⊕ right phase fields into a single ring
