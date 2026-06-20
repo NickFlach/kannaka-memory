@@ -873,6 +873,26 @@ mod tests {
             before.iter().zip(&after).any(|(a, b)| (a - b).abs() > 1e-4),
             "spiral coupling should move the phase field"
         );
+
+        // Down-payment (#415): chiral drift DIRECTION. From a uniform ring the
+        // frustration δ = (π/2)·η (> 0) with all-positive weights pushes every
+        // phase by sin(δ) > 0, so the mean phase must drift FORWARD. A wrong-δ-
+        // sign or collapsed-weights regression reverses or kills the drift and
+        // fails here, where the "moved by >1e-4" check above would still pass.
+        let mut uni = ChiralMedium::new();
+        for i in 0..8 {
+            uni.store(&format!("uniform {i}"), 0.8, &pipeline).unwrap();
+        }
+        let m = uni.right.count();
+        for i in 0..m {
+            uni.right.phase[i] = 0.5;
+        }
+        uni.apply_spiral_coupling(5, 0.1);
+        let mean_after: f32 = (0..m).map(|i| uni.right.phase[i]).sum::<f32>() / m as f32;
+        assert!(
+            mean_after > 0.5 + 1e-4,
+            "frustrated chiral coupling must drift the mean phase forward (δ>0); got {mean_after}"
+        );
     }
 
     #[test]
