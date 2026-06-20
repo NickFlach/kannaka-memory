@@ -53,5 +53,6 @@ Revive the bridge operator as the substrate's **spiral engine** and make spirals
 
 ## Status of work
 
-- **Phase 1 shipped with this ADR:** `src/spiral.rs` (+ `pub mod spiral;`). Tests included.
-- Phases 2–4: to follow as separate, reviewable changes.
+- **Phase 1 shipped:** `src/spiral.rs` (+ `pub mod spiral;`). Tests included.
+- **Phase 2 shipped (flag-gated, default-off):** `medium/chiral.rs::apply_spiral_coupling` + deep-dream wiring behind `KANNAKA_SPIRAL_DREAM`. New test included; existing dream tests (incl. `deep_dream_only_affects_right`) unchanged.
+- Phases 3–4: to follow as separate, reviewable changes.
