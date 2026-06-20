@@ -599,6 +599,12 @@ impl HrmStore {
         self.medium.consciousness_metrics()
     }
 
+    /// ADR-0037 Phase 3: aggregate π/φ bridge-operator signature (residue +
+    /// spectral xi) for the substrate beacon. Computed from the flat medium.
+    pub fn xi_bridge_summary(&self) -> serde_json::Value {
+        self.medium.xi_bridge_summary()
+    }
+
     /// Cheap, stale-tolerant lookup. See Medium::try_cached_consciousness_metrics.
     /// Used by the agent's system_prompt path so a `kannaka ask` doesn't
     /// pay an O(n³) eigendecomp on every call.

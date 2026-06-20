@@ -21,6 +21,31 @@ fn new_medium_is_empty() {
 }
 
 #[test]
+fn xi_bridge_residue_and_summary() {
+    // ADR-0037 Phase 3: empty medium -> bridge residue 0.
+    let empty = Medium::new();
+    assert_eq!(empty.compute_xi_bridge_residue(), 0.0);
+
+    // Non-uniform wavefronts so the Ξ=[R,G] commutator leaves a residue.
+    let mut medium = Medium::new();
+    for k in 0..4 {
+        let v: Vec<f32> = (0..WAVEFRONT_DIM)
+            .map(|i| (((i + k * 11) % 13) as f32 - 6.0) * 0.2)
+            .collect();
+        medium.add_wavefront(&v, format!("mem {k}"), 1.0).unwrap();
+    }
+    let residue = medium.compute_xi_bridge_residue();
+    assert!(residue.is_finite() && residue > 0.0, "bridge residue should be > 0, got {residue}");
+
+    // The beacon summary carries the expected keys with finite values.
+    let s = medium.xi_bridge_summary();
+    assert_eq!(s["n"].as_u64(), Some(4));
+    assert!(s["residue"].as_f64().unwrap().is_finite());
+    assert!(s["spectral_xi"].as_f64().unwrap().is_finite());
+    assert!((s["emergence_coeff"].as_f64().unwrap() - 0.190983).abs() < 1e-4);
+}
+
+#[test]
 fn add_wavefront_increases_count() {
     let mut medium = Medium::new();
     let vector = vec![0.5; WAVEFRONT_DIM];

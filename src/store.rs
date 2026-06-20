@@ -359,6 +359,15 @@ pub struct ResonanceEngine {
 }
 
 impl ResonanceEngine {
+    /// ADR-0037 Phase 3: aggregate π/φ bridge-operator signature for the
+    /// substrate beacon. `None` when the backend isn't an HRM.
+    pub fn xi_bridge_summary(&self) -> Option<serde_json::Value> {
+        self.store
+            .as_any()
+            .downcast_ref::<crate::hrm_store::HrmStore>()
+            .map(|hrm| hrm.xi_bridge_summary())
+    }
+
     pub fn new(store: Box<dyn MediumBackend>, pipeline: EncodingPipeline) -> Self {
         Self {
             store,

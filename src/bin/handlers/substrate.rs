@@ -848,7 +848,10 @@ pub(crate) fn handle_substrate_run(
             );
             queen.derive_local_state(&sys.engine);
             queen.phi = state.phi;
-            let phase = queen.to_agent_phase(state.num_clusters, state.total_memories, state.total_skip_links);
+            let mut phase = queen.to_agent_phase(state.num_clusters, state.total_memories, state.total_skip_links);
+            // ADR-0037 Phase 3: populate the substrate beacon's xi_signature
+            // (previously null) with the aggregate π/φ bridge-operator summary.
+            phase.xi_signature = sys.engine.xi_bridge_summary();
             if let Err(e) = transport.publish_phase(&phase) {
                 eprintln!("[substrate] swarm phase publish failed: {}", e);
             }

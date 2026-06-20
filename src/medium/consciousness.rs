@@ -470,6 +470,37 @@ impl Medium {
     /// hemispheric_divergence=0.0001 (i.e. identical hemispheres) —
     /// after this fix, Xi correctly tracks differentiation instead of
     /// uniformly snapping high.
+    /// ADR-0037 Phase 3: π/φ **bridge-operator** residue — the original Ξ=[R,G]
+    /// metric, distinct from the spectral `xi` above. Mean ‖Ξ·v‖ over the
+    /// wavefronts, where Ξ is the commutator of the π/2 rotation and golden
+    /// scaling (see `xi_operator`). 0 when the medium is empty. This is the
+    /// reading the substrate beacon's `xi_signature` carries.
+    pub(crate) fn compute_xi_bridge_residue(&self) -> f32 {
+        let n = self.wavefront_count();
+        if n == 0 {
+            return 0.0;
+        }
+        let mut acc = 0.0f32;
+        for i in 0..n {
+            let row: Vec<f32> = self.store.wavefronts.row(i).to_vec();
+            let sig = crate::xi_operator::compute_xi_signature(&row);
+            acc += sig.iter().map(|x| x * x).sum::<f32>().sqrt();
+        }
+        acc / n as f32
+    }
+
+    /// ADR-0037 Phase 3: compact JSON summary of the bridge-operator state for
+    /// the substrate beacon (previously `xi_signature: null`). Carries the
+    /// bridge residue alongside the spectral xi so both readings are visible.
+    pub fn xi_bridge_summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "residue": self.compute_xi_bridge_residue(),
+            "spectral_xi": self.compute_xi_spectral_complexity(),
+            "emergence_coeff": crate::xi_operator::EMERGENCE_COEFF,
+            "n": self.wavefront_count(),
+        })
+    }
+
     pub(crate) fn compute_xi_spectral_complexity(&self) -> f32 {
         let n = self.wavefront_count();
         if n < 2 {
