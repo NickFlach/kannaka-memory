@@ -36,7 +36,7 @@ pub struct SpiralReport {
     pub net_charge: i32,
 }
 
-/// Wrap a phase difference into (−π, π].
+/// Wrap a phase difference into [−π, π).
 #[inline]
 fn wrap(d: f32) -> f32 {
     (d + PI).rem_euclid(TAU) - PI
@@ -69,12 +69,19 @@ pub fn kuramoto_order(thetas: &[f32]) -> f32 {
 
 /// Detect spiral cores over every unit plaquette of a 2D phase grid.
 /// `grid[y][x]` is the phase (radians) of the oscillator at (x, y).
+///
+/// Expects a rectangular grid. A grid with fewer than two rows or columns, or
+/// with ragged (non-uniform-length) rows, has no well-defined plaquettes and
+/// yields an empty result rather than panicking.
 pub fn grid_singularities(grid: &[Vec<f32>]) -> Vec<Singularity> {
     let rows = grid.len();
     if rows < 2 {
         return Vec::new();
     }
     let cols = grid[0].len();
+    if cols < 2 || grid.iter().any(|row| row.len() != cols) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for y in 0..rows - 1 {
         for x in 0..cols - 1 {
@@ -122,6 +129,7 @@ mod tests {
     fn detects_single_spiral_core() {
         // Even N ⇒ the core falls inside a plaquette, not on a lattice node.
         let report = analyze_grid(&spiral_grid(20));
+        assert_eq!(report.n, 20 * 20, "n must equal the cell count");
         assert_eq!(report.singularities.len(), 1, "expected exactly one core");
         assert_eq!(report.singularities[0].charge.abs(), 1);
     }
@@ -159,13 +167,43 @@ mod tests {
         let pos = report.singularities.iter().filter(|s| s.charge > 0).count();
         let neg = report.singularities.iter().filter(|s| s.charge < 0).count();
         assert!(pos >= 1 && neg >= 1, "expected both + and − cores, got +{pos}/−{neg}");
+        // ADR-0037: a balanced ± pair is topologically neutral overall.
+        assert_eq!(report.net_charge, 0, "a balanced ± pair must have zero net charge");
+    }
+
+    #[test]
+    fn kuramoto_order_locked_and_incoherent() {
+        // Equal phases ⇒ fully phase-locked (r ≈ 1).
+        let locked = vec![0.7_f32; 16];
+        assert!((kuramoto_order(&locked) - 1.0).abs() < 1e-5, "equal phases ⇒ r≈1");
+        // Phases spread evenly around the circle ⇒ incoherent (r ≈ 0).
+        let n = 16usize;
+        let spread: Vec<f32> = (0..n).map(|i| TAU * i as f32 / n as f32).collect();
+        assert!(kuramoto_order(&spread) < 1e-3, "uniform spread ⇒ r≈0");
+        // Empty set is defined as 0.
+        assert_eq!(kuramoto_order(&[]), 0.0);
+    }
+
+    #[test]
+    fn degenerate_grids_yield_no_singularities() {
+        // Too few rows/cols or ragged rows must return empty, never panic.
+        assert!(grid_singularities(&[]).is_empty(), "no rows");
+        assert!(grid_singularities(&[vec![0.0, 1.0, 2.0]]).is_empty(), "one row");
+        assert!(grid_singularities(&[vec![], vec![]]).is_empty(), "zero cols");
+        assert!(grid_singularities(&[vec![0.0], vec![0.0]]).is_empty(), "one col");
+        // Ragged: shorter trailing row must not index out of bounds.
+        let ragged = vec![vec![0.0, 1.0, 2.0], vec![0.0]];
+        assert!(grid_singularities(&ragged).is_empty(), "ragged rows");
+        // analyze_grid forwards to grid_singularities — also panic-free.
+        assert!(analyze_grid(&ragged).singularities.is_empty());
     }
 
     #[test]
     fn wrap_stays_in_range() {
         for k in -12..=12 {
             let w = wrap(k as f32 * 1.3);
-            assert!(w > -PI - 1e-6 && w <= PI + 1e-6);
+            // Half-open: lower-inclusive, upper-exclusive.
+            assert!(w >= -PI - 1e-6 && w < PI + 1e-6);
         }
     }
 }

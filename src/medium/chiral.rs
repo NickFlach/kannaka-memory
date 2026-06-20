@@ -552,9 +552,13 @@ impl ChiralMedium {
         }
         let eta = crate::xi_operator::ETA; // 1/φ ≈ 0.618
         let delta = std::f32::consts::FRAC_PI_2 * eta;
+        // Sakaguchi coupling gain. Empirically — with δ and the 1±η weights —
+        // this constant-set seeds spiral phase singularities (ADR-0037).
         const K: f32 = 1.5;
         for _ in 0..cycles.max(1) {
-            let phases: Vec<f32> = self.right.phase.iter().copied().collect();
+            // Active phases occupy the contiguous [0, n) prefix; slice to it so
+            // the ring ignores the (possibly larger) capacity tail of `phase`.
+            let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
             let updates: Vec<f32> = (0..n)
                 .map(|i| {
                     let back = phases[(i + n - 1) % n];
@@ -564,8 +568,8 @@ impl ChiralMedium {
                     dt * (K / 2.0) * s
                 })
                 .collect();
-            for i in 0..n {
-                self.right.phase[i] += updates[i];
+            for (i, &delta_theta) in updates.iter().enumerate() {
+                self.right.phase[i] += delta_theta;
             }
         }
     }
@@ -582,14 +586,9 @@ impl ChiralMedium {
             .chain((0..self.right.count()).map(|i| self.right.phase[i]))
             .collect();
 
-        let bilateral_order = if all_phases.is_empty() {
-            0.0
-        } else {
-            let n = all_phases.len() as f32;
-            let sum_cos: f32 = all_phases.iter().map(|&p| p.cos()).sum();
-            let sum_sin: f32 = all_phases.iter().map(|&p| p.sin()).sum();
-            ((sum_cos / n).powi(2) + (sum_sin / n).powi(2)).sqrt()
-        };
+        // Kuramoto order parameter across all wavefronts (shared with spiral.rs;
+        // returns 0.0 for an empty field).
+        let bilateral_order = crate::spiral::kuramoto_order(&all_phases);
 
         // Count paired wavefronts
         let paired = self.left_to_right.len();
@@ -874,5 +873,18 @@ mod tests {
             before.iter().zip(&after).any(|(a, b)| (a - b).abs() > 1e-4),
             "spiral coupling should move the phase field"
         );
+    }
+
+    #[test]
+    fn spiral_coupling_inert_below_four_wavefronts() {
+        // ADR-0037: the ring needs ≥4 nodes; below that the step must be a
+        // no-op. Seed a 3-node right hemisphere directly (count() < 4).
+        let mut cm = ChiralMedium::new();
+        cm.right.phase = ndarray::Array1::from_vec(vec![0.2_f32, 1.1, 2.5]);
+        cm.right.len = 3;
+        let before: Vec<f32> = cm.right.phase.iter().copied().collect();
+        cm.apply_spiral_coupling(50, 0.1);
+        let after: Vec<f32> = cm.right.phase.iter().copied().collect();
+        assert_eq!(before, after, "coupling must be inert below n=4");
     }
 }

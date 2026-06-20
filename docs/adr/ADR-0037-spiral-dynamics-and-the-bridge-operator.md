@@ -32,7 +32,7 @@ Revive the bridge operator as the substrate's **spiral engine** and make spirals
 
 1. **(Phase 1 — this ADR) In-engine spiral detector.** New module `src/spiral.rs`: winding number over a 2D phase grid → localized `Singularity{x,y,charge}` + Kuramoto order + net charge. Pure, additive, unit-tested (planted spiral detected; plane wave laminar; ± pair balanced). This is the L6 instrument; the Python `singularity_probe.py` is its offline twin.
 
-2. **(Phase 2) Spiral coupling in the dream.** Add an opt-in (`KANNAKA_SPIRAL_DREAM`) Sakaguchi term to the right-hemisphere annealing: `dθ_i += (K/|N|) Σ_j w_ij · sin(θ_j − θ_i + δ)` with **δ = (π/2)·ETA** and chiral weights **1 ± ETA** (ETA = 1/φ). Neighbourhood from the same-Fano-line / cluster adjacency the medium already tracks. Default-off ⇒ byte-identical dreams until opted in.
+2. **(Phase 2) Spiral coupling in the dream.** Add an opt-in (`KANNAKA_SPIRAL_DREAM`) Sakaguchi term to the right-hemisphere annealing: `dθ_i += (K/|N|) Σ_j w_ij · sin(θ_j − θ_i + δ)` with **δ = (π/2)·ETA** and chiral weights **1 ± ETA** (ETA = 1/φ). **As shipped, the neighbourhood `N` is a uniform 1-D nearest-neighbour ring over the right-hemisphere wavefronts (`|N| = 2`, so `K/|N| = K/2`) — the "merry-go-round" prior.** Promoting `N` to the same-Fano-line / cluster adjacency the medium already tracks is deferred to a later phase. Default-off ⇒ byte-identical dreams until opted in.
 
 3. **(Phase 3) Reconcile ξ.** Compute a **bridge-residue ξ** = mean ‖Ξ·vᵢ‖ (accumulated emergence) alongside the spectral ξ, and **populate the substrate `xi_signature`** (currently null) from the aggregated per-memory signatures. Keep the spectral value too, renamed for clarity (`xi_spectral`).
 
