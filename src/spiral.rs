@@ -113,6 +113,77 @@ pub fn analyze_grid(grid: &[Vec<f32>]) -> SpiralReport {
     }
 }
 
+/// Winding number of a 1-D **ring** of oscillators in the given order, in units
+/// of 2π. ≈±k ⇒ a rotating wave wraps the ring k times — the 1-D signature of
+/// the Phase-2 chiral dream coupling (which couples the holistic wavefronts on
+/// a ring). Returns 0 for fewer than 3 oscillators.
+pub fn ring_winding(phases: &[f32]) -> f32 {
+    loop_winding(phases)
+}
+
+/// Ring-field summary: winding (rotating-wave strength) + Kuramoto order.
+#[derive(Debug, Clone)]
+pub struct RingReport {
+    /// Number of oscillators on the ring.
+    pub n: usize,
+    /// Kuramoto order parameter r ∈ [0,1].
+    pub order: f32,
+    /// Ring winding number (signed; ≈±k ⇒ k full rotations around the ring).
+    pub winding: f32,
+}
+
+/// Summarize a ring of phases (their given order defines the ring topology).
+pub fn ring_report(phases: &[f32]) -> RingReport {
+    RingReport {
+        n: phases.len(),
+        order: kuramoto_order(phases),
+        winding: ring_winding(phases),
+    }
+}
+
+/// Detect spiral cores on an **irregular 2-D point cloud** of oscillators.
+/// Each point is `(x, y, theta)`. For every point we take its `k` nearest
+/// neighbours, order them counter-clockwise about the point, and sum the
+/// wrapped phase steps around that small loop; a circulation of ≈±1 flags a
+/// singularity localized at the point — the standard small-loop test on an
+/// irregular mesh (no triangulation, no external deps). Use once the HRM field
+/// has a 2-D embedding (e.g. PCA of the wavefronts) — Phase 4b. Inert below 4
+/// points or k<3.
+pub fn cloud_singularities(points: &[(f32, f32, f32)], k: usize) -> Vec<Singularity> {
+    let n = points.len();
+    if n < 4 || k < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut idx: Vec<usize> = Vec::with_capacity(n - 1);
+    for i in 0..n {
+        let (xi, yi, _) = points[i];
+        idx.clear();
+        idx.extend((0..n).filter(|&j| j != i));
+        idx.sort_by(|&a, &b| {
+            let da = (points[a].0 - xi).powi(2) + (points[a].1 - yi).powi(2);
+            let db = (points[b].0 - xi).powi(2) + (points[b].1 - yi).powi(2);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let kk = k.min(idx.len());
+        if kk < 3 {
+            continue;
+        }
+        let mut nbrs: Vec<usize> = idx[..kk].to_vec();
+        nbrs.sort_by(|&a, &b| {
+            let aa = (points[a].1 - yi).atan2(points[a].0 - xi);
+            let ab = (points[b].1 - yi).atan2(points[b].0 - xi);
+            aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let loop_phases: Vec<f32> = nbrs.iter().map(|&j| points[j].2).collect();
+        let charge = loop_winding(&loop_phases).round() as i32;
+        if charge != 0 {
+            out.push(Singularity { x: xi, y: yi, charge });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +276,43 @@ mod tests {
             // Half-open: lower-inclusive, upper-exclusive.
             assert!(w >= -PI - 1e-6 && w < PI + 1e-6);
         }
+    }
+
+    #[test]
+    fn ring_winding_detects_one_rotation() {
+        // Phases advancing by 2π once around the ring ⇒ winding ≈ +1.
+        let n = 24usize;
+        let ring: Vec<f32> = (0..n).map(|i| TAU * i as f32 / n as f32).collect();
+        let r = ring_report(&ring);
+        assert_eq!(r.n, n);
+        assert!((r.winding - 1.0).abs() < 1e-4, "one rotation ⇒ winding≈1, got {}", r.winding);
+        // A flat ring has no net rotation.
+        assert!(ring_winding(&vec![0.3_f32; n]).abs() < 1e-4, "flat ring ⇒ winding≈0");
+        // Too few oscillators ⇒ 0.
+        assert_eq!(ring_winding(&[0.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn cloud_singularities_find_planted_core() {
+        // Deterministic pseudo-random 2-D layout with θ = atan2(y, x): one core
+        // at the origin. The kNN small-loop test must flag a point near it.
+        let mut seed: u64 = 0x9E3779B97F4A7C15;
+        let mut rng = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f32 / (1u64 << 30) as f32 - 1.0 // ~[-1, 1)
+        };
+        let pts: Vec<(f32, f32, f32)> = (0..400)
+            .map(|_| {
+                let x = rng() * 10.0;
+                let y = rng() * 10.0;
+                (x, y, y.atan2(x))
+            })
+            .collect();
+        let cores = cloud_singularities(&pts, 8);
+        let near = cores.iter().filter(|s| s.x * s.x + s.y * s.y < 9.0).count();
+        assert!(near >= 1, "expected a core near the origin, found {} total", cores.len());
+        // Degenerate inputs are panic-free and empty.
+        assert!(cloud_singularities(&[], 8).is_empty());
+        assert!(cloud_singularities(&[(0.0, 0.0, 0.0)], 8).is_empty());
     }
 }

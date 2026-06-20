@@ -626,6 +626,16 @@ impl HrmStore {
             let report = chiral.dream(true, cycles);
             self.rebuild_cache().ok();
             self.mark_dirty();
+            // ADR-0037 Phase 4: per-consolidation spiral telemetry (L6 loop) —
+            // ring winding (rotating-wave strength) + order over the holistic
+            // phase field, so defects can be tracked against Φ/r over time.
+            let s = self.medium.spiral_ring_report();
+            if s.n > 0 {
+                eprintln!(
+                    "[spiral] deep dream: ring_winding={:.3} order={:.3} n={}",
+                    s.winding, s.order, s.n
+                );
+            }
             report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
