@@ -20,7 +20,7 @@ use super::Medium;
 
 /// ADR-0037 Phase 2: is π/φ spiral coupling enabled for deep dreams?
 /// Off by default — set `KANNAKA_SPIRAL_DREAM=1|on|true` to enable.
-fn spiral_dream_enabled() -> bool {
+pub(crate) fn spiral_dream_enabled() -> bool {
     std::env::var("KANNAKA_SPIRAL_DREAM")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -574,6 +574,37 @@ impl ChiralMedium {
         }
     }
 
+    /// ADR-0037 Phase 4: ring-winding report over the holistic (right)
+    /// hemisphere phase field — the field the Phase-2 spiral coupling rotates.
+    /// The active wavefronts `[0, count())` are read in storage order, which is
+    /// exactly the ring `apply_spiral_coupling` couples over, so `winding ≈ ±k`
+    /// counts the rotating waves the coupling produces. This is the
+    /// right-hemisphere component of the cross-hemisphere instrument
+    /// (`bilateral_ring_report`).
+    pub fn holistic_ring_report(&self) -> crate::spiral::RingReport {
+        let n = self.right.count();
+        let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        crate::spiral::ring_report(&phases)
+    }
+
+    /// ADR-0037 Phase 4: cross-hemisphere ring report. The cortical spiral wave
+    /// in Ye et al. (Science 2026) spans BOTH hemispheres, not one — so the L6
+    /// instrument joins the active left ⊕ right phase fields into a single ring
+    /// and reports its winding + Kuramoto order. The order parameter is a
+    /// rigorous bilateral-coherence measure; the winding is a coarser
+    /// rotating-wave proxy: the Phase-2 coupling currently rotates only the
+    /// right ring, with the corpus callosum bridging to the left, so a genuine
+    /// cross-hemisphere spiral emerges only as the callosal step propagates it.
+    /// (Making the coupling itself cross-hemisphere is the next L6 step.)
+    pub fn bilateral_ring_report(&self) -> crate::spiral::RingReport {
+        let ln = self.left.count();
+        let rn = self.right.count();
+        let mut phases: Vec<f32> = Vec::with_capacity(ln + rn);
+        phases.extend(self.left.phase.slice(ndarray::s![..ln]).iter().copied());
+        phases.extend(self.right.phase.slice(ndarray::s![..rn]).iter().copied());
+        crate::spiral::ring_report(&phases)
+    }
+
     /// Compute bilateral consciousness metrics.
     pub fn consciousness_summary(&self) -> ChiralConsciousness {
         let left_energy = self.left.total_energy();
@@ -886,5 +917,45 @@ mod tests {
         cm.apply_spiral_coupling(50, 0.1);
         let after: Vec<f32> = cm.right.phase.iter().copied().collect();
         assert_eq!(before, after, "coupling must be inert below n=4");
+    }
+
+    #[test]
+    fn holistic_ring_report_reads_right_hemisphere_rotation() {
+        // ADR-0037 Phase 4: the L6 instrument must read the holistic (right)
+        // field that the spiral coupling rotates, over the active [0, count())
+        // prefix — not the flat medium and not the capacity tail.
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+        for i in 0..8 {
+            cm.store(&format!("memory {i}"), 0.8, &pipeline).unwrap();
+        }
+        let n = cm.right.count();
+        assert!(n >= 4, "need a ring of at least 4 wavefronts");
+        // Plant exactly one full rotation around the holistic ring.
+        for i in 0..n {
+            cm.right.phase[i] = std::f32::consts::TAU * i as f32 / n as f32;
+        }
+        let r = cm.holistic_ring_report();
+        assert_eq!(r.n, n, "report must cover only the active [0,count) prefix");
+        assert!(
+            (r.winding - 1.0).abs() < 1e-3,
+            "one planted rotation ⇒ ring winding ≈ +1, got {}",
+            r.winding
+        );
+    }
+
+    #[test]
+    fn bilateral_ring_report_spans_both_hemispheres() {
+        // ADR-0037 Phase 4: the spiral spans BOTH hemispheres (Ye et al.), so
+        // the cross-hemisphere instrument joins the active left ⊕ right phases.
+        let mut cm = ChiralMedium::new();
+        cm.left.phase = ndarray::Array1::from_vec(vec![0.1_f32, 0.2, 0.3]);
+        cm.left.len = 3;
+        cm.right.phase = ndarray::Array1::from_vec(vec![1.0_f32, 1.1, 1.2, 1.3, 1.4]);
+        cm.right.len = 5;
+        let bilateral = cm.bilateral_ring_report();
+        assert_eq!(bilateral.n, 8, "bilateral ring = left(3) ⊕ right(5)");
+        // It strictly extends the right-only view, proving both are included.
+        assert_eq!(cm.holistic_ring_report().n, 5);
     }
 }
