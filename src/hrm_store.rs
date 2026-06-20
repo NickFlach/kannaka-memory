@@ -626,15 +626,24 @@ impl HrmStore {
             let report = chiral.dream(true, cycles);
             self.rebuild_cache().ok();
             self.mark_dirty();
-            // ADR-0037 Phase 4: per-consolidation spiral telemetry (L6 loop) —
-            // ring winding (rotating-wave strength) + order over the holistic
-            // phase field, so defects can be tracked against Φ/r over time.
-            let s = self.medium.spiral_ring_report();
-            if s.n > 0 {
-                eprintln!(
-                    "[spiral] deep dream: ring_winding={:.3} order={:.3} n={}",
-                    s.winding, s.order, s.n
-                );
+            // ADR-0037 Phase 4: per-consolidation spiral telemetry (L6 loop).
+            // The cortical spiral wave (Ye et al.) spans BOTH hemispheres, so
+            // the headline metric is the cross-hemisphere ring; the right ring
+            // (which the Phase-2 coupling directly rotates) is reported beside
+            // it. Gated on the same flag as the coupling: with
+            // KANNAKA_SPIRAL_DREAM off the field is untouched, so logging it
+            // would be a misleading, byte-noisy no-op.
+            if crate::medium::chiral::spiral_dream_enabled() {
+                if let Some(ref chiral) = self.chiral {
+                    let x = chiral.bilateral_ring_report();
+                    if x.n > 0 {
+                        let right = chiral.holistic_ring_report();
+                        eprintln!(
+                            "[spiral] deep dream: cross-hemi winding={:.3} order={:.3} n={} (right winding={:.3})",
+                            x.winding, x.order, x.n, right.winding
+                        );
+                    }
+                }
             }
             report
         } else {

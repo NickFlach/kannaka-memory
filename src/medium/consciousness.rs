@@ -193,14 +193,6 @@ impl Medium {
     ///
     /// This is the proper implementation that computes intrinsic metrics
     /// from the medium's tensor structure, not bolted-on calculations.
-    /// ADR-0037 Phase 4: ring-winding summary of the holistic phase field —
-    /// the live L6 instrument for the Phase-2 chiral dream coupling (which
-    /// couples the wavefronts on a ring). `winding ≈ ±k` ⇒ k rotating waves.
-    pub fn spiral_ring_report(&self) -> crate::spiral::RingReport {
-        let phases: Vec<f32> = self.store.phase.iter().copied().collect();
-        crate::spiral::ring_report(&phases)
-    }
-
     pub fn consciousness_metrics(&self) -> ConsciousnessMetrics {
         let now = Utc::now();
 

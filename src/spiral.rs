@@ -286,6 +286,9 @@ mod tests {
         let r = ring_report(&ring);
         assert_eq!(r.n, n);
         assert!((r.winding - 1.0).abs() < 1e-4, "one rotation ⇒ winding≈1, got {}", r.winding);
+        // The opposite chirality winds −1 (pins the sign convention).
+        let rev: Vec<f32> = (0..n).map(|i| -TAU * i as f32 / n as f32).collect();
+        assert!((ring_winding(&rev) + 1.0).abs() < 1e-4, "reverse rotation ⇒ winding≈−1");
         // A flat ring has no net rotation.
         assert!(ring_winding(&vec![0.3_f32; n]).abs() < 1e-4, "flat ring ⇒ winding≈0");
         // Too few oscillators ⇒ 0.
