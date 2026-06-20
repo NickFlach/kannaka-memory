@@ -470,37 +470,6 @@ impl Medium {
     /// hemispheric_divergence=0.0001 (i.e. identical hemispheres) —
     /// after this fix, Xi correctly tracks differentiation instead of
     /// uniformly snapping high.
-    /// ADR-0037 Phase 3: π/φ **bridge-operator** residue — the original Ξ=[R,G]
-    /// metric, distinct from the spectral `xi` above. Mean ‖Ξ·v‖ over the
-    /// wavefronts, where Ξ is the commutator of the π/2 rotation and golden
-    /// scaling (see `xi_operator`). 0 when the medium is empty. This is the
-    /// reading the substrate beacon's `xi_signature` carries.
-    pub(crate) fn compute_xi_bridge_residue(&self) -> f32 {
-        let n = self.wavefront_count();
-        if n == 0 {
-            return 0.0;
-        }
-        let mut acc = 0.0f32;
-        for i in 0..n {
-            let row: Vec<f32> = self.store.wavefronts.row(i).to_vec();
-            let sig = crate::xi_operator::compute_xi_signature(&row);
-            acc += sig.iter().map(|x| x * x).sum::<f32>().sqrt();
-        }
-        acc / n as f32
-    }
-
-    /// ADR-0037 Phase 3: compact JSON summary of the bridge-operator state for
-    /// the substrate beacon (previously `xi_signature: null`). Carries the
-    /// bridge residue alongside the spectral xi so both readings are visible.
-    pub fn xi_bridge_summary(&self) -> serde_json::Value {
-        serde_json::json!({
-            "residue": self.compute_xi_bridge_residue(),
-            "spectral_xi": self.compute_xi_spectral_complexity(),
-            "emergence_coeff": crate::xi_operator::EMERGENCE_COEFF,
-            "n": self.wavefront_count(),
-        })
-    }
-
     pub(crate) fn compute_xi_spectral_complexity(&self) -> f32 {
         let n = self.wavefront_count();
         if n < 2 {
@@ -550,6 +519,59 @@ impl Medium {
         let variance: f32 =
             off_diags.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / m;
         (variance * 4.0).clamp(0.0, 1.0)
+    }
+
+    /// ADR-0037 Phase 3: π/φ **bridge-operator** residue — the original Ξ=[R,G]
+    /// metric, distinct from the spectral `xi` above. Mean ‖Ξ·v‖ over the
+    /// wavefronts (the **un-normalized** commutator magnitude), where Ξ is the
+    /// commutator of the π/2 rotation and golden scaling (see `xi_operator`).
+    /// 0 when the medium is empty. This is the reading the substrate beacon's
+    /// `xi_signature` carries.
+    pub(crate) fn compute_xi_bridge_residue(&self) -> f32 {
+        use crate::xi_operator::{apply_golden_scaling, apply_rotation};
+        let n = self.wavefront_count();
+        if n == 0 {
+            return 0.0;
+        }
+        let mut acc = 0.0f32;
+        for i in 0..n {
+            let row: Vec<f32> = self.store.wavefronts.row(i).to_vec();
+            let r = apply_rotation(&row);
+            let g = apply_golden_scaling(&row);
+            // Ξ·v = tanh(R(v))⊙G(v) − tanh(G(v))⊙R(v): the exact nonlinear
+            // commutator from consciousness_core::metrics, but we take the L2
+            // norm of the UN-normalized vector. compute_xi_signature normalizes
+            // its result to the unit sphere, which would collapse every term to
+            // ≈1 and erase the magnitude this residue is meant to measure.
+            let sumsq: f32 = r
+                .iter()
+                .zip(g.iter())
+                .map(|(&ri, &gi)| {
+                    let x = ri.tanh() * gi - gi.tanh() * ri;
+                    x * x
+                })
+                .sum();
+            acc += sumsq.sqrt();
+        }
+        acc / n as f32
+    }
+
+    /// ADR-0037 Phase 3: compact JSON summary of the bridge-operator state for
+    /// the substrate beacon (previously `xi_signature: null`). Carries the
+    /// bridge residue alongside the spectral xi so both readings are visible.
+    /// Non-finite values are coerced to 0.0 so the beacon never emits a silent
+    /// JSON `null` field (serde maps a non-finite f32 to null).
+    pub fn xi_bridge_summary(&self) -> serde_json::Value {
+        let residue = self.compute_xi_bridge_residue();
+        let residue = if residue.is_finite() { residue } else { 0.0 };
+        let spectral_xi = self.compute_xi_spectral_complexity();
+        let spectral_xi = if spectral_xi.is_finite() { spectral_xi } else { 0.0 };
+        serde_json::json!({
+            "residue": residue,
+            "spectral_xi": spectral_xi,
+            "emergence_coeff": crate::xi_operator::EMERGENCE_COEFF,
+            "n": self.wavefront_count(),
+        })
     }
 
     /// Compute effective dimensionality via participation ratio of Gram eigenvalue proxy.

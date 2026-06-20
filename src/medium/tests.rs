@@ -37,6 +37,28 @@ fn xi_bridge_residue_and_summary() {
     let residue = medium.compute_xi_bridge_residue();
     assert!(residue.is_finite() && residue > 0.0, "bridge residue should be > 0, got {residue}");
 
+    // Regression guard for the normalization bug: the residue is the mean
+    // UN-normalized commutator magnitude (mean ‖Ξ·v‖). It must NOT collapse to
+    // the unit-sphere constant 1.0 that compute_xi_signature would produce...
+    assert!(
+        (residue - 1.0).abs() > 1e-3,
+        "residue collapsed to normalized ~1.0 — magnitude was discarded: {residue}"
+    );
+    // ...and it must track the data: a 10x-louder population yields a larger
+    // residue. A constant metric (the bug) would fail this.
+    let mut louder = Medium::new();
+    for k in 0..4 {
+        let v: Vec<f32> = (0..WAVEFRONT_DIM)
+            .map(|i| (((i + k * 11) % 13) as f32 - 6.0) * 2.0)
+            .collect();
+        louder.add_wavefront(&v, format!("loud {k}"), 1.0).unwrap();
+    }
+    let residue_louder = louder.compute_xi_bridge_residue();
+    assert!(
+        residue_louder > residue * 1.5,
+        "residue must grow with input magnitude: quiet={residue} loud={residue_louder}"
+    );
+
     // The beacon summary carries the expected keys with finite values.
     let s = medium.xi_bridge_summary();
     assert_eq!(s["n"].as_u64(), Some(4));
