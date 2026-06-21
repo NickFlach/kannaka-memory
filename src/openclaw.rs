@@ -766,22 +766,18 @@ impl KannakaMemorySystem {
         // Phase 2: Consolidation engine (interference detection, skip links, pruning)
         // This uses the particle-based pipeline on the memory cache for topology effects.
         //
-        // ADR-0037 SAFETY GATE: the belief re-phase scatters phases (order ~1.0 →
-        // ~0.13), which flips this classifier's similar-neighbour pairs from
-        // Constructive to Destructive (the bands meet at π/2 with no neutral gap),
-        // mass-ghosting the field; stage_compact_ghosts then HARD-DELETES those
-        // fresh ghosts in the SAME cycle because an old field's created_at predates
-        // the 7-day retain horizon (engine.delete → removes from the chiral
-        // hemispheres → persisted). That cost 295→88 memories on the first live
-        // re-phase. Skip the destructive particle pass under belief-phase — the
-        // belief wave dream is the consolidation; this is the ONLY mutating+persisting
-        // remover in the dream. Default/prod path (flag off) is byte-identical.
-        let consol_report = if crate::medium::chiral::belief_phase_enabled() {
-            eprintln!("[dream] belief-phase active: skipping legacy destructive particle consolidate(0,2) to protect the re-phased field");
-            crate::consolidation::ConsolidationReport::default()
-        } else {
-            self.dream_state.engine.consolidate(&mut self.engine, 0, 2)
-        };
+        // ADR-0037: the belief re-phase scatters phases, which USED to flip this
+        // classifier's pairs Constructive→Destructive and mass-ghost the field;
+        // stage_compact_ghosts then hard-deleted the fresh ghosts in the SAME cycle
+        // (old created_at > 7-day horizon), costing 295→88 memories on the first
+        // live re-phase. That is now fixed INSIDE the consolidation stages
+        // (belief-gated, consolidation.rs): a π/3 NEUTRAL band so only strongly-
+        // opposed pairs prune, protect_established so strong memories never ghost,
+        // and updated_at stamped on ghosting so the recovery window is honored (no
+        // same-cycle hard-delete). So the BENEFICIAL particle consolidation
+        // (strengthen, skip-links, kuramoto, hallucination bridges) runs under
+        // belief too, instead of the earlier blunt skip. Default path byte-identical.
+        let consol_report = self.dream_state.engine.consolidate(&mut self.engine, 0, 2);
 
         let total_strengthened = wave_report.wavefronts_strengthened + consol_report.memories_strengthened;
         let total_pruned = wave_report.wavefronts_dissolved + consol_report.memories_pruned;

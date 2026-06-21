@@ -434,11 +434,24 @@ impl ConsolidationEngine {
                 let phase_diff = phase_diff % (2.0 * PI);
                 let phase_diff = if phase_diff > PI { 2.0 * PI - phase_diff } else { phase_diff };
 
+                // ADR-0037: under the belief substrate the field is deliberately
+                // phase-scattered (order ~1.0 → ~0.13), so with the default π/2
+                // threshold (Constructive <π/2, Destructive >π/2, NO gap) a huge
+                // fraction of similar pairs flips to Destructive and the field is
+                // mass-ghosted. Open a real NEUTRAL band by lowering the threshold
+                // to π/3 (Constructive <π/3, Destructive >2π/3, neutral between)
+                // so only strongly-opposed pairs are pruned. Default path keeps π/2
+                // (byte-identical).
+                let align_thresh = if crate::medium::chiral::belief_phase_enabled() {
+                    self.phase_alignment_threshold.min(std::f32::consts::FRAC_PI_3)
+                } else {
+                    self.phase_alignment_threshold
+                };
                 let kind = if frequency_mismatch {
                     Interference::Destructive // different frequency bands can't sync
-                } else if phase_diff < self.phase_alignment_threshold {
+                } else if phase_diff < align_thresh {
                     Interference::Constructive
-                } else if phase_diff > PI - self.phase_alignment_threshold {
+                } else if phase_diff > PI - align_thresh {
                     Interference::Destructive
                 } else {
                     continue; // neutral
@@ -1004,7 +1017,13 @@ impl ConsolidationEngine {
                     // Signal protection: skip destructive dampening for established memories
                     // (amplitude > 0.5) when protect_established is enabled. This prevents
                     // multi-cycle dreams from killing signal memories on repeated passes.
-                    if self.protect_established && mem.amplitude > 0.5 {
+                    // Signal protection. ADR-0037: ALWAYS protect established
+                    // memories (amplitude > 0.5) under the belief substrate — the
+                    // phase-scattered field would otherwise dampen strong signal
+                    // memories on the destructive pairs the re-phase creates.
+                    if (self.protect_established || crate::medium::chiral::belief_phase_enabled())
+                        && mem.amplitude > 0.5
+                    {
                         continue;
                     }
                     // Proportional dampening: stronger memories lose more absolute amplitude
@@ -1012,6 +1031,12 @@ impl ConsolidationEngine {
                     mem.amplitude *= 1.0 - self.destructive_penalty * dt;
                     if mem.amplitude < self.prune_threshold {
                         mem.amplitude = 0.0; // soft-delete (ghost)
+                        // ADR-0037: stamp updated_at on ghosting so stage_compact_ghosts
+                        // honors the recovery window. Without this, an old field's
+                        // freshly-ghosted memories (updated_at defaulted to created_at,
+                        // > the 7-day horizon) were hard-deleted in the SAME cycle —
+                        // the 295→88 over-prune. Now a ghost stays recoverable.
+                        mem.updated_at = Some(chrono::Utc::now());
                         // Count actual prune events (threshold crossings), not every
                         // destructive-pair touch. Old code incremented unconditionally,
                         // making `memories_pruned` insensitive to `prune_threshold` —
@@ -1033,6 +1058,7 @@ impl ConsolidationEngine {
                         && !mem.content.starts_with("__consolidation")
                     {
                         mem.amplitude = 0.0; // ghost
+                        mem.updated_at = Some(chrono::Utc::now()); // ADR-0037: honor recovery window
                         count += 1;
                     }
                 }
