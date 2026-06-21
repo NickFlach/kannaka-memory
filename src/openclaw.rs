@@ -714,6 +714,21 @@ impl KannakaMemorySystem {
         }
     }
 
+    /// ADR-0037 belief substrate: re-phase the field from content (the one-time
+    /// migration that desyncs an already-collapsed field — born phase only fixes
+    /// NEW inserts). Delegates to the HRM store; no-op on non-HRM backends.
+    pub fn rephase_belief(&mut self) -> usize {
+        match self
+            .engine
+            .store
+            .as_any_mut()
+            .downcast_mut::<crate::hrm_store::HrmStore>()
+        {
+            Some(hrm) => hrm.rephase_belief(),
+            None => 0,
+        }
+    }
+
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
         let before = self.bridge.assess(&self.engine);
 
@@ -750,7 +765,23 @@ impl KannakaMemorySystem {
 
         // Phase 2: Consolidation engine (interference detection, skip links, pruning)
         // This uses the particle-based pipeline on the memory cache for topology effects.
-        let consol_report = self.dream_state.engine.consolidate(&mut self.engine, 0, 2);
+        //
+        // ADR-0037 SAFETY GATE: the belief re-phase scatters phases (order ~1.0 →
+        // ~0.13), which flips this classifier's similar-neighbour pairs from
+        // Constructive to Destructive (the bands meet at π/2 with no neutral gap),
+        // mass-ghosting the field; stage_compact_ghosts then HARD-DELETES those
+        // fresh ghosts in the SAME cycle because an old field's created_at predates
+        // the 7-day retain horizon (engine.delete → removes from the chiral
+        // hemispheres → persisted). That cost 295→88 memories on the first live
+        // re-phase. Skip the destructive particle pass under belief-phase — the
+        // belief wave dream is the consolidation; this is the ONLY mutating+persisting
+        // remover in the dream. Default/prod path (flag off) is byte-identical.
+        let consol_report = if crate::medium::chiral::belief_phase_enabled() {
+            eprintln!("[dream] belief-phase active: skipping legacy destructive particle consolidate(0,2) to protect the re-phased field");
+            crate::consolidation::ConsolidationReport::default()
+        } else {
+            self.dream_state.engine.consolidate(&mut self.engine, 0, 2)
+        };
 
         let total_strengthened = wave_report.wavefronts_strengthened + consol_report.memories_strengthened;
         let total_pruned = wave_report.wavefronts_dissolved + consol_report.memories_pruned;

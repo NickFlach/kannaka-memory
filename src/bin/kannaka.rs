@@ -2031,6 +2031,7 @@ fn main() {
         }
         "dream" => {
             let mut dream_mode = "deep".to_string();
+            let mut do_rephase = false;
             let mut chiral_perturbation: f32 = env::var("KANNAKA_CHIRAL_PERTURBATION")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -2044,6 +2045,9 @@ fn main() {
                     } else if args[i] == "--chiral" && i + 1 < args.len() {
                         chiral_perturbation = args[i + 1].parse().unwrap_or(0.05);
                         i += 2;
+                    } else if args[i] == "--rephase" {
+                        do_rephase = true;
+                        i += 1;
                     } else {
                         i += 1;
                     }
@@ -2097,6 +2101,23 @@ fn main() {
                     process::exit(0);
                 }
             };
+
+            // ADR-0037: optional belief re-phase before the dream — the one-time
+            // migration that desyncs an already-collapsed field (born phase only
+            // fixes NEW inserts). Gated on KANNAKA_BELIEF_PHASE so we never desync
+            // a field without the belief dynamics to maintain it. Persists inside
+            // rephase_belief; the dream then runs on the re-phased field.
+            if do_rephase {
+                let belief_on = env::var("KANNAKA_BELIEF_PHASE")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if belief_on {
+                    let rn = sys.rephase_belief();
+                    eprintln!("[rephase] re-phased {} wavefronts from content (belief substrate)", rn);
+                } else {
+                    eprintln!("[rephase] skipped: KANNAKA_BELIEF_PHASE is off — set it on to re-phase");
+                }
+            }
 
             let dream_result = if dream_mode == "lite" {
                 sys.dream_lite()
