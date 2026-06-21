@@ -193,6 +193,16 @@ impl Medium {
             return; // No existing wavefronts to interfere with
         }
 
+        // The incoming wavefront's phase: content-smooth born phase under the
+        // belief substrate, else legacy phase-0. Used so interference is measured
+        // against the NEW wavefront's ACTUAL phase, not a hardcoded 0.
+        let belief = crate::medium::chiral::belief_phase_enabled();
+        let new_phase = if belief {
+            crate::medium::chiral::content_born_phase(new_vector)
+        } else {
+            0.0
+        };
+
         // Compute dot products between new vector and all existing wavefronts
         for i in 0..self.wavefront_count() {
             let existing_vector = self.store.wavefronts.row(i);
@@ -204,14 +214,17 @@ impl Medium {
                 .sum();
 
             // Phase difference affects interference pattern
-            let phase_diff = (self.store.phase[i] - 0.0).cos(); // New wavefront starts at phase 0
+            let phase_diff = (self.store.phase[i] - new_phase).cos();
             let interference = dot_product * phase_diff * importance * 0.1; // Scale interference
 
             // Apply constructive/destructive interference
             self.store.energy[i] = (self.store.energy[i] + interference).max(0.0); // Energy can't go negative
 
-            // Phase coupling — nearby vectors tend to align phases (Kuramoto-like)
-            if dot_product.abs() > 0.5 {
+            // Legacy Kuramoto pull toward phase 0 — a constant synchronizer that
+            // collapses the field to order≈1. DISABLED under the belief substrate:
+            // heterogeneity must survive ingest; belief coherence is restored by
+            // the coherence-gated dream/tick coupling, not by ingest sync.
+            if !belief && dot_product.abs() > 0.5 {
                 // High similarity threshold
                 let coupling = 0.05;
                 self.store.phase[i] += coupling * (0.0 - self.store.phase[i]).sin(); // Pull toward phase 0

@@ -1140,6 +1140,17 @@ impl Medium {
             return;
         }
 
+        // Mirror Medium::apply_interference under the belief substrate so the two
+        // interference implementations agree: measure against the new wavefront's
+        // actual (content-smooth) phase and disable the toward-0 pull. Default-off
+        // → new_phase=0 and the pull stays, byte-identical to before.
+        let belief = crate::medium::chiral::belief_phase_enabled();
+        let new_phase = if belief {
+            crate::medium::chiral::content_born_phase(new_vector)
+        } else {
+            0.0
+        };
+
         for i in 0..self.wavefront_count() {
             let existing_vector = self.store.wavefronts.row(i);
 
@@ -1149,12 +1160,12 @@ impl Medium {
                 .map(|(a, b)| a * b)
                 .sum();
 
-            let phase_diff = (self.store.phase[i] - 0.0).cos();
+            let phase_diff = (self.store.phase[i] - new_phase).cos();
             let interference = dot_product * phase_diff * importance * 0.1;
 
             self.store.energy[i] = (self.store.energy[i] + interference).max(0.0);
 
-            if dot_product.abs() > 0.5 {
+            if !belief && dot_product.abs() > 0.5 {
                 let coupling = 0.05;
                 self.store.phase[i] += coupling * (0.0 - self.store.phase[i]).sin();
             }
