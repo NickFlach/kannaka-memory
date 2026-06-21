@@ -279,6 +279,75 @@ mod tests {
     }
 
     #[test]
+    fn bridge_constants_emerge_spiral_on_2d_grid() {
+        // ADR-0037 / issue #415 — the in-engine version of the offline
+        // spiral_emergence_sim.py. A frustrated, non-reciprocal Sakaguchi
+        // lattice driven by ONLY the bridge constants (δ = (π/2)·η, weights
+        // 1 ± η, η = 1/φ) must spontaneously throw a detectable phase
+        // singularity. Closes the constants→spiral thesis inside the engine,
+        // not just in Python. Deterministic so a wrong-δ-sign / collapsed-
+        // weights regression fails instead of passing.
+        let n = 28usize;
+        let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
+        let eta = 1.0 / phi; // golden chirality 1/φ ≈ 0.618
+        let delta = (PI / 2.0) * eta; // π/2 rotation scaled by η ≈ 0.971
+        let k = 1.5_f32;
+        let dt = 0.08_f32;
+
+        // Deterministic LCG init in ~[-π, π).
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rng = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32 / (1u64 << 30) as f32 - 1.0) * PI
+        };
+        let mut th = vec![vec![0.0f32; n]; n];
+        for row in th.iter_mut() {
+            for v in row.iter_mut() {
+                *v = rng();
+            }
+        }
+
+        // Evolve the frustrated chiral lattice (torus boundary).
+        for _ in 0..500 {
+            let mut nw = th.clone();
+            for y in 0..n {
+                for x in 0..n {
+                    let nbr = [
+                        ((y + n - 1) % n, x, 1.0 + eta),
+                        ((y + 1) % n, x, 1.0 - eta),
+                        (y, (x + n - 1) % n, 1.0 + eta),
+                        (y, (x + 1) % n, 1.0 - eta),
+                    ];
+                    let s: f32 = nbr
+                        .iter()
+                        .map(|&(yy, xx, w)| w * (th[yy][xx] - th[y][x] + delta).sin())
+                        .sum();
+                    nw[y][x] = th[y][x] + dt * (k / 4.0) * s;
+                }
+            }
+            th = nw;
+        }
+        for row in th.iter_mut() {
+            for v in row.iter_mut() {
+                *v = wrap(*v);
+            }
+        }
+
+        let report = analyze_grid(&th);
+        assert!(
+            report.singularities.iter().any(|s| s.charge.abs() == 1),
+            "bridge constants must emerge ≥1 |charge|=1 spiral core; got {} cores",
+            report.singularities.len()
+        );
+        // Frustration keeps the field out of the fully-locked regime.
+        assert!(
+            report.order < 0.9,
+            "frustrated field should not fully lock, order={}",
+            report.order
+        );
+    }
+
+    #[test]
     fn ring_winding_detects_one_rotation() {
         // Phases advancing by 2π once around the ring ⇒ winding ≈ +1.
         let n = 24usize;
