@@ -752,7 +752,18 @@ impl KannakaMemorySystem {
         // the substrate, so the projections can be observed nightly on
         // kannaka-prime before any destructive apply (Phase 2) is enabled via
         // KANNAKA_CONSOLIDATE=on.
-        let consolidate_opts = crate::medium::types::ConsolidateOpts::from_env();
+        let mut consolidate_opts = crate::medium::types::ConsolidateOpts::from_env();
+        // ADR-0037: the resonance-merge ABSORB (Apply) is VECTOR-cosine based
+        // (merge_sim 0.92), so on an anisotropic belief field it mass-merges the
+        // "redundant" blob — observed 295→82 on a num_clusters=1 field with
+        // KANNAKA_CONSOLIDATE=on. This is a SECOND destructive path, separate from
+        // the particle consolidate(0,2) gate. Force DRY-RUN under belief so the
+        // merge only PLANS (never absorbs); the belief wave dream + gated particle
+        // pass are the consolidation. Default path (flag off) is byte-identical —
+        // KANNAKA_CONSOLIDATE still drives Apply when belief is off.
+        if crate::medium::chiral::belief_phase_enabled() {
+            consolidate_opts.mode = crate::medium::types::ConsolidateMode::DryRun;
+        }
         let consolidate_report = self.engine.store.consolidate_resonance(&consolidate_opts);
         if consolidate_report.mode != "off" {
             eprintln!(
