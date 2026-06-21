@@ -145,7 +145,14 @@ impl Hemisphere {
         }
         self.energy[index] = importance;
         self.frequency[index] = 1.0;
-        self.phase[index] = 0.0;
+        // Born phase: content-smooth (belief substrate) or legacy phase-0. This
+        // is the chiral hemispheres' own ingest chokepoint (parallel to
+        // WavefrontStore::insert for the flat medium).
+        self.phase[index] = if crate::medium::chiral::belief_phase_enabled() {
+            crate::medium::chiral::content_born_phase(&adapted)
+        } else {
+            0.0
+        };
 
         self.timestamps.push(chrono::Utc::now().timestamp_millis());
         self.metadata.push(WavefrontMeta::new(id, content));
@@ -442,12 +449,48 @@ impl Hemisphere {
         let n = self.count();
         let mut coherence = Array2::zeros((n, n));
 
+        // Belief substrate: mean-CENTER the vectors before the pairwise dot.
+        // Real embeddings are anisotropic (cone-clustered), so RAW dots are all
+        // large + positive → this matrix is ~rank-1 with a uniform dominant
+        // eigenvector → every wavefront alignment ≈ 1/√n lands in the annealing
+        // dead band [0.05, 0.1] → 0 strengthened / 0 dissolved (the live "0/0/0"
+        // consolidation). Centering removes the shared component so the dominant
+        // mode captures CONTENT VARIATION → alignments spread out of the dead
+        // band → consolidation revives. Only the dream's internal eigenstructure
+        // changes; stored vectors and recall (cosine×energy) are untouched.
+        // Gated to the belief substrate so the default path is byte-identical.
+        let centered = crate::medium::chiral::belief_phase_enabled();
+        let mean: Vec<f32> = if centered && n > 0 {
+            let dim = self.wavefronts.ncols();
+            let mut m = vec![0.0f32; dim];
+            for i in 0..n {
+                for (mm, &v) in m.iter_mut().zip(self.wavefronts.row(i).iter()) {
+                    *mm += v;
+                }
+            }
+            for mm in m.iter_mut() {
+                *mm /= n as f32;
+            }
+            m
+        } else {
+            Vec::new()
+        };
+
         for i in 0..n {
             for j in 0..n {
                 if i != j {
                     let vec_i = self.wavefronts.row(i);
                     let vec_j = self.wavefronts.row(j);
-                    let dot_product: f32 = vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum();
+                    let dot_product: f32 = if centered {
+                        vec_i
+                            .iter()
+                            .zip(vec_j.iter())
+                            .zip(mean.iter())
+                            .map(|((a, b), m)| (a - m) * (b - m))
+                            .sum()
+                    } else {
+                        vec_i.iter().zip(vec_j.iter()).map(|(a, b)| a * b).sum()
+                    };
                     let phase_coherence = (self.phase[i] - self.phase[j]).cos();
                     coherence[[i, j]] = phase_coherence * dot_product;
                 } else {

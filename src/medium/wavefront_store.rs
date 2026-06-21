@@ -104,7 +104,12 @@ impl WavefrontStore {
         }
         self.energy[index] = importance;
         self.frequency[index] = 1.0;
-        self.phase[index] = 0.0;
+        // Born phase: content-smooth (belief substrate) or legacy phase-0.
+        self.phase[index] = if crate::medium::chiral::belief_phase_enabled() {
+            crate::medium::chiral::content_born_phase(vector)
+        } else {
+            0.0
+        };
 
         self.timestamps.push(chrono::Utc::now().timestamp_millis());
         self.metadata.push(WavefrontMeta::new(id, content));

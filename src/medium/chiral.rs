@@ -28,6 +28,49 @@ pub(crate) fn spiral_dream_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// ADR-0037 belief substrate: enable the content-smooth born phase (and disable
+/// the legacy toward-phase-0 ingest pull). **Default OFF** — opt in with
+/// `KANNAKA_BELIEF_PHASE=1|on|true`, so prod ingest is byte-identical until this
+/// is validated. When off, wavefronts are born at phase 0 exactly as before.
+pub(crate) fn belief_phase_enabled() -> bool {
+    std::env::var("KANNAKA_BELIEF_PHASE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Content-smooth born phase: `atan2` of the embedding projected onto two fixed
+/// pseudo-random directions. Similar embeddings → similar phase (recall-safe —
+/// constructive interference preserved); the projection winds where the
+/// embedding distribution wraps the (u1,u2) origin, seeding genuine topological
+/// belief-cores instead of scattering phase like an id/text hash. The two
+/// directions are deterministic (fixed seeds + per-index SplitMix64 hash — no
+/// stored arrays, any embedding length) so the node HRM and the substrate map
+/// identical content to identical phase → the two fields are comparable (the
+/// exemplar / two-systems coupling needs this). Scale-invariant (atan2 of a ratio).
+pub(crate) fn content_born_phase(vector: &[f32]) -> f32 {
+    const SEED1: u64 = 0x9E37_79B9_7F4A_7C15; // direction u1
+    const SEED2: u64 = 0xC2B2_AE3D_27D4_EB4F; // direction u2
+    // Per-index centered pseudo-random weight in ~[-1, 1) (SplitMix64 finalizer).
+    let comp = |i: usize, seed: u64| -> f32 {
+        let mut h = seed ^ (i as u64).wrapping_mul(0x2545_F491_4F6C_DD1D);
+        h ^= h >> 30;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 27;
+        h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+        h ^= h >> 31;
+        (h >> 40) as f32 / (1u64 << 23) as f32 - 1.0 // ~[-1, 1)
+    };
+    let (mut d1, mut d2) = (0.0f32, 0.0f32);
+    for (i, &v) in vector.iter().enumerate() {
+        d1 += v * comp(i, SEED1);
+        d2 += v * comp(i, SEED2);
+    }
+    let p = d2.atan2(d1); // (-π, π]
+    // Never write a non-finite phase (a NaN/Inf embedding would poison the field
+    // and get serialized to the .hrm); fall back to 0.0.
+    if p.is_finite() { p } else { 0.0 }
+}
+
 /// The Chiral Medium - two hemispheres connected by a corpus callosum.
 #[derive(Debug, Clone)]
 pub struct ChiralMedium {
@@ -411,12 +454,22 @@ impl ChiralMedium {
             // step over the combined left ⊕ right ring, so the rotating wave
             // spans BOTH hemispheres (Ye et al.), bridged at the two callosal
             // junctions. ON by default; set KANNAKA_SPIRAL_DREAM=0 to opt out.
-            if spiral_dream_enabled() {
-                self.apply_cross_callosal_coupling(cycles.max(1), 0.1);
-            }
+            if belief_phase_enabled() {
+                // Belief substrate: the right.dream() anneal above now operates on
+                // a genuinely heterogeneous (content-born-phase) field, so its
+                // within-cluster pull consolidates beliefs instead of idling in
+                // the dead band. Stabilize the belief-cores on the 2-D content
+                // embedding, and SKIP the callosal re-sync — it would re-collapse
+                // the deliberately heterogeneous field back toward order≈1.
+                self.apply_belief_coupling(cycles.max(1), 0.1);
+            } else {
+                if spiral_dream_enabled() {
+                    self.apply_cross_callosal_coupling(cycles.max(1), 0.1);
+                }
 
-            // Callosal coupling step: sync insights between hemispheres post-dream
-            self.callosal_kuramoto_step(0.5);
+                // Callosal coupling step: sync insights between hemispheres post-dream
+                self.callosal_kuramoto_step(0.5);
+            }
 
             // The right-hemisphere eigenstructure dream is holistic refinement;
             // left energy/wavefronts stay untouched. Left *phases* are nudged
@@ -625,6 +678,137 @@ impl ChiralMedium {
                 self.right.phase[j] += u;
             }
         }
+    }
+
+    /// ADR-0037 belief substrate: COHERENCE-GATED frustrated coupling on the 2-D
+    /// content embedding of the holistic (right) field. This is the belief-core
+    /// STABILIZER: attractive inside a coherent content domain (a belief stays
+    /// locked → recall-safe), frustrated only at incoherent boundaries (spiral
+    /// cores persist *between* beliefs). The gate is `δ_eff = δ·(1 − local_order)`
+    /// with δ = (π/2)·η, η = 1/φ — the bridge constant survives in δ; chirality
+    /// comes from the content-derived born phase, so the step is reciprocal.
+    /// Phase-only (energy untouched). Neighbours are kNN in PCA space (built once
+    /// per call from the wavefronts, O(n²) — dream/occasional cadence, NOT every
+    /// live tick at large n without caching). Run GENTLY (few cycles): a static
+    /// field over-driven drifts; the field is meant to be continuously re-fed.
+    pub(crate) fn apply_belief_coupling(&mut self, cycles: usize, dt: f32) {
+        let n = self.right.count();
+        if n < 4 {
+            return;
+        }
+        // 2-D PCA coords come from the wavefronts (stable across phase cycles).
+        // Mean-CENTER the columns first: real embeddings are anisotropic (cone-
+        // clustered), and pca_field_2d uses an uncentered Gram, so without
+        // centering the top component is the shared mean direction and kNN
+        // neighbours are driven by magnitude, not content. Centering makes the
+        // neighbourhoods (and the local_order gate) content-meaningful —
+        // consistent with coherence_matrix / rephase_from_content.
+        let mut wf = self.right.wavefronts.slice(ndarray::s![..n, ..]).to_owned();
+        if let Some(mean) = wf.mean_axis(ndarray::Axis(0)) {
+            for mut row in wf.rows_mut() {
+                row -= &mean;
+            }
+        }
+        let phases0: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        let pts = Medium::pca_field_2d(&wf, &phases0); // (x, y, phase); phase unused here
+        let k = 6usize.min(n - 1);
+        let neighbors: Vec<Vec<usize>> = (0..n)
+            .map(|i| {
+                let (xi, yi) = (pts[i].0, pts[i].1);
+                let mut d: Vec<(f32, usize)> = (0..n)
+                    .filter(|&j| j != i)
+                    .map(|j| {
+                        let dx = pts[j].0 - xi;
+                        let dy = pts[j].1 - yi;
+                        (dx * dx + dy * dy, j)
+                    })
+                    .collect();
+                // Partial select: we only need the k nearest, in any order (the
+                // coupling sums sin over the set), so avoid a full O(n log n) sort.
+                let take = k.min(d.len());
+                if take < d.len() {
+                    d.select_nth_unstable_by(take, |a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+                d.truncate(take);
+                d.into_iter().map(|(_, j)| j).collect()
+            })
+            .collect();
+
+        let eta = crate::xi_operator::ETA; // 1/φ
+        let delta = std::f32::consts::FRAC_PI_2 * eta;
+        const K: f32 = 1.5;
+        for _ in 0..cycles.max(1) {
+            let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+            let updates: Vec<f32> = (0..n)
+                .map(|i| {
+                    let nbrs = &neighbors[i];
+                    if nbrs.is_empty() {
+                        return 0.0;
+                    }
+                    // Local order over the point + its neighbours.
+                    let (mut c, mut s) = (phases[i].cos(), phases[i].sin());
+                    for &j in nbrs {
+                        c += phases[j].cos();
+                        s += phases[j].sin();
+                    }
+                    let m = (nbrs.len() + 1) as f32;
+                    let lo = ((c / m).powi(2) + (s / m).powi(2)).sqrt();
+                    let d_eff = delta * (1.0 - lo); // frustrate only where incoherent
+                    let mut acc = 0.0f32;
+                    for &j in nbrs {
+                        acc += (phases[j] - phases[i] + d_eff).sin();
+                    }
+                    dt * (K / 2.0) * acc / nbrs.len() as f32
+                })
+                .collect();
+            for i in 0..n {
+                self.right.phase[i] += updates[i];
+            }
+        }
+    }
+
+    /// ADR-0037 belief substrate MIGRATION: recompute EVERY existing wavefront's
+    /// phase from its stored vector via `content_born_phase`. Born phase only
+    /// affects NEW inserts, so a field that collapsed to phase≈0 before the belief
+    /// substrate existed stays collapsed until re-phased. Run this ONCE on such a
+    /// field (the belief dream then maintains the heterogeneity). Phase-only —
+    /// energy and vectors are untouched, so recall (cosine×energy) is unchanged.
+    pub fn rephase_from_content(&mut self) -> usize {
+        // Mean-CENTER each hemisphere's vectors before phasing. Real embeddings
+        // are anisotropic (clustered in a cone — no codebook centering, the same
+        // root as num_clusters=1), so projecting RAW vectors barely spreads
+        // phase. Subtracting the corpus mean removes the shared component, so
+        // content differences dominate the projection → phases spread.
+        fn rephase_hemi(hemi: &mut super::hemisphere::Hemisphere) -> usize {
+            let n = hemi.count();
+            if n == 0 {
+                return 0;
+            }
+            let dim = hemi.wavefronts.ncols();
+            let mut mean = vec![0.0f32; dim];
+            for i in 0..n {
+                for (m, &v) in mean.iter_mut().zip(hemi.wavefronts.row(i).iter()) {
+                    *m += v;
+                }
+            }
+            for m in mean.iter_mut() {
+                *m /= n as f32;
+            }
+            for i in 0..n {
+                let v: Vec<f32> = hemi
+                    .wavefronts
+                    .row(i)
+                    .iter()
+                    .zip(mean.iter())
+                    .map(|(&x, &m)| x - m)
+                    .collect();
+                hemi.phase[i] = content_born_phase(&v);
+            }
+            n
+        }
+        rephase_hemi(&mut self.right) + rephase_hemi(&mut self.left)
     }
 
     /// ADR-0037 Phase 4: ring-winding report over the holistic (right)
@@ -1087,5 +1271,350 @@ mod tests {
         cm.apply_cross_callosal_coupling(50, 0.1);
         let after: Vec<f32> = cm.left.phase.iter().chain(cm.right.phase.iter()).copied().collect();
         assert_eq!(before, after, "cross-callosal coupling must be inert below 4 total");
+    }
+
+    #[test]
+    fn content_born_phase_is_content_smooth() {
+        // Recall-safety: similar embeddings → similar phase; an unrelated
+        // embedding sits further away in phase. Deterministic (fixed seed).
+        let dim = 256;
+        let mut seed = 0xBEEF_F00Du64;
+        let mut r = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as f32 / (1u64 << 30) as f32 - 1.0
+        };
+        let base: Vec<f32> = (0..dim).map(|_| r()).collect();
+        let near: Vec<f32> = base.iter().map(|&x| x + 0.01 * r()).collect();
+        let far: Vec<f32> = (0..dim).map(|_| r()).collect();
+
+        let pb = content_born_phase(&base);
+        let pn = content_born_phase(&near);
+        let pf = content_born_phase(&far);
+        let circ = |a: f32, b: f32| {
+            let d = (a - b).abs() % (2.0 * std::f32::consts::PI);
+            d.min(2.0 * std::f32::consts::PI - d)
+        };
+        assert!(
+            circ(pb, pn) < 0.15,
+            "similar content must get similar phase: {pb} vs {pn} (Δ={})",
+            circ(pb, pn)
+        );
+        assert!(
+            circ(pb, pf) > circ(pb, pn),
+            "unrelated content should be further in phase than a near-duplicate"
+        );
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_BELIEF_PHASE"]
+    fn experiment_belief_phase_real_field() {
+        // Born-phase on a REAL encoded field: 16 memories across 4 topics
+        // (belief domains). Expect global order well below the phase-0 baseline
+        // (~1.0), i.e. the field is now heterogeneous by content.
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+        let pipeline = test_pipeline();
+
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+
+        // Baseline (belief OFF) for comparison.
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "0");
+        let mut base_cm = ChiralMedium::new();
+        for group in topics.iter() {
+            for s in group.iter() {
+                base_cm.store(s, 0.8, &pipeline).unwrap();
+            }
+        }
+        let br = base_cm.bilateral_ring_report();
+
+        // Belief substrate ON.
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+        let mut cm = ChiralMedium::new();
+        for group in topics.iter() {
+            for s in group.iter() {
+                cm.store(s, 0.8, &pipeline).unwrap();
+            }
+        }
+        let r = cm.bilateral_ring_report();
+        let cloud = cm.holistic_cloud_report();
+        eprintln!(
+            "[expBelief] OFF: order={:.3} | ON: order={:.3} winding={:+.2} 2D_cores={} net={} (n={})",
+            br.order, r.order, r.winding, cloud.singularities.len(), cloud.net_charge, r.n
+        );
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_BELIEF_PHASE"]
+    fn experiment_belief_phase_recall_at_k() {
+        // RECALL-SAFETY (make-or-break). Store 16 memories across 4 topics, then
+        // query with each stored phrase and measure same-topic precision@4.
+        // Compare belief-phase OFF vs ON: ON must NOT degrade retrieval (the
+        // content-smooth phase claim). Note: the test pipeline is a hash encoder,
+        // so absolute precision is modest — the OFF→ON DELTA is what matters.
+        let pipeline = test_pipeline();
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+        let run = |on: bool| -> f32 {
+            std::env::set_var("KANNAKA_BELIEF_PHASE", if on { "1" } else { "0" });
+            let mut cm = ChiralMedium::new();
+            for g in topics.iter() {
+                for s in g.iter() {
+                    cm.store(s, 0.8, &pipeline).unwrap();
+                }
+            }
+            let (mut hits, mut total) = (0usize, 0usize);
+            for (t, g) in topics.iter().enumerate() {
+                for q in g.iter() {
+                    let res = cm.recall(q, 4, &pipeline).unwrap();
+                    for r in res.iter() {
+                        total += 1;
+                        if topics[t].iter().any(|&s| s == r.content.as_str()) {
+                            hits += 1;
+                        }
+                    }
+                }
+            }
+            hits as f32 / total.max(1) as f32
+        };
+        let off = run(false);
+        let on = run(true);
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
+        eprintln!("[expRecall] same-topic precision@4  OFF={off:.3}  ON={on:.3}  (Δ={:+.3})", on - off);
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_BELIEF_PHASE"]
+    fn experiment_belief_coupling_stabilizes_cores() {
+        // Track B on the REAL born-phase field: does the coherence-gated 2-D
+        // coupling preserve within-belief coherence while keeping the cores?
+        // within = mean Kuramoto order over each topic's 4 memories (recall
+        // proxy); global must stay < 0.9; cores should persist.
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+        let pipeline = test_pipeline();
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+        let mut cm = ChiralMedium::new();
+        for g in topics.iter() {
+            for s in g.iter() {
+                cm.store(s, 0.8, &pipeline).unwrap();
+            }
+        }
+        // Within-topic coherence: right hemisphere stores in insertion order, so
+        // topic t occupies right indices [4t, 4t+4).
+        let within = |cm: &ChiralMedium| -> f32 {
+            let n = cm.right.count();
+            let (mut total, mut groups) = (0.0f32, 0u32);
+            let mut t = 0;
+            while t * 4 < 16.min(n) {
+                let (mut c, mut s) = (0.0f32, 0.0f32);
+                for i in (t * 4)..((t * 4 + 4).min(n)) {
+                    c += cm.right.phase[i].cos();
+                    s += cm.right.phase[i].sin();
+                }
+                total += ((c / 4.0).powi(2) + (s / 4.0).powi(2)).sqrt();
+                groups += 1;
+                t += 1;
+            }
+            total / groups.max(1) as f32
+        };
+        let report = |cm: &ChiralMedium| {
+            let r = cm.bilateral_ring_report();
+            let cl = cm.holistic_cloud_report();
+            (r.order, within(cm), cl.singularities.len(), cl.net_charge)
+        };
+
+        let (g0, w0, c0, q0) = report(&cm);
+        eprintln!("[expCoupl] born:  global={g0:.3} within={w0:.3} cores={c0} net={q0}");
+        let mut done = 0usize;
+        for &target in &[3usize, 10, 30] {
+            cm.apply_belief_coupling(target - done, 0.1);
+            done = target;
+            let (g, w, c, q) = report(&cm);
+            eprintln!("[expCoupl] c{target}: global={g:.3} within={w:.3} cores={c} net={q}");
+        }
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_BELIEF_PHASE"]
+    fn experiment_belief_dream_consolidates() {
+        // Track C: does a real chiral dream on the born-phase field REVIVE the
+        // dead 0/0/0 consolidation? Compare OFF (collapsed → dream idles in the
+        // dead band) vs ON (heterogeneous → anneal has real clusters to work on),
+        // and confirm ON keeps order well below 1.0 after the dream.
+        let pipeline = test_pipeline();
+        // A handful of memories per topic so the anneal has clusters to act on.
+        let topics: [&[&str]; 4] = [
+            &["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly", "the tabby stretched and yawned", "a cat groomed its paws"],
+            &["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates", "shares slid at the opening bell", "the index closed lower"],
+            &["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight", "the chloroplast makes sugar", "foliage turns toward the sun"],
+            &["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch", "the capsule docked in space", "the probe left the atmosphere"],
+        ];
+        let run = |belief: bool| -> (f32, f32, usize, usize, usize) {
+            std::env::set_var("KANNAKA_BELIEF_PHASE", if belief { "1" } else { "0" });
+            let mut cm = ChiralMedium::new();
+            for g in topics.iter() {
+                for s in g.iter() {
+                    cm.store(s, 0.8, &pipeline).unwrap();
+                }
+            }
+            let before = cm.bilateral_ring_report().order;
+            let rep = cm.dream(true, 3);
+            let after = cm.bilateral_ring_report().order;
+            (before, after, rep.wavefronts_dissolved, rep.wavefronts_strengthened, rep.wavefronts_hallucinated)
+        };
+        let off = run(false);
+        let on = run(true);
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
+        eprintln!(
+            "[expDream] OFF order {:.3}->{:.3}  dissolved={} strengthened={} halluc={}",
+            off.0, off.1, off.2, off.3, off.4
+        );
+        eprintln!(
+            "[expDream] ON  order {:.3}->{:.3}  dissolved={} strengthened={} halluc={}",
+            on.0, on.1, on.2, on.3, on.4
+        );
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture"]
+    fn experiment_rephase_collapsed_field() {
+        // The MIGRATION for an already-collapsed field: store with belief OFF
+        // (every wavefront born at phase 0 → order 1.0, the live pathology), then
+        // re-phase from content. Order should drop and cores should appear —
+        // proving the existing field can be revived without re-encoding vectors.
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "0");
+        let pipeline = test_pipeline();
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+        let mut cm = ChiralMedium::new();
+        for g in topics.iter() {
+            for s in g.iter() {
+                cm.store(s, 0.8, &pipeline).unwrap();
+            }
+        }
+        let before = cm.bilateral_ring_report();
+        let cb = cm.holistic_cloud_report();
+        let n = cm.rephase_from_content();
+        let after = cm.bilateral_ring_report();
+        let ca = cm.holistic_cloud_report();
+        eprintln!(
+            "[expRephase] re-phased {n} wavefronts | order {:.3}->{:.3} | cores {}->{} | winding {:+.2}->{:+.2}",
+            before.order, after.order, cb.singularities.len(), ca.singularities.len(), before.winding, after.winding
+        );
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
+    }
+
+    #[test]
+    #[ignore = "probe: KANNAKA_PROBE_HRM=<path.hrm> cargo test --lib probe_rephase_live_hrm -- --ignored --nocapture"]
+    fn probe_rephase_live_hrm() {
+        // READ-ONLY probe of a real collapsed field. Loads the .hrm, reports its
+        // actual order/cores, re-phases from content IN MEMORY, reports again.
+        // Never saves — does not touch the file. This is the true test that the
+        // migration revives the LIVE collapse (synthetic fields under-collapse).
+        let path = match std::env::var("KANNAKA_PROBE_HRM") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("[probe] set KANNAKA_PROBE_HRM=<path to .hrm>");
+                return;
+            }
+        };
+        let mut cm = match ChiralMedium::load(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[probe] load failed: {e}");
+                return;
+            }
+        };
+        let before = cm.bilateral_ring_report();
+        let cb = cm.holistic_cloud_report();
+        eprintln!(
+            "[probe] LOADED right={} left={} n={} | order={:.4} winding={:+.2} 2D_cores={} net={}",
+            cm.right.count(), cm.left.count(), before.n, before.order, before.winding,
+            cb.singularities.len(), cb.net_charge
+        );
+
+        // MEASURE FIRST: mean pairwise cosine, raw vs mean-centered, over the
+        // right hemisphere — quantifies the embedding anisotropy and whether
+        // centering actually de-anisotropizes (if raw is already ~moderate or
+        // the blob is >0.9 even centered, centering won't help).
+        {
+            let nr = cm.right.count();
+            let dim = cm.right.wavefronts.ncols();
+            let mut mean = vec![0.0f32; dim];
+            for i in 0..nr {
+                for (m, &v) in mean.iter_mut().zip(cm.right.wavefronts.row(i).iter()) {
+                    *m += v;
+                }
+            }
+            for m in mean.iter_mut() {
+                *m /= nr.max(1) as f32;
+            }
+            let zero = vec![0.0f32; dim];
+            let cosab = |i: usize, j: usize, ctr: &[f32]| -> f32 {
+                let (a, b) = (cm.right.wavefronts.row(i), cm.right.wavefronts.row(j));
+                let (mut d, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+                for ((x, y), m) in a.iter().zip(b.iter()).zip(ctr.iter()) {
+                    let (xc, yc) = (x - m, y - m);
+                    d += xc * yc;
+                    na += xc * xc;
+                    nb += yc * yc;
+                }
+                if na <= 0.0 || nb <= 0.0 { 0.0 } else { d / (na.sqrt() * nb.sqrt()) }
+            };
+            let (mut raw, mut ctr, mut cnt) = (0.0f32, 0.0f32, 0u32);
+            for i in 0..nr {
+                for j in (i + 1)..nr {
+                    raw += cosab(i, j, &zero);
+                    ctr += cosab(i, j, &mean);
+                    cnt += 1;
+                }
+            }
+            let c = cnt.max(1) as f32;
+            eprintln!(
+                "[probe] anisotropy: mean pairwise cosine raw={:.3} centered={:.3} ({} pairs)",
+                raw / c, ctr / c, cnt
+            );
+        }
+        let n = cm.rephase_from_content();
+        let after = cm.bilateral_ring_report();
+        let ca = cm.holistic_cloud_report();
+        eprintln!(
+            "[probe] REPHASED {n} | order {:.4}->{:.4} | winding {:+.2}->{:+.2} | cores {}->{} net {}->{}  (NOT saved)",
+            before.order, after.order, before.winding, after.winding,
+            cb.singularities.len(), ca.singularities.len(), cb.net_charge, ca.net_charge
+        );
+
+        // Full pipeline: a belief dream on the re-phased real field. Does it
+        // consolidate (strengthen, hold the field heterogeneous) into beliefs?
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+        let rep = cm.dream(true, 3);
+        let post = cm.bilateral_ring_report();
+        let cp = cm.holistic_cloud_report();
+        eprintln!(
+            "[probe] DREAMED  | order {:.4}->{:.4} | cores {}->{} | dissolved={} strengthened={} halluc={}  (NOT saved)",
+            after.order, post.order, ca.singularities.len(), cp.singularities.len(),
+            rep.wavefronts_dissolved, rep.wavefronts_strengthened, rep.wavefronts_hallucinated
+        );
+        std::env::remove_var("KANNAKA_BELIEF_PHASE");
     }
 }
