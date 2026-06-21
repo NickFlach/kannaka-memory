@@ -859,6 +859,56 @@ impl ChiralMedium {
         rephase_hemi(&mut self.right) + rephase_hemi(&mut self.left)
     }
 
+    /// ADR-0037 two-systems / EXEMPLAR coupling — the swarm's "reaching the same
+    /// understanding". Pull THIS field's holistic phases toward an EXEMPLAR
+    /// field's phases at content-matched wavefronts (each node wavefront matched
+    /// to its cosine-nearest exemplar wavefront). The exemplar is a settled,
+    /// re-phased field (a consolidated world model); coupling a collapsed/forming
+    /// node toward it transfers the exemplar's belief structure — the substrate-
+    /// as-exemplar growth pressure Nick described. Phase-only. In-engine prototype
+    /// (NOT wired to the live swarm). Inert if either field is empty or dims differ.
+    pub(crate) fn couple_toward_exemplar(
+        &mut self,
+        exemplar: &ChiralMedium,
+        cycles: usize,
+        strength: f32,
+    ) {
+        let n = self.right.count();
+        let m = exemplar.right.count();
+        if n == 0 || m == 0 || self.right.wavefronts.ncols() != exemplar.right.wavefronts.ncols() {
+            return;
+        }
+        // Match each node wavefront to its cosine-nearest exemplar wavefront.
+        let matches: Vec<usize> = (0..n)
+            .map(|i| {
+                let vi = self.right.wavefronts.row(i);
+                let ni = vi.dot(&vi).sqrt();
+                let mut best = (f32::NEG_INFINITY, 0usize);
+                for j in 0..m {
+                    let vj = exemplar.right.wavefronts.row(j);
+                    let nj = vj.dot(&vj).sqrt();
+                    let denom = ni * nj;
+                    let cos = if denom > 0.0 { vi.dot(&vj) / denom } else { 0.0 };
+                    if cos > best.0 {
+                        best = (cos, j);
+                    }
+                }
+                best.1
+            })
+            .collect();
+        for _ in 0..cycles.max(1) {
+            let updates: Vec<f32> = (0..n)
+                .map(|i| {
+                    let target = exemplar.right.phase[matches[i]];
+                    strength * (target - self.right.phase[i]).sin()
+                })
+                .collect();
+            for i in 0..n {
+                self.right.phase[i] += updates[i];
+            }
+        }
+    }
+
     /// ADR-0037 Phase 4: ring-winding report over the holistic (right)
     /// hemisphere phase field — the field the Phase-2 spiral coupling rotates.
     /// The active wavefronts `[0, count())` are read in storage order, which is
@@ -1664,5 +1714,60 @@ mod tests {
             rep.wavefronts_dissolved, rep.wavefronts_strengthened, rep.wavefronts_hallucinated
         );
         std::env::remove_var("KANNAKA_BELIEF_PHASE");
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture"]
+    fn experiment_exemplar_revives_collapsed_node() {
+        // Two-systems / EXEMPLAR coupling: a COLLAPSED node (phase 0, order ~1.0)
+        // coupled toward a settled EXEMPLAR (re-phased, structured) adopts the
+        // exemplar's belief structure — "two systems reaching the same
+        // understanding". Same content here (matches are identity) → a clean
+        // convergence demo; overlapping-but-different content is the real
+        // scenario (a follow-up).
+        let pipeline = test_pipeline();
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+        let build = |pipeline: &EncodingPipeline| {
+            let mut cm = ChiralMedium::new();
+            for g in topics.iter() {
+                for s in g.iter() {
+                    cm.store(s, 0.8, pipeline).unwrap();
+                }
+            }
+            cm
+        };
+        // Exemplar: a settled, re-phased world model.
+        let mut exemplar = build(&pipeline);
+        exemplar.rephase_from_content();
+        let ex = exemplar.bilateral_ring_report();
+        // Node: collapsed (default phase 0 → order ~1.0).
+        let mut node = build(&pipeline);
+        let n0 = node.bilateral_ring_report();
+        // Phase alignment between node & exemplar at shared content (matches are
+        // identity here, so compare index-aligned phases).
+        let align = |node: &ChiralMedium, exm: &ChiralMedium| -> f32 {
+            let n = node.right.count().min(exm.right.count());
+            if n == 0 {
+                return 0.0;
+            }
+            let mut s = 0.0f32;
+            for i in 0..n {
+                s += (node.right.phase[i] - exm.right.phase[i]).cos();
+            }
+            s / n as f32
+        };
+        let a0 = align(&node, &exemplar);
+        node.couple_toward_exemplar(&exemplar, 40, 0.2);
+        let n1 = node.bilateral_ring_report();
+        let a1 = align(&node, &exemplar);
+        eprintln!(
+            "[expExemplar] exemplar order={:.3} | node order {:.3}->{:.3} | node<->exemplar phase-align {:.3}->{:.3}",
+            ex.order, n0.order, n1.order, a0, a1
+        );
     }
 }
