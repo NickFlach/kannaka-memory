@@ -166,6 +166,9 @@ pub fn build_cli() -> Command {
         .subcommand(passthrough("relate", "Find semantically related memories"))
         // ── Consolidation + introspection ───────────────────────────────
         .subcommand(passthrough("dream", "Trigger dream consolidation (--mode deep|lite)"))
+        // ADR-0037 belief substrate management — status (cheap order/winding),
+        // on/off (persist [belief].enabled), activate (safe re-phase migration).
+        .subcommand(passthrough("belief", "Belief substrate: status | on | off | activate (--full | --manage-service <unit>)"))
         .subcommand(passthrough("observe", "Dump full medium state (waves, clusters, links)"))
         .subcommand(passthrough("status", "Quick consciousness metrics snapshot"))
         .subcommand(passthrough("assess", "Full consciousness level assessment (Phi/Xi/order)"))

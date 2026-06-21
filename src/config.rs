@@ -30,6 +30,8 @@ pub struct KannakaConfig {
     pub updates: UpdatesConfig,
     #[serde(default = "TriageConfig::default")]
     pub triage: TriageConfig,
+    #[serde(default = "BeliefConfig::default")]
+    pub belief: BeliefConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,22 @@ pub struct TriageConfig {
     /// the auto-trigger even when `enabled` (explicit CLI triage still works).
     #[serde(default = "default_triage_xi_trigger")]
     pub xi_trigger: f32,
+}
+
+/// ADR-0037 belief substrate. `enabled` turns on the content-smooth born phase
+/// (and the belief dream dynamics / spiral belief-formation layer). **Default
+/// OFF** so a field is byte-identical until activated. `max_n` caps the O(n²)
+/// belief-coupling PCA on under-provisioned nodes (the 1-core hub sets 0 to skip
+/// it; re-phase still works). The `KANNAKA_BELIEF_PHASE` / `KANNAKA_BELIEF_MAX_N`
+/// env vars OVERRIDE these — `apply_belief_env_from_config` bridges config→env at
+/// startup only when the env var is unset, so a dream-cron / systemd `Environment=`
+/// still wins. Managed via `kannaka belief on|off|status|activate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeliefConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_belief_max_n")]
+    pub max_n: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +256,16 @@ fn default_triage_min_amplitude() -> f32 { 0.75 }
 fn default_triage_min_age_hours() -> i64 { 24 }
 fn default_triage_max_evict() -> usize { 100 }
 fn default_triage_xi_trigger() -> f32 { 0.0 }
+fn default_belief_max_n() -> usize { 6000 }
+
+impl Default for BeliefConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_n: default_belief_max_n(),
+        }
+    }
+}
 
 impl Default for KannakaConfig {
     fn default() -> Self {
@@ -250,6 +278,7 @@ impl Default for KannakaConfig {
             hrm: HrmConfig::default(),
             updates: UpdatesConfig::default(),
             triage: TriageConfig::default(),
+            belief: BeliefConfig::default(),
         }
     }
 }
@@ -378,6 +407,21 @@ impl KannakaConfig {
         let path = Self::data_dir().join("agent_id");
         std::fs::write(&path, &self.agent.id)
             .map_err(|e| format!("failed to write agent_id: {e}"))
+    }
+}
+
+/// ADR-0037: bridge the persisted `[belief]` config to the env vars the engine
+/// reads (`belief_phase_enabled` / `belief_max_n` in `medium::chiral`). **Env
+/// wins** — only set a var when it's unset, so `KANNAKA_BELIEF_PHASE=on` from a
+/// dream-cron or a systemd `Environment=` still overrides the file. Call once at
+/// startup, before the HRM loads (and before any worker thread spawns, so the
+/// `set_var` is single-threaded-safe on edition 2021).
+pub fn apply_belief_env_from_config(cfg: &KannakaConfig) {
+    if std::env::var_os("KANNAKA_BELIEF_PHASE").is_none() && cfg.belief.enabled {
+        std::env::set_var("KANNAKA_BELIEF_PHASE", "on");
+    }
+    if std::env::var_os("KANNAKA_BELIEF_MAX_N").is_none() {
+        std::env::set_var("KANNAKA_BELIEF_MAX_N", cfg.belief.max_n.to_string());
     }
 }
 
@@ -3386,5 +3430,34 @@ mod config_field_tests {
         let toml = toml::to_string(&cfg).expect("serialize config");
         let back: KannakaConfig = toml::from_str(&toml).expect("deserialize config");
         assert_eq!(back.swarm.role, "witness");
+    }
+
+    // ADR-0037 belief substrate config.
+    #[test]
+    fn belief_defaults_off_maxn_6000() {
+        let cfg = KannakaConfig::default();
+        assert!(!cfg.belief.enabled, "belief must default OFF (byte-identical field)");
+        assert_eq!(cfg.belief.max_n, 6000);
+    }
+
+    #[test]
+    fn belief_survives_toml_roundtrip() {
+        let mut cfg = KannakaConfig::default();
+        cfg.belief.enabled = true;
+        cfg.belief.max_n = 0;
+        let toml = toml::to_string(&cfg).expect("serialize config");
+        let back: KannakaConfig = toml::from_str(&toml).expect("deserialize config");
+        assert!(back.belief.enabled);
+        assert_eq!(back.belief.max_n, 0);
+    }
+
+    // Missing [belief] section (old config.toml) deserializes to the default —
+    // upgrades must not break existing installs.
+    #[test]
+    fn belief_section_absent_uses_default() {
+        let minimal = "[agent]\nid = \"x\"\n";
+        let cfg: KannakaConfig = toml::from_str(minimal).expect("deserialize minimal config");
+        assert!(!cfg.belief.enabled);
+        assert_eq!(cfg.belief.max_n, 6000);
     }
 }
