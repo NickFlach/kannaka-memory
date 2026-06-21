@@ -21,6 +21,44 @@ fn new_medium_is_empty() {
 }
 
 #[test]
+fn spiral_field_2d_separates_clusters_and_reports() {
+    // ADR-0037 Phase 4b: the PCA embedding must place two orthogonal wavefront
+    // clusters apart in the 2-D field, and the cloud report must run clean.
+    let mut medium = Medium::new();
+    for k in 0..6 {
+        let mut v = vec![0.0f32; WAVEFRONT_DIM];
+        if k < 3 {
+            v[0] = 1.0;
+            v[1] = 0.05 * k as f32;
+        } else {
+            v[1] = 1.0;
+            v[0] = 0.05 * k as f32;
+        }
+        medium.add_wavefront(&v, format!("m{k}"), 1.0).unwrap();
+    }
+    let pts = medium.spiral_field_2d();
+    assert_eq!(pts.len(), 6);
+    assert!(pts.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+    // The two clusters must separate in the 2-D embedding.
+    let ca = (
+        pts[..3].iter().map(|p| p.0).sum::<f32>() / 3.0,
+        pts[..3].iter().map(|p| p.1).sum::<f32>() / 3.0,
+    );
+    let cb = (
+        pts[3..].iter().map(|p| p.0).sum::<f32>() / 3.0,
+        pts[3..].iter().map(|p| p.1).sum::<f32>() / 3.0,
+    );
+    let sep = ((ca.0 - cb.0).powi(2) + (ca.1 - cb.1).powi(2)).sqrt();
+    assert!(sep > 1e-3, "clusters should separate in the 2-D embedding, sep={sep}");
+    // Cloud report runs clean.
+    let rep = medium.spiral_cloud_report();
+    assert_eq!(rep.n, 6);
+    assert!(rep.order.is_finite());
+    // Empty medium -> empty field.
+    assert!(Medium::new().spiral_field_2d().is_empty());
+}
+
+#[test]
 fn xi_bridge_residue_and_summary() {
     // ADR-0037 Phase 3: empty medium -> bridge residue 0.
     let empty = Medium::new();
