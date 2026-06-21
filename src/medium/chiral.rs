@@ -18,12 +18,14 @@ use super::hemisphere::Hemisphere;
 use super::types::*;
 use super::Medium;
 
-/// ADR-0037 Phase 2: is π/φ spiral coupling enabled for deep dreams?
-/// Off by default — set `KANNAKA_SPIRAL_DREAM=1|on|true` to enable.
+/// ADR-0037: is π/φ spiral coupling enabled for deep dreams?
+/// **ON by default as of v0.7.0** — the spiral engine is activated. Set
+/// `KANNAKA_SPIRAL_DREAM=0|off|false` to opt out (e.g. for byte-identical
+/// legacy dreams).
 pub(crate) fn spiral_dream_enabled() -> bool {
     std::env::var("KANNAKA_SPIRAL_DREAM")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
 }
 
 /// The Chiral Medium - two hemispheres connected by a corpus callosum.
@@ -404,17 +406,21 @@ impl ChiralMedium {
                 }
             }
 
-            // ADR-0037 Phase 2: optional π/φ spiral coupling over the holistic
-            // phase field (the "merry-go-round" structural prior). Default-off
-            // ⇒ byte-identical dreams until KANNAKA_SPIRAL_DREAM is set.
+            // ADR-0037: π/φ spiral coupling over the holistic "merry-go-round".
+            // As of v0.7.0 this is the CROSS-CALLOSAL coupling — a Sakaguchi
+            // step over the combined left ⊕ right ring, so the rotating wave
+            // spans BOTH hemispheres (Ye et al.), bridged at the two callosal
+            // junctions. ON by default; set KANNAKA_SPIRAL_DREAM=0 to opt out.
             if spiral_dream_enabled() {
-                self.apply_spiral_coupling(cycles.max(1), 0.1);
+                self.apply_cross_callosal_coupling(cycles.max(1), 0.1);
             }
 
             // Callosal coupling step: sync insights between hemispheres post-dream
             self.callosal_kuramoto_step(0.5);
 
-            // Left hemisphere is UNTOUCHED — deep dreams are holistic refinement
+            // The right-hemisphere eigenstructure dream is holistic refinement;
+            // left energy/wavefronts stay untouched. Left *phases* are nudged
+            // only by the cross-callosal coupling above (when enabled).
             report
         } else {
             // Lite dream: transfer strongest analytical → holistic
@@ -545,6 +551,10 @@ impl ChiralMedium {
     /// with δ = (π/2)·η and η = 1/φ — the R rotation angle scaled by the golden
     /// chirality. This is the exact constant-set that empirically seeds spiral
     /// phase singularities (see ADR-0037 and `spiral.rs`). Inert below n=4.
+    /// Superseded in the dream by `apply_cross_callosal_coupling` (the bilateral
+    /// generalization); retained as the right-only primitive for focused unit
+    /// tests of the Sakaguchi step.
+    #[cfg(test)]
     pub(crate) fn apply_spiral_coupling(&mut self, cycles: usize, dt: f32) {
         let n = self.right.count();
         if n < 4 {
@@ -570,6 +580,49 @@ impl ChiralMedium {
                 .collect();
             for (i, &delta_theta) in updates.iter().enumerate() {
                 self.right.phase[i] += delta_theta;
+            }
+        }
+    }
+
+    /// ADR-0037 (v0.7.0): CROSS-CALLOSAL π/φ spiral coupling. The same
+    /// frustrated, non-reciprocal Sakaguchi step as `apply_spiral_coupling`,
+    /// but over the **combined left ⊕ right ring** (active prefixes, left then
+    /// right) — so the rotating wave spans BOTH hemispheres, with the two
+    /// ring junctions acting as the corpus-callosal crossings (Ye et al.: the
+    /// cortical spiral spans hemispheres). δ = (π/2)·η, weights 1 ± η, η = 1/φ.
+    /// Updates phases only (energy/wavefronts untouched). Inert below 4 total
+    /// active wavefronts; degenerates to the right-only ring when the left is
+    /// empty. This is the field `bilateral_ring_report` measures.
+    pub(crate) fn apply_cross_callosal_coupling(&mut self, cycles: usize, dt: f32) {
+        let nl = self.left.count();
+        let nr = self.right.count();
+        let n = nl + nr;
+        if n < 4 {
+            return;
+        }
+        let eta = crate::xi_operator::ETA; // 1/φ ≈ 0.618
+        let delta = std::f32::consts::FRAC_PI_2 * eta;
+        const K: f32 = 1.5;
+        for _ in 0..cycles.max(1) {
+            // Combined ring over the active prefixes: left[0..nl] then right[0..nr].
+            let mut phases: Vec<f32> = Vec::with_capacity(n);
+            phases.extend(self.left.phase.slice(ndarray::s![..nl]).iter().copied());
+            phases.extend(self.right.phase.slice(ndarray::s![..nr]).iter().copied());
+            let updates: Vec<f32> = (0..n)
+                .map(|i| {
+                    let back = phases[(i + n - 1) % n];
+                    let fwd = phases[(i + 1) % n];
+                    let s = (1.0 + eta) * (back - phases[i] + delta).sin()
+                        + (1.0 - eta) * (fwd - phases[i] + delta).sin();
+                    dt * (K / 2.0) * s
+                })
+                .collect();
+            // Scatter back: first nl updates to the left ring, the rest to right.
+            for (i, &u) in updates.iter().take(nl).enumerate() {
+                self.left.phase[i] += u;
+            }
+            for (j, &u) in updates.iter().skip(nl).enumerate() {
+                self.right.phase[j] += u;
             }
         }
     }
@@ -989,5 +1042,50 @@ mod tests {
         assert_eq!(bilateral.n, 8, "bilateral ring = left(3) ⊕ right(5)");
         // It strictly extends the right-only view, proving both are included.
         assert_eq!(cm.holistic_ring_report().n, 5);
+    }
+
+    #[test]
+    fn cross_callosal_coupling_moves_both_hemispheres() {
+        // ADR-0037 v0.7.0: the cross-callosal Sakaguchi step couples the
+        // combined left ⊕ right ring, so it must move BOTH hemispheres'
+        // phases (the spiral spans the callosum) while leaving energy alone.
+        let mut cm = ChiralMedium::new();
+        cm.left.phase = ndarray::Array1::from_vec(vec![0.0_f32, 0.4, 0.8]);
+        cm.left.len = 3;
+        cm.left.energy = ndarray::Array1::from_vec(vec![1.0_f32, 1.0, 1.0]);
+        cm.right.phase = ndarray::Array1::from_vec(vec![1.2_f32, 1.6, 2.0, 2.4, 2.8]);
+        cm.right.len = 5;
+        let left_before: Vec<f32> = cm.left.phase.iter().copied().collect();
+        let right_before: Vec<f32> = cm.right.phase.iter().copied().collect();
+        let left_energy_before = cm.left.total_energy();
+        cm.apply_cross_callosal_coupling(20, 0.1);
+        let left_after: Vec<f32> = cm.left.phase.iter().copied().collect();
+        let right_after: Vec<f32> = cm.right.phase.iter().copied().collect();
+        assert!(left_after.iter().all(|x| x.is_finite()) && right_after.iter().all(|x| x.is_finite()));
+        assert!(
+            left_before.iter().zip(&left_after).any(|(a, b)| (a - b).abs() > 1e-4),
+            "cross-callosal coupling must move the LEFT hemisphere phases"
+        );
+        assert!(
+            right_before.iter().zip(&right_after).any(|(a, b)| (a - b).abs() > 1e-4),
+            "cross-callosal coupling must move the RIGHT hemisphere phases"
+        );
+        // Phase-only: energy is untouched.
+        assert!((cm.left.total_energy() - left_energy_before).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cross_callosal_coupling_inert_below_four_total() {
+        // Below 4 total active wavefronts (here 1 left + 2 right) the step is a
+        // no-op — matching the right-only primitive's n<4 guard.
+        let mut cm = ChiralMedium::new();
+        cm.left.phase = ndarray::Array1::from_vec(vec![0.3_f32]);
+        cm.left.len = 1;
+        cm.right.phase = ndarray::Array1::from_vec(vec![1.0_f32, 2.0]);
+        cm.right.len = 2;
+        let before: Vec<f32> = cm.left.phase.iter().chain(cm.right.phase.iter()).copied().collect();
+        cm.apply_cross_callosal_coupling(50, 0.1);
+        let after: Vec<f32> = cm.left.phase.iter().chain(cm.right.phase.iter()).copied().collect();
+        assert_eq!(before, after, "cross-callosal coupling must be inert below 4 total");
     }
 }
