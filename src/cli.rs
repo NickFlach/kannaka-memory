@@ -256,7 +256,7 @@ EXAMPLES:
         // ADR-0037 belief substrate management.
         .subcommand(passthrough_doc(
             "belief",
-            "Belief substrate: status | on | off | activate",
+            "Belief substrate: status | on | off | activate | history",
             r#"Manage the ADR-0037 belief substrate (content-smooth phase + spiral belief-formation).
 
 SUBCOMMANDS:
@@ -264,6 +264,8 @@ SUBCOMMANDS:
   on | off             persist [belief].enabled in config.toml (KANNAKA_BELIEF_PHASE env still overrides)
   activate             one-time re-phase migration: auto-backup → rephase-only (count-stable) →
                        count-preservation guard (auto-restore on drop) → refuse-if-locked
+  history [--last N]   the L6 instrument: per-dream order/winding/cores/Φ/stats time-series
+                       (recorded to <data_dir>/l6-telemetry.jsonl on every dream); --json for raw rows
 
 FLAGS:
   --full                    status: also compute the heavier 2-D PCA spiral cores
