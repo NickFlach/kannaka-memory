@@ -2549,9 +2549,82 @@ fn main() {
                     }
                     println!("belief activate: done ({before} memories preserved).");
                 }
+                // ADR-0037 L6 instrument: self-recall@k — the dependent variable for
+                // "core stability ⇒ recall reliability". For a sample of memories,
+                // query by their own content and check whether each retrieves ITSELF
+                // in the top-k. A healthy field ⇒ recall@1≈1; over-merge/blur drops it.
+                "recall-probe" => {
+                    let arg_after = |flag: &str, def: usize| -> usize {
+                        let a = &args[command_start..];
+                        a.iter()
+                            .position(|x| x == flag)
+                            .and_then(|i| a.get(i + 1))
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(def)
+                    };
+                    let k = arg_after("--k", 5).max(1);
+                    let sample = arg_after("--sample", 64).max(1);
+                    // The probe's recalls reinforce (mutate the medium in RAM); readonly
+                    // blocks any flush so the persisted field stays untouched.
+                    if let Some(h) = sys
+                        .engine
+                        .store
+                        .as_any_mut()
+                        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                    {
+                        h.set_readonly(true);
+                    }
+                    let mems = sys.engine.store.all_memories().unwrap_or_default();
+                    let n = mems.len();
+                    if n == 0 {
+                        println!("recall-probe: empty field");
+                    } else {
+                        let step = (n / sample).max(1);
+                        let sampled: Vec<String> = mems
+                            .iter()
+                            .step_by(step)
+                            .take(sample)
+                            .map(|m| m.content.clone())
+                            .filter(|c| !c.trim().is_empty())
+                            .collect();
+                        drop(mems);
+                        let m = sampled.len().max(1);
+                        let (mut r1, mut rk) = (0usize, 0usize);
+                        for content in &sampled {
+                            if let Ok(res) = sys.recall(content, k) {
+                                if res.first().map(|r| &r.content == content).unwrap_or(false) {
+                                    r1 += 1;
+                                }
+                                if res.iter().any(|r| &r.content == content) {
+                                    rk += 1;
+                                }
+                            }
+                        }
+                        let recall1 = r1 as f32 / m as f32;
+                        let recallk = rk as f32 / m as f32;
+                        let rec = serde_json::json!({
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                            "k": k,
+                            "sample": m,
+                            "recall_at_1": recall1,
+                            "recall_at_k": recallk,
+                        });
+                        use std::io::Write;
+                        let path = data_dir().join("l6-recall.jsonl");
+                        if let Ok(mut f) =
+                            std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                        {
+                            let _ = writeln!(f, "{rec}");
+                        }
+                        println!(
+                            "recall@1={recall1:.3}  recall@{k}={recallk:.3}  (sample={m}/{n}) → {}",
+                            path.display()
+                        );
+                    }
+                }
                 other => {
                     eprintln!("unknown belief subcommand: '{other}'");
-                    eprintln!("usage: kannaka belief [status [--full] | on | off | activate [--manage-service <unit>]]");
+                    eprintln!("usage: kannaka belief [status [--full] | on | off | history | cores | recall-probe | activate [--manage-service <unit>]]");
                     process::exit(1);
                 }
             }
