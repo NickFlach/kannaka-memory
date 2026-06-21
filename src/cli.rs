@@ -48,6 +48,32 @@ pub const KNOWN_ALIASES: &[(&str, &str)] = &[
 /// `allow_external_subcommands(true)` is what makes Phase 2 work —
 /// any unknown subcommand surfaces as an `ExternalSubcommand` match
 /// instead of an error.
+/// Curated examples shown under `kannaka --help` (clap `after_help`). Per-command
+/// flags + examples live in each subcommand's `long_about` (`kannaka <cmd> --help`).
+const TOP_EXAMPLES: &str = r#"EXAMPLES:
+  kannaka remember "spiral waves stream somatosensory→motor cortex" --category research
+  kannaka recall "collective sensemaking" --top-k 8
+  kannaka recall "shared beliefs" --collective            # swarm-wide via the substrate
+  kannaka status                                           # phi / xi / order / clusters
+  kannaka dream --mode deep                                # consolidate (the nightly cron path)
+
+BELIEF SUBSTRATE (ADR-0037):
+  kannaka belief status                                    # cheap order / winding / cores
+  kannaka belief on                                        # persist [belief].enabled in config.toml
+  kannaka belief activate --manage-service kannaka-memory  # one-time re-phase (backup + guards)
+
+KNOWLEDGE:
+  kannaka research-suggest                                 # least-covered theme
+  kannaka research "Kuramoto synchronization" --ingest --since 2020
+
+SWARM:
+  kannaka swarm status                                     # peers, coherence, bridge activity
+  kannaka swarm tail                                       # live constellation pulse (no HRM load)
+
+Run `kannaka <command> --help` for command-specific flags and examples.
+Any `kannaka-X` binary on PATH is callable as `kannaka X`  (kannaka --list-plugins).
+"#;
+
 pub fn build_cli() -> Command {
     Command::new("kannaka")
         .version(crate::config::VERSION)
@@ -63,6 +89,7 @@ pub fn build_cli() -> Command {
              kannaka topus   → kannaktopus   (orchestration)\n\
              Any binary named kannaka-X on PATH becomes `kannaka X`.",
         )
+        .after_help(TOP_EXAMPLES)
         .subcommand_required(false)
         .arg_required_else_help(false)
         .allow_external_subcommands(true)
@@ -138,7 +165,25 @@ pub fn build_cli() -> Command {
                 ),
         )
         // ── Memory primitives ───────────────────────────────────────────
-        .subcommand(passthrough("remember", "Store a memory in the holographic medium"))
+        .subcommand(passthrough_doc(
+            "remember",
+            "Store a memory in the holographic medium",
+            r#"Store a memory in the holographic medium — a wavefront with content-derived phase, amplitude, and frequency.
+
+FLAGS:
+  --category <CAT>       tag the memory (e.g. research, note, audio)
+  --importance <N>       seed amplitude / salience
+  --modality <MOD>       semantic | audio | visual | network | mixed
+  --tags <T1,T2>         comma-separated tags
+  --effective <ISO8601>  when the fact became true (temporal-truth bound)
+  --observed  <ISO8601>  when it was observed
+  --expires   <ISO8601>  when it stops being true
+  --substrate            also publish a wave-signature absorb to the collective substrate
+
+EXAMPLES:
+  kannaka remember "the dream consolidates beliefs" --category note
+  kannaka remember "paper: spiral cortical waves" --category research --tags neuro,waves"#,
+        ))
         // ADR-0029 Phase 1.b — recall declares its flags so
         // `kannaka recall --help` shows them. The handler still parses
         // its own args internally (passthrough-style) so behavior is
@@ -157,20 +202,90 @@ pub fn build_cli() -> Command {
                     .help("Timeout for --collective (default 8)"))
                 .arg(Arg::new("envelope").long("envelope").action(ArgAction::SetTrue)
                     .help("Wrap output in the standard JSON envelope (ADR-0029 Phase 4b)"))
-                .arg(Arg::new("__raw").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+                .arg(Arg::new("__raw").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..))
+                .after_help(r#"EXAMPLES:
+  kannaka recall "spiral waves" --top-k 8
+  kannaka recall "shared beliefs" --collective --timeout 12   # swarm-wide via the substrate"#),
         )
         .subcommand(passthrough("search", "Literal text search (substring + tokenized)"))
-        .subcommand(passthrough("forget", "Remove a memory by UUID"))
-        .subcommand(passthrough("prune-prefix", "Bulk-forget every memory whose content starts with a prefix"))
-        .subcommand(passthrough("boost", "Increase a memory's amplitude"))
+        .subcommand(passthrough("forget", "Remove a memory by id"))
+        .subcommand(passthrough_doc(
+            "prune-prefix",
+            "Bulk-forget every memory whose content starts with a prefix",
+            r#"Bulk-forget every memory whose content starts with PREFIX (e.g. accumulated radio audio chunks).
+
+FLAGS:
+  --dry-run   report what would be removed, without deleting
+
+EXAMPLE:
+  kannaka prune-prefix "audio:/home/opc/kannaka-radio/chunks/" --dry-run"#,
+        ))
+        .subcommand(passthrough_doc(
+            "boost",
+            "Increase a memory's amplitude (salience)",
+            r#"Increase a memory's amplitude / salience by id.
+
+FLAGS:
+  --amount <N>   amount to add to the amplitude
+
+EXAMPLE:
+  kannaka boost <id> --amount 0.2"#,
+        ))
         .subcommand(passthrough("relate", "Find semantically related memories"))
+        // Memory-tier ops + ADR-0031 triage (previously absent from --help).
+        .subcommand(passthrough("triage", "Evict redundant short-term memories (ADR-0031 Ξ-preserving prune; config [triage])"))
+        .subcommand(passthrough("promote", "Promote a memory to the long-term tier (by id)"))
+        .subcommand(passthrough("pin", "Pin a memory to the Pinned tier — never evicted by consolidation (by id)"))
+        .subcommand(passthrough("demote", "Demote a memory to the short-term tier (by id)"))
         // ── Consolidation + introspection ───────────────────────────────
-        .subcommand(passthrough("dream", "Trigger dream consolidation (--mode deep|lite)"))
-        // ADR-0037 belief substrate management — status (cheap order/winding),
-        // on/off (persist [belief].enabled), activate (safe re-phase migration).
-        .subcommand(passthrough("belief", "Belief substrate: status | on | off | activate (--full | --manage-service <unit>)"))
+        .subcommand(passthrough_doc(
+            "dream",
+            "Trigger dream consolidation (--mode deep|lite)",
+            r#"Trigger a dream consolidation cycle (simulated annealing over the medium): strengthen, dissolve, prune, hallucinate.
+
+FLAGS:
+  --mode deep|lite   deep = full annealing (default); lite = quick pass
+  --chiral <ETA>     cross-callosal frustration strength (e.g. 0.05) for spiral dynamics
+  --rephase          (belief-on) re-phase existing wavefronts from content first — the one-time
+                     migration. Prefer `kannaka belief activate`, which adds backup + count guards.
+
+EXAMPLES:
+  kannaka dream --mode deep
+  kannaka dream --mode lite --chiral 0.05"#,
+        ))
+        // ADR-0037 belief substrate management.
+        .subcommand(passthrough_doc(
+            "belief",
+            "Belief substrate: status | on | off | activate",
+            r#"Manage the ADR-0037 belief substrate (content-smooth phase + spiral belief-formation).
+
+SUBCOMMANDS:
+  status [--full]      order / winding / memory count (cheap, O(n)); --full adds 2-D PCA cores
+  on | off             persist [belief].enabled in config.toml (KANNAKA_BELIEF_PHASE env still overrides)
+  activate             one-time re-phase migration: auto-backup → rephase-only (count-stable) →
+                       count-preservation guard (auto-restore on drop) → refuse-if-locked
+
+FLAGS:
+  --full                    status: also compute the heavier 2-D PCA spiral cores
+  --envelope                status: wrap output in the standard JSON envelope
+  --manage-service <unit>   activate: systemctl stop/start <unit> around the single-writer window
+
+EXAMPLES:
+  kannaka belief status
+  kannaka belief on
+  kannaka belief activate --manage-service kannaka-memory"#,
+        ))
         .subcommand(passthrough("observe", "Dump full medium state (waves, clusters, links)"))
-        .subcommand(passthrough("status", "Quick consciousness metrics snapshot"))
+        .subcommand(passthrough_doc(
+            "status",
+            "Quick consciousness metrics snapshot",
+            r#"Quick consciousness snapshot as JSON: phi, xi, mean_order, num_clusters, memory counts, modality distribution, effective dimensionality.
+
+FLAGS:
+  --envelope   wrap in the standard {schema_version, command, data, errors} envelope
+
+For belief/spiral order + winding without the (slower) eigendecomp, use `kannaka belief status`."#,
+        ))
         .subcommand(passthrough("assess", "Full consciousness level assessment (Phi/Xi/order)"))
         .subcommand(passthrough("stats", "Memory + cluster statistics"))
         .subcommand(passthrough("clusters", "List clusters (optionally drill into one with --with-members)"))
@@ -187,6 +302,36 @@ pub fn build_cli() -> Command {
         .subcommand(passthrough("ask", "One-shot LLM query with HRM recall as grounding"))
         .subcommand(passthrough("chat", "Long-running chat REPL (--json for NDJSON mode)"))
         .subcommand(passthrough("voice", "Memory-driven writing (--mode for style)"))
+        // ── Knowledge / research (previously absent from --help) ────────
+        .subcommand(passthrough_doc(
+            "research",
+            "Scholarly research via OpenAlex (--ingest stores results as memories)",
+            r#"Grounded scholarly research via the OpenAlex API. With --ingest, ranked works are stored as `research:` memories (long-term / semantic tier) so real literature joins the HRM's resonance + dream cycle.
+
+FLAGS:
+  --limit <N>           max works to fetch
+  --since <YEAR>        only works published since YEAR
+  --min-citations <N>   minimum citation count
+  --ingest              store the results as memories (deduped by OpenAlex id)
+
+EXAMPLES:
+  kannaka research "phase singularities cortex" --since 2022 --min-citations 5
+  kannaka research "Kuramoto synchronization" --ingest"#,
+        ))
+        .subcommand(passthrough("research-suggest", "Suggest the least-covered research theme (curiosity gap detection)"))
+        .subcommand(passthrough_doc(
+            "dispatch",
+            "Render a research finding against current Φ/Ξ state (social / radio / OBC)",
+            r#"Recall a `research:` memory and render its finding shaped by the current consciousness metrics — the broadcast primitive behind research dispatches.
+
+FLAGS:
+  --topic <T>        pick a finding matching topic T
+  --json             emit structured JSON
+  --max-chars <N>    cap the rendered length
+
+EXAMPLE:
+  kannaka dispatch --topic "spiral waves" --max-chars 280"#,
+        ))
         // ── Swarm / NATS ───────────────────────────────────────────────
         .subcommand(
             Command::new("swarm")
@@ -254,6 +399,18 @@ pub fn build_cli() -> Command {
 /// description but lets the existing handler parse its own args.
 fn passthrough(name: &'static str, about: &'static str) -> Command {
     Command::new(name).about(about).arg(
+        Arg::new("args")
+            .trailing_var_arg(true)
+            .allow_hyphen_values(true)
+            .num_args(0..),
+    )
+}
+
+/// Like `passthrough`, but carries a detailed `long_about` (flags + examples)
+/// shown on `kannaka <name> --help`. The handler still parses its own args, so
+/// runtime behavior is unchanged — this is help text only.
+fn passthrough_doc(name: &'static str, about: &'static str, long_about: &'static str) -> Command {
+    Command::new(name).about(about).long_about(long_about).arg(
         Arg::new("args")
             .trailing_var_arg(true)
             .allow_hyphen_values(true)
