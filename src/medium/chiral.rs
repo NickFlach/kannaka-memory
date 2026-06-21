@@ -32,7 +32,7 @@ pub(crate) fn spiral_dream_enabled() -> bool {
 /// the legacy toward-phase-0 ingest pull). **Default OFF** — opt in with
 /// `KANNAKA_BELIEF_PHASE=1|on|true`, so prod ingest is byte-identical until this
 /// is validated. When off, wavefronts are born at phase 0 exactly as before.
-pub(crate) fn belief_phase_enabled() -> bool {
+pub fn belief_phase_enabled() -> bool {
     std::env::var("KANNAKA_BELIEF_PHASE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)

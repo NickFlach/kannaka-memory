@@ -142,6 +142,35 @@ fn acquire_write_lock_blocking(timeout_secs: u64) -> Option<WriteLock> {
     None
 }
 
+/// ADR-0037: `kannaka belief on|off` — persist `[belief].enabled` to config.toml.
+/// Mirrors `config set` (load_unmodified so writing one key doesn't bake env-only
+/// values into the file). Stateless: does NOT touch the HRM and does NOT re-phase
+/// existing memories — that's `kannaka belief activate`.
+fn handle_belief_toggle(enable: bool) {
+    let mut cfg = KannakaConfig::load_unmodified();
+    cfg.belief.enabled = enable;
+    match cfg.save() {
+        Ok(()) => {
+            println!(
+                "belief substrate {} (config.toml: [belief].enabled = {})",
+                if enable { "ENABLED" } else { "disabled" },
+                enable
+            );
+            if enable {
+                println!("• new memories are now born with content-smooth phase; dreams run the belief path (resonance-merge gated to dry-run).");
+                println!("• existing memories keep their phase — run `kannaka belief activate` to re-phase them (the one-time migration).");
+            }
+            if std::env::var_os("KANNAKA_BELIEF_PHASE").is_some() {
+                println!("note: KANNAKA_BELIEF_PHASE is also set in the environment and OVERRIDES this config value.");
+            }
+        }
+        Err(e) => {
+            eprintln!("error: failed to save config: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn init_with_hrm(
     data_dir: PathBuf,
     quiet: bool,
@@ -467,7 +496,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "boost" | "relate" | "triage" | "promote" | "pin" | "demote"
         | "research" | "dispatch" | "research-suggest"
         // consolidation + introspection
-        | "dream" | "observe" | "status" | "assess" | "stats" | "clusters"
+        | "dream" | "belief" | "observe" | "status" | "assess" | "stats" | "clusters"
         | "kannaktopus"
         | "neighbors" | "cmf" | "invariant" | "topology" | "bias"
         // perception
@@ -876,6 +905,12 @@ fn main() {
     // All subsequent code uses `cfg` instead of raw env::var lookups.
     let cfg = KannakaConfig::load();
 
+    // ADR-0037: bridge persisted [belief] config → the KANNAKA_BELIEF_* env
+    // vars the engine reads. Must run BEFORE the HRM loads / any belief check
+    // (and before the update-check thread spawns, so set_var is single-threaded).
+    // Env still wins: only sets a var when unset.
+    config::apply_belief_env_from_config(&cfg);
+
     // Non-blocking update check (background thread)
     config::check_for_updates_background(&cfg);
 
@@ -919,6 +954,16 @@ fn main() {
         "identity" => {
             handle_identity(&args[command_start..]);
             return;
+        }
+        // ADR-0037 belief: `on`/`off` only persist config (no HRM needed) and
+        // return here; `status`/`activate` need the field, so they fall through
+        // to the HRM-backed match below.
+        "belief" => {
+            match args.get(command_start + 1).map(|s| s.as_str()).unwrap_or("") {
+                "on" | "enable" => { handle_belief_toggle(true); return; }
+                "off" | "disable" => { handle_belief_toggle(false); return; }
+                _ => { /* status / activate / help — fall through (needs HRM) */ }
+            }
         }
         _ => {}
     }
@@ -2141,6 +2186,152 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        // ADR-0037 belief substrate (status/activate; on/off handled statelessly above).
+        "belief" => {
+            let sub = args.get(command_start + 1).map(|s| s.as_str()).unwrap_or("status");
+            match sub {
+                "status" => {
+                    let enabled = kannaka_memory::medium::chiral::belief_phase_enabled();
+                    let max_n = std::env::var("KANNAKA_BELIEF_MAX_N").ok().and_then(|v| v.parse::<u64>().ok());
+                    let file_cfg = KannakaConfig::load_unmodified();
+                    let mem_count = sys.engine.store.all_memories().map(|m| m.len()).unwrap_or(0);
+                    let full = args[command_start..].iter().any(|a| a == "--full");
+                    let hrm = sys
+                        .engine
+                        .store
+                        .as_any()
+                        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>();
+                    let mut output = serde_json::json!({
+                        "enabled": enabled,
+                        "config_enabled": file_cfg.belief.enabled,
+                        "max_n": max_n,
+                        "memories": mem_count,
+                    });
+                    // Cheap O(n) ring telemetry (no eigendecomp / no PCA).
+                    if let Some(r) = hrm.and_then(|h| h.belief_ring_report()) {
+                        output["order"] = serde_json::json!(r.order);
+                        output["winding"] = serde_json::json!(r.winding);
+                        output["ring_n"] = serde_json::json!(r.n);
+                        // order≈1 ⇒ a trivially synced/collapsed field (no belief OR
+                        // spiral structure). A low order can come from EITHER the belief
+                        // re-phase or the default spiral dream, so don't claim "re-phased".
+                        output["collapsed"] = serde_json::json!(r.order >= 0.9);
+                    }
+                    // Opt-in heavier 2-D cores (PCA).
+                    if full {
+                        if let Some(c) = hrm.and_then(|h| h.belief_cloud_report()) {
+                            output["cores"] = serde_json::json!(c.singularities.len());
+                            output["net_charge"] = serde_json::json!(c.net_charge);
+                        }
+                    }
+                    if args[command_start..].iter().any(|a| a == "--envelope") {
+                        kannaka_memory::cli::print_envelope("belief", output);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    }
+                }
+                "activate" => {
+                    // Flags: --manage-service <unit> opts into systemctl stop/start
+                    // around the single-writer window (portable core works without it).
+                    let mut manage_service: Option<String> = None;
+                    {
+                        let a = &args[command_start..];
+                        let mut i = 1;
+                        while i < a.len() {
+                            if a[i] == "--manage-service" && i + 1 < a.len() {
+                                manage_service = Some(a[i + 1].clone());
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                    // Re-phasing a field we won't maintain only desyncs it — require belief on.
+                    if !kannaka_memory::medium::chiral::belief_phase_enabled() {
+                        eprintln!("error: belief substrate is OFF — run `kannaka belief on` (or set KANNAKA_BELIEF_PHASE=on) first.");
+                        eprintln!("(re-phasing a field without the belief dynamics to maintain it would only desync it)");
+                        process::exit(1);
+                    }
+                    let svc_stop = |svc: &str| {
+                        let _ = process::Command::new("sudo").args(["systemctl", "stop", svc]).status();
+                    };
+                    let svc_start = |svc: &str| {
+                        let _ = process::Command::new("sudo").args(["systemctl", "start", svc]).status();
+                    };
+                    if let Some(ref svc) = manage_service {
+                        eprintln!("[belief] stopping {svc} for the single-writer window...");
+                        svc_stop(svc);
+                    }
+                    // Single-writer guard — refuse if a writer/daemon holds the lock.
+                    let _lock = match try_acquire_write_lock() {
+                        Some(l) => l,
+                        None => {
+                            eprintln!("error: another writer holds the HRM write lock.");
+                            eprintln!("stop it first (`sudo systemctl stop kannaka-memory`) or pass --manage-service <unit>.");
+                            if let Some(ref svc) = manage_service { svc_start(svc); }
+                            process::exit(1);
+                        }
+                    };
+                    // Auto-backup before any mutation.
+                    let data_dir = KannakaConfig::data_dir();
+                    let hrm_path = data_dir.join("kannaka.hrm");
+                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+                    let backup = data_dir.join(format!("kannaka.hrm.bak-pre-belief-activate-{ts}"));
+                    let before = sys.engine.store.all_memories().map(|m| m.len()).unwrap_or(0);
+                    if hrm_path.exists() {
+                        if let Err(e) = std::fs::copy(&hrm_path, &backup) {
+                            eprintln!("error: backup failed ({e}) — aborting before any mutation.");
+                            if let Some(ref svc) = manage_service { svc_start(svc); }
+                            process::exit(1);
+                        }
+                        eprintln!("[belief] backup → {}", backup.display());
+                    }
+                    // The migration: re-phase existing wavefronts from content (phase-only,
+                    // count-stable) and persist. NOT a full dream — the slow/destructive
+                    // consolidation passes stay with the gated nightly dream.
+                    eprintln!("[belief] re-phasing {before} memories from content...");
+                    let rn = sys.rephase_belief();
+                    let after = sys.engine.store.all_memories().map(|m| m.len()).unwrap_or(0);
+                    // Count-preservation guard (insurance — rephase is phase-only, so this
+                    // should never fire; if it does, restore the backup and abort).
+                    let lost = before.saturating_sub(after);
+                    let tolerance = (before / 20).max(5);
+                    if lost > tolerance {
+                        eprintln!("!! memory count dropped {before} → {after} (> {tolerance} tolerance) — RESTORING backup");
+                        if hrm_path.exists() && backup.exists() {
+                            let _ = std::fs::copy(&backup, &hrm_path);
+                            eprintln!("restored {} from {}", hrm_path.display(), backup.display());
+                        }
+                        if let Some(ref svc) = manage_service { svc_start(svc); }
+                        process::exit(1);
+                    }
+                    eprintln!("[belief] re-phased {rn} wavefronts; memories {before} → {after} (preserved)");
+                    if let Some(r) = sys
+                        .engine
+                        .store
+                        .as_any()
+                        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                        .and_then(|h| h.belief_ring_report())
+                    {
+                        eprintln!(
+                            "[belief] order={:.3} winding={:.3} ring_n={} — {}",
+                            r.order, r.winding, r.n,
+                            if r.order < 0.9 { "re-phased OK" } else { "WARNING: still synced (order >= 0.9)" }
+                        );
+                    }
+                    if let Some(ref svc) = manage_service {
+                        eprintln!("[belief] restarting {svc}...");
+                        svc_start(svc);
+                    }
+                    println!("belief activate: done ({before} memories preserved).");
+                }
+                other => {
+                    eprintln!("unknown belief subcommand: '{other}'");
+                    eprintln!("usage: kannaka belief [status [--full] | on | off | activate [--manage-service <unit>]]");
                     process::exit(1);
                 }
             }

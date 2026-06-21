@@ -647,6 +647,21 @@ impl HrmStore {
         }
     }
 
+    /// ADR-0037: cheap (O(n), no eigendecomp / no PCA) cross-hemisphere ring
+    /// report for `kannaka belief status` — the same metric the dream telemetry
+    /// headlines (`bilateral_ring_report`: order + winding over the active
+    /// left⊕right phase ring). `None` when not in chiral mode. The 2-D PCA cores
+    /// are the heavier `belief_cloud_report` (opt-in via `--full`).
+    pub fn belief_ring_report(&self) -> Option<crate::spiral::RingReport> {
+        self.chiral.as_ref().map(|c| c.bilateral_ring_report())
+    }
+
+    /// ADR-0037: 2-D spiral cores over the holistic field (PCA — O(n²), heavier).
+    /// Backs `kannaka belief status --full`. `None` when not in chiral mode.
+    pub fn belief_cloud_report(&self) -> Option<crate::spiral::SpiralReport> {
+        self.chiral.as_ref().map(|c| c.holistic_cloud_report())
+    }
+
     /// Perform a dream cycle (simulated annealing).
     /// In chiral mode, deep dreams only affect the right hemisphere.
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
