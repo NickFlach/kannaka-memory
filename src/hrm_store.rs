@@ -662,6 +662,13 @@ impl HrmStore {
         self.chiral.as_ref().map(|c| c.holistic_cloud_report())
     }
 
+    /// ADR-0037 L6 instrument: per-dream belief-core snapshot (cores + frame-
+    /// invariant content fingerprints) for cross-dream tracking. Empty when not
+    /// in chiral mode.
+    pub fn belief_core_snapshot(&self) -> Vec<crate::l6::CoreObs> {
+        self.chiral.as_ref().map(|c| c.belief_core_snapshot()).unwrap_or_default()
+    }
+
     /// Perform a dream cycle (simulated annealing).
     /// In chiral mode, deep dreams only affect the right hemisphere.
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
