@@ -564,7 +564,15 @@ impl Medium {
     pub fn xi_bridge_summary(&self) -> serde_json::Value {
         let residue = self.compute_xi_bridge_residue();
         let residue = if residue.is_finite() { residue } else { 0.0 };
-        let spectral_xi = self.compute_xi_spectral_complexity();
+        // Reuse the spectral xi already computed + cached by this tick's
+        // consciousness_metrics()/assess(). Recomputing the O(n²·d) Gram here
+        // DOUBLED the substrate beacon's per-tick CPU every 60s; on a small
+        // single-core host that tipped it into a swap-thrash death spiral
+        // (v0.7.0 incident). Fall back to a direct compute only if no cache.
+        let spectral_xi = self
+            .try_cached_consciousness_metrics()
+            .map(|m| m.xi)
+            .unwrap_or_else(|| self.compute_xi_spectral_complexity());
         let spectral_xi = if spectral_xi.is_finite() { spectral_xi } else { 0.0 };
         serde_json::json!({
             "residue": residue,
