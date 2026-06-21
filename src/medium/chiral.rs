@@ -71,6 +71,42 @@ pub(crate) fn content_born_phase(vector: &[f32]) -> f32 {
     if p.is_finite() { p } else { 0.0 }
 }
 
+/// Mean of the active wavefront rows `[0, n)` — the corpus mean used to CENTER a
+/// new wavefront's embedding at ingest before `content_born_phase`. Real
+/// embeddings are anisotropic (cone-clustered), so an uncentered born phase
+/// barely spreads; centering against the corpus mean makes new memories spread
+/// like the `rephase_from_content` migration. Computed on-demand (no stored
+/// field → no .hrm format change). Returns a zero vector when `n == 0`.
+pub(crate) fn corpus_mean(wavefronts: &ndarray::Array2<f32>, n: usize) -> Vec<f32> {
+    let dim = wavefronts.ncols();
+    let mut mean = vec![0.0f32; dim];
+    if n == 0 {
+        return mean;
+    }
+    for i in 0..n {
+        for (m, &v) in mean.iter_mut().zip(wavefronts.row(i).iter()) {
+            *m += v;
+        }
+    }
+    for m in mean.iter_mut() {
+        *m /= n as f32;
+    }
+    mean
+}
+
+/// `content_born_phase` of `vector − mean`. With an empty mean (first insert)
+/// this is exactly `content_born_phase(vector)`. NB the corpus mean drifts as the
+/// field grows, so ingest-centered phases are approximately (not exactly)
+/// consistent with an older migration snapshot — close enough to spread new
+/// memories; `rephase_from_content` re-centers the whole field exactly.
+pub(crate) fn content_born_phase_centered(vector: &[f32], mean: &[f32]) -> f32 {
+    if mean.is_empty() {
+        return content_born_phase(vector);
+    }
+    let centered: Vec<f32> = vector.iter().zip(mean.iter()).map(|(&v, &m)| v - m).collect();
+    content_born_phase(&centered)
+}
+
 /// The Chiral Medium - two hemispheres connected by a corpus callosum.
 #[derive(Debug, Clone)]
 pub struct ChiralMedium {

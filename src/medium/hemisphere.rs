@@ -147,9 +147,12 @@ impl Hemisphere {
         self.frequency[index] = 1.0;
         // Born phase: content-smooth (belief substrate) or legacy phase-0. This
         // is the chiral hemispheres' own ingest chokepoint (parallel to
-        // WavefrontStore::insert for the flat medium).
+        // WavefrontStore::insert for the flat medium). Center against the EXISTING
+        // corpus mean (self.len is still the pre-insert count here) so a new
+        // memory spreads like the rephase migration on anisotropic embeddings.
         self.phase[index] = if crate::medium::chiral::belief_phase_enabled() {
-            crate::medium::chiral::content_born_phase(&adapted)
+            let mean = crate::medium::chiral::corpus_mean(&self.wavefronts, self.len);
+            crate::medium::chiral::content_born_phase_centered(&adapted, &mean)
         } else {
             0.0
         };
