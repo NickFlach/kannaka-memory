@@ -934,6 +934,55 @@ impl ChiralMedium {
         Medium::cloud_report_2d(&wf, &phases)
     }
 
+    /// ADR-0037 L6 instrument: per-dream belief-core snapshot — each detected core
+    /// paired with a frame-invariant content fingerprint (random projection of its
+    /// k-neighbourhood centroid in the stable wavefront space, NOT the unstable 2-D
+    /// PCA coords), for cross-dream tracking (see `crate::l6::build_tracks`).
+    /// Holistic (right) field; same O(n²) cost class as `holistic_cloud_report`.
+    pub fn belief_core_snapshot(&self) -> Vec<crate::l6::CoreObs> {
+        let n = self.right.count();
+        if n < 4 {
+            return Vec::new();
+        }
+        let wf = self.right.wavefronts.slice(ndarray::s![..n, ..]).to_owned();
+        let phases: Vec<f32> = self.right.phase.slice(ndarray::s![..n]).iter().copied().collect();
+        let pts = Medium::pca_field_2d(&wf, &phases);
+        let cores = crate::spiral::cloud_singularities(&pts, 8);
+        let dim = wf.ncols();
+        let k = 8usize.min(n);
+        cores
+            .iter()
+            .map(|c| {
+                // k nearest points to the core centre; their wavefront centroid is
+                // the (frame-invariant) content fingerprint of what the core organizes.
+                let mut idx: Vec<usize> = (0..n).collect();
+                idx.sort_by(|&a, &b| {
+                    let da = (pts[a].0 - c.x).powi(2) + (pts[a].1 - c.y).powi(2);
+                    let db = (pts[b].0 - c.x).powi(2) + (pts[b].1 - c.y).powi(2);
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let kk = k.min(idx.len());
+                let mut centroid = vec![0.0f32; dim];
+                for &j in &idx[..kk] {
+                    for (d, val) in wf.row(j).iter().enumerate() {
+                        centroid[d] += *val;
+                    }
+                }
+                if kk > 0 {
+                    for v in centroid.iter_mut() {
+                        *v /= kk as f32;
+                    }
+                }
+                crate::l6::CoreObs {
+                    x: c.x,
+                    y: c.y,
+                    charge: c.charge,
+                    fp: crate::l6::fingerprint(&centroid, 16),
+                }
+            })
+            .collect()
+    }
+
     /// ADR-0037 Phase 4: cross-hemisphere ring report. The cortical spiral wave
     /// in Ye et al. (Science 2026) spans BOTH hemispheres, not one — so the L6
     /// instrument joins the active left ⊕ right phase fields into a single ring
