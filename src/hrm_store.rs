@@ -1178,6 +1178,28 @@ impl HrmStore {
         report
     }
 
+    /// ADR-0037 belief substrate: re-phase every wavefront from its (mean-
+    /// centered) content, then persist. The one-time migration that desyncs an
+    /// already-collapsed field — born phase only fixes NEW inserts, so existing
+    /// wavefronts stuck at phase 0 need this. Phase-only (vectors/recall
+    /// untouched). Returns the number re-phased; chiral backend only.
+    pub fn rephase_belief(&mut self) -> usize {
+        let n = if let Some(ref mut chiral) = self.chiral {
+            chiral.rephase_from_content()
+        } else {
+            0
+        };
+        if n > 0 {
+            self.sync_medium_from_chiral();
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+            if let Err(e) = self.save_medium() {
+                eprintln!("Warning: Failed to save after rephase: {}", e);
+            }
+        }
+        n
+    }
+
     /// Reset all wavefront energies to target value (bias voltage restoration).
     pub fn reset_energies(&mut self, target: f32) {
         self.medium.reset_energies(target);
