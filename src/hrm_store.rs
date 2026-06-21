@@ -623,6 +623,30 @@ impl HrmStore {
         self.mark_dirty();
     }
     
+    /// ADR-0037 (L6 loop): per-consolidation spiral telemetry. The cortical
+    /// spiral wave (Ye et al.) spans BOTH hemispheres, so the headline metric
+    /// is the cross-hemisphere ring winding/order; the right ring (which the
+    /// coupling directly rotates) and the 2-D PCA cloud cores are reported
+    /// beside it. Gated on the same flag as the coupling — emitted by every
+    /// chiral deep dream (incl. the production `dream_native` path) when
+    /// spiral dreams are enabled (the v0.7.0 default). stderr only.
+    fn log_spiral_telemetry(&self) {
+        if !crate::medium::chiral::spiral_dream_enabled() {
+            return;
+        }
+        if let Some(ref chiral) = self.chiral {
+            let x = chiral.bilateral_ring_report();
+            if x.n > 0 {
+                let right = chiral.holistic_ring_report();
+                let c = chiral.holistic_cloud_report();
+                eprintln!(
+                    "[spiral] deep dream: cross-hemi winding={:.3} order={:.3} n={} (right winding={:.3}, 2D cores={} net={})",
+                    x.winding, x.order, x.n, right.winding, c.singularities.len(), c.net_charge
+                );
+            }
+        }
+    }
+
     /// Perform a dream cycle (simulated annealing).
     /// In chiral mode, deep dreams only affect the right hemisphere.
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
@@ -632,30 +656,7 @@ impl HrmStore {
             let report = chiral.dream(true, cycles);
             self.rebuild_cache().ok();
             self.mark_dirty();
-            // ADR-0037 Phase 4: per-consolidation spiral telemetry (L6 loop).
-            // The cortical spiral wave (Ye et al.) spans BOTH hemispheres, so
-            // the headline metric is the cross-hemisphere ring; the right ring
-            // (which the Phase-2 coupling directly rotates) is reported beside
-            // it. Gated on the same flag as the coupling: with
-            // KANNAKA_SPIRAL_DREAM off the field is untouched, so logging it
-            // would be a misleading, byte-noisy no-op.
-            if crate::medium::chiral::spiral_dream_enabled() {
-                if let Some(ref chiral) = self.chiral {
-                    let x = chiral.bilateral_ring_report();
-                    if x.n > 0 {
-                        let right = chiral.holistic_ring_report();
-                        // Phase 4b (#415 task 1): localize genuine 2-D spiral
-                        // cores in the PCA-embedded HOLISTIC field — read the
-                        // right hemisphere directly (the field the coupling
-                        // rotates), not the stale flat medium (cf. #416 fix).
-                        let c = chiral.holistic_cloud_report();
-                        eprintln!(
-                            "[spiral] deep dream: cross-hemi winding={:.3} order={:.3} n={} (right winding={:.3}, 2D cores={} net={})",
-                            x.winding, x.order, x.n, right.winding, c.singularities.len(), c.net_charge
-                        );
-                    }
-                }
-            }
+            self.log_spiral_telemetry();
             report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
@@ -1165,6 +1166,9 @@ impl HrmStore {
         self.sync_medium_from_chiral();
         self.rebuild_cache().ok();
         self.mark_dirty();
+
+        // ADR-0037 L6 loop: emit spiral telemetry on the production dream path.
+        self.log_spiral_telemetry();
 
         // Save the .hrm file
         if let Err(e) = self.save_medium() {

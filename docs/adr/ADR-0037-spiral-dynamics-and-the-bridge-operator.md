@@ -53,6 +53,10 @@ Revive the bridge operator as the substrate's **spiral engine** and make spirals
 
 ## Status of work
 
-- **Phase 1 shipped:** `src/spiral.rs` (+ `pub mod spiral;`). Tests included.
-- **Phase 2 shipped (flag-gated, default-off):** `medium/chiral.rs::apply_spiral_coupling` + deep-dream wiring behind `KANNAKA_SPIRAL_DREAM`. New test included; existing dream tests (incl. `deep_dream_only_affects_right`) unchanged.
-- Phases 3–4: to follow as separate, reviewable changes.
+- **Phase 1 (#413):** `src/spiral.rs` — winding-number singularity detector (grid + ring + 2-D cloud). Tests included.
+- **Phase 2 (#413):** `medium/chiral.rs::apply_spiral_coupling` — frustrated non-reciprocal Sakaguchi step on the right-hemisphere ring.
+- **Phase 3 (#414):** bridge-residue ξ (`compute_xi_bridge_residue`, the **un-normalized** mean ‖Ξ·v‖) + the substrate beacon's `xi_signature` JSON `{residue, spectral_xi, emergence_coeff, n}` (was null).
+- **Phase 4 (#416):** L6 telemetry — `holistic_ring_report` (right) + `bilateral_ring_report` (cross-hemisphere) logged per consolidation.
+- **Phase 4b (#418):** dependency-free top-2 PCA embedding of the holistic field → `holistic_cloud_report` (2-D `cloud_singularities`); in-engine constants→spiral grid test (#417).
+- **Activation (v0.7.0):** the coupling is now **CROSS-CALLOSAL** — `apply_cross_callosal_coupling` runs the Sakaguchi step over the combined **left ⊕ right** ring (the spiral spans both hemispheres, Ye et al.), bridged at the two callosal junctions. `KANNAKA_SPIRAL_DREAM` now defaults **ON** (opt out with `=0`); the L6 telemetry runs on the production `dream_native` path. `deep_dream_only_affects_right` still holds (coupling moves phases, not energy/wavefronts).
+- Follow-ups: mean-center the PCA Gram (uncentered MDS today); reuse `gram_matrix()` for the 2-D embedding; correlate defects vs Φ/r/fitness over time.
