@@ -732,6 +732,18 @@ impl ChiralMedium {
         if n < 4 {
             return;
         }
+        // Safety valve for the under-provisioned hub (1-core/6GB): the 2-D PCA +
+        // kNN build is O(n²) in time and a dense n×n Gram in memory. Above this
+        // cap, skip the coupling rather than risk an OOM mid-dream. Default 6000
+        // (headroom over the ~3808 prod field); override with KANNAKA_BELIEF_MAX_N.
+        let max_n: usize = std::env::var("KANNAKA_BELIEF_MAX_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6000);
+        if n > max_n {
+            eprintln!("[belief] apply_belief_coupling skipped: n={n} > KANNAKA_BELIEF_MAX_N={max_n}");
+            return;
+        }
         // 2-D PCA coords come from the wavefronts (stable across phase cycles).
         // Mean-CENTER the columns first: real embeddings are anisotropic (cone-
         // clustered), and pca_field_2d uses an uncentered Gram, so without
