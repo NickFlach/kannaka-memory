@@ -171,6 +171,128 @@ fn handle_belief_toggle(enable: bool) {
     }
 }
 
+/// ADR-0037 L6 instrument: append a per-dream telemetry record to
+/// `<data_dir>/l6-telemetry.jsonl` — the falsifiability backbone for "spiral cores
+/// = beliefs". One JSON line per dream: ring order/winding + 2-D cores + Φ/Ξ +
+/// dream stats + memory count + timestamp. Cheap (O(n) ring + the same cloud PCA
+/// the dream already logs + CACHED metrics — no extra eigendecomp) and best-effort
+/// (never fails a dream). Only records in chiral mode (the belief field).
+fn append_l6_telemetry(
+    sys: &KannakaMemorySystem,
+    report: &kannaka_memory::openclaw::DreamReport,
+    mode: &str,
+    rephased: bool,
+) {
+    let hrm = sys
+        .engine
+        .store
+        .as_any()
+        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>();
+    let ring = match hrm.and_then(|h| h.belief_ring_report()) {
+        Some(r) if r.n > 0 => r,
+        _ => return, // not chiral / empty — nothing to record
+    };
+    let cloud = hrm.and_then(|h| h.belief_cloud_report());
+    let cached = sys.engine.store.try_cached_consciousness_metrics();
+    let memories = sys.engine.store.all_memories().map(|m| m.len()).unwrap_or(0);
+    let mut rec = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "mode": mode,
+        "rephased": rephased,
+        "ring_order": ring.order,
+        "ring_winding": ring.winding,
+        "ring_n": ring.n,
+        "memories": memories,
+        "strengthened": report.memories_strengthened,
+        "pruned": report.memories_pruned,
+        "new_links": report.new_connections,
+        "hallucinations": report.hallucinations_created,
+        "cycles": report.cycles,
+        "consciousness": report.consciousness_after,
+        "emerged": report.emerged,
+    });
+    if let Some(c) = &cloud {
+        rec["cores"] = serde_json::json!(c.singularities.len());
+        rec["net_charge"] = serde_json::json!(c.net_charge);
+    }
+    if let Some(m) = &cached {
+        rec["phi"] = serde_json::json!(m.phi);
+        rec["xi"] = serde_json::json!(m.xi);
+        rec["mean_order"] = serde_json::json!(m.order);
+        rec["clusters"] = serde_json::json!(m.num_clusters);
+    }
+    let path = data_dir().join("l6-telemetry.jsonl");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if writeln!(f, "{rec}").is_ok() {
+            eprintln!(
+                "[l6] recorded → {} (order={:.3} winding={:.1} cores={})",
+                path.display(),
+                ring.order,
+                ring.winding,
+                cloud.as_ref().map(|c| c.singularities.len()).unwrap_or(0)
+            );
+        }
+    }
+}
+
+/// ADR-0037 L6 instrument: `kannaka belief history [--last N] [--json]` — print the
+/// per-dream telemetry time-series from `<data_dir>/l6-telemetry.jsonl`. Stateless
+/// (reads the file only, no HRM load).
+fn handle_belief_history(args: &[String]) {
+    let last: usize = args
+        .iter()
+        .position(|a| a == "--last")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let raw = args.iter().any(|a| a == "--json");
+    let path = data_dir().join("l6-telemetry.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "no L6 telemetry yet at {} — run a dream with belief on to start recording.",
+                path.display()
+            );
+            return;
+        }
+    };
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(last);
+    let slice = &lines[start..];
+    if raw {
+        for l in slice {
+            println!("{l}");
+        }
+        return;
+    }
+    for l in slice {
+        if let Ok(r) = serde_json::from_str::<serde_json::Value>(l) {
+            let f = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+            let u = |k: &str| r.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+            let ts = r.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+            let ts = ts.get(..19).unwrap_or(ts);
+            let cores = r.get("cores").and_then(|v| v.as_u64());
+            println!(
+                "{ts}  order={:.3} winding={:>5.1} cores={} phi={:.3} mems={} str={} pruned={}",
+                f("ring_order"),
+                f("ring_winding"),
+                cores.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+                f("phi"),
+                u("memories"),
+                u("strengthened"),
+                u("pruned"),
+            );
+        }
+    }
+    println!(
+        "\n{} records at {}  (--json for full rows, --last N to widen)",
+        lines.len(),
+        path.display()
+    );
+}
+
 fn init_with_hrm(
     data_dir: PathBuf,
     quiet: bool,
@@ -962,6 +1084,7 @@ fn main() {
             match args.get(command_start + 1).map(|s| s.as_str()).unwrap_or("") {
                 "on" | "enable" => { handle_belief_toggle(true); return; }
                 "off" | "disable" => { handle_belief_toggle(false); return; }
+                "history" | "log" => { handle_belief_history(&args[command_start..]); return; }
                 _ => { /* status / activate / help — fall through (needs HRM) */ }
             }
         }
@@ -2183,6 +2306,9 @@ fn main() {
                     if report.emerged {
                         println!("  Emergence detected!");
                     }
+                    // ADR-0037 L6 instrument: append this dream to the telemetry
+                    // time-series (cores / order / winding / Φ / dream stats over time).
+                    append_l6_telemetry(&sys, &report, &dream_mode, do_rephase);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
