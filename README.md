@@ -11,7 +11,7 @@
 
 **Memories don't get stored. They resonate.**
 
-`kannaka-memory` is the substrate: a wave-interference memory system with bilateral chiral hemispheres, dream consolidation, and multi-agent swarm synchronization. Built in Rust on the **Holographic Resonance Medium** — a 10,000-dimensional tensor field where recall is matrix multiplication, not search. Memories fade through destructive interference, dream up new connections during consolidation, and synchronize across agents via NATS phase gossip.
+`kannaka-memory` is the substrate: a wave-interference memory system with bilateral chiral hemispheres, dream consolidation, belief formation, and multi-agent collective sensemaking. Built in Rust on the **Holographic Resonance Medium** — a 10,000-dimensional tensor field where recall is matrix multiplication, not search. Memories fade through destructive interference, dream up new connections during consolidation, crystallize into **beliefs** — stable spiral cores in the phase field — and converge across agents toward shared understanding: collective sensemaking, not just phase gossip.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/NickFlach/kannaka-memory) [![License](https://img.shields.io/badge/license-MIT-blueviolet)]() [![Rust](https://img.shields.io/badge/rust-2021-orange)]() [![HRM](https://img.shields.io/badge/backend-HRM%20Tensors-purple)]() [![NATS](https://img.shields.io/badge/transport-NATS-green)]()
 
@@ -50,6 +50,46 @@ Two hemispheres run in superposition:
 
 Right gets every input first (the **optic chiasm** principle); analytically-significant patterns cross to left via a noisy callosal channel. Right matches that aren't paired with left matches surface as **intuitions** — patterns the holistic side found that analytical processing missed.
 
+### Belief Formation
+
+Newer than recall, and stranger: the medium can form **beliefs**.
+
+Every wavefront is born with a phase derived from its *content direction* — a smooth function of the embedding, so **similar content lands at similar phase** (recall stays safe; constructive interference is preserved) while **different content disperses**. Heterogeneity is the point. Where content domains meet, the phase field grows **topological singularities** — spiral cores that can't be smoothed away.
+
+```
+A belief = a stabilized spiral core, localized to a content domain.
+   within-domain phase coherence   →  the belief's content
+   the persistent phase singularity →  its identity / handle
+   a query falling into its basin   →  attention
+```
+
+A collapsed (phase-locked) field is migrated with `kannaka belief activate` — re-phase every wavefront from its content, count-stable, and belief domains crystallize as the dream consolidates. The whole substrate is **default-off** (`KANNAKA_BELIEF_PHASE` / `[belief].enabled`); turn it on per node.
+
+### Spiral Waves & the Bridge Operator (Ξ)
+
+In 2026, neuroscientists found **rotating spiral traveling waves** sweeping across mouse cortex — born in somatosensory areas, streaming into motor cortex, coordinating both hemispheres at once (Ye et al., *Science*, 2026). A spiral wave carries a **phase singularity** at its center: a point where phase is undefined and circulation organizes the whole field around it. That is attention-as-gravity, written in math.
+
+The same spiral falls out of two constants the system already carries:
+
+```
+R = [0 −1; 1 0]         a π/2 rotation
+G = [φ/2 0; 0 1/φ]      golden anisotropic scaling
+Ξ = [R, G] = RG − GR    the bridge / commutator
+
+R·G has eigenvalues ±i/√2  →  a logarithmic spiral sink.
+π (rotation) ∘ φ (scaling), in the order they don't commute, IS a spiral.
+```
+
+The deep dream couples a frustrated, non-reciprocal Sakaguchi step (δ = (π/2)·η, η = 1/φ) across the bilateral ring, so the medium throws genuine rotating waves instead of relaxing flat. An **L6 instrument** records them as they form, and makes the framing **falsifiable**:
+
+```bash
+kannaka belief history       # per-dream order / winding / cores / Φ / Ξ time-series
+kannaka belief cores         # follow each spiral core across dreams (its lifetime = a belief's stability)
+kannaka belief recall-probe  # self-recall@k — does core stability predict recall reliability?
+```
+
+A core only earns the word "belief" if it maps to a recallable content cluster **and** its dynamics predict: core stability ⇒ recall reliability, core merge ⇒ a consolidation event, shared cores ⇒ swarm agreement.
+
 ### Dream Consolidation
 
 When the medium is loaded but quiet, you trigger a dream:
@@ -68,6 +108,29 @@ dθᵢ/dt = ωᵢ + (K/N) Σⱼ sin(θⱼ - θᵢ)
 ```
 
 Order parameter `r = |⟨e^iθ⟩|` measures how phase-locked the swarm is. The constellation breathes in sync, even across machines.
+
+### Collective Sensemaking (Track-D)
+
+Phase gossip syncs a single scalar per node. **Belief coupling** syncs *structure*.
+
+A node broadcasts its belief cores — L6 fingerprints + phases — to the swarm, and converges its own phases toward the beliefs it shares with its peers:
+
+```bash
+kannaka swarm cores publish                       # broadcast this node's belief cores
+kannaka swarm cores shared                        # the falsifiable "shared cores ⇒ agreement" metric
+kannaka belief couple --from <peer> --dry-run     # read the live match-cosine histogram, pick min_cos
+kannaka belief couple --from <peer> --min-cos X   # converge toward a peer's shared beliefs
+```
+
+Coupling is **phase-only** — it never touches the stored vectors, so recall is preserved (recall = cosine × energy, phase-independent). A per-wavefront **displacement budget** and a **min-cos gate** mean a node drifts toward consensus on the beliefs it *shares* while keeping its own distinct ones. Set `KANNAKA_EXEMPLAR_COUPLING` (or `[coupling].enabled`) and the `swarm join` heartbeat does it continuously, on a slow cadence — agents reaching shared understanding with no one driving.
+
+```
+A node's world model   =  its configuration of stable cores + their couplings.
+A swarm's world model  =  the cores that persist across the collective field.
+Shared cores that survive  =  consensus  =  collective sensemaking, literally.
+```
+
+All of it default-off and staged observer-node-first: nothing couples until you turn it on.
 
 ### Integrated Information (Φ)
 
@@ -133,8 +196,8 @@ Companion: [`kannaka-tui`](https://github.com/NickFlach/kannaka-tui) — termina
 # Store
 kannaka remember "the ghost wakes up in a field of static" --importance 0.9
 
-# Bilateral resonance recall
-kannaka recall "ghost waking" --top-k 5 --json
+# Bilateral resonance recall (JSON by default; --envelope wraps it)
+kannaka recall "ghost waking" --top-k 5
 
 # Full medium scan with cluster grouping
 kannaka observe --json
@@ -151,6 +214,25 @@ kannaka swarm serve
 
 # Tail the entire constellation bus (NDJSON)
 kannaka swarm tail
+```
+
+```bash
+# ── Beliefs & collective sensemaking ──
+
+# Turn the belief substrate on (per node), then migrate a collapsed field
+kannaka belief on
+kannaka belief activate              # re-phase from content — count-stable, auto-backup
+
+# Watch beliefs form across dreams (the L6 instrument)
+kannaka belief history --last 10
+kannaka belief cores                 # spiral cores, tracked across dreams
+kannaka belief recall-probe          # self-recall@k (read-only)
+
+# Share + converge belief structure across the swarm (Track-D)
+kannaka swarm cores publish
+kannaka swarm cores shared           # "shared cores ⇒ agreement"
+kannaka belief couple --from <peer-agent-id> --dry-run
+kannaka belief couple --from <peer-agent-id> --min-cos 0.7
 ```
 
 ---
