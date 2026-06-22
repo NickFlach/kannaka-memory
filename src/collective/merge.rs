@@ -165,16 +165,30 @@ pub fn merge_guard(
         }
     }
 
-    // BUG 5: Idempotency — check if we've already merged this version
-    let dominated = local.merge_history.iter().any(|mr| {
-        mr.source_agent == remote.origin_agent
-            && mr.source_memory_id == remote.id.to_string()
-    });
-    if dominated && remote.sync_version <= local.sync_version {
-        return Some(format!(
-            "already merged from {} at sync_version {}",
-            remote.origin_agent, remote.sync_version
-        ));
+    // BUG 5: Idempotency — reject a re-broadcast of a memory we've already
+    // merged at an equal-or-older SOURCE version. Compare against the highest
+    // source_sync_version we recorded for this (agent, memory) — NOT
+    // local.sync_version. local's counter is bumped by every unrelated merge,
+    // so it is not comparable to a remote agent's counter: the old
+    // `remote.sync_version <= local.sync_version` check let a re-broadcast of
+    // the same logical memory at a bumped source version slip through and
+    // double-count amplitude (constructive superposition inflates each time).
+    let highest_merged_source_version = local
+        .merge_history
+        .iter()
+        .filter(|mr| {
+            mr.source_agent == remote.origin_agent
+                && mr.source_memory_id == remote.id.to_string()
+        })
+        .map(|mr| mr.source_sync_version)
+        .max();
+    if let Some(v) = highest_merged_source_version {
+        if remote.sync_version <= v {
+            return Some(format!(
+                "already merged from {} at source sync_version {} (have {})",
+                remote.origin_agent, remote.sync_version, v
+            ));
+        }
     }
 
     None
@@ -231,6 +245,7 @@ pub fn apply_constructive(local: &mut HyperMemory, remote: &HyperMemory, result:
         phase_diff: result.phase_diff,
         amplitude_before: a1,
         amplitude_after: result.resulting_amplitude,
+        source_sync_version: remote.sync_version,
     });
 }
 
@@ -249,6 +264,7 @@ pub fn apply_destructive(local: &mut HyperMemory, remote: &HyperMemory, result: 
         phase_diff: result.phase_diff,
         amplitude_before,
         amplitude_after: result.resulting_amplitude,
+        source_sync_version: remote.sync_version,
     });
 }
 
@@ -262,6 +278,7 @@ pub fn apply_partial(local: &mut HyperMemory, remote: &HyperMemory, result: &Mer
         phase_diff: result.phase_diff,
         amplitude_before: local.amplitude,
         amplitude_after: local.amplitude,
+        source_sync_version: remote.sync_version,
     });
 }
 
@@ -397,9 +414,41 @@ mod tests {
             phase_diff: 0.0,
             amplitude_before: 0.8,
             amplitude_after: 1.5,
+            source_sync_version: remote.sync_version,
         });
         let guard = merge_guard(&local, &remote, Some("all-minilm"), Some("all-minilm"));
         assert!(guard.is_some(), "should reject duplicate merge");
+    }
+
+    #[test]
+    fn merge_guard_allows_rebroadcast_at_newer_source_version() {
+        // We merged this memory once at source sync_version 0. A genuinely newer
+        // version (the source bumped its own counter) must NOT be rejected...
+        let mut local = mem_agent(0.8, 0.0, "fact A", "kannaka");
+        let mut remote = mem_agent(0.7, 0.0, "fact A", "arc");
+        local.merge_history.push(crate::memory::MergeRecord {
+            merged_at: chrono::Utc::now(),
+            source_agent: "arc".to_string(),
+            source_memory_id: remote.id.to_string(),
+            merge_type: "constructive".to_string(),
+            phase_diff: 0.0,
+            amplitude_before: 0.8,
+            amplitude_after: 1.5,
+            source_sync_version: 0,
+        });
+        remote.sync_version = 3; // source advanced
+        assert!(
+            merge_guard(&local, &remote, Some("all-minilm"), Some("all-minilm")).is_none(),
+            "a newer source version is a real update, not a duplicate"
+        );
+        // ...but re-broadcasting at the SAME (or older) source version is a
+        // duplicate even though our own local.sync_version may have advanced.
+        local.sync_version = 99;
+        remote.sync_version = 0;
+        assert!(
+            merge_guard(&local, &remote, Some("all-minilm"), Some("all-minilm")).is_some(),
+            "same source version is a duplicate regardless of local sync_version"
+        );
     }
 
     #[test]

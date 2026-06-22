@@ -485,6 +485,17 @@ impl ChiralMedium {
                 }
             }
 
+            // Symmetric completeness: a deep dream can HALLUCINATE new right
+            // wavefronts (cross-cluster superposition), and those arrive WITHOUT
+            // a ChiralScale — the stale-cleanup above only removes scales for
+            // dissolved wavefronts, it never adds them for new ones. Give every
+            // right wavefront that still lacks a scale a default so the scale map
+            // stays complete (save/recall round-trips and any scale-keyed
+            // traversal then see every wavefront, hallucinated or not).
+            for id in &right_ids {
+                self.scales.entry(*id).or_insert_with(ChiralScale::deep_memory);
+            }
+
             // ADR-0037: π/φ spiral coupling over the holistic "merry-go-round".
             // As of v0.7.0 this is the CROSS-CALLOSAL coupling — a Sakaguchi
             // step over the combined left ⊕ right ring, so the rotating wave

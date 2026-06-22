@@ -1035,6 +1035,10 @@ impl HrmStore {
         let mut merged_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut carriers: Vec<(Uuid, f32, Tier)> = Vec::new(); // (id, new_energy, new_tier)
         let mut absorb_ids: Vec<Uuid> = Vec::new();
+        // Each absorbed member -> the carrier it collapses into. Used after the
+        // removal to re-home the skip-link graph so a merge conserves
+        // connectivity, not just energy (see step 5b).
+        let mut absorbed_to_carrier: HashMap<Uuid, Uuid> = HashMap::new();
         let mut groups_found = 0usize;
 
         for members in groups.values() {
@@ -1080,6 +1084,7 @@ impl HrmStore {
             for &mi in members {
                 if mi != rep {
                     absorb_ids.push(snaps[mi].id);
+                    absorbed_to_carrier.insert(snaps[mi].id, snaps[rep].id);
                 }
             }
         }
@@ -1151,6 +1156,56 @@ impl HrmStore {
         report.would_decay = report.shortterm_total;
         report.would_evict = evicted_removed;
         let _ = removed; // total removed = absorbed + evicted; kept for clarity
+
+        // --- 5b. Re-home the skip-link graph onto carriers. The removal above
+        //         drops absorbed members from the authoritative store; without
+        //         this, their OUTBOUND links vanish and every INBOUND link to
+        //         them is dropped by rebuild_cache's dangling-link filter — so a
+        //         merge would conserve energy but silently sever every
+        //         association a hub memory had. Re-point both onto the carrier.
+        //         Runs on memory_cache, which still holds every pre-merge entry;
+        //         rebuild_cache (next) snapshots from it, and the absorbed
+        //         entries themselves drop out because they're gone from the store.
+        if !absorbed_to_carrier.is_empty() {
+            // 1. Gather absorbed members' outbound links, intra-group targets
+            //    collapsed to the carrier, grouped by the carrier that inherits.
+            let mut inherited: HashMap<Uuid, Vec<crate::memory::LegacyLink>> = HashMap::new();
+            for (absorbed, carrier) in &absorbed_to_carrier {
+                if let Some(m) = self.memory_cache.get(absorbed) {
+                    let bucket = inherited.entry(*carrier).or_default();
+                    for link in &m.connections {
+                        let mut l = link.clone();
+                        if let Some(&c) = absorbed_to_carrier.get(&l.target_id) {
+                            l.target_id = c;
+                        }
+                        bucket.push(l);
+                    }
+                }
+            }
+            // 2. On every cache entry: redirect outbound links to absorbed ids
+            //    onto their carrier, give carriers the inherited links, drop the
+            //    self-loops the collapse creates, and dedup by target keeping the
+            //    strongest link.
+            for (id, mem) in self.memory_cache.iter_mut() {
+                for link in mem.connections.iter_mut() {
+                    if let Some(&c) = absorbed_to_carrier.get(&link.target_id) {
+                        link.target_id = c;
+                    }
+                }
+                if let Some(extra) = inherited.get(id) {
+                    mem.connections.extend(extra.iter().cloned());
+                }
+                mem.connections.retain(|l| l.target_id != *id);
+                mem.connections.sort_by(|a, b| {
+                    a.target_id.cmp(&b.target_id).then_with(|| {
+                        b.strength
+                            .partial_cmp(&a.strength)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                });
+                mem.connections.dedup_by_key(|l| l.target_id);
+            }
+        }
 
         // --- 6. Rebuild + persist. rebuild_cache restores retrieval_count from
         //        the cache snapshot (for survivors) and reads from the now-mutated
@@ -2198,6 +2253,71 @@ mod tests {
         assert!(!hits.is_empty(), "search returns the carrier for absorbed content");
         assert_eq!(hits[0].0, carrier_id, "carrier is the top match for the merged content");
         assert!(store.get(&absorbed_id).unwrap().is_none(), "absorbed id is gone");
+    }
+
+    #[test]
+    fn apply_merge_rehomes_connections_onto_carrier() {
+        // A merge must conserve the skip-link graph, not just energy: a link INTO
+        // an absorbed member is redirected to the carrier, and an absorbed
+        // member's link OUT is inherited by the carrier. Regression for the
+        // dropped/dangling-connection gap on the ADR-0036 destructive path.
+        let mut store =
+            HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+
+        // Merge group of 3 near-identical, phase-locked dups. dup[0] is strongest
+        // so it is deterministically the carrier; dup[1]/dup[2] are absorbed.
+        let base = vec![0.5f32; WAVEFRONT_DIM];
+        let mut dup_ids = Vec::new();
+        for k in 0..3 {
+            let mut v = base.clone();
+            v[k] += 0.001;
+            let energy = if k == 0 { 2.0 } else { 1.0 };
+            dup_ids.push(insert_ctl(&mut store, v, &format!("dup {k}"), energy, 0.0, Tier::LongTerm, 0));
+        }
+        // An unrelated survivor to link to/from.
+        let mut u = vec![0.0f32; WAVEFRONT_DIM];
+        u[100] = 1.0;
+        let other = insert_ctl(&mut store, u, "other", 1.0, 0.0, Tier::LongTerm, 0);
+
+        let carrier = dup_ids[0];
+        let absorbed_a = dup_ids[1];
+        let absorbed_b = dup_ids[2];
+
+        let link = |target: Uuid| crate::memory::LegacyLink {
+            target_id: target,
+            strength: 0.7,
+            resonance_key: Vec::new(),
+            span: 0,
+        };
+        // Inbound: other -> absorbed_a (must redirect to the carrier).
+        store.memory_cache.get_mut(&other).unwrap().connections.push(link(absorbed_a));
+        // Outbound: absorbed_b -> other (the carrier must inherit this).
+        store.memory_cache.get_mut(&absorbed_b).unwrap().connections.push(link(other));
+
+        let report = store.apply_consolidation(&apply_opts());
+        assert_eq!(report.groups_found, 1);
+        assert_eq!(report.would_absorb, 2);
+        assert!(store.get(&carrier).unwrap().is_some(), "carrier survives");
+        assert!(store.get(&absorbed_a).unwrap().is_none(), "absorbed_a removed");
+
+        // Inbound link redirected: `other` points at the carrier, not a dead id.
+        let other_conns = store.get(&other).unwrap().unwrap().connections.clone();
+        assert!(
+            other_conns.iter().any(|l| l.target_id == carrier),
+            "inbound link must be redirected onto the carrier"
+        );
+        assert!(
+            !other_conns.iter().any(|l| l.target_id == absorbed_a || l.target_id == absorbed_b),
+            "no surviving link may point at an absorbed id"
+        );
+
+        // Outbound link inherited: the carrier carries the absorbed member's
+        // link to `other`.
+        let carrier_conns = store.get(&carrier).unwrap().unwrap().connections.clone();
+        assert!(
+            carrier_conns.iter().any(|l| l.target_id == other),
+            "carrier must inherit the absorbed member's outbound link"
+        );
     }
 
     #[test]

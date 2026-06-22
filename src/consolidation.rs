@@ -253,6 +253,10 @@ impl ConsolidationEngine {
     ) -> ConsolidationReport {
         let start = Instant::now();
         let mut report = ConsolidationReport::default();
+        // Wall-clock instant the cycle began, captured BEFORE stage_prune ghosts
+        // anything. stage_compact_ghosts uses it to never hard-delete a memory in
+        // the same cycle it was ghosted (see that stage for why).
+        let cycle_started_at = Utc::now();
 
         // Stage 1: REPLAY � collect working set of memories in layer range
         let working_set = self.stage_replay(engine, min_layer, max_layer);
@@ -304,7 +308,7 @@ impl ConsolidationEngine {
         // and reload forever, inflating total_memories and dragging the O(n²)/
         // O(n³) recall + eigendecomp. Deletes only ghosts that have stayed at
         // zero past the recovery window, never pinned/summary memories.
-        report.ghosts_reclaimed = self.stage_compact_ghosts(engine);
+        report.ghosts_reclaimed = self.stage_compact_ghosts(engine, cycle_started_at);
 
         // Stage 7: WIRE -- create skip links for cross-layer constructive pairs
         report.skip_links_created = self.stage_wire(engine, &pairs, &working_set);
@@ -1088,7 +1092,7 @@ impl ConsolidationEngine {
     /// Retention horizon defaults to 7 days; override with
     /// `KANNAKA_GHOST_RETAIN_DAYS` (0 reclaims every ghost immediately — treats
     /// ghost as a true delete).
-    fn stage_compact_ghosts(&self, engine: &mut ResonanceEngine) -> usize {
+    fn stage_compact_ghosts(&self, engine: &mut ResonanceEngine, cycle_started_at: chrono::DateTime<Utc>) -> usize {
         let retain_days: i64 = std::env::var("KANNAKA_GHOST_RETAIN_DAYS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1116,7 +1120,17 @@ impl ConsolidationEngine {
             // was created. Reclaim only once that is older than the window, so a
             // freshly-ghosted memory stays recoverable.
             let last_active = mem.updated_at.unwrap_or(mem.created_at);
-            if last_active <= horizon {
+            // Never hard-delete a ghost in the same cycle it was created.
+            // stage_prune (run earlier this cycle) soft-deletes by stamping
+            // updated_at = now; with the default 7-day window that fresh stamp
+            // already lands after the horizon, but KANNAKA_GHOST_RETAIN_DAYS=0
+            // sets horizon = now and would reclaim those just-made ghosts in the
+            // very same dream — re-opening the 295→88 over-prune the updated_at
+            // stamp was added to prevent. Requiring last_active to predate the
+            // cycle gives every ghost at least one cycle of recovery regardless
+            // of the retain window; for retain_days>=1 this is a no-op (the
+            // horizon already excludes the current cycle).
+            if last_active <= horizon && last_active < cycle_started_at {
                 doomed.push(mem.id);
             }
         }
