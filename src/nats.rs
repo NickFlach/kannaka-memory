@@ -1342,6 +1342,51 @@ impl SwarmTransport {
         self.get_stream_messages("KANNAKA_EXEMPLARS", &subject_filter, 500)
     }
 
+    /// ADR-0037 Track-D: publish this agent's belief-core snapshot (L6
+    /// fingerprints + phases) so peers can content-match + couple toward shared
+    /// beliefs. Subject `KANNAKA.cores.<agent_id>`; KANNAKA_CORES keeps the
+    /// latest per agent (max_msgs_per_subject=1).
+    pub fn publish_cores(
+        &self,
+        agent_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let subject = format!("KANNAKA.cores.{}", agent_id);
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(&subject, &bytes)
+    }
+
+    /// Ensure the KANNAKA_CORES JetStream stream exists (ADR-0037 Track-D).
+    pub fn ensure_cores_stream(&self) -> Result<(), NatsError> {
+        self.ensure_js_stream(
+            "KANNAKA_CORES",
+            serde_json::json!({
+                "name": "KANNAKA_CORES",
+                "subjects": ["KANNAKA.cores.>"],
+                "retention": "limits",
+                "max_msgs_per_subject": 1,
+                "max_age": 604800_000_000_000i64, // 7 days
+                "storage": "file",
+                "discard": "old",
+                "num_replicas": 1
+            }),
+        )
+    }
+
+    /// Pull peers' belief-core snapshots (one latest per agent), optionally
+    /// filtered to a single agent. ADR-0037 Track-D.
+    pub fn get_peer_cores(
+        &self,
+        from_agent: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, NatsError> {
+        let subject_filter = match from_agent {
+            Some(a) => format!("KANNAKA.cores.{}", a),
+            None => "KANNAKA.cores.>".to_string(),
+        };
+        self.get_stream_messages("KANNAKA_CORES", &subject_filter, 500)
+    }
+
     /// Generic helper: iterate a JetStream stream's messages by subject filter.
     /// Used by both exemplars and presence (and future ADR-0026 streams).
     /// Non-JSON payloads are skipped (but still advance the walk).

@@ -44,8 +44,9 @@ use handlers_attention::handle_attention_serve;
 #[path = "handlers/swarm.rs"]
 mod handlers_swarm;
 use handlers_swarm::{
-    handle_swarm_absorb, handle_swarm_autoabsorb, handle_swarm_enqueue, handle_swarm_exemplars,
-    handle_swarm_peers, handle_swarm_serve, handle_swarm_tail, handle_swarm_worker,
+    handle_swarm_absorb, handle_swarm_autoabsorb, handle_swarm_cores, handle_swarm_enqueue,
+    handle_swarm_exemplars, handle_swarm_peers, handle_swarm_serve, handle_swarm_tail,
+    handle_swarm_worker,
 };
 
 #[path = "handlers/inbox.rs"]
@@ -3062,7 +3063,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan|loop>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan|loop>");
                 process::exit(1);
             }
 
@@ -3964,6 +3965,9 @@ fn main() {
                 "exemplars" => {
                     handle_swarm_exemplars(&mut sys, &cfg, &args[command_start..]);
                 }
+                "cores" => {
+                    handle_swarm_cores(&mut sys, &cfg, &args[command_start..]);
+                }
                 "peers" => {
                     handle_swarm_peers(&cfg, &args[command_start..]);
                 }
@@ -3991,7 +3995,7 @@ fn main() {
                 }
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|peers|absorb|autoabsorb|enqueue|worker>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker>");
                     process::exit(1);
                 }
             }
