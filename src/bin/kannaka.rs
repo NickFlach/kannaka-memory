@@ -192,16 +192,23 @@ fn append_l6_telemetry(
         Some(r) if r.n > 0 => r,
         _ => return, // not chiral / empty — nothing to record
     };
-    let cloud = hrm.and_then(|h| h.belief_cloud_report());
+    // One core snapshot (cores + frame-invariant fingerprints) serves BOTH the
+    // count in the time-series record AND the cross-dream tracking file — a single
+    // PCA pass rather than recomputing the cloud report separately.
+    let snapshot = hrm.map(|h| h.belief_core_snapshot()).unwrap_or_default();
+    let net_charge: i32 = snapshot.iter().map(|c| c.charge).sum();
     let cached = sys.engine.store.try_cached_consciousness_metrics();
     let memories = sys.engine.store.all_memories().map(|m| m.len()).unwrap_or(0);
+    let ts = chrono::Utc::now().to_rfc3339();
     let mut rec = serde_json::json!({
-        "ts": chrono::Utc::now().to_rfc3339(),
+        "ts": ts.clone(),
         "mode": mode,
         "rephased": rephased,
         "ring_order": ring.order,
         "ring_winding": ring.winding,
         "ring_n": ring.n,
+        "cores": snapshot.len(),
+        "net_charge": net_charge,
         "memories": memories,
         "strengthened": report.memories_strengthened,
         "pruned": report.memories_pruned,
@@ -211,29 +218,31 @@ fn append_l6_telemetry(
         "consciousness": report.consciousness_after,
         "emerged": report.emerged,
     });
-    if let Some(c) = &cloud {
-        rec["cores"] = serde_json::json!(c.singularities.len());
-        rec["net_charge"] = serde_json::json!(c.net_charge);
-    }
     if let Some(m) = &cached {
         rec["phi"] = serde_json::json!(m.phi);
         rec["xi"] = serde_json::json!(m.xi);
         rec["mean_order"] = serde_json::json!(m.order);
         rec["clusters"] = serde_json::json!(m.num_clusters);
     }
-    let path = data_dir().join("l6-telemetry.jsonl");
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        if writeln!(f, "{rec}").is_ok() {
-            eprintln!(
-                "[l6] recorded → {} (order={:.3} winding={:.1} cores={})",
-                path.display(),
-                ring.order,
-                ring.winding,
-                cloud.as_ref().map(|c| c.singularities.len()).unwrap_or(0)
-            );
-        }
+    let tpath = data_dir().join("l6-telemetry.jsonl");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&tpath) {
+        let _ = writeln!(f, "{rec}");
     }
+    // Persist the core snapshot (cores + fingerprints) for cross-dream tracking
+    // via `kannaka belief cores` (crate::l6::build_tracks).
+    let cpath = data_dir().join("l6-cores.jsonl");
+    let crec = serde_json::json!({ "ts": ts, "cores": snapshot });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&cpath) {
+        let _ = writeln!(f, "{crec}");
+    }
+    eprintln!(
+        "[l6] recorded → {} (order={:.3} winding={:.1} cores={})",
+        tpath.display(),
+        ring.order,
+        ring.winding,
+        snapshot.len()
+    );
 }
 
 /// ADR-0037 L6 instrument: `kannaka belief history [--last N] [--json]` — print the
@@ -289,6 +298,90 @@ fn handle_belief_history(args: &[String]) {
     println!(
         "\n{} records at {}  (--json for full rows, --last N to widen)",
         lines.len(),
+        path.display()
+    );
+}
+
+/// ADR-0037 L6 instrument: `kannaka belief cores [--last N] [--min-cos X] [--json]`
+/// — track spiral cores ACROSS dreams from `<data_dir>/l6-cores.jsonl`. Reads the
+/// per-dream snapshots, matches cores by frame-invariant fingerprint + charge
+/// (`crate::l6::build_tracks`), and reports each track's lifetime — a long-lived
+/// track is a persistent belief. Stateless (reads the file only, no HRM load).
+fn handle_belief_cores(args: &[String]) {
+    let last: usize = args
+        .iter()
+        .position(|a| a == "--last")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    let min_cos: f32 = args
+        .iter()
+        .position(|a| a == "--min-cos")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.85);
+    let raw = args.iter().any(|a| a == "--json");
+    let path = data_dir().join("l6-cores.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            println!(
+                "no core snapshots yet at {} — run dreams with belief on to start.",
+                path.display()
+            );
+            return;
+        }
+    };
+    let mut snaps: Vec<Vec<kannaka_memory::l6::CoreObs>> = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(cores) = v.get("cores") {
+                if let Ok(obs) =
+                    serde_json::from_value::<Vec<kannaka_memory::l6::CoreObs>>(cores.clone())
+                {
+                    snaps.push(obs);
+                }
+            }
+        }
+    }
+    if snaps.is_empty() {
+        println!("no parseable core snapshots in {}", path.display());
+        return;
+    }
+    let start = snaps.len().saturating_sub(last);
+    let window = &snaps[start..];
+    let dreams = window.len();
+    let tracks = kannaka_memory::l6::build_tracks(window, min_cos);
+    if raw {
+        println!("{}", serde_json::to_string_pretty(&tracks).unwrap_or_default());
+        return;
+    }
+    println!(
+        "tracked {} cores across {} dreams (min_cos={:.2}):",
+        tracks.len(),
+        dreams,
+        min_cos
+    );
+    for t in tracks.iter().take(40) {
+        let stability = t.appearances as f32 / dreams.max(1) as f32;
+        let bar: String = "#".repeat((stability * 20.0).round() as usize);
+        println!(
+            "  id={:<4} charge={:+} appears={}/{} span={} stability={:.0}% {}",
+            t.id,
+            t.charge,
+            t.appearances,
+            dreams,
+            t.span,
+            stability * 100.0,
+            bar
+        );
+    }
+    let persistent = tracks.iter().filter(|t| t.appearances >= 2).count();
+    println!(
+        "\n{} persistent cores (>=2 dreams) of {} total; {} snapshots at {}",
+        persistent,
+        tracks.len(),
+        snaps.len(),
         path.display()
     );
 }
@@ -1085,6 +1178,7 @@ fn main() {
                 "on" | "enable" => { handle_belief_toggle(true); return; }
                 "off" | "disable" => { handle_belief_toggle(false); return; }
                 "history" | "log" => { handle_belief_history(&args[command_start..]); return; }
+                "cores" => { handle_belief_cores(&args[command_start..]); return; }
                 _ => { /* status / activate / help — fall through (needs HRM) */ }
             }
         }
@@ -2455,9 +2549,82 @@ fn main() {
                     }
                     println!("belief activate: done ({before} memories preserved).");
                 }
+                // ADR-0037 L6 instrument: self-recall@k — the dependent variable for
+                // "core stability ⇒ recall reliability". For a sample of memories,
+                // query by their own content and check whether each retrieves ITSELF
+                // in the top-k. A healthy field ⇒ recall@1≈1; over-merge/blur drops it.
+                "recall-probe" => {
+                    let arg_after = |flag: &str, def: usize| -> usize {
+                        let a = &args[command_start..];
+                        a.iter()
+                            .position(|x| x == flag)
+                            .and_then(|i| a.get(i + 1))
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(def)
+                    };
+                    let k = arg_after("--k", 5).max(1);
+                    let sample = arg_after("--sample", 64).max(1);
+                    // The probe's recalls reinforce (mutate the medium in RAM); readonly
+                    // blocks any flush so the persisted field stays untouched.
+                    if let Some(h) = sys
+                        .engine
+                        .store
+                        .as_any_mut()
+                        .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                    {
+                        h.set_readonly(true);
+                    }
+                    let mems = sys.engine.store.all_memories().unwrap_or_default();
+                    let n = mems.len();
+                    if n == 0 {
+                        println!("recall-probe: empty field");
+                    } else {
+                        let step = (n / sample).max(1);
+                        let sampled: Vec<String> = mems
+                            .iter()
+                            .step_by(step)
+                            .take(sample)
+                            .map(|m| m.content.clone())
+                            .filter(|c| !c.trim().is_empty())
+                            .collect();
+                        drop(mems);
+                        let m = sampled.len().max(1);
+                        let (mut r1, mut rk) = (0usize, 0usize);
+                        for content in &sampled {
+                            if let Ok(res) = sys.recall(content, k) {
+                                if res.first().map(|r| &r.content == content).unwrap_or(false) {
+                                    r1 += 1;
+                                }
+                                if res.iter().any(|r| &r.content == content) {
+                                    rk += 1;
+                                }
+                            }
+                        }
+                        let recall1 = r1 as f32 / m as f32;
+                        let recallk = rk as f32 / m as f32;
+                        let rec = serde_json::json!({
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                            "k": k,
+                            "sample": m,
+                            "recall_at_1": recall1,
+                            "recall_at_k": recallk,
+                        });
+                        use std::io::Write;
+                        let path = data_dir().join("l6-recall.jsonl");
+                        if let Ok(mut f) =
+                            std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                        {
+                            let _ = writeln!(f, "{rec}");
+                        }
+                        println!(
+                            "recall@1={recall1:.3}  recall@{k}={recallk:.3}  (sample={m}/{n}) → {}",
+                            path.display()
+                        );
+                    }
+                }
                 other => {
                     eprintln!("unknown belief subcommand: '{other}'");
-                    eprintln!("usage: kannaka belief [status [--full] | on | off | activate [--manage-service <unit>]]");
+                    eprintln!("usage: kannaka belief [status [--full] | on | off | history | cores | recall-probe | activate [--manage-service <unit>]]");
                     process::exit(1);
                 }
             }

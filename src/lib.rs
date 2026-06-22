@@ -58,6 +58,8 @@ pub mod consciousness;
 /// ADR-0037: spiral / phase-singularity detection (L6 instrument).
 pub mod spiral;
 
+pub mod l6;
+
 pub mod medium;
 
 pub mod hrm_store;

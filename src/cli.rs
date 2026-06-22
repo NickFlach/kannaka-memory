@@ -266,6 +266,10 @@ SUBCOMMANDS:
                        count-preservation guard (auto-restore on drop) → refuse-if-locked
   history [--last N]   the L6 instrument: per-dream order/winding/cores/Φ/stats time-series
                        (recorded to <data_dir>/l6-telemetry.jsonl on every dream); --json for raw rows
+  cores [--last N] [--min-cos X]   track spiral cores ACROSS dreams (fingerprint-matched) →
+                       per-core lifetime/stability; a long-lived core = a persistent belief
+  recall-probe [--k N] [--sample M]   self-recall@k: do memories still retrieve themselves?
+                       (the dependent variable for "core stability ⇒ recall reliability"; read-only)
 
 FLAGS:
   --full                    status: also compute the heavier 2-D PCA spiral cores
