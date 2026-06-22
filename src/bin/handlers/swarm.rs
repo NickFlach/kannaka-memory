@@ -498,7 +498,14 @@ pub(crate) fn handle_swarm_cores(
             };
             for p in &peers {
                 let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let n = p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                // Count the actual cores array (authoritative), not the peer-supplied
+                // core_count scalar (which a misbehaving peer could set inconsistently).
+                let n = p
+                    .get("cores")
+                    .and_then(|c| c.as_array())
+                    .map(|a| a.len() as u64)
+                    .or_else(|| p.get("core_count").and_then(|v| v.as_u64()))
+                    .unwrap_or(0);
                 let ts = p.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
                 println!("{aid:<24} {n:>4} cores  {ts}");
             }
@@ -516,10 +523,13 @@ pub(crate) fn handle_swarm_cores(
             for p in &peers {
                 let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
                 if aid == agent_id { continue; }
-                let peer_cores: Vec<kannaka_memory::l6::CoreObs> = p
+                let mut peer_cores: Vec<kannaka_memory::l6::CoreObs> = p
                     .get("cores")
                     .and_then(|c| serde_json::from_value(c.clone()).ok())
                     .unwrap_or_default();
+                // Bound the O(own × peer) match against a misbehaving peer's oversized
+                // snapshot (honest publishers emit ≤8 cores; 1024 is a generous cap).
+                peer_cores.truncate(1024);
                 let shared = kannaka_memory::l6::shared_cores(&own_cores, &peer_cores, min_cos);
                 let rate = if own_cores.is_empty() { 0.0 } else { shared as f32 / own_cores.len() as f32 };
                 println!("  {aid:<24} shared={shared:<4}/{:<4} peer  (agreement {:.0}%)", peer_cores.len(), rate * 100.0);

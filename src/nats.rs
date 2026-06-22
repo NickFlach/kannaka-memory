@@ -1367,6 +1367,7 @@ impl SwarmTransport {
                 "retention": "limits",
                 "max_msgs_per_subject": 1,
                 "max_age": 604800_000_000_000i64, // 7 days
+                "max_msg_size": 1_048_576i64, // 1 MiB — a core snapshot is ≤8 cores (~KB); bound abuse
                 "storage": "file",
                 "discard": "old",
                 "num_replicas": 1
