@@ -1222,6 +1222,34 @@ impl HrmStore {
         n
     }
 
+    /// ADR-0037 Track-D: pull this field's holistic phases toward a peer's belief
+    /// cores (node↔node coupling — `couple_toward_peer_cores`), then persist.
+    /// Phase-only (vectors/recall untouched); per-wavefront displacement is capped
+    /// at `max_disp` (anti-homogenization budget). Returns the number of wavefronts
+    /// moved; chiral backend only.
+    pub fn couple_belief(
+        &mut self,
+        peer_cores: &[crate::l6::CoreObs],
+        cycles: usize,
+        strength: f32,
+        max_disp: f32,
+    ) -> usize {
+        let moved = if let Some(ref mut chiral) = self.chiral {
+            chiral.couple_toward_peer_cores(peer_cores, cycles, strength, max_disp)
+        } else {
+            0
+        };
+        if moved > 0 {
+            self.sync_medium_from_chiral();
+            self.rebuild_cache().ok();
+            self.mark_dirty();
+            if let Err(e) = self.save_medium() {
+                eprintln!("Warning: Failed to save after couple: {}", e);
+            }
+        }
+        moved
+    }
+
     /// Reset all wavefront energies to target value (bias voltage restoration).
     pub fn reset_energies(&mut self, target: f32) {
         self.medium.reset_energies(target);

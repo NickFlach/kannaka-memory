@@ -2623,9 +2623,97 @@ fn main() {
                         );
                     }
                 }
+                // ADR-0037 Track-D: manually couple this field's phases toward peers'
+                // belief cores (the controlled live-coupling step before always-on).
+                // Phase-only (recall-safe), displacement-budget-capped, write-locked.
+                "couple" => {
+                    #[cfg(feature = "nats")]
+                    {
+                        if !kannaka_memory::medium::chiral::belief_phase_enabled() {
+                            eprintln!("error: belief substrate is OFF — run `kannaka belief on` first (couple a re-phased field, not a collapsed one).");
+                            process::exit(1);
+                        }
+                        let a = &args[command_start..];
+                        let after = |flag: &str| {
+                            a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1)).cloned()
+                        };
+                        let from = after("--from");
+                        let strength: f32 = after("--strength").and_then(|v| v.parse().ok()).unwrap_or(0.1);
+                        let cycles: usize = after("--cycles").and_then(|v| v.parse().ok()).unwrap_or(20);
+                        let max_disp: f32 = after("--max-disp").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        let transport = match kannaka_memory::nats::SwarmTransport::connect(&cfg.swarm.nats_url) {
+                            Ok(t) => t,
+                            Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                        };
+                        let payloads = match transport.get_peer_cores(from.as_deref()) {
+                            Ok(p) => p,
+                            Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                        };
+                        let self_id = cfg.agent.id.clone();
+                        let mut peer_cores: Vec<kannaka_memory::l6::CoreObs> = Vec::new();
+                        let mut sources = 0usize;
+                        for p in &payloads {
+                            if p.get("agent_id").and_then(|v| v.as_str()) == Some(self_id.as_str()) {
+                                continue; // never couple toward self
+                            }
+                            if let Some(cs) = p
+                                .get("cores")
+                                .and_then(|c| serde_json::from_value::<Vec<kannaka_memory::l6::CoreObs>>(c.clone()).ok())
+                            {
+                                if !cs.is_empty() {
+                                    sources += 1;
+                                    peer_cores.extend(cs);
+                                }
+                            }
+                        }
+                        if peer_cores.is_empty() {
+                            println!("no peer cores to couple toward — run `kannaka swarm cores publish` on peers first.");
+                        } else {
+                            let _lock = match try_acquire_write_lock() {
+                                Some(l) => l,
+                                None => {
+                                    eprintln!("error: another writer holds the HRM lock — stop kannaka-memory first.");
+                                    process::exit(1);
+                                }
+                            };
+                            let data_dir = KannakaConfig::data_dir();
+                            let hrm_path = data_dir.join("kannaka.hrm");
+                            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+                            if hrm_path.exists() {
+                                let backup = data_dir.join(format!("kannaka.hrm.bak-pre-couple-{ts}"));
+                                if std::fs::copy(&hrm_path, &backup).is_ok() {
+                                    eprintln!("[couple] backup → {}", backup.display());
+                                }
+                            }
+                            let ring0 = sys.engine.store.as_any()
+                                .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                                .and_then(|h| h.belief_ring_report());
+                            let moved = sys.engine.store.as_any_mut()
+                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                                .map(|h| h.couple_belief(&peer_cores, cycles, strength, max_disp))
+                                .unwrap_or(0);
+                            let ring1 = sys.engine.store.as_any()
+                                .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                                .and_then(|h| h.belief_ring_report());
+                            eprintln!(
+                                "[couple] {} peer cores from {} source(s) → moved {} wavefronts (strength={strength} cycles={cycles} budget={max_disp})",
+                                peer_cores.len(), sources, moved
+                            );
+                            if let (Some(b), Some(aft)) = (ring0, ring1) {
+                                eprintln!("[couple] order {:.3}->{:.3} winding {:.1}->{:.1}", b.order, aft.order, b.winding, aft.winding);
+                            }
+                            println!("belief couple: done ({moved} wavefronts coupled toward {} peer cores).", peer_cores.len());
+                        }
+                    }
+                    #[cfg(not(feature = "nats"))]
+                    {
+                        eprintln!("`belief couple` requires the 'nats' feature");
+                        process::exit(1);
+                    }
+                }
                 other => {
                     eprintln!("unknown belief subcommand: '{other}'");
-                    eprintln!("usage: kannaka belief [status [--full] | on | off | history | cores | recall-probe | activate [--manage-service <unit>]]");
+                    eprintln!("usage: kannaka belief [status [--full] | on | off | history | cores | recall-probe | couple [--from <agent>] | activate [--manage-service <unit>]]");
                     process::exit(1);
                 }
             }
