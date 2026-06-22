@@ -34,6 +34,14 @@ pub struct MergeRecord {
     pub phase_diff: f32,
     pub amplitude_before: f32,
     pub amplitude_after: f32,
+    /// The source memory's `sync_version` at the moment it was merged in. The
+    /// idempotency guard rejects a re-broadcast whose `sync_version` is <= the
+    /// highest already merged from that (agent, memory) — comparing against the
+    /// SOURCE's own counter, not the local one (which every unrelated merge
+    /// bumps and is therefore not comparable across agents). `#[serde(default)]`
+    /// keeps pre-existing persisted records (which read back as 0) loadable.
+    #[serde(default)]
+    pub source_sync_version: u64,
 }
 
 fn default_agent() -> String {
@@ -186,7 +194,15 @@ impl HyperMemory {
     /// Record a retrieval event — called on search/recall to boost the f(x) term.
     pub fn record_retrieval(&mut self) {
         self.retrieval_count = self.retrieval_count.saturating_add(1);
-        self.touch();
+        // Do NOT renew the recovery window for a soft-deleted (ghost) memory.
+        // `touch()` stamps `updated_at = now`, which stage_compact_ghosts reads
+        // as "last meaningful activity" to decide when a ghost may be reclaimed.
+        // If an incidental recall match kept bumping it, a ghost that still
+        // happens to resonate with queries would never age out — defeating the
+        // soft-delete. A live memory still touches.
+        if self.amplitude != 0.0 {
+            self.touch();
+        }
     }
 
     /// Compute the effective vector: S(t) · h

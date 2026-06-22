@@ -11,7 +11,7 @@
 //!
 //! ## Architecture
 //!
-//! ```
+//! ```text
 //! Data -> SGA Mapping -> Fano Grouping -> Geometric Compression -> Glyph
 //!                                                                    |
 //! Reconstructed Data <- SGA Bloom <- Unfold Sequence <- Glyph ------+
