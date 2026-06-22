@@ -468,7 +468,6 @@ fn dream_can_prune_weak_memories() {
     // Some weak memories should have been dissolved
     let final_count = medium.wavefront_count();
     assert!(final_count <= initial_count);
-    assert!(report.wavefronts_dissolved >= 0);
 
     println!("Pruned {} wavefronts during dream", report.wavefronts_dissolved);
 }
@@ -1423,7 +1422,7 @@ fn phi_trend_extraction_from_introspections() {
     println!("Phi trend: {:?}", emergence.phi_trend);
 
     // Should have extracted some phi values
-    assert!(emergence.phi_trend.len() >= 0); // May be empty if extraction fails, but that's ok
+    // phi_trend may be empty if extraction fails — that's ok; values (if any) checked below.
 
     // If we did extract values, they should be reasonable
     for phi in &emergence.phi_trend {

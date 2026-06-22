@@ -1389,6 +1389,10 @@ fn run_l4_pass(
     // outer orchestrator overwrites fitness with the resistance-adjusted
     // total. This keeps run_l4_pass reusable for both clean and adversarial
     // inner evaluations without double-counting.
+    // Neutral inside run_l4_pass; the outer orchestrator overwrites fitness with the
+    // resistance-adjusted total (see the note above). Named (not a literal 1.0 - 1.0)
+    // so it isn't a clippy::eq_op.
+    let adversarial_resistance = 1.0;
     let fitness = 0.05 * (1.0 - noise_removal)
         + 0.05 * (1.0 - signal_preservation)
         + 0.05 * (1.0 - phase_coherence)
@@ -1400,7 +1404,7 @@ fn run_l4_pass(
         + 0.15 * (1.0 - retention_score)
         + 0.05 * (1.0 - retention_plasticity)
         + 0.10 * (1.0 - chain_fidelity)
-        + 0.10 * (1.0 - 1.0) // adversarial_resistance slot, filled by caller
+        + 0.10 * (1.0 - adversarial_resistance) // slot filled by the outer orchestrator
         + 0.05 * (1.0 - encoding_entropy);
 
     let metrics = L4PassMetrics {

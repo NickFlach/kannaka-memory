@@ -1842,8 +1842,9 @@ mod tests {
         sys.remember("the capital of france is paris").unwrap(); // knowledge
         
         let stats = sys.stats();
-        // HRM-native path doesn't populate legacy geometry, so geometric_classes may be 0
-        assert!(stats.geometric_classes >= 0);
+        // HRM-native path doesn't populate legacy geometry, so geometric_classes may be 0.
+        // (It's unsigned, so `>= 0` is vacuous — just confirm the field is accessible.)
+        let _ = stats.geometric_classes;
         // Triality coverage may also be 0 in HRM mode
         assert!(stats.triality_coverage.len() == 3);
         

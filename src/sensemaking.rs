@@ -381,7 +381,7 @@ mod tests {
         let peers = vec![
             PeerCluster { agent_id: "a".into(), summary: "rates rise".into(), phase: 0.05 },
             PeerCluster { agent_id: "b".into(), summary: "rates rise".into(), phase: 0.1 },
-            PeerCluster { agent_id: "c".into(), summary: "rates rise".into(), phase: 3.14 }, // anti-phase, excluded
+            PeerCluster { agent_id: "c".into(), summary: "rates rise".into(), phase: std::f32::consts::PI }, // anti-phase, excluded
         ];
         let sim = |a: &str, b: &str| if a == b { 1.0 } else { 0.0 };
         let v = reinforce_hypotheses(&hyps, &peers, sim, 0.8, std::f32::consts::FRAC_PI_2, 2);
