@@ -1225,29 +1225,48 @@ impl HrmStore {
     /// ADR-0037 Track-D: pull this field's holistic phases toward a peer's belief
     /// cores (node↔node coupling — `couple_toward_peer_cores`), then persist.
     /// Phase-only (vectors/recall untouched); per-wavefront displacement is capped
-    /// at `max_disp` (anti-homogenization budget). Returns the number of wavefronts
-    /// moved; chiral backend only.
+    /// at `max_disp` (anti-homogenization budget) and only matches at cosine ≥
+    /// `min_cos` are coupled. Returns `(moved, saved_ok)` — `moved` is the number of
+    /// wavefronts coupled, `saved_ok` is whether the on-disk .hrm was successfully
+    /// updated (true when there was nothing to save). Chiral backend only.
     pub fn couple_belief(
         &mut self,
         peer_cores: &[crate::l6::CoreObs],
         cycles: usize,
         strength: f32,
         max_disp: f32,
-    ) -> usize {
+        min_cos: f32,
+    ) -> (usize, bool) {
         let moved = if let Some(ref mut chiral) = self.chiral {
-            chiral.couple_toward_peer_cores(peer_cores, cycles, strength, max_disp)
+            chiral.couple_toward_peer_cores(peer_cores, cycles, strength, max_disp, min_cos)
         } else {
             0
         };
-        if moved > 0 {
-            self.sync_medium_from_chiral();
-            self.rebuild_cache().ok();
-            self.mark_dirty();
-            if let Err(e) = self.save_medium() {
-                eprintln!("Warning: Failed to save after couple: {}", e);
-            }
+        if moved == 0 {
+            return (0, true);
         }
-        moved
+        self.sync_medium_from_chiral();
+        self.rebuild_cache().ok();
+        self.mark_dirty();
+        let saved_ok = match self.save_medium() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("Warning: Failed to save after couple: {}", e);
+                false
+            }
+        };
+        (moved, saved_ok)
+    }
+
+    /// ADR-0037 Track-D dry-run (read-only): the per-wavefront best-match cosines
+    /// against `peer_cores` (`ChiralMedium::peer_match_cosines`). For `belief couple
+    /// --dry-run` to print the live match distribution so `min_cos` is picked from
+    /// data. Chiral backend only; empty otherwise.
+    pub fn peer_match_cosines(&self, peer_cores: &[crate::l6::CoreObs]) -> Vec<f32> {
+        self.chiral
+            .as_ref()
+            .map(|c| c.peer_match_cosines(peer_cores))
+            .unwrap_or_default()
     }
 
     /// Reset all wavefront energies to target value (bias voltage restoration).
