@@ -2633,7 +2633,8 @@ fn main() {
                             eprintln!("error: belief substrate is OFF — run `kannaka belief on` first (couple a re-phased field, not a collapsed one).");
                             process::exit(1);
                         }
-                        const USAGE: &str = "Usage: kannaka belief couple [--from <agent>] [--strength X] [--cycles N] [--max-disp X] [--min-cos X] [--nats-url URL]";
+                        warn_if_readonly("belief couple");
+                        const USAGE: &str = "Usage: kannaka belief couple [--from <agent>] [--strength X] [--cycles N] [--max-disp X] [--min-cos X] [--nats-url URL] [--dry-run]";
                         // Strict flag parsing — parse_flag_value exits 2 on a bad value
                         // rather than silently substituting a default (this is a
                         // write-locked, mutating op; a fat-fingered flag must not pass).
@@ -2642,10 +2643,14 @@ fn main() {
                         let mut strength: f32 = 0.1;
                         let mut cycles: usize = 20;
                         let mut max_disp: f32 = 1.0;
-                        // Wavefront→peer-core match floor. Lower scale than shared_cores'
-                        // core↔core 0.85 (different comparands); ~0.3 ≈ JL-16 noise floor.
-                        let mut min_cos: f32 = 0.3;
+                        // Wavefront→peer-core match floor — a SECONDARY quality filter
+                        // (max_disp is the real anti-homogenization guarantee). The right
+                        // value is FIELD-DEPENDENT: a large peer pool inflates the
+                        // per-wavefront best-match cosine via max-of-N, so run `--dry-run`
+                        // first and pick min_cos from the live distribution.
+                        let mut min_cos: f32 = 0.5;
                         let mut nats_url_override: Option<String> = None;
+                        let mut dry_run = false;
                         let mut i = 2; // a[0]="belief", a[1]="couple"
                         while i < a.len() {
                             match a[i].as_str() {
@@ -2655,6 +2660,7 @@ fn main() {
                                 "--max-disp" => { max_disp = parse_flag_value(a, i, "--max-disp", USAGE); i += 2; }
                                 "--min-cos" => { min_cos = parse_flag_value(a, i, "--min-cos", USAGE); i += 2; }
                                 "--nats-url" => { nats_url_override = Some(flag_value(a, i, "--nats-url", USAGE).to_string()); i += 2; }
+                                "--dry-run" => { dry_run = true; i += 1; }
                                 other => {
                                     if other.starts_with("--") {
                                         eprintln!("[couple] ignoring unknown flag: {other}");
@@ -2662,6 +2668,12 @@ fn main() {
                                     i += 1;
                                 }
                             }
+                        }
+                        // Clamp + warn so the logged strength matches what's applied
+                        // (couple_toward_peer_cores clamps too, to keep the map monotone).
+                        if !(0.0..=1.0).contains(&strength) {
+                            eprintln!("[couple] --strength {strength} out of [0,1]; clamping to keep the coupling map monotone.");
+                            strength = strength.clamp(0.0, 1.0);
                         }
                         let nats_url = nats_url_override.unwrap_or_else(|| cfg.swarm.nats_url.clone());
                         let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
@@ -2700,6 +2712,26 @@ fn main() {
                         }
                         if peer_cores.is_empty() {
                             println!("no peer cores to couple toward — run `kannaka swarm cores publish` on peers first.");
+                        } else if dry_run {
+                            // Read-only: show the live match-cosine distribution so the
+                            // operator can pick min_cos from data (no lock, no mutation).
+                            let mut cs = sys.engine.store.as_any()
+                                .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                                .map(|h| h.peer_match_cosines(&peer_cores))
+                                .unwrap_or_default();
+                            cs.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+                            let n = cs.len();
+                            println!("belief couple --dry-run: {n} wavefronts vs {} peer cores from {} source(s)", peer_cores.len(), sources);
+                            if n > 0 {
+                                let pct = |p: f32| cs[(((n - 1) as f32) * p) as usize];
+                                let ge = |t: f32| cs.iter().filter(|&&s| s >= t).count();
+                                println!("  match-cos: min={:.3} p50={:.3} p90={:.3} max={:.3}", cs[0], pct(0.5), pct(0.9), cs[n - 1]);
+                                println!(
+                                    "  would couple: >=0.3:{} >=0.5:{} >=0.7:{} >=0.85:{} >=0.95:{}  | at --min-cos {:.2}: {}",
+                                    ge(0.3), ge(0.5), ge(0.7), ge(0.85), ge(0.95), min_cos, ge(min_cos)
+                                );
+                                println!("  NB max-of-N over a large peer pool inflates these — pick min_cos so it couples genuine shared beliefs, not noise.");
+                            }
                         } else {
                             let _lock = match try_acquire_write_lock() {
                                 Some(l) => l,
@@ -2762,6 +2794,10 @@ fn main() {
                             }
                             if moved == 0 {
                                 println!("belief couple: no wavefronts matched a peer core at cosine ≥ {min_cos} — nothing coupled.");
+                            } else if readonly_env_active() {
+                                // saved_ok is true here only because save_medium no-ops
+                                // under readonly — be honest that nothing hit disk.
+                                println!("belief couple: coupled {moved} wavefronts in RAM only — NOT persisted (KANNAKA_READONLY set).");
                             } else {
                                 println!("belief couple: done ({moved} wavefronts coupled toward {} peer cores).", peer_cores.len());
                             }

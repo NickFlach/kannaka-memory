@@ -997,9 +997,13 @@ impl ChiralMedium {
     /// Match gating: only wavefronts whose nearest peer core is within fingerprint
     /// cosine ≥ `min_cos` are coupled, so we converge toward beliefs we actually
     /// share and never drag unrelated content toward a "least-bad" match. NB this is
-    /// a WAVEFRONT→core-centroid match — a lower cosine scale than `l6::shared_cores`'
-    /// core↔core agreement metric, so its threshold is lower too (a sensible default
-    /// is ~0.3 ≈ the JL-16 random-cosine noise floor 1/√16, not shared_cores' 0.85).
+    /// a WAVEFRONT→core-centroid match (charge-agnostic — a wavefront has no charge,
+    /// unlike `shared_cores`' charge-matched core↔core comparison), on a LOWER cosine
+    /// scale than that metric. The right `min_cos` is FIELD-DEPENDENT: with a large
+    /// aggregated peer pool the per-wavefront best-match cosine inflates via max-of-N
+    /// (16-d fingerprint noise σ≈1/√16=0.25), so pick it from `belief couple --dry-run`
+    /// on the live field, NOT a fixed guess. The `max_disp` budget below is the PRIMARY
+    /// anti-homogenization guarantee; the min_cos gate is a secondary quality filter.
     ///
     /// Safety: per-wavefront NET displacement from its starting phase is capped at
     /// `max_disp` radians (the anti-homogenization budget — coupling can nudge a node
@@ -1057,6 +1061,22 @@ impl ChiralMedium {
             }
         }
         moved.iter().filter(|&&m| m).count()
+    }
+
+    /// ADR-0037 Track-D dry-run diagnostic (read-only): for each holistic wavefront,
+    /// the cosine of its best fingerprint match among `peer_cores` — the SAME match
+    /// `couple_toward_peer_cores` gates on (charge-agnostic). Lets `belief couple
+    /// --dry-run` print the live match-cosine distribution so an operator picks
+    /// `min_cos` from real data instead of a synthetic default. No mutation.
+    pub fn peer_match_cosines(&self, peer_cores: &[crate::l6::CoreObs]) -> Vec<f32> {
+        let n = self.right.count();
+        (0..n)
+            .filter_map(|i| {
+                let v: Vec<f32> = self.right.wavefronts.row(i).iter().copied().collect();
+                let fp = crate::l6::fingerprint(&v, 16);
+                crate::l6::nearest_core(&fp, peer_cores, None).map(|(_, s)| s)
+            })
+            .collect()
     }
 
     /// ADR-0037 Phase 4: cross-hemisphere ring report. The cortical spiral wave
@@ -1965,13 +1985,19 @@ mod tests {
                 let d = (node.right.phase[i] - before[i]).abs();
                 assert!(d <= max_disp + 1e-3, "wavefront {i} moved {d} > budget {max_disp}");
             }
-            // The min_cos gate bites: a threshold above the match scale couples nobody.
+            // The min_cos gate bites: a threshold above the match scale (max≈0.77)
+            // couples NOBODY (the documented "couples nobody above the scale" invariant,
+            // not mere monotonicity).
             let mut strict = build(&pipeline);
             let moved_strict = strict.couple_toward_peer_cores(&peer_cores, 40, 0.2, max_disp, 0.95);
-            assert!(
-                moved_strict < moved,
-                "min_cos gate should couple strictly fewer at a higher threshold ({moved_strict} !< {moved})"
+            assert_eq!(
+                moved_strict, 0,
+                "min_cos=0.95 is above the match scale (max≈0.77) — should couple nobody, got {moved_strict}"
             );
+            // peer_match_cosines (the `--dry-run` diagnostic): one cosine per wavefront.
+            let diag = strict.peer_match_cosines(&peer_cores);
+            assert_eq!(diag.len(), strict.right.count());
+            assert!(diag.iter().all(|&c| (-1.01..=1.01).contains(&c)));
         }
         eprintln!("[trackD] peer_cores={} moved={moved} target-align {a0:.3}->{a1:.3}", peer_cores.len());
     }

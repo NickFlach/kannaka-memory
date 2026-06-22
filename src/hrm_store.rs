@@ -1258,6 +1258,17 @@ impl HrmStore {
         (moved, saved_ok)
     }
 
+    /// ADR-0037 Track-D dry-run (read-only): the per-wavefront best-match cosines
+    /// against `peer_cores` (`ChiralMedium::peer_match_cosines`). For `belief couple
+    /// --dry-run` to print the live match distribution so `min_cos` is picked from
+    /// data. Chiral backend only; empty otherwise.
+    pub fn peer_match_cosines(&self, peer_cores: &[crate::l6::CoreObs]) -> Vec<f32> {
+        self.chiral
+            .as_ref()
+            .map(|c| c.peer_match_cosines(peer_cores))
+            .unwrap_or_default()
+    }
+
     /// Reset all wavefront energies to target value (bias voltage restoration).
     pub fn reset_energies(&mut self, target: f32) {
         self.medium.reset_energies(target);
