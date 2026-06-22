@@ -436,6 +436,115 @@ pub(crate) fn handle_swarm_exemplars(_: &mut kannaka_memory::openclaw::KannakaMe
     eprintln!("swarm exemplars requires the 'nats' feature"); process::exit(1);
 }
 
+/// ADR-0037 Track-D: `kannaka swarm cores <publish|list|shared>` — share belief
+/// cores (L6 fingerprints + phases) across the swarm and measure overlap. All
+/// read/publish (no HRM mutation); the writing `couple` command lands with the
+/// heartbeat wiring. `shared` is the falsifiable "shared cores ⇒ agreement" metric.
+#[cfg(feature = "nats")]
+pub(crate) fn handle_swarm_cores(
+    sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    args: &[String],
+) {
+    const USAGE: &str = "Usage: kannaka swarm cores <publish|list|shared> [--from <agent>] [--min-cos X] [--agent-id ID] [--nats-url URL]";
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("shared");
+    let mut agent_id_override: Option<String> = None;
+    let mut from: Option<String> = None;
+    let mut min_cos: f32 = 0.85;
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--agent-id" => { agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string()); i += 2; }
+            "--from" => { from = Some(flag_value(args, i, "--from", USAGE).to_string()); i += 2; }
+            "--min-cos" => { min_cos = parse_flag_value(args, i, "--min-cos", USAGE); i += 2; }
+            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            other => { warn_unknown_flag("cores", other); i += 1; }
+        }
+    }
+    let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
+    let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+    };
+
+    // This node's belief cores (the L6 snapshot used everywhere in Track-D).
+    let own_cores = sys
+        .engine
+        .store
+        .as_any()
+        .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+        .map(|h| h.belief_core_snapshot())
+        .unwrap_or_default();
+
+    match sub {
+        "publish" => {
+            let _ = transport.ensure_cores_stream();
+            let payload = serde_json::json!({
+                "agent_id": agent_id,
+                "core_count": own_cores.len(),
+                "cores": own_cores,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+            });
+            match transport.publish_cores(&agent_id, &payload) {
+                Ok(()) => println!("published {} belief cores from {}", own_cores.len(), agent_id),
+                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+            }
+        }
+        "list" => {
+            let peers = match transport.get_peer_cores(from.as_deref()) {
+                Ok(p) => p,
+                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+            };
+            for p in &peers {
+                let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let n = p.get("core_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let ts = p.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+                println!("{aid:<24} {n:>4} cores  {ts}");
+            }
+            println!("{} peer snapshot(s)", peers.len());
+        }
+        "shared" => {
+            // Falsifiable "shared cores ⇒ swarm agreement": how many of THIS node's
+            // belief cores are mirrored by each peer (same-charge fingerprint match).
+            let peers = match transport.get_peer_cores(from.as_deref()) {
+                Ok(p) => p,
+                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+            };
+            println!("own cores: {} (agent {agent_id}, min_cos={min_cos:.2})", own_cores.len());
+            let (mut total, mut counted) = (0usize, 0usize);
+            for p in &peers {
+                let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                if aid == agent_id { continue; }
+                let peer_cores: Vec<kannaka_memory::l6::CoreObs> = p
+                    .get("cores")
+                    .and_then(|c| serde_json::from_value(c.clone()).ok())
+                    .unwrap_or_default();
+                let shared = kannaka_memory::l6::shared_cores(&own_cores, &peer_cores, min_cos);
+                let rate = if own_cores.is_empty() { 0.0 } else { shared as f32 / own_cores.len() as f32 };
+                println!("  {aid:<24} shared={shared:<4}/{:<4} peer  (agreement {:.0}%)", peer_cores.len(), rate * 100.0);
+                total += shared;
+                counted += 1;
+            }
+            if counted > 0 {
+                println!("mean shared across {counted} peer(s): {:.1}", total as f32 / counted as f32);
+            } else {
+                println!("no peers have published cores yet (run `kannaka swarm cores publish` on them)");
+            }
+        }
+        other => {
+            eprintln!("{USAGE}");
+            eprintln!("Unknown subcommand: {other}");
+            process::exit(1);
+        }
+    }
+}
+
+#[cfg(not(feature = "nats"))]
+pub(crate) fn handle_swarm_cores(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+    eprintln!("swarm cores requires the 'nats' feature"); process::exit(1);
+}
+
 #[cfg(feature = "nats")]
 pub(crate) fn handle_swarm_absorb(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,

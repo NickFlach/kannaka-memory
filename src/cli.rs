@@ -270,6 +270,9 @@ SUBCOMMANDS:
                        per-core lifetime/stability; a long-lived core = a persistent belief
   recall-probe [--k N] [--sample M]   self-recall@k: do memories still retrieve themselves?
                        (the dependent variable for "core stability ⇒ recall reliability"; read-only)
+  couple [--from <agent>] [--strength X] [--cycles N] [--max-disp X]   Track-D: pull this field's
+                       phases toward peers' belief cores (phase-only/recall-safe; backup + write-locked
+                       + displacement-capped). Peers publish via `kannaka swarm cores publish`.
 
 FLAGS:
   --full                    status: also compute the heavier 2-D PCA spiral cores

@@ -973,14 +973,72 @@ impl ChiralMedium {
                         *v /= kk as f32;
                     }
                 }
+                // idx[0] is the nearest point to (c.x, c.y) — i.e. the core's anchor
+                // wavefront (distance 0) — so its phase is the core's holistic phase.
+                let phase = phases[idx[0]];
                 crate::l6::CoreObs {
                     x: c.x,
                     y: c.y,
                     charge: c.charge,
                     fp: crate::l6::fingerprint(&centroid, 16),
+                    phase,
                 }
             })
             .collect()
+    }
+
+    /// ADR-0037 Track-D: pull this (holistic/right) field's phases toward a peer's
+    /// belief cores — the node↔node "shared cores ⇒ swarm agreement" coupling.
+    /// Frame-invariant: each local wavefront is matched to the cosine-nearest peer
+    /// core by L6 FINGERPRINT (not raw vectors — peers only broadcast fingerprints),
+    /// then its phase is sine-damped toward that core's phase. **Phase-only** (vectors
+    /// untouched ⇒ recall is preserved). Safety: per-wavefront displacement is capped
+    /// at `max_disp` radians total (the anti-homogenization budget — coupling can
+    /// nudge a node toward consensus but can't drag its whole field into the peer).
+    /// Fingerprints + matches are computed ONCE (they're vector-derived, so stable
+    /// across the phase-only cycles). Returns the number of wavefronts moved.
+    pub fn couple_toward_peer_cores(
+        &mut self,
+        peer_cores: &[crate::l6::CoreObs],
+        cycles: usize,
+        strength: f32,
+        max_disp: f32,
+    ) -> usize {
+        let n = self.right.count();
+        if n == 0 || peer_cores.is_empty() {
+            return 0;
+        }
+        let dim = self.right.wavefronts.ncols();
+        // Compute each local wavefront's fingerprint + its nearest peer core ONCE.
+        // (Phase-only coupling never touches vectors, so these don't drift.)
+        let targets: Vec<Option<f32>> = (0..n)
+            .map(|i| {
+                let v: Vec<f32> = self.right.wavefronts.row(i).iter().copied().collect();
+                let _ = dim;
+                let fp = crate::l6::fingerprint(&v, 16);
+                crate::l6::nearest_core(&fp, peer_cores, None).map(|(j, _)| peer_cores[j].phase)
+            })
+            .collect();
+        let mut disp = vec![0.0f32; n];
+        let mut moved = vec![false; n];
+        for _ in 0..cycles.max(1) {
+            for i in 0..n {
+                let Some(target) = targets[i] else { continue };
+                if disp[i].abs() >= max_disp {
+                    continue; // displacement budget spent for this wavefront
+                }
+                let mut step = strength * (target - self.right.phase[i]).sin();
+                // Clamp the step so accumulated |disp| never exceeds the budget.
+                let room = max_disp - disp[i].abs();
+                if step.abs() > room {
+                    step = step.signum() * room;
+                }
+                self.right.phase[i] += step;
+                disp[i] += step;
+                moved[i] = true;
+            }
+        }
+        moved.iter().filter(|&&m| m).count()
     }
 
     /// ADR-0037 Phase 4: cross-hemisphere ring report. The cortical spiral wave
@@ -1818,5 +1876,74 @@ mod tests {
             "[expExemplar] exemplar order={:.3} | node order {:.3}->{:.3} | node<->exemplar phase-align {:.3}->{:.3}",
             ex.order, n0.order, n1.order, a0, a1
         );
+    }
+
+    // ADR-0037 Track-D: node↔node peer-core coupling. A node, fed a PEER's belief
+    // cores (fingerprints + phases), should converge its phases toward the matched
+    // cores WITHOUT any wavefront exceeding the displacement budget (anti-collapse).
+    #[test]
+    fn couple_toward_peer_cores_converges_within_budget() {
+        let pipeline = test_pipeline();
+        let topics: [[&str; 4]; 4] = [
+            ["the cat sat on the mat", "a cat napped in the sun", "kittens chase yarn balls", "the feline purred softly"],
+            ["the stock market fell sharply", "investors sold their equities", "the bond yield rose today", "the reserve raised interest rates"],
+            ["photosynthesis converts light", "chlorophyll absorbs photons", "green plants release oxygen", "leaves capture the sunlight"],
+            ["the rocket reached orbit", "the satellite deployed cleanly", "the booster stage separated", "mission control confirmed launch"],
+        ];
+        let build = |p: &EncodingPipeline| {
+            let mut cm = ChiralMedium::new();
+            for g in topics.iter() {
+                for s in g.iter() {
+                    cm.store(s, 0.8, p).unwrap();
+                }
+            }
+            cm
+        };
+        // Peer: a settled, re-phased world model with belief cores.
+        let mut peer = build(&pipeline);
+        peer.rephase_from_content();
+        let peer_cores = peer.belief_core_snapshot();
+
+        // Node: same content, collapsed (phase 0).
+        let mut node = build(&pipeline);
+        let n = node.right.count();
+        let before: Vec<f32> = (0..n).map(|i| node.right.phase[i]).collect();
+
+        // Mean cos(phase_i − matched_peer_core_phase): alignment toward the targets
+        // the coupling actually pulls toward (recomputes the primitive's matching).
+        let target_align = |node: &ChiralMedium| -> f32 {
+            if peer_cores.is_empty() {
+                return 0.0;
+            }
+            let n = node.right.count();
+            let mut s = 0.0f32;
+            for i in 0..n {
+                let v: Vec<f32> = node.right.wavefronts.row(i).iter().copied().collect();
+                let fp = crate::l6::fingerprint(&v, 16);
+                if let Some((j, _)) = crate::l6::nearest_core(&fp, &peer_cores, None) {
+                    s += (node.right.phase[i] - peer_cores[j].phase).cos();
+                }
+            }
+            s / n as f32
+        };
+
+        let max_disp = 1.5f32;
+        let a0 = target_align(&node);
+        let moved = node.couple_toward_peer_cores(&peer_cores, 40, 0.2, max_disp);
+        let a1 = target_align(&node);
+
+        if peer_cores.is_empty() {
+            // No cores detected on this synthetic field ⇒ coupling is a no-op.
+            assert_eq!(moved, 0);
+        } else {
+            assert!(moved > 0, "expected some wavefronts to couple toward peer cores");
+            assert!(a1 >= a0 - 1e-3, "coupling must not reduce alignment to peer cores ({a0} -> {a1})");
+            // Displacement budget: no wavefront moved more than max_disp.
+            for i in 0..n {
+                let d = (node.right.phase[i] - before[i]).abs();
+                assert!(d <= max_disp + 1e-3, "wavefront {i} moved {d} > budget {max_disp}");
+            }
+        }
+        eprintln!("[trackD] peer_cores={} moved={moved} target-align {a0:.3}->{a1:.3}", peer_cores.len());
     }
 }
