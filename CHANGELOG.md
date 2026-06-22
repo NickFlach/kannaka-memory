@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.7.10] — 2026-06-22
+
+### Fixed — hardening pass: 15 verified bug fixes (#439, #440)
+
+Autonomous bug-hunt across correctness, graph integrity, persistence durability,
+DoS, and recall quality. Full suite green; 7 new regression tests.
+
+- **Graph integrity**: resonance-merge now conserves connectivity — the carrier
+  inherits absorbed members' skip-links and inbound links are redirected onto it
+  (was: silently severed); `rebuild_cache` strips links to removed memories so
+  dangling targets can't accumulate in `*.links.json`.
+- **Persistence**: link + reactivation sidecars are written atomically
+  (temp+rename) — a torn write no longer wipes all history.
+- **Correctness**: `relate_wavefronts` no longer errors on phase-opposed pairs;
+  `phase_locked_pairs` uses cos (anti-phase no longer counts as locked); Cl₀,₇
+  geometric product applies the eᵢ²=−1 metric sign; Newman modularity edge-count
+  made consistent; cancelled clusters fall back to a non-zero `theme_vector`
+  (were unreachable by recall).
+- **Consolidation/ghosts**: `stage_compact_ghosts` never deletes a ghost in the
+  same cycle it was created; recall no longer renews a ghost's recovery window.
+- **Swarm**: peer `top_k` clamped (OOM guard); `merge_guard` de-dupes on the
+  source `sync_version` (no double-counted amplitude); `insert_remote` never
+  clobbers a locally-owned glyph; empty/tiny peer tags can't force pull-floods.
+- **Hallucinations**: dream-hallucinated wavefronts now get a default
+  `ChiralScale` so the scale map stays complete.
+
 ## [0.6.27] — 2026-06-14
 
 ### Added — hive formation + self-directed loop (ADR-0035 Wave 4 Tasks 4.2, 4.3)
