@@ -1126,6 +1126,9 @@ fn main() {
     // (and before the update-check thread spawns, so set_var is single-threaded).
     // Env still wins: only sets a var when unset.
     config::apply_belief_env_from_config(&cfg);
+    // num_clusters fix: bridge persisted [cluster].decone → KANNAKA_CLUSTER_DECONE
+    // (same single-threaded, env-wins contract as the belief bridge above).
+    config::apply_cluster_env_from_config(&cfg);
 
     // Non-blocking update check (background thread)
     config::check_for_updates_background(&cfg);
