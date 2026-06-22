@@ -34,6 +34,8 @@ pub struct KannakaConfig {
     pub belief: BeliefConfig,
     #[serde(default = "ClusterConfig::default")]
     pub cluster: ClusterConfig,
+    #[serde(default = "CouplingConfig::default")]
+    pub coupling: CouplingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +157,16 @@ pub struct BeliefConfig {
 pub struct ClusterConfig {
     #[serde(default)]
     pub decone: bool,
+}
+
+/// ADR-0037 Track-D: always-on heartbeat belief coupling. env KANNAKA_EXEMPLAR_
+/// COUPLING OVERRIDES this; `apply_coupling_env_from_config` bridges config→env at
+/// startup only when the env var is unset. Default off — the riskiest Track-D step;
+/// enable per-node, observer-first. Cadence/min_cos tune via the _TICKS/_MIN_COS env.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CouplingConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +304,7 @@ impl Default for KannakaConfig {
             triage: TriageConfig::default(),
             belief: BeliefConfig::default(),
             cluster: ClusterConfig::default(),
+            coupling: CouplingConfig::default(),
         }
     }
 }
@@ -445,6 +458,15 @@ pub fn apply_belief_env_from_config(cfg: &KannakaConfig) {
 pub fn apply_cluster_env_from_config(cfg: &KannakaConfig) {
     if std::env::var_os("KANNAKA_CLUSTER_DECONE").is_none() && cfg.cluster.decone {
         std::env::set_var("KANNAKA_CLUSTER_DECONE", "on");
+    }
+}
+
+/// ADR-0037 Track-D: bridge persisted `[coupling].enabled` → KANNAKA_EXEMPLAR_
+/// COUPLING (read by the swarm-join heartbeat). **Env wins** — only set when unset.
+/// Call once at startup (single-threaded, before workers spawn).
+pub fn apply_coupling_env_from_config(cfg: &KannakaConfig) {
+    if std::env::var_os("KANNAKA_EXEMPLAR_COUPLING").is_none() && cfg.coupling.enabled {
+        std::env::set_var("KANNAKA_EXEMPLAR_COUPLING", "on");
     }
 }
 

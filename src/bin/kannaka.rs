@@ -1146,6 +1146,8 @@ fn main() {
     // num_clusters fix: bridge persisted [cluster].decone → KANNAKA_CLUSTER_DECONE
     // (same single-threaded, env-wins contract as the belief bridge above).
     config::apply_cluster_env_from_config(&cfg);
+    // Track-D: bridge persisted [coupling].enabled → KANNAKA_EXEMPLAR_COUPLING.
+    config::apply_coupling_env_from_config(&cfg);
 
     // Non-blocking update check (background thread)
     config::check_for_updates_background(&cfg);
