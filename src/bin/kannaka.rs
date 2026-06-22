@@ -691,6 +691,23 @@ fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
     }
 }
 
+/// ADR-0037 Track-D: always-on belief-coupling toggle. When on, `swarm join`'s
+/// heartbeat periodically publishes this node's belief cores AND couples its phases
+/// toward peers' — so swarm agents drift toward shared beliefs without a manual
+/// `belief couple`. Default OFF — the riskiest Track-D step (continuous live-HRM
+/// mutation), enable per-node observer-first. Phase-only (recall preserved),
+/// min_cos-gated + displacement-capped (unique beliefs stay distinct; shared ones
+/// converge to consensus and then stop, since sin(target−phase)→0 at agreement).
+#[cfg(feature = "nats")]
+fn exemplar_coupling_enabled() -> bool {
+    std::env::var("KANNAKA_EXEMPLAR_COUPLING")
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
 /// Cheap pre-clap check: is `verb` one of the built-in subcommand
 /// names? Used to skip the clap layer on the hot path (built-in
 /// invocations don't pay for clap parsing). Mirrors the subcommand set
@@ -1129,6 +1146,8 @@ fn main() {
     // num_clusters fix: bridge persisted [cluster].decone → KANNAKA_CLUSTER_DECONE
     // (same single-threaded, env-wins contract as the belief bridge above).
     config::apply_cluster_env_from_config(&cfg);
+    // Track-D: bridge persisted [coupling].enabled → KANNAKA_EXEMPLAR_COUPLING.
+    config::apply_coupling_env_from_config(&cfg);
 
     // Non-blocking update check (background thread)
     config::check_for_updates_background(&cfg);
@@ -3801,6 +3820,42 @@ fn main() {
                     sys.publish_consciousness_to_nats(&initial_assess);
                     const CONSCIOUSNESS_REFRESH_TICKS: u64 = 10;
 
+                    // ADR-0037 Track-D heartbeat coupling (default OFF). Conservative,
+                    // env-tunable cadence + gate. NB: a coupling tick is SYNCHRONOUS in
+                    // this single-threaded loop — belief_core_snapshot (a dense-Gram PCA)
+                    // + couple + save can block the phase beacon for several seconds on a
+                    // large field / 1-core box, so the cadence is slow by default (40
+                    // ticks ≈ 20 min @ 30s). min_cos is HIGH (0.7, well above the ~0.54
+                    // median match scale) so it under-couples — only strongly-shared
+                    // beliefs. The per-event nudge is gentle; max_disp caps drift PER
+                    // EVENT, not cumulatively, so over many events a node's SHARED-content
+                    // phases converge toward swarm consensus (intended) while unmatched/
+                    // unique beliefs stay put (min_cos gate) and recall is untouched
+                    // (phase-only ⇒ recall = cosine×energy is phase-independent). Coupling
+                    // is SKIPPED on a read-only node (it could never persist and would
+                    // only pollute the reader's published beacon/metrics). ⚠ A coupling
+                    // node holds the writer lock continuously: any prune/triage cron on
+                    // the same node MUST stop the writer first (like dream-cron) or its
+                    // lockless save can lost-update the coupled state — see the PR notes.
+                    let coupling_on = exemplar_coupling_enabled() && !readonly_env_active();
+                    if exemplar_coupling_enabled() && readonly_env_active() {
+                        println!("[couple] KANNAKA_EXEMPLAR_COUPLING set but node is read-only — coupling SKIPPED (a reader can't persist).");
+                    }
+                    let coupling_ticks = std::env::var("KANNAKA_EXEMPLAR_COUPLING_TICKS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|&n| n > 0)
+                        .unwrap_or(40);
+                    let coupling_min_cos = std::env::var("KANNAKA_EXEMPLAR_COUPLING_MIN_COS")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(0.7);
+                    if coupling_on {
+                        println!(
+                            "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2} (phase-only; a coupling tick briefly blocks the beacon; needs belief on)"
+                        );
+                    }
+
                     let mut tick: u64 = 0;
                     while running.load(Ordering::SeqCst) {
                         // Granular sleep so Ctrl+C is responsive (<= 1s).
@@ -3835,6 +3890,101 @@ fn main() {
                         if tick % CONSCIOUSNESS_REFRESH_TICKS == 0 {
                             let state = sys.assess();
                             sys.publish_consciousness_to_nats(&state);
+                        }
+
+                        // ADR-0037 Track-D: always-on belief coupling (default OFF).
+                        // On a slow cadence: (1) publish our belief cores so peers can
+                        // converge toward us, (2) couple our phases toward peers' shared
+                        // beliefs. Phase-only ⇒ recall preserved; the heartbeat's own
+                        // flush (in swarm_publish_heartbeat above) persists the result.
+                        // Requires a re-phased belief field; skips on no peers / errors.
+                        if running.load(Ordering::SeqCst)
+                            && coupling_on
+                            && tick % coupling_ticks == 0
+                            && kannaka_memory::medium::chiral::belief_phase_enabled()
+                        {
+                            // (1) publish our (fresh) cores.
+                            if let Some(h) = sys
+                                .engine
+                                .store
+                                .as_any()
+                                .downcast_ref::<kannaka_memory::hrm_store::HrmStore>()
+                            {
+                                let own = h.belief_core_snapshot();
+                                if !own.is_empty() {
+                                    let _ = transport.ensure_cores_stream();
+                                    let payload = serde_json::json!({
+                                        "agent_id": my_agent_id,
+                                        "core_count": own.len(),
+                                        "cores": own,
+                                        "created_at": chrono::Utc::now().to_rfc3339(),
+                                    });
+                                    let _ = transport.publish_cores(&my_agent_id, &payload);
+                                }
+                            }
+                            // (2) fetch peers' cores + couple toward them.
+                            match transport.get_peer_cores(None) {
+                                Ok(payloads) => {
+                                    let mut peer_cores: Vec<kannaka_memory::l6::CoreObs> = Vec::new();
+                                    let mut sources = 0usize;
+                                    for p in &payloads {
+                                        if p.get("agent_id").and_then(|v| v.as_str())
+                                            == Some(my_agent_id.as_str())
+                                        {
+                                            continue; // never couple toward self
+                                        }
+                                        if let Some(cs) = p.get("cores").and_then(|c| {
+                                            serde_json::from_value::<Vec<kannaka_memory::l6::CoreObs>>(
+                                                c.clone(),
+                                            )
+                                            .ok()
+                                        }) {
+                                            let valid: Vec<_> =
+                                                cs.into_iter().filter(|c| c.fp.len() == 16).collect();
+                                            if !valid.is_empty() {
+                                                sources += 1;
+                                                peer_cores.extend(valid);
+                                            }
+                                        }
+                                    }
+                                    peer_cores.truncate(1024); // bound O(n×cores) on the 1-core box
+                                    if !peer_cores.is_empty() {
+                                        // Gentle per-event nudge: small strength/cycles + a
+                                        // tight displacement budget so consensus accrues
+                                        // gradually across heartbeats, never in one jump.
+                                        let (moved, saved_ok) = sys
+                                            .engine
+                                            .store
+                                            .as_any_mut()
+                                            .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                                            .map(|h| {
+                                                h.couple_belief(
+                                                    &peer_cores,
+                                                    5,
+                                                    0.05,
+                                                    0.2,
+                                                    coupling_min_cos,
+                                                )
+                                            })
+                                            .unwrap_or((0, true));
+                                        if moved > 0 && !saved_ok {
+                                            // Don't report success on a failed persist; the
+                                            // next heartbeat flush re-attempts the save.
+                                            eprintln!(
+                                                "[couple] tick #{tick}: nudged {moved} wavefronts but SAVE FAILED — on-disk .hrm unchanged (retries next flush)"
+                                            );
+                                        } else if moved > 0 {
+                                            println!(
+                                                "[couple] tick #{tick}: nudged {moved} wavefronts toward {} cores from {sources} peer(s)",
+                                                peer_cores.len()
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[couple] tick #{tick}: peer cores fetch failed: {e}");
+                                }
+                            }
                         }
                     }
 
