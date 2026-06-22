@@ -9,6 +9,24 @@ use uuid::Uuid;
 use super::Medium;
 use super::types::*;
 
+/// Blake3 hash of `content` packed into a u64 (first 8 bytes, little-endian).
+/// Used to match wavefronts across agents without sharing full content.
+fn content_hash(content: &str) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(content.as_bytes());
+    let hash_bytes = hasher.finalize();
+    u64::from_le_bytes([
+        hash_bytes.as_bytes()[0],
+        hash_bytes.as_bytes()[1],
+        hash_bytes.as_bytes()[2],
+        hash_bytes.as_bytes()[3],
+        hash_bytes.as_bytes()[4],
+        hash_bytes.as_bytes()[5],
+        hash_bytes.as_bytes()[6],
+        hash_bytes.as_bytes()[7],
+    ])
+}
+
 impl Medium {
     /// Kuramoto coupling between two agent media
     ///
@@ -82,22 +100,7 @@ impl Medium {
         let content_hashes = self
             .store.metadata
             .iter()
-            .map(|meta| {
-                let mut hasher = blake3::Hasher::new();
-                hasher.update(meta.content.as_bytes());
-                let hash_bytes = hasher.finalize();
-                // Convert first 8 bytes to u64
-                u64::from_le_bytes([
-                    hash_bytes.as_bytes()[0],
-                    hash_bytes.as_bytes()[1],
-                    hash_bytes.as_bytes()[2],
-                    hash_bytes.as_bytes()[3],
-                    hash_bytes.as_bytes()[4],
-                    hash_bytes.as_bytes()[5],
-                    hash_bytes.as_bytes()[6],
-                    hash_bytes.as_bytes()[7],
-                ])
-            })
+            .map(|meta| content_hash(&meta.content))
             .collect();
 
         PhaseState {
@@ -125,20 +128,7 @@ impl Medium {
         // Build hash lookup for our content
         let mut our_hash_to_index = HashMap::new();
         for (i, meta) in self.store.metadata.iter().enumerate() {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(meta.content.as_bytes());
-            let hash_bytes = hasher.finalize();
-            let hash = u64::from_le_bytes([
-                hash_bytes.as_bytes()[0],
-                hash_bytes.as_bytes()[1],
-                hash_bytes.as_bytes()[2],
-                hash_bytes.as_bytes()[3],
-                hash_bytes.as_bytes()[4],
-                hash_bytes.as_bytes()[5],
-                hash_bytes.as_bytes()[6],
-                hash_bytes.as_bytes()[7],
-            ]);
-            our_hash_to_index.insert(hash, i);
+            our_hash_to_index.insert(content_hash(&meta.content), i);
         }
 
         // Apply coupling for matched content
