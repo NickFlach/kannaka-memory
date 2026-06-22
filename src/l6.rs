@@ -17,13 +17,19 @@ use serde::{Deserialize, Serialize};
 
 /// One spiral core observed in a single dream. `fp` is the frame-invariant
 /// content fingerprint (see `fingerprint`); `(x, y)` is the per-dream 2-D
-/// position (only meaningful within that dream's embedding).
+/// position (only meaningful within that dream's embedding); `phase` is the
+/// core's holistic phase at its anchor (the value a peer node couples toward in
+/// Track-D — see `ChiralMedium::couple_toward_peer_cores`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreObs {
     pub x: f32,
     pub y: f32,
     pub charge: i32,
     pub fp: Vec<f32>,
+    /// Holistic phase at the core anchor (radians). `#[serde(default)]` so
+    /// pre-Track-D `l6-cores.jsonl` snapshots (no phase field) still parse.
+    #[serde(default)]
+    pub phase: f32,
 }
 
 /// Deterministic random projection of a content `vector` to `dims` (a compact,
@@ -66,6 +72,40 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Index + cosine of the core in `cores` whose fingerprint best matches `fp`.
+/// If `charge` is `Some(q)`, only cores of charge `q` are considered. Returns
+/// `None` when no eligible core exists. Used by Track-D peer-core coupling +
+/// the cross-node shared-core metric.
+pub fn nearest_core(fp: &[f32], cores: &[CoreObs], charge: Option<i32>) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (j, c) in cores.iter().enumerate() {
+        if let Some(q) = charge {
+            if c.charge != q {
+                continue;
+            }
+        }
+        let s = cosine(fp, &c.fp);
+        if best.map(|(_, bs)| s > bs).unwrap_or(true) {
+            best = Some((j, s));
+        }
+    }
+    best
+}
+
+/// Count how many `own` cores have a same-charge `peer` core within fingerprint
+/// cosine ≥ `min_cos` — the cross-node "shared beliefs" tally (Track-D's
+/// falsifiable "shared cores ⇒ swarm agreement" measurement). Asymmetric: it
+/// counts own cores that are mirrored by the peer.
+pub fn shared_cores(own: &[CoreObs], peer: &[CoreObs], min_cos: f32) -> usize {
+    own.iter()
+        .filter(|c| {
+            nearest_core(&c.fp, peer, Some(c.charge))
+                .map(|(_, s)| s >= min_cos)
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 /// A core followed across dreams: same charge + fingerprint-matched neighbours.
@@ -175,7 +215,7 @@ mod tests {
     use super::*;
 
     fn obs(charge: i32, fp: Vec<f32>) -> CoreObs {
-        CoreObs { x: 0.0, y: 0.0, charge, fp }
+        CoreObs { x: 0.0, y: 0.0, charge, fp, phase: 0.0 }
     }
 
     #[test]
@@ -226,5 +266,32 @@ mod tests {
         // Same fingerprint but opposite charge ⇒ two distinct tracks, not one.
         assert_eq!(tracks.len(), 2);
         assert!(tracks.iter().all(|t| t.appearances == 1));
+    }
+
+    // ── Track-D cross-node matching ──────────────────────────────────────
+    #[test]
+    fn nearest_core_respects_charge_and_picks_best() {
+        let a = fingerprint(&[1.0, 0.0, 0.0, 0.2], 16);
+        let a2 = fingerprint(&[1.0, 0.03, 0.0, 0.21], 16); // ~a
+        let b = fingerprint(&[0.0, 1.0, -0.5, 0.0], 16); // different
+        let cores = vec![obs(1, b.clone()), obs(1, a2.clone()), obs(-1, a.clone())];
+        // Best +1 match for `a` is index 1 (a2), not the -1 core (excluded by charge).
+        let (j, s) = nearest_core(&a, &cores, Some(1)).unwrap();
+        assert_eq!(j, 1);
+        assert!(s > 0.9);
+        // No +1 core at all ⇒ None.
+        assert!(nearest_core(&a, &[obs(-1, a.clone())], Some(1)).is_none());
+    }
+
+    #[test]
+    fn shared_cores_counts_mirrored_beliefs() {
+        let shared = fingerprint(&[1.0, 0.2, -0.3, 0.4], 16);
+        let mine_only = fingerprint(&[-0.7, 0.1, 0.9, 0.0], 16);
+        let own = vec![obs(1, shared.clone()), obs(1, mine_only.clone())];
+        let peer = vec![obs(1, shared.clone()), obs(-1, fingerprint(&[0.0, 0.0, 1.0, 1.0], 16))];
+        // Only the shared +1 belief is mirrored by the peer.
+        assert_eq!(shared_cores(&own, &peer, 0.85), 1);
+        // A peer with no overlap shares nothing.
+        assert_eq!(shared_cores(&own, &[obs(1, fingerprint(&[0.0, -1.0, 0.0, 0.5], 16))], 0.85), 0);
     }
 }
