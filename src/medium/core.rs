@@ -635,9 +635,18 @@ impl Medium {
                 *x /= norm;
             }
         } else {
-            // Degenerate case - use average instead
-            for (a, b) in vec_a.iter().zip(vec_b.iter()) {
-                associative_vector.push((a + b) * 0.5);
+            // Degenerate case: vec_a ≈ -vec_b, so their sum — and its 0.5
+            // average, which is collinear with the sum — is ~0 and has no
+            // meaningful direction to normalize. Fall back to vec_a's
+            // direction as the association anchor.
+            //
+            // NOTE: the previous code *pushed* a second DIM-length run onto
+            // the already-full `associative_vector`, producing a 2×DIM vector
+            // that `add_wavefront` then rejected with DimensionMismatch — so
+            // relating two phase-opposed wavefronts always errored instead of
+            // forming an association. Overwrite in place to keep length == DIM.
+            for (slot, a) in associative_vector.iter_mut().zip(vec_a.iter()) {
+                *slot = *a;
             }
         }
 

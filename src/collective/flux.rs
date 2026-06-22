@@ -334,11 +334,19 @@ pub fn evaluate_pull(signal: &RemoteMemorySignal, trust_score: f32, current_focu
     if let Some(focus) = current_focus {
         let focus_lower = focus.to_lowercase();
         let summary_lower = signal.summary.to_lowercase();
-        let relevant = signal.tags.iter().any(|t| {
-            let tag_lower = t.to_lowercase();
-            // Match if tag contains focus term OR focus contains tag
-            tag_lower.contains(&focus_lower) || focus_lower.contains(&tag_lower)
-        }) || summary_lower.contains(&focus_lower);
+        // An empty focus would make every `contains()` below vacuously true —
+        // treat it as "no focus" rather than "matches everything".
+        let relevant = !focus_lower.is_empty()
+            && (signal.tags.iter().any(|t| {
+                let tag_lower = t.to_lowercase();
+                // Require a meaningful (>= 3 char) tag before bidirectional
+                // substring matching. An empty or 1-char peer-supplied tag
+                // makes `focus.contains(tag)` vacuously true, which would force
+                // topical relevance for any signal above the amplitude gate —
+                // a pull-flood vector a peer could trigger with a `""` tag.
+                tag_lower.len() >= 3
+                    && (tag_lower.contains(&focus_lower) || focus_lower.contains(&tag_lower))
+            }) || summary_lower.contains(&focus_lower));
         if relevant && signal.amplitude > 0.4 {
             return PullDecision::Pull;
         }
@@ -660,5 +668,28 @@ mod tests {
             branch: "arc/working".to_string(),
         };
         assert_eq!(evaluate_pull(&signal, 0.7, Some("collective memory")), PullDecision::Pull);
+    }
+
+    #[test]
+    fn pull_decision_ignores_empty_and_tiny_tags() {
+        // A peer must not be able to force a Pull with an empty or 1-char tag
+        // (the vacuous-substring pull-flood vector). Amplitude is above the
+        // topical gate (0.4) but below the trusted-always gate, and the focus
+        // does not appear in the summary, so the only path to Pull is a tag
+        // match — which an empty/tiny tag must NOT provide.
+        let signal = RemoteMemorySignal {
+            agent_id: "spammer".to_string(),
+            memory_id: Uuid::new_v4().to_string(),
+            amplitude: 0.5,
+            category: "knowledge".to_string(),
+            tags: vec!["".to_string(), "x".to_string()],
+            summary: "unrelated content".to_string(),
+            branch: "spammer/working".to_string(),
+        };
+        assert_ne!(
+            evaluate_pull(&signal, 0.6, Some("quantum entanglement")),
+            PullDecision::Pull,
+            "empty/1-char tags must not force topical relevance"
+        );
     }
 }

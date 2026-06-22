@@ -1116,7 +1116,13 @@ impl ChiralMedium {
         // Count paired wavefronts
         let paired = self.left_to_right.len();
 
-        // Count phase-locked pairs (|sin(Δφ)| < 0.1)
+        // Count phase-locked pairs: Δφ aligned to within ~0.1 rad.
+        //
+        // Must test cos(Δφ) > cos(0.1) ≈ 0.995, NOT |sin(Δφ)| < 0.1 — the
+        // latter is also satisfied near Δφ ≈ π (sin(π) = 0), so a perfectly
+        // ANTI-phased pair (the opposite of locked) was being counted as
+        // locked, over-reporting hemispheric coherence. cos disambiguates:
+        // it is near +1 only when the phases are genuinely aligned.
         let locked = self.left_to_right.iter()
             .filter(|(lid, rid)| {
                 let lp = self.left.id_to_index.get(lid)
@@ -1124,7 +1130,7 @@ impl ChiralMedium {
                 let rp = self.right.id_to_index.get(rid)
                     .map(|&i| self.right.phase[i]);
                 match (lp, rp) {
-                    (Some(l), Some(r)) => (r - l).sin().abs() < 0.1,
+                    (Some(l), Some(r)) => (r - l).cos() > 0.995,
                     _ => false,
                 }
             })

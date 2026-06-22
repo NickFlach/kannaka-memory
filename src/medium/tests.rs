@@ -21,6 +21,37 @@ fn new_medium_is_empty() {
 }
 
 #[test]
+fn relate_phase_opposed_wavefronts_does_not_error() {
+    // Regression: when two wavefronts are near-exact negatives, their sum is
+    // ~0 and cannot be normalized into a direction. The degenerate branch must
+    // still produce a valid DIM-length associative wavefront and succeed.
+    // Previously it *pushed* a second DIM-length run onto the already-full
+    // buffer, yielding a 2×DIM vector that add_wavefront rejected with
+    // DimensionMismatch — so relating any phase-opposed pair always errored.
+    let mut medium = Medium::new();
+    let mut v = vec![0.0f32; WAVEFRONT_DIM];
+    v[0] = 1.0;
+    v[1] = -0.5;
+    v[2] = 0.3;
+    let neg: Vec<f32> = v.iter().map(|x| -x).collect();
+    medium.add_wavefront(&v, "pos".to_string(), 1.0).unwrap();
+    medium.add_wavefront(&neg, "neg".to_string(), 1.0).unwrap();
+    let before = medium.wavefront_count();
+
+    let res = medium.relate_wavefronts(0, 1);
+    assert!(
+        res.is_ok(),
+        "relating phase-opposed wavefronts must not error: {:?}",
+        res.err()
+    );
+    assert_eq!(
+        medium.wavefront_count(),
+        before + 1,
+        "the association wavefront must be added"
+    );
+}
+
+#[test]
 fn spiral_field_2d_separates_clusters_and_reports() {
     // ADR-0037 Phase 4b: the PCA embedding must place two orthogonal wavefront
     // clusters apart in the 2-D field, and the cloud report must run clean.

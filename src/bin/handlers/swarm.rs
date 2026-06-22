@@ -178,7 +178,13 @@ pub(crate) fn handle_swarm_serve(
                     let reply_to = msg.reply_to.clone();
                     let req: serde_json::Value = serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
                     let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+                    // Clamp peer-supplied top_k: it comes straight off the NATS
+                    // wire and drives recall + result-Vec allocation + per-result
+                    // store.get + JSON serialization. An unbounded value (e.g.
+                    // {"top_k": 4_000_000_000}) is an OOM/DoS vector on the
+                    // 1-core/6GB hub. The sibling `cores` handler caps peer input
+                    // the same way (truncate(1024)).
+                    let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8).min(100) as usize;
                     if let (false, Some(reply)) = (query.is_empty(), reply_to) {
                         let beam = kannaka_memory::agent::attention_beam_for_prompt(
                             sys, &query, kannaka_memory::agent::DEFAULT_ATTENTION_BEAM);

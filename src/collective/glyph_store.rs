@@ -165,6 +165,14 @@ impl GlyphStore {
     /// Insert a remote glyph (no openings — received from another agent).
     pub fn insert_remote(&mut self, glyph: PrivacyGlyph) {
         let hash = glyph.glyph_hash.clone();
+        // Never downgrade a glyph we OWN. If we already hold this hash with
+        // openings, a remote copy (openings: None) must not overwrite it —
+        // otherwise we lose the ability to open/prove our own memory, and a
+        // peer could poison local state simply by broadcasting a glyph whose
+        // hash collides with one of ours. A locally-owned entry wins.
+        if matches!(self.glyphs.get(&hash), Some(g) if g.openings.is_some()) {
+            return;
+        }
         self.glyphs.insert(hash, StoredGlyph {
             glyph,
             openings: None,
@@ -404,6 +412,26 @@ mod tests {
 
         let stored = store.get(&hash).unwrap();
         assert!(stored.openings.is_none()); // Remote — no openings
+    }
+
+    #[test]
+    fn test_insert_remote_does_not_clobber_owned() {
+        // A remote copy of a glyph we OWN must not wipe our openings — that
+        // would destroy our ability to open/prove our own memory and is a
+        // peer-poisoning vector.
+        let mut store = GlyphStore::new();
+        let owned = make_seal_result("my memory", 8, "me");
+        let hash = owned.glyph.glyph_hash.clone();
+        let remote_copy = owned.glyph.clone();
+        store.insert(owned); // we own it (openings: Some)
+
+        store.insert_remote(remote_copy); // peer echoes the same hash back
+
+        let stored = store.get(&hash).unwrap();
+        assert!(
+            stored.openings.is_some(),
+            "owned glyph openings must survive a remote insert of the same hash"
+        );
     }
 
     #[test]

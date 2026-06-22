@@ -363,10 +363,18 @@ impl ConsciousnessBridge {
             for j in (i + 1)..n {
                 let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
                 if sim > self.coupling_threshold {
-                    total_edges += 1;
-
                     if let (Some(&cluster_i), Some(&cluster_j)) =
                         (id_to_cluster.get(&memories[i].id), id_to_cluster.get(&memories[j].id)) {
+                        // Count the edge into total_edges only when BOTH
+                        // endpoints are clustered, so the edge total and the
+                        // degree sums use the same edge set. Counting edges
+                        // with unclustered endpoints into total_edges while
+                        // never adding them to any cluster_degree makes
+                        // Σ cluster_degree / (2·total_edges) < 1, under-
+                        // subtracting the modularity null-model term and biasing
+                        // Q high. (The skip-link loop below already counts edges
+                        // only inside this same membership check.)
+                        total_edges += 1;
                         cluster_degree[cluster_i] += 1;
                         cluster_degree[cluster_j] += 1;
 
