@@ -3819,23 +3819,38 @@ fn main() {
                     const CONSCIOUSNESS_REFRESH_TICKS: u64 = 10;
 
                     // ADR-0037 Track-D heartbeat coupling (default OFF). Conservative,
-                    // env-tunable cadence + gate: slow (so it doesn't thrash the .hrm /
-                    // 1-core box) and a HIGH min_cos so it under-couples by default
-                    // (couple only strongly-shared beliefs). Gentle per-event nudge
-                    // (strength/cycles/max_disp below) so consensus builds gradually.
-                    let coupling_on = exemplar_coupling_enabled();
+                    // env-tunable cadence + gate. NB: a coupling tick is SYNCHRONOUS in
+                    // this single-threaded loop — belief_core_snapshot (a dense-Gram PCA)
+                    // + couple + save can block the phase beacon for several seconds on a
+                    // large field / 1-core box, so the cadence is slow by default (40
+                    // ticks ≈ 20 min @ 30s). min_cos is HIGH (0.7, well above the ~0.54
+                    // median match scale) so it under-couples — only strongly-shared
+                    // beliefs. The per-event nudge is gentle; max_disp caps drift PER
+                    // EVENT, not cumulatively, so over many events a node's SHARED-content
+                    // phases converge toward swarm consensus (intended) while unmatched/
+                    // unique beliefs stay put (min_cos gate) and recall is untouched
+                    // (phase-only ⇒ recall = cosine×energy is phase-independent). Coupling
+                    // is SKIPPED on a read-only node (it could never persist and would
+                    // only pollute the reader's published beacon/metrics). ⚠ A coupling
+                    // node holds the writer lock continuously: any prune/triage cron on
+                    // the same node MUST stop the writer first (like dream-cron) or its
+                    // lockless save can lost-update the coupled state — see the PR notes.
+                    let coupling_on = exemplar_coupling_enabled() && !readonly_env_active();
+                    if exemplar_coupling_enabled() && readonly_env_active() {
+                        println!("[couple] KANNAKA_EXEMPLAR_COUPLING set but node is read-only — coupling SKIPPED (a reader can't persist).");
+                    }
                     let coupling_ticks = std::env::var("KANNAKA_EXEMPLAR_COUPLING_TICKS")
                         .ok()
                         .and_then(|v| v.parse::<u64>().ok())
                         .filter(|&n| n > 0)
-                        .unwrap_or(20);
+                        .unwrap_or(40);
                     let coupling_min_cos = std::env::var("KANNAKA_EXEMPLAR_COUPLING_MIN_COS")
                         .ok()
                         .and_then(|v| v.parse::<f32>().ok())
                         .unwrap_or(0.7);
                     if coupling_on {
                         println!(
-                            "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2} (phase-only, displacement-capped; needs belief on)"
+                            "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2} (phase-only; a coupling tick briefly blocks the beacon; needs belief on)"
                         );
                     }
 
@@ -3881,7 +3896,8 @@ fn main() {
                         // beliefs. Phase-only ⇒ recall preserved; the heartbeat's own
                         // flush (in swarm_publish_heartbeat above) persists the result.
                         // Requires a re-phased belief field; skips on no peers / errors.
-                        if coupling_on
+                        if running.load(Ordering::SeqCst)
+                            && coupling_on
                             && tick % coupling_ticks == 0
                             && kannaka_memory::medium::chiral::belief_phase_enabled()
                         {
@@ -3934,7 +3950,7 @@ fn main() {
                                         // Gentle per-event nudge: small strength/cycles + a
                                         // tight displacement budget so consensus accrues
                                         // gradually across heartbeats, never in one jump.
-                                        let moved = sys
+                                        let (moved, saved_ok) = sys
                                             .engine
                                             .store
                                             .as_any_mut()
@@ -3948,9 +3964,14 @@ fn main() {
                                                     coupling_min_cos,
                                                 )
                                             })
-                                            .map(|(m, _)| m)
-                                            .unwrap_or(0);
-                                        if moved > 0 {
+                                            .unwrap_or((0, true));
+                                        if moved > 0 && !saved_ok {
+                                            // Don't report success on a failed persist; the
+                                            // next heartbeat flush re-attempts the save.
+                                            eprintln!(
+                                                "[couple] tick #{tick}: nudged {moved} wavefronts but SAVE FAILED — on-disk .hrm unchanged (retries next flush)"
+                                            );
+                                        } else if moved > 0 {
                                             println!(
                                                 "[couple] tick #{tick}: nudged {moved} wavefronts toward {} cores from {sources} peer(s)",
                                                 peer_cores.len()
