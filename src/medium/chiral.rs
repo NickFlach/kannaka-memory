@@ -1862,6 +1862,177 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "probe: KANNAKA_PROBE_HRM=<path.hrm> cargo test --lib probe_cluster_centering_live_hrm -- --ignored --nocapture"]
+    fn probe_cluster_centering_live_hrm() {
+        // READ-ONLY. num_clusters=1 comes from the anisotropic cone: the cluster
+        // graph links any pair with cosine > 0.75, but the field's mean pairwise
+        // cosine is ~0.8, so ~every pair links into ONE component. Mean-centering
+        // removes the cone (centered cosine ~0.2) but needs a LOWER threshold. This
+        // counts connected components at several thresholds, RAW vs CENTERED, to pick
+        // the threshold from real data. Never saves.
+        let path = match std::env::var("KANNAKA_PROBE_HRM") {
+            Ok(p) => p,
+            Err(_) => { eprintln!("[probe] set KANNAKA_PROBE_HRM=<path to .hrm>"); return; }
+        };
+        let cm = match ChiralMedium::load(&path) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("[probe] load failed: {e}"); return; }
+        };
+        let n = cm.right.count();
+        let dim = cm.right.wavefronts.ncols();
+        eprintln!("[probe] loaded n={n} dim={dim}");
+        if n < 2 { return; }
+        // Corpus mean over the right hemisphere (the clustering vectors live here).
+        let mut mean = vec![0.0f32; dim];
+        for i in 0..n {
+            for (m, &v) in mean.iter_mut().zip(cm.right.wavefronts.row(i).iter()) { *m += v; }
+        }
+        for m in mean.iter_mut() { *m /= n as f32; }
+        let zero = vec![0.0f32; dim];
+        let cosc = |i: usize, j: usize, ctr: &[f32]| -> f32 {
+            let (a, b) = (cm.right.wavefronts.row(i), cm.right.wavefronts.row(j));
+            let (mut d, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+            for ((x, y), m) in a.iter().zip(b.iter()).zip(ctr.iter()) {
+                let (xc, yc) = (x - m, y - m); d += xc * yc; na += xc * xc; nb += yc * yc;
+            }
+            if na <= 0.0 || nb <= 0.0 { 0.0 } else { d / (na.sqrt() * nb.sqrt()) }
+        };
+        // Precompute pairwise cosines once (raw + centered), then sweep thresholds.
+        let idx = |i: usize, j: usize| i * n + j;
+        let mut rmat = vec![0.0f32; n * n];
+        let mut cmat = vec![0.0f32; n * n];
+        let (mut rs, mut cs, mut np) = (0.0f32, 0.0f32, 0u32);
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let r = cosc(i, j, &zero);
+                let c = cosc(i, j, &mean);
+                rmat[idx(i, j)] = r;
+                cmat[idx(i, j)] = c;
+                rs += r; cs += c; np += 1;
+            }
+        }
+        eprintln!("[probe] mean pairwise cosine raw={:.3} centered={:.3} ({} pairs)",
+            rs / np.max(1) as f32, cs / np.max(1) as f32, np);
+        // (components, #components with >=3 members, largest component size)
+        let comps = |mat: &[f32], thr: f32| -> (usize, usize, usize) {
+            let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    if mat[idx(i, j)] > thr { adj[i].push(j); adj[j].push(i); }
+                }
+            }
+            let mut seen = vec![false; n];
+            let mut sizes = vec![];
+            for s in 0..n {
+                if seen[s] { continue; }
+                let mut st = vec![s];
+                seen[s] = true;
+                let mut sz = 0usize;
+                while let Some(u) = st.pop() {
+                    sz += 1;
+                    for &v in &adj[u] { if !seen[v] { seen[v] = true; st.push(v); } }
+                }
+                sizes.push(sz);
+            }
+            let largest = *sizes.iter().max().unwrap_or(&0);
+            (sizes.len(), sizes.iter().filter(|&&s| s >= 3).count(), largest)
+        };
+        let (t, b, l) = comps(&rmat, 0.75);
+        eprintln!("[probe] RAW @0.75 (current behavior): components={t} (>=3 members:{b}) largest={l}/{n}");
+        eprintln!("[probe] CENTERED sweep (components / >=3-member / largest):");
+        for thr in [0.20f32, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50] {
+            let (t, b, l) = comps(&cmat, thr);
+            eprintln!("  thr={thr:.2}: comps={t} (>=3:{b}) largest={l}/{n}");
+        }
+
+        // ── Why does the blob survive centering? Either ONE dominant residual
+        // direction (→ whitening/PC-removal fixes it) or genuinely dense variance
+        // (→ the content is homogeneous, 1 cluster is content-correct). Decide via
+        // the top eigenvalues of the centered Gram + connectivity after projecting
+        // out the top principal component(s).
+        let cvec: Vec<Vec<f32>> = (0..n)
+            .map(|i| cm.right.wavefronts.row(i).iter().zip(mean.iter()).map(|(&x, &m)| x - m).collect())
+            .collect();
+        let mut g = vec![0.0f32; n * n];
+        let mut trace = 0.0f32;
+        for i in 0..n {
+            for j in i..n {
+                let d: f32 = cvec[i].iter().zip(cvec[j].iter()).map(|(a, b)| a * b).sum();
+                g[idx(i, j)] = d;
+                g[j * n + i] = d;
+                if i == j { trace += d; }
+            }
+        }
+        let matvec = |m: &[f32], u: &[f32]| -> Vec<f32> {
+            (0..n).map(|i| (0..n).map(|j| m[i * n + j] * u[j]).sum()).collect()
+        };
+        let mut gd = g.clone();
+        let mut feat_dirs: Vec<Vec<f32>> = vec![]; // top principal directions in feature space (unit)
+        for k in 0..3 {
+            let mut u = vec![1.0f32 / (n as f32).sqrt(); n];
+            let mut lam = 0.0f32;
+            for _ in 0..80 {
+                let mut w = matvec(&gd, &u);
+                let norm = w.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm <= 0.0 { break; }
+                for x in w.iter_mut() { *x /= norm; }
+                lam = norm;
+                u = w;
+            }
+            eprintln!("[probe] PC{}: explains {:.1}% of centered variance", k + 1, lam / trace.max(1e-9) * 100.0);
+            let mut v = vec![0.0f32; dim];
+            for i in 0..n {
+                for (vd, &c) in v.iter_mut().zip(cvec[i].iter()) { *vd += u[i] * c; }
+            }
+            let vn = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if vn > 0.0 { for x in v.iter_mut() { *x /= vn; } }
+            feat_dirs.push(v);
+            for i in 0..n {
+                for j in 0..n { gd[i * n + j] -= lam * u[i] * u[j]; }
+            }
+        }
+        let resid_largest = |kdirs: usize, thr: f32| -> usize {
+            let res: Vec<Vec<f32>> = (0..n)
+                .map(|i| {
+                    let mut r = cvec[i].clone();
+                    for v in feat_dirs.iter().take(kdirs) {
+                        let dot: f32 = r.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                        for (rx, &vx) in r.iter_mut().zip(v.iter()) { *rx -= dot * vx; }
+                    }
+                    r
+                })
+                .collect();
+            let cosr = |i: usize, j: usize| -> f32 {
+                let (mut d, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+                for (a, b) in res[i].iter().zip(res[j].iter()) { d += a * b; na += a * a; nb += b * b; }
+                if na <= 0.0 || nb <= 0.0 { 0.0 } else { d / (na.sqrt() * nb.sqrt()) }
+            };
+            let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+            for i in 0..n {
+                for j in (i + 1)..n { if cosr(i, j) > thr { adj[i].push(j); adj[j].push(i); } }
+            }
+            let mut seen = vec![false; n];
+            let mut largest = 0usize;
+            for s in 0..n {
+                if seen[s] { continue; }
+                let mut st = vec![s];
+                seen[s] = true;
+                let mut sz = 0usize;
+                while let Some(u) = st.pop() {
+                    sz += 1;
+                    for &v in &adj[u] { if !seen[v] { seen[v] = true; st.push(v); } }
+                }
+                largest = largest.max(sz);
+            }
+            largest
+        };
+        eprintln!(
+            "[probe] largest component @residual-cos>0.30: top1-removed={}/{} top3-removed={}/{}",
+            resid_largest(1, 0.30), n, resid_largest(3, 0.30), n
+        );
+    }
+
+    #[test]
     #[ignore = "experiment: run with --ignored --nocapture"]
     fn experiment_exemplar_revives_collapsed_node() {
         // Two-systems / EXEMPLAR coupling: a COLLAPSED node (phase 0, order ~1.0)

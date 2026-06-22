@@ -99,6 +99,118 @@ fn save_sidecar(engine: &ResonanceEngine, entry: &ClusterCacheEntry) {
     }
 }
 
+/// num_clusters fix: when on, `find_synchronized_clusters` mean-centers AND projects
+/// out the top principal components ("decones") the vectors before building the
+/// similarity graph. The field's hypervectors share a dominant common-mode direction
+/// (~38% of variance on the local field) that otherwise links nearly the whole field
+/// into ONE component at the raw 0.75 threshold; deconing removes it and exposes the
+/// real sub-structure. Default OFF — only the graph EDGES change (cluster themes,
+/// phases, and order-parameter still use the original vectors, so recall/storage are
+/// untouched).
+fn cluster_decone_enabled() -> bool {
+    std::env::var("KANNAKA_CLUSTER_DECONE")
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+/// Mean-center `vecs` and project out their top-`k` principal components, returning
+/// the residual vectors (same order). The PCs are estimated from a bounded, evenly
+/// spaced sample (≤ `SAMPLE` rows) via power iteration on the sample Gram, so the
+/// extra cost is O(sample²·d + n·d·k) rather than O(n²·d) — safe on the 1-core hub.
+/// With k==0 or a degenerate field it returns the mean-centered-only vectors.
+fn decone_vectors(vecs: &[&[f32]], k: usize) -> Vec<Vec<f32>> {
+    let n = vecs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let d = vecs[0].len();
+    let mut mean = vec![0.0f32; d];
+    for v in vecs {
+        for (m, &x) in mean.iter_mut().zip(v.iter()) {
+            *m += x;
+        }
+    }
+    for m in mean.iter_mut() {
+        *m /= n as f32;
+    }
+    const SAMPLE: usize = 512;
+    let step = (n / SAMPLE).max(1);
+    let sample: Vec<usize> = (0..n).step_by(step).take(SAMPLE).collect();
+    let s = sample.len();
+    let cs: Vec<Vec<f32>> = sample
+        .iter()
+        .map(|&i| vecs[i].iter().zip(mean.iter()).map(|(&x, &m)| x - m).collect())
+        .collect();
+    let mut dirs: Vec<Vec<f32>> = Vec::new();
+    if k > 0 && s >= 2 {
+        let mut gram = vec![0.0f32; s * s];
+        for a in 0..s {
+            for b in a..s {
+                let dot: f32 = cs[a].iter().zip(cs[b].iter()).map(|(x, y)| x * y).sum();
+                gram[a * s + b] = dot;
+                gram[b * s + a] = dot;
+            }
+        }
+        for _ in 0..k {
+            let mut u = vec![1.0f32 / (s as f32).sqrt(); s];
+            let mut lam = 0.0f32;
+            for _ in 0..60 {
+                let mut w: Vec<f32> = (0..s)
+                    .map(|i| (0..s).map(|j| gram[i * s + j] * u[j]).sum())
+                    .collect();
+                let nrm = w.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if nrm <= 1e-12 {
+                    break;
+                }
+                for x in w.iter_mut() {
+                    *x /= nrm;
+                }
+                lam = nrm;
+                u = w;
+            }
+            if lam <= 1e-9 {
+                break;
+            }
+            // Feature-space direction v = Σ uᵢ·csᵢ, unit-normalized.
+            let mut v = vec![0.0f32; d];
+            for (i, &ui) in u.iter().enumerate() {
+                for (vd, &c) in v.iter_mut().zip(cs[i].iter()) {
+                    *vd += ui * c;
+                }
+            }
+            let vn = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if vn <= 1e-12 {
+                break;
+            }
+            for x in v.iter_mut() {
+                *x /= vn;
+            }
+            dirs.push(v);
+            // Deflate so the next power iteration finds the following PC.
+            for i in 0..s {
+                for j in 0..s {
+                    gram[i * s + j] -= lam * u[i] * u[j];
+                }
+            }
+        }
+    }
+    vecs.iter()
+        .map(|v| {
+            let mut r: Vec<f32> = v.iter().zip(mean.iter()).map(|(&x, &m)| x - m).collect();
+            for dir in &dirs {
+                let dot: f32 = r.iter().zip(dir.iter()).map(|(a, b)| a * b).sum();
+                for (rx, &dx) in r.iter_mut().zip(dir.iter()) {
+                    *rx -= dot * dx;
+                }
+            }
+            r
+        })
+        .collect()
+}
+
 /// Coupling tier for the Kuramoto model.
 ///
 /// Controls the effective coupling constant K depending on the relationship
@@ -507,7 +619,10 @@ impl KuramotoSync {
 
         // Two-tier cache check: in-process fingerprint first, then on-disk
         // sidecar keyed by HRM file mtime.
-        let fp = fingerprint_memories(&all);
+        let decone = cluster_decone_enabled();
+        // Fold the decone flag into the cache key so toggling it never returns
+        // clusters computed under the other mode.
+        let fp = fingerprint_memories(&all) ^ if decone { 0x5EC0_DE5E_5EC0_DE5E } else { 0 };
         if let Ok(guard) = CLUSTER_CACHE.lock() {
             if let Some(ref entry) = *guard {
                 if entry.fingerprint == fp && entry.min_cluster_size == min_cluster_size {
@@ -516,7 +631,7 @@ impl KuramotoSync {
             }
         }
         let mtime = hrm_mtime_secs(engine).unwrap_or(0);
-        if mtime != 0 {
+        if !decone && mtime != 0 {
             if let Some(clusters) = load_sidecar(engine, mtime, min_cluster_size) {
                 // Populate process cache for future calls in this same run.
                 if let Ok(mut guard) = CLUSTER_CACHE.lock() {
@@ -558,11 +673,24 @@ impl KuramotoSync {
         // that are stitched back into an adjacency list. Each pair is visited
         // once (j > i) so there's no redundant work.
         use rayon::prelude::*;
-        let threshold = self.coupling_threshold;
+        // num_clusters fix: optionally "decone" the vectors before the graph (see
+        // cluster_decone_enabled). Only the EDGES change — themes/phases/order below
+        // still use the original vectors. Lower threshold for the residual cosine scale.
+        let dvecs: Vec<Vec<f32>> = if decone {
+            let refs: Vec<&[f32]> = all.iter().map(|m| m.vector.as_slice()).collect();
+            decone_vectors(&refs, 3)
+        } else {
+            Vec::new()
+        };
+        let threshold = if decone { 0.30 } else { self.coupling_threshold };
         let neighbors_per_i: Vec<Vec<usize>> = (0..n).into_par_iter().map(|i| {
             let mut neigh = Vec::new();
             for j in (i + 1)..n {
-                let sim = cosine_similarity(&all[i].vector, &all[j].vector);
+                let sim = if decone {
+                    cosine_similarity(&dvecs[i], &dvecs[j])
+                } else {
+                    cosine_similarity(&all[i].vector, &all[j].vector)
+                };
                 if sim > threshold {
                     neigh.push(j);
                 }
@@ -607,7 +735,7 @@ impl KuramotoSync {
         let mut final_components = Vec::new();
         for component in raw_components {
             let component_size = component.len();
-            if component_size > n / 2 { // Large component (>50% of memories)
+            if !decone && component_size > n / 2 { // Large component (>50% of memories)
                 let subcomponents = self.spectral_split_component(&component, &all, self.coupling_threshold);
                 for subcomp in subcomponents {
                     if subcomp.len() >= min_cluster_size {
@@ -669,7 +797,11 @@ impl KuramotoSync {
         if let Ok(mut guard) = CLUSTER_CACHE.lock() {
             *guard = Some(entry.clone());
         }
-        save_sidecar(engine, &entry);
+        // Don't persist the on-disk sidecar in decone mode: it's keyed by mtime+size,
+        // not the decone flag, so a later non-decone run would wrongly load it.
+        if !decone {
+            save_sidecar(engine, &entry);
+        }
 
         clusters
     }

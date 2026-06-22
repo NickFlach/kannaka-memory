@@ -32,6 +32,8 @@ pub struct KannakaConfig {
     pub triage: TriageConfig,
     #[serde(default = "BeliefConfig::default")]
     pub belief: BeliefConfig,
+    #[serde(default = "ClusterConfig::default")]
+    pub cluster: ClusterConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +145,16 @@ pub struct BeliefConfig {
     pub enabled: bool,
     #[serde(default = "default_belief_max_n")]
     pub max_n: usize,
+}
+
+/// num_clusters fix: "decone" (mean-center + top-PC removal) for the cluster
+/// detector (`cluster_decone_enabled` in `kuramoto`). env `KANNAKA_CLUSTER_DECONE`
+/// OVERRIDES this; `apply_cluster_env_from_config` bridges config→env at startup
+/// only when the env var is unset. Default off.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClusterConfig {
+    #[serde(default)]
+    pub decone: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +291,7 @@ impl Default for KannakaConfig {
             updates: UpdatesConfig::default(),
             triage: TriageConfig::default(),
             belief: BeliefConfig::default(),
+            cluster: ClusterConfig::default(),
         }
     }
 }
@@ -422,6 +435,16 @@ pub fn apply_belief_env_from_config(cfg: &KannakaConfig) {
     }
     if std::env::var_os("KANNAKA_BELIEF_MAX_N").is_none() {
         std::env::set_var("KANNAKA_BELIEF_MAX_N", cfg.belief.max_n.to_string());
+    }
+}
+
+/// num_clusters fix: bridge the persisted `[cluster]` config to the env var the
+/// cluster detector reads (`cluster_decone_enabled` in `kuramoto`). **Env wins** —
+/// only set the var when it's unset, so a one-off `KANNAKA_CLUSTER_DECONE=…` still
+/// overrides the file. Call once at startup (single-threaded, before workers spawn).
+pub fn apply_cluster_env_from_config(cfg: &KannakaConfig) {
+    if std::env::var_os("KANNAKA_CLUSTER_DECONE").is_none() && cfg.cluster.decone {
+        std::env::set_var("KANNAKA_CLUSTER_DECONE", "on");
     }
 }
 
