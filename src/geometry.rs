@@ -104,7 +104,18 @@ impl CliffordElement {
                 }
             }
         }
-        
+
+        // Metric contraction. In Cl₀,₇ every basis vector squares to eᵢ² = −1
+        // (signature 0,7). Each basis vector shared by both blades becomes an
+        // adjacent eᵢeᵢ pair after the reordering above and contracts to that
+        // −1 scalar (the XOR has already removed the bit from `result`). Folding
+        // in one −1 per shared vector is what makes this Cl₀,₇ rather than the
+        // Euclidean Cl₇,₀ — without it e1·e1 returned +1 instead of −1, so the
+        // inner product silently used the wrong metric.
+        if (blade_a & blade_b).count_ones() % 2 == 1 {
+            sign = -sign;
+        }
+
         (result, sign)
     }
 
@@ -1005,6 +1016,33 @@ mod tests {
         let e1e2 = e1.geometric_product(&e2);
         let e2e1 = e2.geometric_product(&e1);
         assert!(e1e2.equals(&e2e1.scale(-1.0), EPSILON));
+    }
+
+    #[test]
+    fn test_clifford_negative_signature() {
+        // Cl₀,₇: every basis vector squares to −1 (signature 0,7), NOT +1.
+        // Regression guard for the metric-contraction sign in
+        // simplify_blade_merge.
+        for i in 1..=7u8 {
+            let ei = CliffordElement::basis_vector(i);
+            let sq = ei.geometric_product(&ei);
+            assert!(
+                (sq.scalar_part() - (-1.0)).abs() < EPSILON,
+                "e{}·e{} must equal −1 in Cl₀,₇, got {}",
+                i, i, sq.scalar_part()
+            );
+        }
+
+        // A bivector also squares to −1: (e1 e2)² = e1 e2 e1 e2 = −1.
+        let e1 = CliffordElement::basis_vector(1);
+        let e2 = CliffordElement::basis_vector(2);
+        let e12 = e1.geometric_product(&e2);
+        let e12_sq = e12.geometric_product(&e12);
+        assert!(
+            (e12_sq.scalar_part() - (-1.0)).abs() < EPSILON,
+            "(e1 e2)² must equal −1, got {}",
+            e12_sq.scalar_part()
+        );
     }
 
     #[test]

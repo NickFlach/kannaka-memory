@@ -242,9 +242,22 @@ impl HrmStore {
             }
         }
 
-        // Restore saved connections from previous cache state
-        for (id, conns) in saved_connections {
+        // Restore saved connections from previous cache state, dropping any
+        // link whose target was removed since the snapshot. rebuild_cache runs
+        // after every removal path (resonance-merge absorb + ShortTerm evict in
+        // apply_consolidation, ghost compaction, delete), and none of those
+        // paths strip inbound links from survivors — so without this filter a
+        // LegacyLink{ target_id } pointing at a merged/evicted/compacted memory
+        // would survive here, re-serialize to the *.links.json sidecar, and
+        // accumulate every dream. Dangling targets corrupt bridge-node
+        // detection and cross-cluster link counts (id_to_cluster.get on a dead
+        // id). The authoritative store is fully reflected in memory_cache at
+        // this point, so any target_id not present is genuinely gone.
+        let live: std::collections::HashSet<uuid::Uuid> =
+            self.memory_cache.keys().copied().collect();
+        for (id, mut conns) in saved_connections {
             if let Some(mem) = self.memory_cache.get_mut(&id) {
+                conns.retain(|l| live.contains(&l.target_id));
                 mem.connections = conns;
             }
         }
@@ -313,6 +326,19 @@ impl HrmStore {
         Ok(())
     }
 
+    /// Atomically write `bytes` to `path`: write a unique per-process temp file
+    /// then rename it over the target. A plain `fs::write` is not atomic — a
+    /// crash or a concurrent writer can leave a truncated file, and the sidecar
+    /// loaders (`load_link_graph`, `load_reactivation`) silently discard ALL
+    /// state when the JSON fails to parse. `rename` within the same directory
+    /// is atomic, so a reader always sees either the old or the new file whole.
+    fn atomic_write(path: &std::path::Path, bytes: &[u8]) {
+        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+        if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
     /// Save the link graph as a sidecar JSON file alongside the HRM file.
     fn save_link_graph(&self) {
         let links_path = self.hrm_path.with_extension("links.json");
@@ -322,7 +348,7 @@ impl HrmStore {
             .collect();
         if graph.is_empty() { return; }
         if let Ok(json) = serde_json::to_vec(&graph) {
-            let _ = std::fs::write(&links_path, json);
+            Self::atomic_write(&links_path, &json);
         }
     }
 
@@ -404,7 +430,7 @@ impl HrmStore {
             return;
         }
         if let Ok(json) = serde_json::to_vec(&merged) {
-            let _ = std::fs::write(&path, json);
+            Self::atomic_write(&path, &json);
         }
     }
 

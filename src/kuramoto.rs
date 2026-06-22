@@ -775,6 +775,28 @@ impl KuramotoSync {
             }
             normalize(&mut theme);
 
+            // If the members' vectors largely cancel, the bundle sums to ~0 and
+            // normalize leaves it all-zeros. This is reachable when a cluster is
+            // grouped by PHASE coupling rather than vector similarity — notably
+            // in decone mode (default), where edges are built on residual
+            // vectors so a connected component can contain members whose
+            // ORIGINAL vectors are anti-correlated. An all-zero theme_vector
+            // scores cosine 0 against every query (cosine_similarity returns 0
+            // for a zero norm), silently making the whole cluster unreachable by
+            // theme-routed recall. Fall back to the strongest member's vector —
+            // a guaranteed non-zero, representative anchor.
+            let theme_norm: f32 = theme.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if theme_norm < 1e-6 {
+                if let Some(strongest) = cluster_mems.iter().max_by(|a, b| {
+                    a.amplitude
+                        .partial_cmp(&b.amplitude)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    theme = strongest.vector.clone();
+                    normalize(&mut theme);
+                }
+            }
+
             clusters.push(MemoryCluster {
                 memory_ids: cluster_mems.iter().map(|m| m.id).collect(),
                 order_parameter: r,
