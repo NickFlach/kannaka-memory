@@ -577,8 +577,9 @@ pub fn bloom(glyph: &PrivacyGlyph, max_difficulty: u32) -> Option<BloomSolution>
         nonce_counter += 1;
 
         // Safety: abort if we've exceeded reasonable bounds
-        // Allow 4x expected work to handle hash variance
-        if nonce_counter > 4u64.saturating_mul(1u64 << max_difficulty.min(40)) {
+        // Allow 64x expected work: P(failure) ≈ e^-64 ≈ 10^-28, negligible.
+        // (4x was e^-4 ≈ 1.8% — enough to flip a difficulty-8 test ~twice/month.)
+        if nonce_counter > 64u64.saturating_mul(1u64 << max_difficulty.min(40)) {
             return None;
         }
     }
