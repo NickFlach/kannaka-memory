@@ -134,9 +134,12 @@ impl Medium {
         // Apply coupling for matched content
         for (remote_idx, &remote_hash) in remote.content_hashes.iter().enumerate() {
             if let Some(&our_idx) = our_hash_to_index.get(&remote_hash) {
-                // Found matching content - apply Kuramoto coupling
-                let remote_phase = remote.phases[remote_idx];
-                let remote_energy = remote.energies[remote_idx];
+                // Found matching content - apply Kuramoto coupling.
+                // Use .get() instead of direct indexing: PhaseState is Deserialize and
+                // travels over the network, so malformed payloads (version skew, truncation)
+                // could have content_hashes longer than phases/energies.
+                let Some(&remote_phase) = remote.phases.get(remote_idx) else { continue };
+                let Some(&remote_energy) = remote.energies.get(remote_idx) else { continue };
                 let phase_diff = remote_phase - self.store.phase[our_idx];
 
                 // Apply phase coupling
