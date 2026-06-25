@@ -669,7 +669,7 @@ pub(crate) fn handle_substrate_run(
                 let req: serde_json::Value = serde_json::from_slice(&msg.payload)
                     .unwrap_or(serde_json::Value::Null);
                 let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+                let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8).min(100) as usize;
                 if !query.is_empty() && reply_to.is_some() {
                     // Use the attention-beam prefilter (token-overlap → top
                     // candidates → resonance against beam only) so the recall
