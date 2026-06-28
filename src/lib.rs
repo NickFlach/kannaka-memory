@@ -74,6 +74,10 @@ pub mod agent;
 // Filesystem + shell tools for the `kannaka agent` coding-harness backend.
 pub mod coding_tools;
 
+// Quantum tools for the agent — runs circuits / resonance-recall on qBraid via
+// the kannaka-quantum bridge.
+pub mod quantum_tools;
+
 // SpaceChild SSO identity for swarm agents (spacechild-auth client + token store).
 pub mod identity;
 

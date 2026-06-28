@@ -27,6 +27,7 @@
 
 use kannaka_memory::agent::{self, AgentError, ContentBlock, Message, Tool};
 use kannaka_memory::coding_tools::{self, ToolCtx};
+use kannaka_memory::quantum_tools;
 use kannaka_memory::openclaw::KannakaMemorySystem;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -91,7 +92,8 @@ fn is_memory_tool(name: &str) -> bool {
 /// Decide whether a tool call may run. Read-only coding tools and all memory
 /// tools run freely; filesystem/shell mutations follow the permission mode.
 fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>, key: &str) -> Decision {
-    if coding_tools::is_read_only(name) || is_memory_tool(name) {
+    if coding_tools::is_read_only(name) || is_memory_tool(name) || quantum_tools::is_quantum_tool(name) {
+        // Quantum tools run on qBraid, not the local machine — never gated.
         return Decision::Allow;
     }
     // name is now a mutating coding tool: write_file | edit_file | bash
@@ -146,7 +148,12 @@ fn coding_system_prompt(cwd: &std::path::Path, mode: Mode) -> String {
            human's approval; prefer the dedicated file/search tools where one fits.\n\
          - recall / remember / status / list_clusters: your persistent HRM memory. Use \
            `recall` to surface relevant past context, and `remember` to persist durable \
-           insights about this project.\n\n\
+           insights about this project.\n\
+         - quantum_devices / quantum_run / quantum_recall / quantum_random: real quantum \
+           computing via qBraid. `quantum_run` executes OpenQASM 3 circuits (free simulator \
+           by default; name a QPU device to run on hardware). `quantum_recall` performs \
+           resonance recall as amplitude amplification; `quantum_random` gives true quantum \
+           entropy.\n\n\
          Working style:\n\
          - Investigate before acting: read the relevant files, search for usages.\n\
          - Make the smallest change that solves the task; match the surrounding style.\n\
@@ -176,6 +183,7 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
     let mut session: Option<String> = None;
     let mut model_override: Option<String> = None;
     let mut no_memory = false;
+    let mut no_quantum = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -207,6 +215,7 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
                 }
             }
             "--no-memory-tools" => no_memory = true,
+            "--no-quantum" => no_quantum = true,
             _ => {}
         }
         i += 1;
@@ -237,6 +246,12 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
     let mut tools: Vec<Tool> = coding_tools::coding_tools();
     if !no_memory {
         tools.extend(memory_tools());
+    }
+    // Quantum tools (run circuits / resonance-recall on qBraid). Available
+    // unless explicitly disabled; the bridge surfaces a clear install hint if
+    // it isn't present, so exposing them is harmless when unconfigured.
+    if !no_quantum {
+        tools.extend(quantum_tools::quantum_tools());
     }
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name).collect();
     let system = coding_system_prompt(&cwd, mode);
@@ -419,7 +434,9 @@ fn run_turn(
         // Execute each tool, gating mutations behind approval.
         let mut result_blocks: Vec<ContentBlock> = Vec::new();
         for (id, name, input) in tool_uses {
-            let read_only = coding_tools::is_read_only(&name) || is_memory_tool(&name);
+            let read_only = coding_tools::is_read_only(&name)
+                || is_memory_tool(&name)
+                || quantum_tools::is_quantum_tool(&name);
             let danger = name == "bash"
                 && input.get("command").and_then(|v| v.as_str()).map(coding_tools::bash_is_destructive).unwrap_or(false);
             emit(json!({
@@ -441,7 +458,9 @@ fn run_turn(
             let (content, is_error) = match decision {
                 Decision::Deny(reason) => (format!("[blocked: {reason}]"), true),
                 _ => {
-                    if coding_tools::is_coding_tool(&name) {
+                    if quantum_tools::is_quantum_tool(&name) {
+                        quantum_tools::dispatch_quantum_tool(&name, &input)
+                    } else if coding_tools::is_coding_tool(&name) {
                         coding_tools::dispatch_coding_tool(tool_ctx, &name, &input)
                     } else {
                         agent::dispatch_tool(sys, &name, &input)
