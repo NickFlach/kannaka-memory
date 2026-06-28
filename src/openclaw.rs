@@ -644,17 +644,23 @@ impl KannakaMemorySystem {
         Ok(n)
     }
 
-    /// Hard FIFO size cap. Returns the oldest-created, NON-Pinned memory ids
-    /// that exceed `max_total`, so the field can be bounded "regardless" of the
-    /// value-based ADR-0031 triage — a backstop against unbounded growth from
-    /// the always-on research/curiosity/engagement crons outpacing
-    /// consolidation (which is gated to dry-run under the belief substrate).
+    /// Hard size cap that evicts the LOWEST-VALUE memories. Returns the
+    /// NON-Pinned memory ids with the smallest effective strength (the system's
+    /// own recall salience: decayed amplitude + retrieval boost) needed to bring
+    /// the field down to `max_total`.
     ///
-    /// Lightweight: O(n log n) sort by created_at, no O(n²) cosine scan, so it
-    /// is safe to run hourly on the 1-core hub. Pinned memories are never
-    /// evicted; if the non-pinned pool is smaller than the overflow, it evicts
-    /// as many as it can (the floor is the pinned count).
-    pub fn fifo_overflow_ids(&self, max_total: usize) -> Vec<Uuid> {
+    /// This mirrors what dream annealing is *meant* to do — let the
+    /// lowest-energy memories fade — as a backstop for when consolidation can't
+    /// reclaim (notably while it is gated to dry-run under the belief
+    /// substrate), so the always-on research/curiosity/engagement crons can't
+    /// grow the field without bound. Evicting by value, not age, keeps strong
+    /// and frequently-recalled memories (including old foundational ones) and
+    /// drops the weak chaff first.
+    ///
+    /// Lightweight: O(n log n) sort, no O(n²) cosine scan — safe to run hourly
+    /// on the 1-core hub. Pinned memories are never evicted; if the non-pinned
+    /// pool is smaller than the overflow, it evicts as many as it can.
+    pub fn lowest_value_overflow_ids(&self, max_total: usize) -> Vec<Uuid> {
         use crate::medium::types::Tier;
         let all = match self.engine.store.all_memories() {
             Ok(a) => a,
@@ -664,10 +670,16 @@ impl KannakaMemorySystem {
             return Vec::new();
         }
         let overflow = all.len() - max_total;
+        let now = Utc::now();
         let mut evictable: Vec<&crate::memory::HyperMemory> =
             all.iter().filter(|m| m.tier != Tier::Pinned).copied().collect();
-        // Oldest first (FIFO).
-        evictable.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        // Lowest effective strength first — the weakest / least-salient
+        // memories, exactly what annealing would dissolve. NaN-safe ordering.
+        evictable.sort_by(|a, b| {
+            a.effective_strength(now)
+                .partial_cmp(&b.effective_strength(now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         evictable.into_iter().take(overflow).map(|m| m.id).collect()
     }
 
@@ -1617,20 +1629,20 @@ mod tests {
     }
 
     #[test]
-    fn fifo_overflow_caps_to_max_total() {
-        let dir = temp_dir("fifo");
+    fn lowest_value_cap_bounds_to_max_total() {
+        let dir = temp_dir("cap");
         let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
         for i in 0..5 {
             sys.remember(&format!("memory number {i}")).unwrap();
         }
         assert_eq!(sys.stats().total_memories, 5);
-        // Overflow = total - cap (oldest-created, non-pinned).
-        assert_eq!(sys.fifo_overflow_ids(3).len(), 2, "5 memories, cap 3 → 2 over");
-        assert_eq!(sys.fifo_overflow_ids(5).len(), 0, "at cap → nothing over");
-        assert_eq!(sys.fifo_overflow_ids(10).len(), 0, "under cap → nothing over");
-        assert_eq!(sys.fifo_overflow_ids(0).len(), 5, "cap 0 (none pinned) → all evictable");
+        // Overflow = total - cap (lowest effective-strength, non-pinned).
+        assert_eq!(sys.lowest_value_overflow_ids(3).len(), 2, "5 memories, cap 3 → 2 over");
+        assert_eq!(sys.lowest_value_overflow_ids(5).len(), 0, "at cap → nothing over");
+        assert_eq!(sys.lowest_value_overflow_ids(10).len(), 0, "under cap → nothing over");
+        assert_eq!(sys.lowest_value_overflow_ids(0).len(), 5, "cap 0 (none pinned) → all evictable");
         // Applying the cap actually bounds the field.
-        let ids = sys.fifo_overflow_ids(2);
+        let ids = sys.lowest_value_overflow_ids(2);
         let n = sys.triage_forget(&ids).unwrap();
         assert_eq!(n, 3);
         assert_eq!(sys.stats().total_memories, 2, "field hard-bounded to max_total");

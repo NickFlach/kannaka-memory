@@ -12,10 +12,13 @@ the belief substrate). `kannaka export-json` then loaded every memory's full
 10k-dim vector into a serde tree — multiple GB on a 3000+ memory field — which
 repeatedly OOM-killed the radio on the 1-core/6 GB box.
 
-- **`triage --max-total N`** — a hard FIFO size cap: evict the oldest-created,
-  non-Pinned memories until the field is ≤ N. Lightweight (O(n log n), no O(n²)
-  cosine scan), safe to run hourly from prune-cron as a growth backstop
-  regardless of value-based triage. `--apply` to persist; Pinned never evicted.
+- **`triage --max-total N`** — a hard size cap: evict the LOWEST-VALUE
+  (effective-strength) non-Pinned memories until the field is ≤ N. Mirrors what
+  dream annealing is meant to do (let the weakest memories fade) — a backstop
+  for when consolidation can't reclaim (it is dry-run under the belief
+  substrate). Lightweight (O(n log n), no O(n²) cosine scan), safe to run hourly
+  from prune-cron. `--apply` to persist; Pinned never evicted; strong/recalled
+  memories kept regardless of age.
 - **`export-json --slim`** — omit the per-memory `vector`/`xi_signature`/
   `geometry` (the 10k-dim vector is ~99% of the size). Metadata-only consumers
   (the observatory's `/api/hrm/memories`) MUST use `--slim` so the export can't

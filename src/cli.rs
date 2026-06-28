@@ -233,7 +233,7 @@ EXAMPLE:
         ))
         .subcommand(passthrough("relate", "Find semantically related memories"))
         // Memory-tier ops + ADR-0031 triage (previously absent from --help).
-        .subcommand(passthrough("triage", "Evict redundant short-term memories (ADR-0031 Ξ-preserving prune; config [triage]). --max-total N: hard FIFO size cap (evict oldest non-pinned over N; --apply to persist)"))
+        .subcommand(passthrough("triage", "Evict redundant short-term memories (ADR-0031 Ξ-preserving prune; config [triage]). --max-total N: hard size cap (evict lowest effective-strength non-pinned memories over N; --apply to persist)"))
         .subcommand(passthrough("promote", "Promote a memory to the long-term tier (by id)"))
         .subcommand(passthrough("pin", "Pin a memory to the Pinned tier — never evicted by consolidation (by id)"))
         .subcommand(passthrough("demote", "Demote a memory to the short-term tier (by id)"))

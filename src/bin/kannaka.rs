@@ -1790,25 +1790,27 @@ fn main() {
             }
             params.include_long_term = include_long_term;
 
-            // Hard FIFO size cap (`--max-total N`). A lightweight, predictable
-            // backstop against unbounded growth: evict the oldest-created
-            // non-Pinned memories until the field is <= N. Runs WITHOUT the
-            // O(n²) redundancy cosine scan below, so it is cheap enough for the
-            // hourly prune-cron on the 1-core hub. Takes precedence — when set,
-            // this is the whole operation.
+            // Hard size cap (`--max-total N`). A lightweight, predictable
+            // backstop against unbounded growth: evict the LOWEST-VALUE
+            // (effective-strength) non-Pinned memories until the field is <= N
+            // — the weak chaff annealing would dissolve, keeping strong/recalled
+            // memories regardless of age. Runs WITHOUT the O(n²) redundancy
+            // cosine scan below, so it is cheap enough for the hourly prune-cron
+            // on the 1-core hub. Takes precedence — when set, this is the whole
+            // operation.
             if let Some(cap) = max_total {
-                let ids = sys.fifo_overflow_ids(cap);
+                let ids = sys.lowest_value_overflow_ids(cap);
                 println!(
-                    "[triage] FIFO cap: {} memories over max-total={cap} (oldest-created, non-pinned){}",
+                    "[triage] size cap: {} lowest-value memories over max-total={cap} (non-pinned){}",
                     ids.len(),
                     if apply { "" } else { " (dry-run — pass --apply to forget)" }
                 );
                 if apply && !ids.is_empty() {
                     warn_if_readonly("triage --max-total --apply");
                     match sys.triage_forget(&ids) {
-                        Ok(n) => println!("[triage] FIFO-evicted={n} (oldest first; pinned protected)"),
+                        Ok(n) => println!("[triage] evicted={n} (lowest effective-strength first; pinned protected)"),
                         Err(e) => {
-                            eprintln!("Failed to persist HRM after FIFO cap: {e}");
+                            eprintln!("Failed to persist HRM after size cap: {e}");
                             process::exit(1);
                         }
                     }
