@@ -32,6 +32,10 @@ use handlers_substrate::{
 mod handlers_chat;
 use handlers_chat::handle_chat;
 
+#[path = "handlers/agent.rs"]
+mod handlers_agent;
+use handlers_agent::handle_agent;
+
 #[path = "handlers/ask.rs"]
 mod handlers_ask;
 use handlers_ask::handle_ask;
@@ -735,7 +739,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         // perception
         | "hear" | "see"
         // reasoning
-        | "ask" | "chat" | "voice"
+        | "ask" | "chat" | "agent" | "voice"
         // swarm / nats
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
         // identity (SpaceChild SSO)
@@ -4514,6 +4518,10 @@ fn main() {
 
         "chat" => {
             handle_chat(&mut sys, &cfg, &args[command_start..]);
+        }
+
+        "agent" => {
+            handle_agent(&mut sys, &cfg, &args[command_start..]);
         }
 
         "invariant" => {

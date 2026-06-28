@@ -313,6 +313,7 @@ For belief/spiral order + winding without the (slower) eigendecomp, use `kannaka
         // ── Reasoning ──────────────────────────────────────────────────
         .subcommand(passthrough("ask", "One-shot LLM query with HRM recall as grounding"))
         .subcommand(passthrough("chat", "Long-running chat REPL (--json for NDJSON mode)"))
+        .subcommand(passthrough("agent", "Agentic coding loop with filesystem/shell tools (--json NDJSON harness backend)"))
         .subcommand(passthrough("voice", "Memory-driven writing (--mode for style)"))
         // ── Knowledge / research (previously absent from --help) ────────
         .subcommand(passthrough_doc(

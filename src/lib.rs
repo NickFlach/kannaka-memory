@@ -71,6 +71,9 @@ pub mod cli;
 
 pub mod agent;
 
+// Filesystem + shell tools for the `kannaka agent` coding-harness backend.
+pub mod coding_tools;
+
 // SpaceChild SSO identity for swarm agents (spacechild-auth client + token store).
 pub mod identity;
 
