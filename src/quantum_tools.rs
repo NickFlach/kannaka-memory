@@ -35,9 +35,10 @@ pub fn quantum_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "quantum_devices",
-            description: "List available qBraid quantum devices (QPUs + simulators) with status \
-                          and qubit counts. The free 'qbraid:qbraid:sim:qir-sv' simulator (30 \
-                          qubits) needs no credits; real QPUs bill the account's qBraid credits.",
+            description: "List available quantum devices across providers (qBraid + OpenQuantum) \
+                          with status, qubit counts, and cost. The free 'qbraid:qbraid:sim:qir-sv' \
+                          simulator (30 qubits) needs no credits; 'openquantum:*' entries are real \
+                          QPUs (IonQ/Rigetti/IQM/AQT) that spend Spark credits (no free simulator).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -47,15 +48,20 @@ pub fn quantum_tools() -> Vec<Tool> {
         },
         Tool {
             name: "quantum_run",
-            description: "Execute an OpenQASM 3 circuit on a qBraid backend and return measurement \
-                          counts. Write standard OpenQASM 3.0 (include \"stdgates.inc\"; declare \
-                          qubit[]/bit[]; apply gates; measure). Defaults to the free simulator.",
+            description: "Execute an OpenQASM 3 circuit on a backend and return measurement counts. \
+                          Write standard OpenQASM 3.0 (include \"stdgates.inc\"; declare qubit[]/bit[]; \
+                          apply gates; measure). Defaults to the free qBraid simulator. To run on a \
+                          real QPU set device='openquantum:<backend>' (e.g. openquantum:iqm:garnet) \
+                          AND allow_spend=true — it spends real Spark credits (a max_credits cap, \
+                          default 1.0 credit, guards against an accidental large run).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "qasm3": { "type": "string", "description": "OpenQASM 3.0 source." },
                     "shots": { "type": "integer", "minimum": 1, "default": 100 },
-                    "device": { "type": "string", "description": "qBraid device id (default: free simulator)." }
+                    "device": { "type": "string", "description": "Device id; default free qBraid simulator. Use 'openquantum:<backend>' for a real QPU." },
+                    "allow_spend": { "type": "boolean", "default": false, "description": "Required to run on OpenQuantum (spends Spark credits)." },
+                    "max_credits": { "type": "number", "description": "Credit ceiling for an OpenQuantum run (1 credit = $2; default 1.0)." }
                 },
                 "required": ["qasm3"]
             }),
@@ -65,14 +71,21 @@ pub fn quantum_tools() -> Vec<Tool> {
             description: "Run Kannaka's resonance recall AS a quantum circuit: amplitude-encode \
                           candidate memory resonances into a quantum state and amplitude-amplify \
                           toward the strongest — the quantum analogue of 'attention as gravity'. \
-                          Returns the measured distribution over candidates and the top pick.",
+                          Returns the measured distribution over candidates and the top pick. \
+                          Defaults to the free qBraid simulator; for the real-hardware artifact set \
+                          device='openquantum:iqm:garnet' + allow_spend=true and keep shots LOW \
+                          (recall defaults to 1024 shots — the max_credits cap, default 1.0, blocks \
+                          a budget-draining run on a paid QPU).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "amplitudes": { "type": "array", "items": { "type": "number" }, "description": "Resonance scores for each candidate memory." },
                     "labels": { "type": "array", "items": { "type": "string" }, "description": "Optional labels aligned with amplitudes." },
                     "shots": { "type": "integer", "minimum": 1, "default": 1024 },
-                    "amplify": { "type": "boolean", "default": true }
+                    "amplify": { "type": "boolean", "default": true },
+                    "device": { "type": "string", "description": "Device id; default free qBraid simulator. Use 'openquantum:<backend>' for a real QPU." },
+                    "allow_spend": { "type": "boolean", "default": false, "description": "Required to run on OpenQuantum (spends Spark credits)." },
+                    "max_credits": { "type": "number", "description": "Credit ceiling for an OpenQuantum run (default 1.0)." }
                 },
                 "required": ["amplitudes"]
             }),
@@ -80,11 +93,15 @@ pub fn quantum_tools() -> Vec<Tool> {
         Tool {
             name: "quantum_random",
             description: "Generate true quantum random bits from measurement collapse (not a PRNG). \
-                          Returns the bitstring, its integer value, and a float in [0,1).",
+                          Returns the bitstring, its integer value, and a float in [0,1). Defaults to \
+                          the free qBraid simulator; set device='openquantum:<backend>' + \
+                          allow_spend=true to draw entropy from a real QPU (spends Spark credits).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "n_bits": { "type": "integer", "minimum": 1, "maximum": 256, "default": 8 }
+                    "n_bits": { "type": "integer", "minimum": 1, "maximum": 256, "default": 8 },
+                    "device": { "type": "string", "description": "Device id; default free qBraid simulator." },
+                    "allow_spend": { "type": "boolean", "default": false, "description": "Required to run on OpenQuantum (spends Spark credits)." }
                 }
             }),
         },
@@ -109,10 +126,8 @@ pub fn dispatch_quantum_tool(name: &str, input: &Value) -> (String, bool) {
             }
             let shots = input.get("shots").and_then(|v| v.as_u64()).unwrap_or(100).to_string();
             let mut args = vec!["run".to_string(), "--shots".to_string(), shots];
-            if let Some(d) = input.get("device").and_then(|v| v.as_str()) {
-                args.push("--device".to_string());
-                args.push(d.to_string());
-            }
+            push_device_arg(&mut args, input);
+            push_spend_args(&mut args, input);
             // QASM goes over stdin — robust against length + shell quoting.
             run_bridge(&args, Some(qasm))
         }
@@ -135,13 +150,40 @@ pub fn dispatch_quantum_tool(name: &str, input: &Value) -> (String, bool) {
             if input.get("amplify").and_then(|v| v.as_bool()) == Some(false) {
                 args.push("--no-amplify".to_string());
             }
+            push_device_arg(&mut args, input);
+            push_spend_args(&mut args, input);
             run_bridge(&args, None)
         }
         "quantum_random" => {
             let bits = input.get("n_bits").and_then(|v| v.as_u64()).unwrap_or(8).to_string();
-            run_bridge(&["qrng".to_string(), "--bits".to_string(), bits], None)
+            let mut args = vec!["qrng".to_string(), "--bits".to_string(), bits];
+            push_device_arg(&mut args, input);
+            push_spend_args(&mut args, input);
+            run_bridge(&args, None)
         }
         other => (format!("unknown quantum tool: {other}"), true),
+    }
+}
+
+/// Append `--device <id>` from a tool input (skips empty/missing).
+fn push_device_arg(args: &mut Vec<String>, input: &Value) {
+    if let Some(d) = input.get("device").and_then(|v| v.as_str()) {
+        if !d.is_empty() {
+            args.push("--device".to_string());
+            args.push(d.to_string());
+        }
+    }
+}
+
+/// Append the OpenQuantum spend-guard flags (`--allow-spend`, `--max-credits`)
+/// from a tool input. No-ops on the free qBraid simulator.
+fn push_spend_args(args: &mut Vec<String>, input: &Value) {
+    if input.get("allow_spend").and_then(|v| v.as_bool()) == Some(true) {
+        args.push("--allow-spend".to_string());
+    }
+    if let Some(mc) = input.get("max_credits").and_then(|v| v.as_f64()) {
+        args.push("--max-credits".to_string());
+        args.push(mc.to_string());
     }
 }
 
