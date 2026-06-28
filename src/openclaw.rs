@@ -644,6 +644,45 @@ impl KannakaMemorySystem {
         Ok(n)
     }
 
+    /// Hard size cap that evicts the LOWEST-VALUE memories. Returns the
+    /// NON-Pinned memory ids with the smallest effective strength (the system's
+    /// own recall salience: decayed amplitude + retrieval boost) needed to bring
+    /// the field down to `max_total`.
+    ///
+    /// This mirrors what dream annealing is *meant* to do — let the
+    /// lowest-energy memories fade — as a backstop for when consolidation can't
+    /// reclaim (notably while it is gated to dry-run under the belief
+    /// substrate), so the always-on research/curiosity/engagement crons can't
+    /// grow the field without bound. Evicting by value, not age, keeps strong
+    /// and frequently-recalled memories (including old foundational ones) and
+    /// drops the weak chaff first.
+    ///
+    /// Lightweight: O(n log n) sort, no O(n²) cosine scan — safe to run hourly
+    /// on the 1-core hub. Pinned memories are never evicted; if the non-pinned
+    /// pool is smaller than the overflow, it evicts as many as it can.
+    pub fn lowest_value_overflow_ids(&self, max_total: usize) -> Vec<Uuid> {
+        use crate::medium::types::Tier;
+        let all = match self.engine.store.all_memories() {
+            Ok(a) => a,
+            Err(_) => return Vec::new(),
+        };
+        if all.len() <= max_total {
+            return Vec::new();
+        }
+        let overflow = all.len() - max_total;
+        let now = Utc::now();
+        let mut evictable: Vec<&crate::memory::HyperMemory> =
+            all.iter().filter(|m| m.tier != Tier::Pinned).copied().collect();
+        // Lowest effective strength first — the weakest / least-salient
+        // memories, exactly what annealing would dissolve. NaN-safe ordering.
+        evictable.sort_by(|a, b| {
+            a.effective_strength(now)
+                .partial_cmp(&b.effective_strength(now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        evictable.into_iter().take(overflow).map(|m| m.id).collect()
+    }
+
     /// ADR-0031 Phase 2b: capture the current amplitude of every short-term
     /// memory, keyed by id. Used to detect dream-strengthening for promotion.
     fn snapshot_short_term_amplitudes(&self) -> std::collections::HashMap<Uuid, f32> {
@@ -1586,6 +1625,27 @@ mod tests {
         sys.remember("memory two").unwrap();
         let report = sys.dream().unwrap();
         assert!(report.cycles > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lowest_value_cap_bounds_to_max_total() {
+        let dir = temp_dir("cap");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        for i in 0..5 {
+            sys.remember(&format!("memory number {i}")).unwrap();
+        }
+        assert_eq!(sys.stats().total_memories, 5);
+        // Overflow = total - cap (lowest effective-strength, non-pinned).
+        assert_eq!(sys.lowest_value_overflow_ids(3).len(), 2, "5 memories, cap 3 → 2 over");
+        assert_eq!(sys.lowest_value_overflow_ids(5).len(), 0, "at cap → nothing over");
+        assert_eq!(sys.lowest_value_overflow_ids(10).len(), 0, "under cap → nothing over");
+        assert_eq!(sys.lowest_value_overflow_ids(0).len(), 5, "cap 0 (none pinned) → all evictable");
+        // Applying the cap actually bounds the field.
+        let ids = sys.lowest_value_overflow_ids(2);
+        let n = sys.triage_forget(&ids).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(sys.stats().total_memories, 2, "field hard-bounded to max_total");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
