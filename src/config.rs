@@ -558,6 +558,82 @@ fn last_checked_within_24h(last: &str) -> bool {
 // Self-update command
 // ---------------------------------------------------------------------------
 
+/// Windows-only: swap `target` for the already-downloaded `new_file` by
+/// moving the running `target` aside to a **unique** backup name, then
+/// renaming `new_file` into place.
+///
+/// Using a unique backup (`<stem>.exe.bak-<pid>`) instead of a fixed
+/// `<stem>.exe.old` is the crux: `std::fs::rename` on Windows uses
+/// `MOVEFILE_REPLACE_EXISTING`, so renaming onto a fixed `.old` that is
+/// still **locked** — e.g. a daemon/worker that was left running from an
+/// earlier renamed binary — fails forever with "Access is denied"
+/// (os error 5). A fresh name is never locked, so the move always
+/// succeeds. We also retry briefly to ride out transient locks (antivirus
+/// scanning the freshly-written binary, or a worker respawn racing the
+/// rename), roll back on a failed install, and sweep unlocked stale
+/// backups on success. Returns the backup path on success.
+#[cfg(windows)]
+fn windows_swap_binary(
+    target: &std::path::Path,
+    new_file: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let backup = target.with_extension(format!("exe.bak-{}", std::process::id()));
+    let _ = std::fs::remove_file(&backup);
+    let mut last_err = String::from("unknown error");
+    let mut moved = false;
+    for attempt in 0..5u64 {
+        match std::fs::rename(target, &backup) {
+            Ok(_) => {
+                moved = true;
+                break;
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
+            }
+        }
+    }
+    if !moved {
+        return Err(last_err);
+    }
+    if let Err(e) = std::fs::rename(new_file, target) {
+        // Roll back so the user is never left without a binary.
+        let _ = std::fs::rename(&backup, target);
+        return Err(e.to_string());
+    }
+    cleanup_stale_backups(target);
+    Ok(backup)
+}
+
+/// Best-effort removal of stale update siblings next to `target`
+/// (`<stem>.exe.bak-*`, the legacy `<stem>.exe.old`, and orphan
+/// `<stem>.new`). Locked ones (a process still running from them) are
+/// silently skipped — they free up on their own once that process exits.
+#[cfg(windows)]
+fn cleanup_stale_backups(target: &std::path::Path) {
+    let (Some(dir), Some(stem)) = (
+        target.parent(),
+        target.file_stem().and_then(|s| s.to_str()),
+    ) else {
+        return;
+    };
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == *target {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{stem}.exe.bak-"))
+                || name == format!("{stem}.exe.old")
+                || name == format!("{stem}.new")
+            {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 /// Download and replace the running binary with the latest release.
 pub fn self_update() -> Result<(), String> {
     let current_version = env!("CARGO_PKG_VERSION");
@@ -665,15 +741,26 @@ pub fn self_update() -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        // On Windows, can't overwrite a running exe directly.
-        // Rename current to .old, rename new to current.
-        let old_path = current_exe.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old_path);
-        std::fs::rename(&current_exe, &old_path)
-            .map_err(|e| format!("failed to move current binary: {e}"))?;
-        std::fs::rename(&tmp_path, &current_exe)
-            .map_err(|e| format!("failed to install new binary: {e}"))?;
-        eprintln!("Updated to v{}! (old binary saved as .exe.old)", remote_version);
+        // Can't overwrite a running exe on Windows — move it aside to a
+        // unique backup, then install the new one (see windows_swap_binary
+        // for why a unique name, not a fixed `.old`, is essential).
+        match windows_swap_binary(&current_exe, &tmp_path) {
+            Ok(backup) => {
+                eprintln!(
+                    "Updated to v{}! (previous binary saved as {})",
+                    remote_version,
+                    backup.display()
+                );
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(format!(
+                    "failed to install update: {e}. Close any running kannaka processes \
+                     (kannaka-tui, swarm/daemon workers) and retry, or download manually \
+                     from https://github.com/NickFlach/kannaka-memory/releases/latest"
+                ));
+            }
+        }
     }
 
     // Sibling TUI update — keep `kannaka-tui` aligned with `kannaka` so
@@ -842,18 +929,13 @@ fn update_sibling_tui(
     }
     #[cfg(windows)]
     {
-        let old_path = tui_path.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old_path);
-        // If the rename fails (e.g. tui is running), it just stays at
-        // the old version — user will see a clear note and can retry.
-        if let Err(e) = std::fs::rename(&tui_path, &old_path) {
-            eprintln!("Note: could not move tui aside (is it running?): {e}");
+        // Same robust swap as the main binary: unique backup name + retry,
+        // so a stale locked backup can't block the install. If the TUI is
+        // genuinely running it stays at the old version — the user sees a
+        // clear note and can retry after closing it.
+        if let Err(e) = windows_swap_binary(&tui_path, &tmp_path) {
+            eprintln!("Note: could not update tui (is it running?): {e}");
             let _ = std::fs::remove_file(&tmp_path);
-            return;
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &tui_path) {
-            eprintln!("Note: tui install failed: {e}");
-            let _ = std::fs::rename(&old_path, &tui_path);
             return;
         }
     }
@@ -3504,5 +3586,59 @@ mod config_field_tests {
         let cfg: KannakaConfig = toml::from_str(minimal).expect("deserialize minimal config");
         assert!(!cfg.belief.enabled);
         assert_eq!(cfg.belief.max_n, 6000);
+    }
+
+    // The self-update binary swap is Windows-specific; its cleanup of stale
+    // backup siblings is the pure part we can unit-test.
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_sweeps_stale_backups_but_keeps_binary_and_unrelated() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("kannaka.exe");
+        for name in [
+            "kannaka.exe",
+            "kannaka.exe.bak-111",
+            "kannaka.exe.bak-222",
+            "kannaka.exe.old",
+            "kannaka.new",
+            "kannaka-other.txt",
+            "kannaka.exe.config",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        cleanup_stale_backups(&target);
+        // stale update siblings are gone
+        assert!(!dir.path().join("kannaka.exe.bak-111").exists());
+        assert!(!dir.path().join("kannaka.exe.bak-222").exists());
+        assert!(!dir.path().join("kannaka.exe.old").exists());
+        assert!(!dir.path().join("kannaka.new").exists());
+        // the live binary and unrelated files are kept
+        assert!(target.exists());
+        assert!(dir.path().join("kannaka-other.txt").exists());
+        assert!(dir.path().join("kannaka.exe.config").exists());
+    }
+
+    // The regression this fixes: a pre-existing legacy `.old` must not block
+    // the swap. The old code renamed onto a fixed `.old` with
+    // REPLACE_EXISTING — which failed forever if that `.old` was locked by a
+    // process still running from it. The fix renames the live binary to a
+    // UNIQUE `bak-<pid>` name and never touches `.old`, so the install
+    // always proceeds.
+    #[cfg(windows)]
+    #[test]
+    fn swap_installs_new_binary_ignoring_legacy_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("app.exe");
+        std::fs::write(&target, b"v1").unwrap();
+        // A stale legacy `.old` is present; the swap must not depend on or
+        // be blocked by it.
+        std::fs::write(dir.path().join("app.exe.old"), b"stale").unwrap();
+        let new_file = dir.path().join("app.exe.new");
+        std::fs::write(&new_file, b"v2").unwrap();
+
+        let res = windows_swap_binary(&target, &new_file);
+        assert!(res.is_ok(), "swap must succeed with a legacy .old present: {res:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2"); // new binary installed
+        assert!(!new_file.exists()); // the staged .new was consumed
     }
 }
