@@ -233,7 +233,7 @@ EXAMPLE:
         ))
         .subcommand(passthrough("relate", "Find semantically related memories"))
         // Memory-tier ops + ADR-0031 triage (previously absent from --help).
-        .subcommand(passthrough("triage", "Evict redundant short-term memories (ADR-0031 Ξ-preserving prune; config [triage])"))
+        .subcommand(passthrough("triage", "Evict redundant short-term memories (ADR-0031 Ξ-preserving prune; config [triage]). --max-total N: hard FIFO size cap (evict oldest non-pinned over N; --apply to persist)"))
         .subcommand(passthrough("promote", "Promote a memory to the long-term tier (by id)"))
         .subcommand(passthrough("pin", "Pin a memory to the Pinned tier — never evicted by consolidation (by id)"))
         .subcommand(passthrough("demote", "Demote a memory to the short-term tier (by id)"))
@@ -387,7 +387,7 @@ EXAMPLE:
         .subcommand(passthrough("orchestrate", "Multi-step orchestration (legacy alias for ask --plan)"))
         .subcommand(passthrough("config", "Inspect / modify ~/.kannaka/config.toml"))
         .subcommand(passthrough("export", "Export all memories as JSON"))
-        .subcommand(passthrough("export-json", "Stream every wavefront as NDJSON to stdout (heavy)"))
+        .subcommand(passthrough("export-json", "Dump all memories as JSON to stdout. HEAVY: the full vectors are ~99% of the size and balloon to multiple GB on a large field. Use --slim (omit vector/xi_signature/geometry) for metadata-only consumers."))
         .subcommand(passthrough("import", "Import memories from a JSON file"))
         .subcommand(passthrough("import-json", "Import NDJSON wavefronts"))
         // `migrate` was the Dolt→HRM path; removed in v0.6.5 along

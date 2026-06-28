@@ -644,6 +644,33 @@ impl KannakaMemorySystem {
         Ok(n)
     }
 
+    /// Hard FIFO size cap. Returns the oldest-created, NON-Pinned memory ids
+    /// that exceed `max_total`, so the field can be bounded "regardless" of the
+    /// value-based ADR-0031 triage — a backstop against unbounded growth from
+    /// the always-on research/curiosity/engagement crons outpacing
+    /// consolidation (which is gated to dry-run under the belief substrate).
+    ///
+    /// Lightweight: O(n log n) sort by created_at, no O(n²) cosine scan, so it
+    /// is safe to run hourly on the 1-core hub. Pinned memories are never
+    /// evicted; if the non-pinned pool is smaller than the overflow, it evicts
+    /// as many as it can (the floor is the pinned count).
+    pub fn fifo_overflow_ids(&self, max_total: usize) -> Vec<Uuid> {
+        use crate::medium::types::Tier;
+        let all = match self.engine.store.all_memories() {
+            Ok(a) => a,
+            Err(_) => return Vec::new(),
+        };
+        if all.len() <= max_total {
+            return Vec::new();
+        }
+        let overflow = all.len() - max_total;
+        let mut evictable: Vec<&crate::memory::HyperMemory> =
+            all.iter().filter(|m| m.tier != Tier::Pinned).copied().collect();
+        // Oldest first (FIFO).
+        evictable.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        evictable.into_iter().take(overflow).map(|m| m.id).collect()
+    }
+
     /// ADR-0031 Phase 2b: capture the current amplitude of every short-term
     /// memory, keyed by id. Used to detect dream-strengthening for promotion.
     fn snapshot_short_term_amplitudes(&self) -> std::collections::HashMap<Uuid, f32> {
@@ -1586,6 +1613,27 @@ mod tests {
         sys.remember("memory two").unwrap();
         let report = sys.dream().unwrap();
         assert!(report.cycles > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fifo_overflow_caps_to_max_total() {
+        let dir = temp_dir("fifo");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        for i in 0..5 {
+            sys.remember(&format!("memory number {i}")).unwrap();
+        }
+        assert_eq!(sys.stats().total_memories, 5);
+        // Overflow = total - cap (oldest-created, non-pinned).
+        assert_eq!(sys.fifo_overflow_ids(3).len(), 2, "5 memories, cap 3 → 2 over");
+        assert_eq!(sys.fifo_overflow_ids(5).len(), 0, "at cap → nothing over");
+        assert_eq!(sys.fifo_overflow_ids(10).len(), 0, "under cap → nothing over");
+        assert_eq!(sys.fifo_overflow_ids(0).len(), 5, "cap 0 (none pinned) → all evictable");
+        // Applying the cap actually bounds the field.
+        let ids = sys.fifo_overflow_ids(2);
+        let n = sys.triage_forget(&ids).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(sys.stats().total_memories, 2, "field hard-bounded to max_total");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

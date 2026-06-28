@@ -1734,6 +1734,7 @@ fn main() {
             // Phase-1 reach (Pinned is never evicted either way).
             let mut apply = false;
             let mut include_long_term = false;
+            let mut max_total: Option<usize> = None;
             let mut params = kannaka_memory::openclaw::TriageParams {
                 redundancy: cfg.triage.redundancy,
                 min_amplitude: cfg.triage.min_amplitude,
@@ -1776,6 +1777,10 @@ fn main() {
                             params.max_evict = args[i + 1].parse().unwrap_or(params.max_evict);
                             i += 2;
                         }
+                        "--max-total" if i + 1 < args.len() => {
+                            max_total = args[i + 1].parse().ok();
+                            i += 2;
+                        }
                         other => {
                             eprintln!("[triage] ignoring unknown arg: {other}");
                             i += 1;
@@ -1784,6 +1789,32 @@ fn main() {
                 }
             }
             params.include_long_term = include_long_term;
+
+            // Hard FIFO size cap (`--max-total N`). A lightweight, predictable
+            // backstop against unbounded growth: evict the oldest-created
+            // non-Pinned memories until the field is <= N. Runs WITHOUT the
+            // O(n²) redundancy cosine scan below, so it is cheap enough for the
+            // hourly prune-cron on the 1-core hub. Takes precedence — when set,
+            // this is the whole operation.
+            if let Some(cap) = max_total {
+                let ids = sys.fifo_overflow_ids(cap);
+                println!(
+                    "[triage] FIFO cap: {} memories over max-total={cap} (oldest-created, non-pinned){}",
+                    ids.len(),
+                    if apply { "" } else { " (dry-run — pass --apply to forget)" }
+                );
+                if apply && !ids.is_empty() {
+                    warn_if_readonly("triage --max-total --apply");
+                    match sys.triage_forget(&ids) {
+                        Ok(n) => println!("[triage] FIFO-evicted={n} (oldest first; pinned protected)"),
+                        Err(e) => {
+                            eprintln!("Failed to persist HRM after FIFO cap: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                return;
+            }
 
             let sel = sys.triage_select(&params);
             println!(
@@ -3074,6 +3105,13 @@ fn main() {
             println!("Status announced to Flux.");
         }
         "export-json" => {
+            // `--slim` omits the per-memory hypervector, xi_signature, and
+            // geometry — the 10k-dim `vector` is ~99% of the output size, so on
+            // a multi-thousand-memory field the full export balloons a
+            // serde_json::Value tree + string to multiple GB and OOMs the 6 GB
+            // hub (it took the radio down repeatedly). Callers that only need
+            // metadata (the observatory's /api/hrm/memories) MUST use --slim.
+            let slim = args[command_start..].iter().any(|a| a == "--slim");
             let all_mems = sys
                 .engine
                 .store
@@ -3086,7 +3124,7 @@ fn main() {
             let output: Vec<serde_json::Value> = all_mems
                 .iter()
                 .map(|m| {
-                    serde_json::json!({
+                    let mut obj = serde_json::json!({
                         "id": m.id.to_string(),
                         "content": m.content,
                         "amplitude": m.amplitude,
@@ -3097,9 +3135,6 @@ fn main() {
                         "layer_depth": m.layer_depth,
                         "hallucinated": m.hallucinated,
                         "parents": m.parents,
-                        "vector": m.vector,
-                        "xi_signature": m.xi_signature,
-                        "geometry": m.geometry,
                         "connections": m.connections.iter().map(|c| {
                             serde_json::json!({
                                 "target_id": c.target_id.to_string(),
@@ -3107,7 +3142,15 @@ fn main() {
                                 "span": c.span
                             })
                         }).collect::<Vec<_>>()
-                    })
+                    });
+                    if !slim {
+                        if let Some(map) = obj.as_object_mut() {
+                            map.insert("vector".into(), serde_json::json!(m.vector));
+                            map.insert("xi_signature".into(), serde_json::json!(m.xi_signature));
+                            map.insert("geometry".into(), serde_json::json!(m.geometry));
+                        }
+                    }
+                    obj
                 })
                 .collect();
             println!("{}", serde_json::to_string(&output).unwrap());
