@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-06-28
+
+### Added — the dream self-bounds the field (KANNAKA_MAX_MEMORIES)
+
+Makes growth-bounding part of annealing itself, instead of a separate cron step.
+When `KANNAKA_MAX_MEMORIES` is set (>0), `dream()` evicts the lowest
+effective-strength (weakest / least-salient) non-Pinned memories down to the cap
+as its FINAL step — after it has strengthened the memories worth keeping, so it
+only sheds the post-anneal weakest. This is the energy-minimization the system
+was designed to do via consolidation, made to actually reclaim even while the
+resonance-merge is gated to dry-run under the belief substrate. Default
+(unset/0) is a no-op; Pinned never evicted. The Oracle dream-cron sets
+`KANNAKA_MAX_MEMORIES=2000`, replacing the standalone `triage --max-total` step.
+
 ## [0.8.3] — 2026-06-28
 
 ### Fixed — unbounded HRM growth OOMing the hub

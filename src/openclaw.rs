@@ -880,6 +880,33 @@ impl KannakaMemorySystem {
             eprintln!("[dream] promoted {} strengthened short-term memory(ies) → long-term", promoted);
         }
 
+        // Self-bounding size cap — the dream's own growth backstop. When
+        // KANNAKA_MAX_MEMORIES is set (>0), evict the lowest effective-strength
+        // (weakest / least-salient) non-Pinned memories down to the cap. This is
+        // the energy-minimization annealing is *meant* to do, made to actually
+        // reclaim even while the resonance-merge consolidation is gated to
+        // dry-run under the belief substrate (so the always-on research/
+        // curiosity/engagement crons can't grow the field without bound). It
+        // runs LAST — after the dream has strengthened the memories worth
+        // keeping — so it only sheds the post-anneal weakest. Default (unset/0)
+        // is a no-op; Pinned is never evicted.
+        if let Some(max_total) = std::env::var("KANNAKA_MAX_MEMORIES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+        {
+            let ids = self.lowest_value_overflow_ids(max_total);
+            if !ids.is_empty() {
+                match self.triage_forget(&ids) {
+                    Ok(n) if n > 0 => eprintln!(
+                        "[dream] size cap (max={}): evicted {} lowest effective-strength memory(ies)",
+                        max_total, n),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[dream] size cap failed: {e}"),
+                }
+            }
+        }
+
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
         if self.auto_save {
