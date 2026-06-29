@@ -1,10 +1,10 @@
 ---
 name: skill-kannaka-memory
 version: 2.0.1
-description: "Kannaka Holographic Resonance Medium (HRM) — wave-interference memory with chiral hemispheres, 96-class collective substrate, event-sourced HRM (durable JetStream snapshots + replay), collective recall across the swarm, NCS modality routing, NATS swarm sync. Use when: user asks to remember/recall/forget memories; trigger dream cycles; introspect Φ/Ξ/clusters; query the collective; manage snapshots / restore from disaster; bridge agents through the substrate; configure providers (Anthropic / OpenAI / Ollama)."
+description: "Kannaka Holographic Resonance Medium (HRM) — wave-interference memory with chiral hemispheres, 96-class collective substrate, event-sourced HRM (durable JetStream snapshots + replay), collective recall across the swarm, NCS modality routing, NATS swarm sync, an agentic coding loop (`kannaka agent --json`), and real quantum tools (qBraid). Use when: user asks to remember/recall/forget memories; trigger dream cycles; introspect Φ/Ξ/clusters; query the collective; manage snapshots / restore from disaster; bridge agents through the substrate; configure providers (Anthropic / OpenAI / Ollama); run the coding agent; or run quantum recall/circuits/entropy."
 ---
 
-# Kannaka Memory — HRM operations (v2.0.1)
+# Kannaka Memory — HRM operations (v2.1.0)
 
 ## What this is
 
@@ -43,6 +43,8 @@ AUTOMATICALLY activate when the user asks about:
 - "snapshot" / "restore" / "backup the HRM" / "rollback"
 - "events init" / "time machine"
 - LLM provider switching (Anthropic / OpenAI / Ollama)
+- "run the coding agent" / "agentic loop" / "kannaka agent"
+- "quantum recall" / "run a quantum circuit" / "quantum random" / "qBraid"
 
 Do NOT use for:
 - Radio station ops → `skill-kannaka-radio`
@@ -137,6 +139,47 @@ kannaka config set llm.base_url https://...   # optional (OpenAI-compatible / Ol
 
 API key fallback: `cfg.llm.api_key` → `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
 → `KANNAKA_LLM_API_KEY`.
+
+---
+
+## Agentic coding loop (`kannaka agent`)
+
+`kannaka agent` is an autonomous coding loop with filesystem/shell tools, backed by
+the same HRM memory — it `recall`s relevant context and `remember`s durable insights as
+it works. It is the **NDJSON harness backend** the kannaka-tui Chat/agent surface drives,
+but you can run it directly.
+
+```bash
+kannaka agent "implement X and run the tests" \
+    [--cwd DIR] [--mode default|yolo|plan] [--yolo] [--plan] \
+    [--session ID] [--model claude-sonnet-4-6] \
+    [--json] [--no-memory-tools] [--no-quantum]
+```
+
+- **Tools**: `read_file`/`glob`/`grep`/`list_dir` (always allowed), `write_file`/`edit_file`,
+  `bash` (destructive commands need approval), the HRM verbs `recall`/`remember`/`status`/
+  `list_clusters`, and the quantum tools below.
+- **Modes**: `default` (mutations prompt), `--yolo` (auto-approve), `--plan` (read-only planning).
+- `--json` emits one NDJSON event per line — the protocol a harness/TUI embeds.
+- `--session ID` persists the conversation under `~/.kannaka/sessions/agent-<id>.json`.
+- `--no-memory-tools` drops the HRM verbs; `--no-quantum` drops the quantum tools.
+
+## Quantum tools (qBraid / OpenQuantum)
+
+The agent ships **real quantum computing** tools (also available standalone via the
+`kannaka-quantum` package / MCP server). They default to the **free qBraid simulator** —
+naming a QPU device runs on real hardware and spends credits.
+
+| Tool | What it does |
+|------|--------------|
+| `quantum_devices` | List QPUs + simulators (status, qubits, cost). |
+| `quantum_run` | Execute an OpenQASM 3 circuit; returns measurement counts. |
+| `quantum_recall` | Resonance recall **as amplitude amplification** — Kannaka's recall run as interference on a quantum computer. |
+| `quantum_random` | True quantum entropy from measurement collapse. |
+
+Default device is `qbraid:qbraid:sim:qir-sv` (free, no credits). Real QPUs run only when you
+name a hardware `device` and opt into spend; never run a per-minute-billed device. Disable the
+whole group with `--no-quantum`. See `skill-kannaka-quantum` for the full surface and spend guards.
 
 ---
 
@@ -305,10 +348,17 @@ kannaka orchestrate <task>            # delegate to Kannaktopus (`npm i -g kanna
 - **"grew then reset itself"**: pre-v0.3.49, `swarm join` daemons didn't periodically
   flush. Drop's flush was best-effort and SIGKILL skipped it. Fixed in v0.3.49 —
   `kannaka update` on the affected agent.
+- **Unbounded field growth / OOM on always-on nodes**: set `KANNAKA_MAX_MEMORIES`
+  (>0) to give the **dream cycle** a self-bounding size cap — after annealing it evicts
+  the lowest effective-strength (weakest/least-salient) non-Pinned memories down to the
+  cap. Default (unset/0) is a no-op; Pinned memories are never evicted. Pairs with
+  `kannaka export-json --slim` for compact archives (v0.8.3+).
 
 ## Version
 
-Skill 2.0.1 covers kannaka-memory ≥ v0.3.50. ADR coverage: 0001 → 0028
+Skill 2.1.0 covers kannaka-memory ≥ v0.8.5. ADR coverage: 0001 → 0028
 (plus ADR-0027/ADR-0028 fully wired through Phase 3 — collective recall,
 events init/snapshot/list-snapshots/restore/dry-run/--from-url, autosnapshot,
-disk pruning).
+disk pruning). New since 2.0.1: the `kannaka agent` coding loop (NDJSON harness
+backend), real quantum tools (qBraid), and the `KANNAKA_MAX_MEMORIES` dream
+size cap.
