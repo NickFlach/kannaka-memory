@@ -171,7 +171,7 @@ fn tool_summary(name: &str, input: &Value) -> String {
             // Show the salient target (profile / slug / instance / env) for a
             // readable approval line, plus the spend ceiling for paid tools so
             // the human approves the real authorized amount.
-            let target = ["profile", "slug", "instance_id", "name", "env_id", "environment"]
+            let target = ["profile", "slug", "instance_id", "name", "env_id", "environment", "ssh_alias", "session_id"]
                 .iter()
                 .find_map(|k| input.get(k).and_then(|v| v.as_str()))
                 .unwrap_or("");
@@ -220,7 +220,10 @@ fn coding_system_prompt(cwd: &std::path::Path, mode: Mode) -> String {
            `lab_compute_up`/`lab_compute_down` (the Lab server) and `lab_provision_instance`/\
            `lab_start_instance`/`lab_stop_instance` (on-demand instances). For any PAID tool you \
            MUST call `lab_credits` + `lab_list_profiles` first, then pass allow_spend=true and a \
-           max_credits ceiling, and tell the user the burn rate; always stop compute when done.\n\n\
+           max_credits ceiling, and tell the user the burn rate; always stop compute when done. \
+           Remote agents: after provisioning an instance, `lab_ssh_configure` returns an ssh_alias, \
+           then `lab_agent_launch`/`lab_agent_list`/`lab_agent_read`/`lab_agent_send` run and drive a \
+           coding agent (claude/codex/opencode) ON that instance.\n\n\
          Working style:\n\
          - Investigate before acting: read the relevant files, search for usages.\n\
          - Make the smallest change that solves the task; match the surrounding style.\n\

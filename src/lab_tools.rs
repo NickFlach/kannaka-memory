@@ -49,6 +49,11 @@ pub fn is_lab_tool(name: &str) -> bool {
             | "lab_provision_instance"
             | "lab_start_instance"
             | "lab_stop_instance"
+            | "lab_ssh_configure"
+            | "lab_agent_launch"
+            | "lab_agent_list"
+            | "lab_agent_read"
+            | "lab_agent_send"
     )
 }
 
@@ -65,6 +70,8 @@ pub fn is_lab_readonly_tool(name: &str) -> bool {
             | "lab_list_instances"
             | "lab_list_kernels"
             | "lab_pip_freeze"
+            | "lab_agent_list"
+            | "lab_agent_read"
     )
 }
 
@@ -284,6 +291,74 @@ pub fn lab_tools() -> Vec<Tool> {
                 "required": ["instance_id"]
             }),
         },
+        // --- Phase 4: remote agents (run a coding agent on an instance) --- //
+        Tool {
+            name: "lab_ssh_configure",
+            description: "Configure local SSH access to a running on-demand instance and return its stable SSH alias. \
+                          Run this once before any lab_agent_* tool. Free.",
+            input_schema: json!({
+                "type": "object",
+                "properties": { "instance_id": { "type": "string" } },
+                "required": ["instance_id"]
+            }),
+        },
+        Tool {
+            name: "lab_agent_launch",
+            description: "Launch a coding agent (claude / codex / opencode) ON a remote provisioned instance over SSH — \
+                          have Kannaka drive another agent on cloud compute. Needs lab_ssh_configure first and the \
+                          instance running. The remote agent may incur its own model-API costs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "tool": { "type": "string", "default": "claude", "description": "claude | codex | opencode" },
+                    "instructions": { "type": "string", "description": "Initial task/prompt for the remote agent." },
+                    "cwd": { "type": "string" },
+                    "name": { "type": "string" },
+                    "agent_type": { "type": "string" },
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
+        Tool {
+            name: "lab_agent_list",
+            description: "List coding agents running on a remote instance. Read-only.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string" },
+                    "include_stopped": { "type": "boolean", "default": false }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
+        Tool {
+            name: "lab_agent_read",
+            description: "Read recent terminal output from a remote agent session. Read-only.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "lines": { "type": "integer", "minimum": 1, "default": 50 }
+                },
+                "required": ["ssh_alias", "session_id"]
+            }),
+        },
+        Tool {
+            name: "lab_agent_send",
+            description: "Send a prompt / keystrokes to a remote agent session (drive it). Mutating.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "text": { "type": "string" }
+                },
+                "required": ["ssh_alias", "session_id", "text"]
+            }),
+        },
     ]
 }
 
@@ -448,6 +523,77 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             args.push("lab-stop-instance".into());
             args.push("--instance-id".into());
             args.push(id);
+        }
+        "lab_ssh_configure" => {
+            let id = match req_str(input, "instance_id") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-ssh-configure".into());
+            args.push("--instance-id".into());
+            args.push(id);
+        }
+        "lab_agent_launch" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-agent-launch".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_str_opt(&mut args, "--tool", input, "tool");
+            push_str_opt(&mut args, "--instructions", input, "instructions");
+            push_str_opt(&mut args, "--cwd", input, "cwd");
+            push_str_opt(&mut args, "--name", input, "name");
+            push_str_opt(&mut args, "--agent-type", input, "agent_type");
+            push_json_opt(&mut args, "--tags", input, "tags");
+        }
+        "lab_agent_list" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-agent-list".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_flag(&mut args, "--include-stopped", input, "include_stopped");
+        }
+        "lab_agent_read" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            let sid = match req_str(input, "session_id") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-agent-read".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            args.push("--session-id".into());
+            args.push(sid);
+            push_int(&mut args, "--lines", input, "lines");
+        }
+        "lab_agent_send" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            let sid = match req_str(input, "session_id") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            let text = match req_str(input, "text") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-agent-send".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            args.push("--session-id".into());
+            args.push(sid);
+            args.push("--text".into());
+            args.push(text);
         }
         other => return (format!("unknown lab tool: {other}"), true),
     }
