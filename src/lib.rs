@@ -78,6 +78,10 @@ pub mod coding_tools;
 // the kannaka-quantum bridge.
 pub mod quantum_tools;
 
+// qBraid Lab / infrastructure tools for the agent — credits, environments,
+// compute profiles, Lab server, and on-demand instances via the same bridge.
+pub mod lab_tools;
+
 // SpaceChild SSO identity for swarm agents (spacechild-auth client + token store).
 pub mod identity;
 

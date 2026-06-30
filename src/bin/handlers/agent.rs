@@ -28,6 +28,7 @@
 use kannaka_memory::agent::{self, AgentError, ContentBlock, Message, Tool};
 use kannaka_memory::coding_tools::{self, ToolCtx};
 use kannaka_memory::quantum_tools;
+use kannaka_memory::lab_tools;
 use kannaka_memory::openclaw::KannakaMemorySystem;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -92,9 +93,39 @@ fn is_memory_tool(name: &str) -> bool {
 /// Decide whether a tool call may run. Read-only coding tools and all memory
 /// tools run freely; filesystem/shell mutations follow the permission mode.
 fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>, key: &str) -> Decision {
-    if coding_tools::is_read_only(name) || is_memory_tool(name) || quantum_tools::is_quantum_tool(name) {
+    if coding_tools::is_read_only(name) || is_memory_tool(name) || quantum_tools::is_quantum_tool(name)
+        || lab_tools::is_lab_readonly_tool(name)
+    {
         // Quantum tools run on qBraid, not the local machine — never gated.
+        // Lab read-only tools (credits/list/status) cost nothing and mutate
+        // nothing, so they're auto-allowed too.
         return Decision::Allow;
+    }
+    if lab_tools::is_lab_tool(name) {
+        if lab_tools::is_lab_paid_tool(name) {
+            // Real money, open-ended per-minute billing: NEVER auto-approve —
+            // not in yolo, and not via a persisted allowlist entry. Every paid
+            // launch needs a fresh human OK (plan refuses outright). This is the
+            // one class of action where yolo does not blanket-approve.
+            return match mode {
+                Mode::Plan => Decision::Deny("plan mode — propose the action instead of running it"),
+                _ => Decision::Ask,
+            };
+        }
+        // Free lab mutations (env/kernel lifecycle, stop/down). These must NOT
+        // ride the coding-edit auto-approve path; gate them like edits: ask
+        // (unless allowlisted), deny in plan, allow in yolo.
+        return match mode {
+            Mode::Yolo => Decision::Allow,
+            Mode::Plan => Decision::Deny("plan mode — propose the action instead of running it"),
+            _ => {
+                if allowlist.contains(key) {
+                    Decision::Allow
+                } else {
+                    Decision::Ask
+                }
+            }
+        };
     }
     // name is now a mutating coding tool: write_file | edit_file | bash
     match mode {
@@ -118,6 +149,15 @@ fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>,
 fn allow_key(name: &str, input: &Value) -> String {
     if name == "bash" {
         format!("bash:{}", input.get("command").and_then(|v| v.as_str()).unwrap_or(""))
+    } else if lab_tools::is_lab_paid_tool(name) {
+        // Scope "allow always" for paid compute to the specific profile/instance
+        // so blessing one launch doesn't bless every future paid launch.
+        let target = input
+            .get("profile")
+            .or_else(|| input.get("instance_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        format!("{name}:{target}")
     } else {
         name.to_string()
     }
@@ -127,6 +167,24 @@ fn tool_summary(name: &str, input: &Value) -> String {
     match name {
         "bash" => input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         "write_file" | "edit_file" => input.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        _ if lab_tools::is_lab_tool(name) => {
+            // Show the salient target (profile / slug / instance / env) for a
+            // readable approval line, plus the spend ceiling for paid tools so
+            // the human approves the real authorized amount.
+            let target = ["profile", "slug", "instance_id", "name", "env_id", "environment"]
+                .iter()
+                .find_map(|k| input.get(k).and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let mut s = if target.is_empty() { name.to_string() } else { format!("{name} {target}") };
+            if lab_tools::is_lab_paid_tool(name) {
+                let allow = input.get("allow_spend").and_then(|v| v.as_bool()).unwrap_or(false);
+                match input.get("max_credits").and_then(|v| v.as_f64()) {
+                    Some(m) => s.push_str(&format!(" [PAID allow_spend={allow} max_credits={m}]")),
+                    None => s.push_str(&format!(" [PAID allow_spend={allow} max_credits=unset]")),
+                }
+            }
+            s
+        }
         _ => serde_json::to_string(input).unwrap_or_default(),
     }
 }
@@ -153,7 +211,16 @@ fn coding_system_prompt(cwd: &std::path::Path, mode: Mode) -> String {
            computing via qBraid. `quantum_run` executes OpenQASM 3 circuits (free simulator \
            by default; name a QPU device to run on hardware). `quantum_recall` performs \
            resonance recall as amplitude amplification; `quantum_random` gives true quantum \
-           entropy.\n\n\
+           entropy.\n\
+         - lab_* : manage qBraid Lab infrastructure. Read-only/free: `lab_credits` (balance), \
+           `lab_list_profiles` (compute instance types + per-minute cost — check before spending), \
+           `lab_list_envs`/`lab_env_info`, `lab_compute_status`, `lab_compute_usage`, \
+           `lab_list_instances`. Free mutations: `lab_create_env` (build an environment, packages \
+           install during the build), `lab_delete_env`. PAID (bills credits per wall-clock minute): \
+           `lab_compute_up`/`lab_compute_down` (the Lab server) and `lab_provision_instance`/\
+           `lab_start_instance`/`lab_stop_instance` (on-demand instances). For any PAID tool you \
+           MUST call `lab_credits` + `lab_list_profiles` first, then pass allow_spend=true and a \
+           max_credits ceiling, and tell the user the burn rate; always stop compute when done.\n\n\
          Working style:\n\
          - Investigate before acting: read the relevant files, search for usages.\n\
          - Make the smallest change that solves the task; match the surrounding style.\n\
@@ -165,6 +232,66 @@ fn coding_system_prompt(cwd: &std::path::Path, mode: Mode) -> String {
         os = os,
         mode = mode.label(),
     )
+}
+
+/// Track started paid compute so a forgotten, still-billing server/instance
+/// can't go unnoticed. Updated after each paid/stop tool result.
+fn update_active_compute(
+    set: &mut std::collections::HashSet<String>,
+    name: &str,
+    input: &Value,
+    content: &str,
+    is_error: bool,
+) {
+    if is_error {
+        return;
+    }
+    match name {
+        "lab_compute_up" => {
+            set.insert("Lab server".to_string());
+        }
+        "lab_compute_down" => {
+            set.remove("Lab server");
+        }
+        "lab_provision_instance" => {
+            // The instance id is assigned by the platform → read it from the result.
+            if let Some(id) = serde_json::from_str::<Value>(content)
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("instance_id"))
+                .and_then(|v| v.as_str())
+            {
+                set.insert(format!("instance {id}"));
+            }
+        }
+        "lab_start_instance" => {
+            if let Some(id) = input.get("instance_id").and_then(|v| v.as_str()) {
+                set.insert(format!("instance {id}"));
+            }
+        }
+        "lab_stop_instance" => {
+            if let Some(id) = input.get("instance_id").and_then(|v| v.as_str()) {
+                set.remove(&format!("instance {id}"));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Emit a prominent reminder if any paid compute is still billing.
+fn warn_active_compute(set: &std::collections::HashSet<String>, emit: &impl Fn(Value)) {
+    if set.is_empty() {
+        return;
+    }
+    let mut targets: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
+    targets.sort_unstable();
+    emit(json!({
+        "kind": "warning",
+        "text": format!(
+            "⚠️ ACTIVE PAID COMPUTE still billing per minute: {}. Stop it with lab_compute_down / lab_stop_instance when done.",
+            targets.join(", ")
+        ),
+    }));
 }
 
 fn session_path(id: &str) -> Option<PathBuf> {
@@ -184,6 +311,7 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
     let mut model_override: Option<String> = None;
     let mut no_memory = false;
     let mut no_quantum = false;
+    let mut no_lab = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -216,6 +344,7 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
             }
             "--no-memory-tools" => no_memory = true,
             "--no-quantum" => no_quantum = true,
+            "--no-lab" => no_lab = true,
             _ => {}
         }
         i += 1;
@@ -253,6 +382,12 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
     if !no_quantum {
         tools.extend(quantum_tools::quantum_tools());
     }
+    // qBraid Lab / infrastructure tools (manage credits/envs/compute via the
+    // same bridge). Paid compute is gated behind allow_spend + approval; the
+    // bridge surfaces a clear hint if qbraid_core isn't installed.
+    if !no_lab {
+        tools.extend(lab_tools::lab_tools());
+    }
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name).collect();
     let system = coding_system_prompt(&cwd, mode);
 
@@ -267,6 +402,10 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
 
     let mut tool_ctx = ToolCtx::new(cwd.clone());
     let mut allowlist: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Paid compute (Lab server / on-demand instances) the agent has started and
+    // not yet stopped — surfaced as a reminder each turn and on exit so a
+    // still-billing resource isn't silently forgotten.
+    let mut active_compute: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     emit(json!({
         "kind": "ready",
@@ -304,7 +443,7 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
                 messages.push(Message::user_text(text));
                 run_turn(
                     &mut client, &cfg_owned, &mut did_fallback, &system, &tools, &mut messages,
-                    sys, &mut tool_ctx, &mut allowlist, mode, &mut lines, &emit,
+                    sys, &mut tool_ctx, &mut allowlist, &mut active_compute, mode, &mut lines, &emit,
                 );
                 if let Some(p) = &sess_path {
                     let _ = agent::save_session(p, &messages);
@@ -313,6 +452,8 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
             _ => continue, // stray approval with no pending request, etc.
         }
     }
+    // On shutdown (exit / EOF), make sure any still-billing compute is flagged.
+    warn_active_compute(&active_compute, &emit);
 }
 
 /// Run the agentic loop for one user turn: repeatedly call the model, execute
@@ -369,10 +510,13 @@ fn run_turn(
     sys: &mut KannakaMemorySystem,
     tool_ctx: &mut ToolCtx,
     allowlist: &mut std::collections::HashSet<String>,
+    active_compute: &mut std::collections::HashSet<String>,
     mode: Mode,
     lines: &mut std::io::Lines<std::io::StdinLock<'_>>,
     emit: &impl Fn(Value),
 ) {
+    // Remind the user up front if paid compute from a prior turn is still billing.
+    warn_active_compute(active_compute, emit);
     let mut iteration = 0usize;
     loop {
         iteration += 1;
@@ -436,9 +580,11 @@ fn run_turn(
         for (id, name, input) in tool_uses {
             let read_only = coding_tools::is_read_only(&name)
                 || is_memory_tool(&name)
-                || quantum_tools::is_quantum_tool(&name);
-            let danger = name == "bash"
-                && input.get("command").and_then(|v| v.as_str()).map(coding_tools::bash_is_destructive).unwrap_or(false);
+                || quantum_tools::is_quantum_tool(&name)
+                || lab_tools::is_lab_readonly_tool(&name);
+            let danger = (name == "bash"
+                && input.get("command").and_then(|v| v.as_str()).map(coding_tools::bash_is_destructive).unwrap_or(false))
+                || lab_tools::is_lab_paid_tool(&name);
             emit(json!({
                 "kind": "tool_use", "id": id, "name": name, "input": input,
                 "read_only": read_only, "danger": danger,
@@ -460,6 +606,8 @@ fn run_turn(
                 _ => {
                     if quantum_tools::is_quantum_tool(&name) {
                         quantum_tools::dispatch_quantum_tool(&name, &input)
+                    } else if lab_tools::is_lab_tool(&name) {
+                        lab_tools::dispatch_lab_tool(&name, &input)
                     } else if coding_tools::is_coding_tool(&name) {
                         coding_tools::dispatch_coding_tool(tool_ctx, &name, &input)
                     } else {
@@ -472,6 +620,8 @@ fn run_turn(
                 "kind": "tool_result", "id": id, "name": name,
                 "content": content, "is_error": is_error,
             }));
+            // Track started/stopped paid compute so it can't be forgotten.
+            update_active_compute(active_compute, &name, &input, &content, is_error);
             result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content,
