@@ -689,6 +689,10 @@ fn run_bridge(args: &[String]) -> (String, bool) {
 
     let mut child = match Command::new(&py)
         .args(&full)
+        // Force Python UTF-8 mode: the remote-agent tools read a remote TUI
+        // whose box-drawing chars crash qBraid's default-cp1252 subprocess
+        // decoding on Windows. UTF-8 mode makes that decode correctly.
+        .env("PYTHONUTF8", "1")
         .env("KANNAKA_QUIET", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
