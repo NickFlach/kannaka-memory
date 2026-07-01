@@ -117,6 +117,19 @@ pub enum ConsolidateMode {
     Apply,
 }
 
+/// ADR-0036 belief-safe merge: default cap on the fraction of the field a single
+/// consolidation pass may absorb while the belief substrate is active. The
+/// 295→82 over-absorb (the failure v0.7.3 gated) would have been bounded to
+/// ~295→236 by this backstop alone.
+pub const DEFAULT_BELIEF_ABSORB_FRAC: f32 = 0.20;
+
+/// ADR-0036 belief-safe merge: cosine floor (on mean-CENTERED embeddings) for the
+/// semantic-redundancy gate while belief is active. Higher than the raw
+/// `merge_sim` because centering removes the shared anisotropic component that
+/// inflates raw cosine on a cone-clustered field, so only genuine residual
+/// redundancy clears the bar.
+pub const DEFAULT_MERGE_SIM_BELIEF: f32 = 0.95;
+
 /// Tunables for the consolidation planner, sourced from env so the dry-run can
 /// be observed and the thresholds tuned before any destructive apply lands.
 #[derive(Debug, Clone)]
@@ -129,6 +142,16 @@ pub struct ConsolidateOpts {
     pub merge_phase_cos: f32,
     /// ShortTerm energy below which an unreactivated trace would be evicted (M3).
     pub shortterm_evict: f32,
+    /// ADR-0036 belief-safe merge — semantic floor on the mean-CENTERED embedding
+    /// when belief is active (removes the anisotropic shared component so belief-
+    /// induced phase/cosine alignment can't group semantically-distinct memories).
+    pub merge_sim_belief: f32,
+    /// ADR-0036 belief-safe merge — max fraction of the examined field a single
+    /// pass may absorb. `None` uses the belief-aware default: capped at
+    /// [`DEFAULT_BELIEF_ABSORB_FRAC`] while belief is active, uncapped otherwise
+    /// (so the default non-belief path stays byte-identical). `Some(f)` forces the
+    /// cap regardless of belief; `Some(1.0)` disables it.
+    pub max_absorb_frac: Option<f32>,
 }
 
 impl Default for ConsolidateOpts {
@@ -138,6 +161,8 @@ impl Default for ConsolidateOpts {
             merge_sim: 0.92,
             merge_phase_cos: std::f32::consts::FRAC_1_SQRT_2, // cos(π/4)
             shortterm_evict: 0.15,
+            merge_sim_belief: DEFAULT_MERGE_SIM_BELIEF,
+            max_absorb_frac: None,
         }
     }
 }
@@ -167,6 +192,13 @@ impl ConsolidateOpts {
         if let Ok(v) = std::env::var("KANNAKA_SHORTTERM_EVICT") {
             if let Ok(f) = v.parse() { o.shortterm_evict = f; }
         }
+        // ADR-0036 belief-safe merge tunables.
+        if let Ok(v) = std::env::var("KANNAKA_MERGE_SIM_BELIEF") {
+            if let Ok(f) = v.parse() { o.merge_sim_belief = f; }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_MERGE_MAX_ABSORB_FRAC") {
+            if let Ok(f) = v.parse::<f32>() { o.max_absorb_frac = Some(f.clamp(0.0, 1.0)); }
+        }
         o
     }
 }
@@ -192,6 +224,22 @@ pub struct ConsolidateReport {
     pub projected_memories: usize,
     /// False in Phase 0 (planning only); true once Phase 2 apply lands.
     pub applied: bool,
+    /// ADR-0036 belief-safe merge — the semantic gate ran on mean-CENTERED
+    /// embeddings (the belief path), not raw cosine.
+    #[serde(default)]
+    pub centered: bool,
+    /// ADR-0036 belief-safe merge — the per-pass absorb cap trimmed the plan
+    /// (fewer groups applied than were found). Logged loudly when true.
+    #[serde(default)]
+    pub absorb_capped: bool,
+    /// ADR-0036 belief-safe merge — redundant groups the criteria found BEFORE
+    /// the absorb cap trimmed them (≥ `groups_found`).
+    #[serde(default)]
+    pub groups_before_cap: usize,
+    /// ADR-0036 belief-safe merge — wavefronts the criteria would absorb BEFORE
+    /// the cap (≥ `would_absorb`).
+    #[serde(default)]
+    pub absorb_before_cap: usize,
 }
 
 impl Default for Tier {

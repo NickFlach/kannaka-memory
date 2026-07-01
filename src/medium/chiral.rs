@@ -38,6 +38,20 @@ pub fn belief_phase_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// ADR-0036 belief-safe merge: opt in to the DESTRUCTIVE resonance-merge apply
+/// while the belief substrate is active. **Default OFF** — set
+/// `KANNAKA_MERGE_UNDER_BELIEF=1|on|true`. When off (the default), a dream under
+/// belief force-downgrades `apply` to `dryrun` (the v0.7.3 safety gate), so
+/// merely deploying with `KANNAKA_CONSOLIDATE=on` on a belief field never
+/// mutates. When on, apply runs — but with the belief-safe guardrails
+/// (mean-centered semantic gate + per-pass absorb cap) that bound the 295→82
+/// over-absorb this flag guards against.
+pub fn merge_under_belief_enabled() -> bool {
+    std::env::var("KANNAKA_MERGE_UNDER_BELIEF")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Content-smooth born phase: `atan2` of the embedding projected onto two fixed
 /// pseudo-random directions. Similar embeddings → similar phase (recall-safe —
 /// constructive interference preserved); the projection winds where the

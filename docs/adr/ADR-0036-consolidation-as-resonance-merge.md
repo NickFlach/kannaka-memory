@@ -213,6 +213,40 @@ This stack has a history of accepted bulk memory loss (corrupt `.hrm` backups, 2
 
 ---
 
+## Phase 2b — Belief-safe merge (ADR-0037 interaction)
+
+*Added after the belief substrate (ADR-0037) shipped and the first destructive apply on a belief field absorbed **295→82** in one dream.*
+
+### Root cause
+
+The merge groups a pair iff it clears **two** gates: vector cosine ≥ `merge_sim` (0.92) **and** phase coherence `cos Δφ` ≥ `merge_phase_cos` (cos π/4). The two were meant to be *independent* lines of evidence — "semantically redundant" **and** "phase-locked". Under belief they collapse into one correlated signal:
+
+- **Phase is derived from content.** Belief born-phase is `content_born_phase(vector − corpus_mean)` — `atan2` of the mean-centered embedding projected onto two fixed directions (`chiral.rs`). `apply_belief_coupling` / `rephase_from_content` only ever touch **phase** ("energy and vectors are untouched"). So the phase gate is a lossy 2-D function of the *same* embedding the cosine gate reads — it rubber-stamps the cosine groups instead of discriminating.
+- **Raw cosine is anisotropy-inflated.** Real sentence embeddings are cone-clustered (the `num_clusters=1` root the belief code fights by **mean-centering**). Genuinely-distinct memories clear 0.92 on the shared component alone. The merge, however, read **raw, uncentered** vectors — the one place in the belief stack that skipped the centering everything else does.
+
+Union-find then transitively chains the whole anisotropic blob into one giant group and absorbs all-but-one. (Without belief, all phases are 0, so `cos Δφ = 1` always and the merge is a pure cosine pass; prod never met this until `KANNAKA_CONSOLIDATE=on` ran on a belief field.)
+
+**v0.7.3** (`0f29186`) shipped an absolute stop-gap: whenever `belief_phase_enabled()`, `openclaw::dream` force-downgrades `apply → dryrun`. Safe, but it means the dream never self-heals (merges) under belief at all.
+
+### Design
+
+Three guardrails, all living in one shared grouping pass — `hrm_store::compute_merge_grouping` — that **both** `plan_consolidation` (dry-run) and `apply_consolidation` now call, so the projection and the destructive apply can never disagree about which memories merge:
+
+1. **Semantic gate on the mean-CENTERED embedding (belief only).** Center the examined field, then gate on centered cosine against a higher floor `merge_sim_belief` (`KANNAKA_MERGE_SIM_BELIEF`, default 0.95). Centering removes the shared anisotropic/belief-core component, so only genuine *residual* redundancy groups. This is also the concrete answer to "belief-independent phase": under belief the honest redundancy signal is the centered content correlation, not the content-derived phase — so the centered cosine, not the phase, carries the decision. Phase stays as a secondary constraint (unchanged).
+2. **Per-pass absorb cap.** `KANNAKA_MERGE_MAX_ABSORB_FRAC` bounds the fraction of the field one apply may absorb; groups are admitted in descending cohesion (mean cosine-to-carrier) order until the cap is hit, the rest left intact and logged loudly. Default: capped at **0.20** while belief is active, **uncapped** otherwise (so the pre-existing non-belief path is byte-identical). This alone bounds *any* over-grouping — 295→82 becomes ~295→236 — even if the criteria are fooled.
+3. **Opt-in gate.** The v0.7.3 force-downgrade is now conditional: `apply` under belief runs **only** when `KANNAKA_MERGE_UNDER_BELIEF=1`; otherwise it still falls back to `dryrun`. Belief-core protection reuses the existing tier machinery — the carrier is the max-effective-strength member and inherits the strongest tier, so the strongest (belief-core-like) memory in a group always survives; `Pinned`/`LongTerm` protections are unchanged. No new per-memory "crystallized" flag is introduced (none exists in the data model, and inventing one would be unsupported scope).
+
+### Enablement procedure (production)
+
+Oracle dream-cron runs `KANNAKA_CONSOLIDATE=on` **and** belief on. Deploying this change is **inert** — the opt-in defaults off, so the gate still forces `dryrun`; nothing merges destructively merely by shipping. To actually enable, on `kannaka-prime` only:
+
+1. Snapshot first (`kannaka substrate` snapshot / cron, respecting `KANNAKA_SNAPSHOT_RETAIN`).
+2. Watch a nightly `dryrun` digest under belief and confirm the centered plan is small and sane (`⚠ absorb cap engaged` lines name what was held back).
+3. Set `KANNAKA_MERGE_UNDER_BELIEF=1` for **one** controlled dream; inspect the digest and `observe --json` (`groups_before_cap`/`absorb_before_cap` vs `would_absorb`, `centered=true`).
+4. Only widen `KANNAKA_MERGE_MAX_ABSORB_FRAC` after repeated clean runs. Never enable on the witness/read replicas.
+
+---
+
 ## Testing
 
 - **Unit:** redundant-set grouping (cosine + phase gate); superposition amplitude matches `collective/merge.rs` formula; merge representative inherits max tier; salience monotonicity; tier-aware floor (ShortTerm can fall below 0.5, LongTerm cannot).

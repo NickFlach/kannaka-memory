@@ -14,7 +14,259 @@ use crate::store::{MediumBackend, StoreError};
 use crate::encoding::EncodingPipeline;
 use crate::medium::{Medium, Resonance};
 use crate::medium::types::{Tier, ConsolidateOpts, ConsolidateMode, ConsolidateReport};
+use crate::medium::types::{DEFAULT_BELIEF_ABSORB_FRAC};
 use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
+
+// ───────────────────────────────────────────────────────────────────────────
+// ADR-0036 belief-safe merge — the single grouping pass shared by
+// `plan_consolidation` (read-only) and `apply_consolidation` (mutating).
+// Centralising the criteria here is what makes the dry-run projection and the
+// destructive apply provably agree about which memories merge, and it is the one
+// place the belief-safety guardrails live (mean-centered semantic gate + the
+// per-pass absorb cap).
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Outcome of the shared grouping pass. `admitted` holds the groups that will
+/// actually be merged (each a list of member indices into the caller's
+/// id-ordered item slice, length ≥ 2); the `*_before_cap` tallies record what the
+/// criteria found before the absorb cap trimmed the plan.
+struct MergeGrouping {
+    admitted: Vec<Vec<usize>>,
+    groups_before_cap: usize,
+    absorb_before_cap: usize,
+    absorb_cap: Option<usize>,
+    centered: bool,
+}
+
+impl MergeGrouping {
+    fn admitted_absorb(&self) -> usize {
+        self.admitted.iter().map(|m| m.len().saturating_sub(1)).sum()
+    }
+    fn capped(&self) -> bool {
+        self.admitted_absorb() < self.absorb_before_cap
+    }
+}
+
+/// Group redundant, phase-locked, non-`Pinned` items and apply the per-pass
+/// absorb cap.
+///
+/// The redundancy criterion mirrors ADR-0036 M1: two items merge iff their
+/// vectors are near-parallel (cosine ≥ threshold) AND constructively phase-locked
+/// (cos Δphase ≥ `merge_phase_cos`). Two belief-safety changes ride on `belief`:
+///
+///  * **Semantic gate on the mean-CENTERED embedding.** Real embeddings are
+///    anisotropic (cone-clustered — the same root as `num_clusters=1`), so raw
+///    cosine is inflated: genuinely-distinct memories clear 0.92 on the shared
+///    component alone. The belief phase is itself a lossy 2-D projection of that
+///    same centered embedding, so it rubber-stamps the inflated cosine groups
+///    rather than discriminating — this is how one dream absorbed 295→82.
+///    Centering removes the shared component so only genuine *residual*
+///    redundancy groups, and the floor rises to `merge_sim_belief`.
+///  * **Per-pass absorb cap.** Groups are admitted in descending cohesion order
+///    until the cap (`max_absorb_frac` of the field) is reached; the rest are
+///    left intact and the caller logs loudly. This bounds ANY over-grouping —
+///    the 295→82 becomes ~295→236 — independent of whether the criteria were
+///    fooled.
+///
+/// The default (belief-off, no explicit `max_absorb_frac`) path is byte-identical
+/// to the pre-existing raw-cosine grouping with every group admitted.
+fn compute_merge_grouping(
+    vectors: &[&[f32]],
+    phases: &[f32],
+    tiers: &[Tier],
+    energies: &[f32],
+    opts: &ConsolidateOpts,
+    belief: bool,
+) -> MergeGrouping {
+    use ndarray::Array2;
+
+    let n = vectors.len();
+    let mut grouping = MergeGrouping {
+        admitted: Vec::new(),
+        groups_before_cap: 0,
+        absorb_before_cap: 0,
+        absorb_cap: None,
+        centered: belief,
+    };
+    if n < 2 {
+        return grouping;
+    }
+
+    let dim = vectors.iter().map(|v| v.len()).find(|&l| l > 0).unwrap_or(0);
+    if dim == 0 {
+        return grouping;
+    }
+
+    // Build the N×D matrix; rows with a mismatched/empty vector or a Pinned tier
+    // are marked unusable (never grouped).
+    let mut mat = Array2::<f32>::zeros((n, dim));
+    let mut usable = vec![false; n];
+    for (i, v) in vectors.iter().enumerate() {
+        if v.len() == dim && tiers[i] != Tier::Pinned {
+            for (d, &x) in v.iter().enumerate() {
+                mat[[i, d]] = x;
+            }
+            usable[i] = true;
+        }
+    }
+
+    // Belief path: mean-center the usable rows so the cosine gate measures genuine
+    // residual redundancy, not the shared anisotropic component.
+    if belief {
+        let mut mean = vec![0.0f32; dim];
+        let mut cnt = 0usize;
+        for i in 0..n {
+            if usable[i] {
+                for d in 0..dim {
+                    mean[d] += mat[[i, d]];
+                }
+                cnt += 1;
+            }
+        }
+        if cnt > 0 {
+            for m in mean.iter_mut() {
+                *m /= cnt as f32;
+            }
+            for i in 0..n {
+                if usable[i] {
+                    for d in 0..dim {
+                        mat[[i, d]] -= mean[d];
+                    }
+                }
+            }
+        }
+    }
+
+    // One matmul for all pairwise dot products; norms from the diagonal.
+    let gram = mat.dot(&mat.t());
+    let norms: Vec<f32> = (0..n).map(|i| gram[[i, i]].max(0.0).sqrt()).collect();
+    let cos_p: Vec<f32> = phases.iter().map(|p| p.cos()).collect();
+    let sin_p: Vec<f32> = phases.iter().map(|p| p.sin()).collect();
+
+    let sim_thresh = if belief {
+        opts.merge_sim.max(opts.merge_sim_belief)
+    } else {
+        opts.merge_sim
+    };
+
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    let eps = 1e-6_f32;
+    for i in 0..n {
+        if !usable[i] || norms[i] < eps {
+            continue;
+        }
+        for j in (i + 1)..n {
+            if !usable[j] || norms[j] < eps {
+                continue;
+            }
+            let cos_sim = gram[[i, j]] / (norms[i] * norms[j]);
+            if cos_sim < sim_thresh {
+                continue;
+            }
+            let phase_coh = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
+            if phase_coh < opts.merge_phase_cos {
+                continue;
+            }
+            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+            if ri != rj {
+                parent[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
+
+    // Collect members per root; keep only real groups (size ≥ 2).
+    let mut roots: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        if !usable[i] {
+            continue;
+        }
+        let r = find(&mut parent, i);
+        roots.entry(r).or_default().push(i);
+    }
+    let mut group_vec: Vec<Vec<usize>> = roots.into_values().filter(|m| m.len() >= 2).collect();
+
+    grouping.groups_before_cap = group_vec.len();
+    grouping.absorb_before_cap = group_vec.iter().map(|m| m.len() - 1).sum();
+
+    // Effective absorb cap. `max_absorb_frac` overrides; otherwise belief caps at
+    // DEFAULT_BELIEF_ABSORB_FRAC and the non-belief default is uncapped (so the
+    // pre-existing path is byte-identical).
+    let frac = opts
+        .max_absorb_frac
+        .unwrap_or(if belief { DEFAULT_BELIEF_ABSORB_FRAC } else { 1.0 });
+    let cap: Option<usize> = if frac >= 1.0 {
+        None
+    } else {
+        Some((frac * n as f32).floor() as usize)
+    };
+    grouping.absorb_cap = cap;
+
+    match cap {
+        None => {
+            // Admit every group; order is irrelevant to the resulting set.
+            grouping.admitted = group_vec;
+        }
+        Some(cap_n) => {
+            // Cohesion = mean cosine of members to the group's strongest (max-
+            // energy) member, on the SAME (centered-or-raw) vectors used to group.
+            // Tightest clusters are admitted first; a lone huge transitive blob is
+            // the first thing dropped.
+            let cohesion = |members: &[usize]| -> f32 {
+                let rep = *members
+                    .iter()
+                    .max_by(|&&a, &&b| {
+                        energies[a].partial_cmp(&energies[b]).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap();
+                if norms[rep] < eps {
+                    return 0.0;
+                }
+                let mut sum = 0.0f32;
+                let mut c = 0.0f32;
+                for &mi in members {
+                    if mi == rep || norms[mi] < eps {
+                        continue;
+                    }
+                    sum += gram[[rep, mi]] / (norms[rep] * norms[mi]);
+                    c += 1.0;
+                }
+                if c == 0.0 { 0.0 } else { sum / c }
+            };
+            let mut scored: Vec<(f32, usize, Vec<usize>)> = group_vec
+                .drain(..)
+                .map(|m| {
+                    let coh = cohesion(&m);
+                    let min_idx = *m.iter().min().unwrap();
+                    (coh, min_idx, m)
+                })
+                .collect();
+            // Descending cohesion, then smallest member index for determinism.
+            scored.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            let mut absorbed = 0usize;
+            for (_, _, m) in scored {
+                let this = m.len() - 1;
+                if absorbed + this <= cap_n {
+                    absorbed += this;
+                    grouping.admitted.push(m);
+                }
+                // else: leave this group intact (never partially merge a group).
+            }
+        }
+    }
+
+    grouping
+}
 
 /// HRM-backed memory store that implements the MediumBackend trait.
 /// 
@@ -734,8 +986,6 @@ impl HrmStore {
     /// (cosine ≥ `merge_sim`) AND they are constructively phase-locked
     /// (cos Δphase ≥ `merge_phase_cos`). `Pinned` wavefronts are never grouped.
     pub fn plan_consolidation(&self, opts: &ConsolidateOpts) -> ConsolidateReport {
-        use ndarray::Array2;
-
         let mode_str = match opts.mode {
             ConsolidateMode::Off => "off",
             ConsolidateMode::DryRun => "dryrun",
@@ -751,7 +1001,12 @@ impl HrmStore {
             ..Default::default()
         };
 
-        let entries: Vec<(&Uuid, &HyperMemory)> = self.memory_cache.iter().collect();
+        // Examine the unified cache (user-facing count) in a deterministic,
+        // id-sorted order so the plan and the destructive apply agree member-for-
+        // member (dry-run parity — both feed `compute_merge_grouping` the same
+        // id-ordered slice).
+        let mut entries: Vec<(&Uuid, &HyperMemory)> = self.memory_cache.iter().collect();
+        entries.sort_by_key(|(id, _)| **id);
         let n = entries.len();
         report.memories_examined = n;
         report.projected_memories = n;
@@ -759,89 +1014,21 @@ impl HrmStore {
             return report;
         }
 
-        // Vector dimension from the first usable row.
-        let dim = entries
-            .iter()
-            .map(|(_, m)| m.vector.len())
-            .find(|&l| l > 0)
-            .unwrap_or(0);
-        if dim == 0 {
-            return report;
-        }
+        let belief = crate::medium::chiral::belief_phase_enabled();
+        let vectors: Vec<&[f32]> = entries.iter().map(|(_, m)| m.vector.as_slice()).collect();
+        let phases: Vec<f32> = entries.iter().map(|(_, m)| m.phase).collect();
+        let tiers: Vec<Tier> = entries.iter().map(|(_, m)| m.tier).collect();
+        let energies: Vec<f32> = entries.iter().map(|(_, m)| m.amplitude).collect();
 
-        // Build the N×D matrix; rows with a mismatched/empty vector are marked unusable.
-        let mut mat = Array2::<f32>::zeros((n, dim));
-        let mut usable = vec![true; n];
-        for (i, (_, m)) in entries.iter().enumerate() {
-            if m.vector.len() == dim {
-                for (d, &v) in m.vector.iter().enumerate() {
-                    mat[[i, d]] = v;
-                }
-            } else {
-                usable[i] = false;
-            }
-        }
-
-        // One fast matmul for all pairwise dot products; norms from the diagonal.
-        let gram = mat.dot(&mat.t());
-        let norms: Vec<f32> = (0..n).map(|i| gram[[i, i]].max(0.0).sqrt()).collect();
-        let cos_p: Vec<f32> = entries.iter().map(|(_, m)| m.phase.cos()).collect();
-        let sin_p: Vec<f32> = entries.iter().map(|(_, m)| m.phase.sin()).collect();
-        let is_pinned: Vec<bool> = entries.iter().map(|(_, m)| m.tier == Tier::Pinned).collect();
-
-        // Union-find over redundant, phase-locked, non-pinned pairs.
-        fn find(parent: &mut [usize], mut x: usize) -> usize {
-            while parent[x] != x {
-                parent[x] = parent[parent[x]];
-                x = parent[x];
-            }
-            x
-        }
-        let mut parent: Vec<usize> = (0..n).collect();
-        let eps = 1e-6_f32;
-        for i in 0..n {
-            if !usable[i] || is_pinned[i] || norms[i] < eps {
-                continue;
-            }
-            for j in (i + 1)..n {
-                if !usable[j] || is_pinned[j] || norms[j] < eps {
-                    continue;
-                }
-                let cos_sim = gram[[i, j]] / (norms[i] * norms[j]);
-                if cos_sim < opts.merge_sim {
-                    continue;
-                }
-                let phase_coh = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
-                if phase_coh < opts.merge_phase_cos {
-                    continue;
-                }
-                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-                if ri != rj {
-                    parent[ri.max(rj)] = ri.min(rj);
-                }
-            }
-        }
-
-        // Tally redundant-group sizes.
-        let mut group_size: HashMap<usize, usize> = HashMap::new();
-        for i in 0..n {
-            if !usable[i] || is_pinned[i] {
-                continue;
-            }
-            let r = find(&mut parent, i);
-            *group_size.entry(r).or_insert(0) += 1;
-        }
-        let mut groups = 0usize;
-        let mut absorb = 0usize;
-        for &sz in group_size.values() {
-            if sz >= 2 {
-                groups += 1;
-                absorb += sz - 1; // all but the representative carrier
-            }
-        }
-        report.groups_found = groups;
-        report.would_merge = groups;
+        let grouping = compute_merge_grouping(&vectors, &phases, &tiers, &energies, opts, belief);
+        let absorb = grouping.admitted_absorb();
+        report.groups_found = grouping.admitted.len();
+        report.would_merge = grouping.admitted.len();
         report.would_absorb = absorb;
+        report.centered = grouping.centered;
+        report.absorb_capped = grouping.capped();
+        report.groups_before_cap = grouping.groups_before_cap;
+        report.absorb_before_cap = grouping.absorb_before_cap;
 
         // ShortTerm decay/evict projection (M3). Reactivation is not persisted
         // until ADR-0036 Phase 1, so "evict" uses the session-local
@@ -913,7 +1100,7 @@ impl HrmStore {
             vector: Vec<f32>,
         }
 
-        let snaps: Vec<Snap> = if let Some(ref chiral) = self.chiral {
+        let mut snaps: Vec<Snap> = if let Some(ref chiral) = self.chiral {
             let h = &chiral.right;
             (0..h.count())
                 .map(|i| Snap {
@@ -967,68 +1154,19 @@ impl HrmStore {
             s.energy * (-0.001 * age_days).exp()
         };
 
-        // --- 3. Union-find grouping over redundant, phase-locked, non-pinned
-        //        wavefronts (same criterion as the planner). ---
-        let dim = snaps.iter().map(|s| s.vector.len()).find(|&l| l > 0).unwrap_or(0);
-        let usable: Vec<bool> = snaps
-            .iter()
-            .map(|s| s.vector.len() == dim && dim > 0 && s.tier != Tier::Pinned)
-            .collect();
-        let norms: Vec<f32> = snaps
-            .iter()
-            .map(|s| s.vector.iter().map(|v| v * v).sum::<f32>().max(0.0).sqrt())
-            .collect();
-        let cos_p: Vec<f32> = snaps.iter().map(|s| s.phase.cos()).collect();
-        let sin_p: Vec<f32> = snaps.iter().map(|s| s.phase.sin()).collect();
-
-        fn find(parent: &mut [usize], mut x: usize) -> usize {
-            while parent[x] != x {
-                parent[x] = parent[parent[x]];
-                x = parent[x];
-            }
-            x
-        }
-        let mut parent: Vec<usize> = (0..n).collect();
-        let eps = 1e-6_f32;
-        for i in 0..n {
-            if !usable[i] || norms[i] < eps {
-                continue;
-            }
-            for j in (i + 1)..n {
-                if !usable[j] || norms[j] < eps {
-                    continue;
-                }
-                // cosine similarity via dot product of the two snapshot vectors
-                let dot: f32 = snaps[i]
-                    .vector
-                    .iter()
-                    .zip(snaps[j].vector.iter())
-                    .map(|(a, b)| a * b)
-                    .sum();
-                let cos_sim = dot / (norms[i] * norms[j]);
-                if cos_sim < opts.merge_sim {
-                    continue;
-                }
-                let phase_coh = cos_p[i] * cos_p[j] + sin_p[i] * sin_p[j];
-                if phase_coh < opts.merge_phase_cos {
-                    continue;
-                }
-                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-                if ri != rj {
-                    parent[ri.max(rj)] = ri.min(rj);
-                }
-            }
-        }
-
-        // Collect members per root.
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-        for i in 0..n {
-            if !usable[i] {
-                continue;
-            }
-            let r = find(&mut parent, i);
-            groups.entry(r).or_default().push(i);
-        }
+        // --- 3. Grouping (shared with the planner → dry-run parity). Sort the
+        //        snapshots by id so the member indices returned by the grouping
+        //        pass line up with plan_consolidation's id-ordered cache slice,
+        //        and the belief-safe guardrails (centered gate + absorb cap)
+        //        apply identically in both. ---
+        snaps.sort_by_key(|s| s.id);
+        let belief = crate::medium::chiral::belief_phase_enabled();
+        let g_vectors: Vec<&[f32]> = snaps.iter().map(|s| s.vector.as_slice()).collect();
+        let g_phases: Vec<f32> = snaps.iter().map(|s| s.phase).collect();
+        let g_tiers: Vec<Tier> = snaps.iter().map(|s| s.tier).collect();
+        let g_energies: Vec<f32> = snaps.iter().map(|s| s.energy).collect();
+        let grouping =
+            compute_merge_grouping(&g_vectors, &g_phases, &g_tiers, &g_energies, opts, belief);
 
         // Track which ids are part of a merge (so they are never double-counted
         // by the evict pass), the carrier mutations, and the absorbed removals.
@@ -1039,13 +1177,9 @@ impl HrmStore {
         // removal to re-home the skip-link graph so a merge conserves
         // connectivity, not just energy (see step 5b).
         let mut absorbed_to_carrier: HashMap<Uuid, Uuid> = HashMap::new();
-        let mut groups_found = 0usize;
+        let groups_found = grouping.admitted.len();
 
-        for members in groups.values() {
-            if members.len() < 2 {
-                continue;
-            }
-            groups_found += 1;
+        for members in &grouping.admitted {
             for &mi in members {
                 merged_ids.insert(snaps[mi].id);
             }
@@ -1155,6 +1289,10 @@ impl HrmStore {
         report.shortterm_total = snaps.iter().filter(|s| s.tier == Tier::ShortTerm).count();
         report.would_decay = report.shortterm_total;
         report.would_evict = evicted_removed;
+        report.centered = grouping.centered;
+        report.absorb_capped = grouping.capped();
+        report.groups_before_cap = grouping.groups_before_cap;
+        report.absorb_before_cap = grouping.absorb_before_cap;
         let _ = removed; // total removed = absorbed + evicted; kept for clarity
 
         // --- 5b. Re-home the skip-link graph onto carriers. The removal above
@@ -2194,6 +2332,7 @@ mod tests {
             merge_sim: 0.92,
             merge_phase_cos: std::f32::consts::FRAC_1_SQRT_2,
             shortterm_evict: 0.15,
+            ..Default::default()
         }
     }
 
@@ -2495,5 +2634,199 @@ mod tests {
     fn ulv_fix(v: &mut [f32]) -> &[f32] {
         v[0] = 0.2;
         v
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0036 belief-safety — mean-centered semantic gate, per-pass absorb
+    // cap, and dry-run/apply parity. These exercise the shared grouping pass
+    // (`compute_merge_grouping`) directly with `belief` as a parameter, so they
+    // never touch the process-global `KANNAKA_BELIEF_PHASE` env (no flakiness
+    // from parallel tests), plus one end-to-end apply for the cap.
+    // -----------------------------------------------------------------------
+
+    /// The failure class v0.7.3 gated. Under belief the phase field is content-
+    /// derived, so semantically-DISTINCT-but-anisotropic memories (a large shared
+    /// component + small distinct residuals) share BOTH an inflated raw cosine and
+    /// a manufactured phase coherence — and the old raw-cosine grouping chained
+    /// them into one blob (the live 295→82). The mean-centered belief gate must
+    /// refuse to group them, while the raw gate (belief off) still would.
+    #[test]
+    fn belief_centered_gate_rejects_anisotropic_distinct() {
+        let dim = 64usize;
+        // Shared anisotropic base dominates; each memory adds a distinct residual.
+        // Raw cosine ≈ 0.9996 (base dominates); centered cosine < 0 (residuals
+        // point away from each other once the shared mean is removed).
+        let base = vec![1.0f32; dim];
+        let n = 6usize;
+        let owned: Vec<Vec<f32>> = (0..n)
+            .map(|k| {
+                let mut v = base.clone();
+                v[k] += 0.15;
+                v
+            })
+            .collect();
+        let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+        // Manufactured phase coherence: all phases identical, as the belief born-
+        // phase yields when its 2-D projection collapses on an anisotropic field.
+        let phases = vec![0.0f32; n];
+        let tiers = vec![Tier::LongTerm; n];
+        let energies = vec![1.0f32; n];
+        let opts = ConsolidateOpts { mode: ConsolidateMode::Apply, ..Default::default() };
+
+        // belief OFF: raw cosine is inflated by the shared base → they group.
+        let raw = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, false);
+        assert!(raw.groups_before_cap >= 1, "raw cosine groups the anisotropic blob");
+        assert!(raw.absorb_before_cap >= 1);
+        assert!(!raw.centered);
+
+        // belief ON: centered cosine sees only the distinct residuals → no group.
+        let safe = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, true);
+        assert_eq!(
+            safe.groups_before_cap, 0,
+            "centered gate must not group semantically-distinct memories under belief"
+        );
+        assert_eq!(safe.admitted.len(), 0);
+        assert!(safe.centered);
+    }
+
+    /// Genuinely-redundant memories (identical residuals) still merge under the
+    /// centered belief gate — the fix must not neuter consolidation entirely.
+    #[test]
+    fn belief_centered_gate_still_merges_true_duplicates() {
+        let dim = 64usize;
+        // Two genuine duplicates (identical) + two unrelated one-hots. Even after
+        // centering, the duplicates' residuals coincide → they group.
+        let mut d1 = vec![0.2f32; dim]; d1[0] = 1.0;
+        let d2 = d1.clone();
+        let mut u1 = vec![0.0f32; dim]; u1[20] = 1.0;
+        let mut u2 = vec![0.0f32; dim]; u2[40] = 1.0;
+        let owned = vec![d1, d2, u1, u2];
+        let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+        let phases = vec![0.0f32; 4];
+        let tiers = vec![Tier::LongTerm; 4];
+        let energies = vec![1.0f32; 4];
+        let opts = ConsolidateOpts { mode: ConsolidateMode::Apply, ..Default::default() };
+
+        let safe = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, true);
+        assert_eq!(safe.groups_before_cap, 1, "true duplicates still group under belief");
+        assert_eq!(safe.absorb_before_cap, 1);
+    }
+
+    /// Cohesion ordering: when the per-pass cap admits fewer groups than found,
+    /// the tightest (highest mean-cosine-to-carrier) group is admitted first.
+    #[test]
+    fn absorb_cap_admits_tightest_group_first() {
+        let dim = 64usize;
+        // Group A: two IDENTICAL vectors (cohesion 1.0). Group B: a looser pair
+        // (cohesion ≈ 0.96). Orthogonal anchors so the groups never cross-merge.
+        let mut a1 = vec![0.0f32; dim]; a1[0] = 1.0;
+        let a2 = a1.clone();
+        let mut b1 = vec![0.0f32; dim]; b1[32] = 1.0;
+        let mut b2 = vec![0.0f32; dim]; b2[32] = 1.0; b2[33] = 0.30;
+        let owned = vec![a1, a2, b1, b2];
+        let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+        let phases = vec![0.0f32; 4];
+        let tiers = vec![Tier::LongTerm; 4];
+        let energies = vec![1.0f32; 4];
+        // n=4, cap_n = floor(0.25*4) = 1 → only one group's single absorb fits.
+        let opts = ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            max_absorb_frac: Some(0.25),
+            ..Default::default()
+        };
+
+        let g = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, false);
+        assert_eq!(g.groups_before_cap, 2, "both pairs pass the raw sim gate");
+        assert_eq!(g.absorb_before_cap, 2);
+        assert_eq!(g.admitted.len(), 1, "cap admits exactly one group");
+        assert!(g.capped());
+        let admitted: std::collections::HashSet<usize> = g.admitted[0].iter().copied().collect();
+        assert!(
+            admitted.contains(&0) && admitted.contains(&1),
+            "the identical pair (tightest cohesion) is admitted, not the looser pair"
+        );
+    }
+
+    /// End-to-end: even if the criteria are fully fooled into one giant redundant
+    /// group, the per-pass absorb cap bounds how much a single apply can remove —
+    /// the property that would have turned 295→82 into a bounded event.
+    #[test]
+    fn apply_absorb_cap_bounds_over_merge() {
+        let mut store =
+            HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        // Three orthogonal clusters of 3 near-identical LongTerm memories each
+        // (9) + one unrelated survivor = 10. All 3 clusters WOULD merge (absorb 6).
+        for cluster in 0..3usize {
+            let anchor = cluster * 100;
+            for k in 0..3usize {
+                let mut v = vec![0.0f32; WAVEFRONT_DIM];
+                v[anchor] = 1.0;
+                v[anchor + 1 + k] = 0.001; // tiny within-cluster perturbation
+                insert_ctl(&mut store, v, &format!("c{cluster}-{k}"), 1.0, 0.0, Tier::LongTerm, 0);
+            }
+        }
+        let mut u = vec![0.0f32; WAVEFRONT_DIM]; u[900] = 1.0;
+        insert_ctl(&mut store, u, "solo", 1.0, 0.0, Tier::LongTerm, 0);
+        assert_eq!(store.count(), 10);
+
+        // Cap at 20% of the field: floor(0.2 * 10) = 2 absorbs allowed.
+        let opts = ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            max_absorb_frac: Some(0.20),
+            ..Default::default()
+        };
+        let report = store.apply_consolidation(&opts);
+
+        assert_eq!(report.groups_before_cap, 3, "criteria found all 3 clusters");
+        assert_eq!(report.absorb_before_cap, 6, "would absorb 6 without the cap");
+        assert!(report.absorb_capped, "the cap engaged");
+        assert!(report.would_absorb <= 2, "absorbed bounded to floor(0.2*10)=2, got {}", report.would_absorb);
+        assert_eq!(store.count(), 10 - report.would_absorb, "count drops by exactly the bounded absorb");
+        assert!(store.count() >= 8, "the cap prevented the catastrophic collapse");
+    }
+
+    /// Dry-run parity: `plan_consolidation` (read-only) and `apply_consolidation`
+    /// must agree on groups / absorb / evict / projection for the same state, so
+    /// the nightly dry-run projection faithfully predicts a destructive apply.
+    #[test]
+    fn dryrun_apply_parity() {
+        let build = || {
+            let mut store = HrmStore::new(
+                make_test_pipeline(),
+                NamedTempFile::new().unwrap().path().to_path_buf(),
+            );
+            let base = vec![0.5f32; WAVEFRONT_DIM];
+            for k in 0..4usize {
+                let mut v = base.clone();
+                v[k] += 0.001;
+                insert_ctl(&mut store, v, &format!("d{k}"), 1.0, 0.0, Tier::LongTerm, 0);
+            }
+            // A cold ShortTerm evict candidate + an unrelated LongTerm survivor.
+            let mut e = vec![0.0f32; WAVEFRONT_DIM]; e[10] = 1.0;
+            insert_ctl(&mut store, e, "cold", 0.05, 0.0, Tier::ShortTerm, 0);
+            let mut u = vec![0.0f32; WAVEFRONT_DIM]; u[200] = 1.0;
+            insert_ctl(&mut store, u, "solo", 1.0, 0.0, Tier::LongTerm, 0);
+            store
+        };
+
+        let plan_store = build();
+        let plan = plan_store.plan_consolidation(&ConsolidateOpts {
+            mode: ConsolidateMode::DryRun,
+            ..Default::default()
+        });
+
+        let mut apply_store = build();
+        let applied = apply_store.apply_consolidation(&apply_opts());
+
+        assert_eq!(plan.groups_found, applied.groups_found, "groups parity");
+        assert_eq!(plan.would_absorb, applied.would_absorb, "absorb parity");
+        assert_eq!(plan.would_evict, applied.would_evict, "evict parity");
+        assert_eq!(
+            plan.projected_memories, applied.projected_memories,
+            "projected-count parity"
+        );
+        // Sanity: the 4 dups collapse to one carrier and the cold ShortTerm evicts.
+        assert_eq!(plan.would_absorb, 3);
+        assert_eq!(plan.would_evict, 1);
     }
 }
