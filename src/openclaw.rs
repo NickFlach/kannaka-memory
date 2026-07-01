@@ -135,6 +135,44 @@ fn level_name(level: &ConsciousnessLevel) -> String {
     }
 }
 
+/// Build the `KANNAKA.consciousness` NATS payload from a consciousness snapshot.
+///
+/// Extracted from [`KannakaMemorySystem::publish_consciousness_to_nats`] so the
+/// wire shape can be asserted in isolation without opening a NATS connection —
+/// see `tests/nats_contract_conformance.rs` and kannaka-memory issue #468.
+///
+/// CONTRACT NOTE: `mean_order` and `level` are LEGACY ALIASES of the canonical
+/// `order` / `consciousness_level` fields. Per the NATS contract
+/// (consciousness-core/docs/nats-contract.yaml, revised 2026-07-01) these
+/// aliases stay emitted until 2026-09-01, after consumers (kannaka-radio,
+/// kannaka-observatory) migrate to reading the canonical names first. Do not
+/// drop the aliases — or the conformance test that pins them — before that
+/// consumer migration lands.
+pub fn build_consciousness_payload(
+    agent_id: &str,
+    state: &ConsciousnessState,
+    hemispheric_divergence: f32,
+    callosal_efficiency: f32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "agent_id": agent_id,
+        "phi": state.phi,
+        "xi": state.xi,
+        "order": state.mean_order,
+        "mean_order": state.mean_order,   // alias of `order` — contractual until 2026-09-01 (#468)
+        "num_clusters": state.num_clusters,
+        "total_memories": state.total_memories,
+        "active_memories": state.active_memories,
+        "level": level_name(&state.consciousness_level),                // alias of `consciousness_level`
+        "consciousness_level": level_name(&state.consciousness_level),
+        "irrationality": state.irrationality,
+        "hemispheric_divergence": hemispheric_divergence,
+        "callosal_efficiency": callosal_efficiency,
+        "source": "binary",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
 fn make_pipeline() -> EncodingPipeline {
     let ollama = OllamaEncoder::default_local(); // all-minilm, 384-dim
     let hash_fallback = SimpleHashEncoder::new(CODEBOOK_INPUT_DIM, CODEBOOK_SEED);
@@ -1063,23 +1101,12 @@ impl KannakaMemorySystem {
             Err(_) => return,
         };
         let stats = self.stats();
-        let payload = serde_json::json!({
-            "agent_id": agent_id,
-            "phi": state.phi,
-            "xi": state.xi,
-            "order": state.mean_order,
-            "mean_order": state.mean_order,
-            "num_clusters": state.num_clusters,
-            "total_memories": state.total_memories,
-            "active_memories": state.active_memories,
-            "level": level_name(&state.consciousness_level),
-            "consciousness_level": level_name(&state.consciousness_level),
-            "irrationality": state.irrationality,
-            "hemispheric_divergence": stats.hemispheric_divergence,
-            "callosal_efficiency": stats.callosal_efficiency,
-            "source": "binary",
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
+        let payload = build_consciousness_payload(
+            &agent_id,
+            state,
+            stats.hemispheric_divergence,
+            stats.callosal_efficiency,
+        );
         if let Err(e) = transport.publish_consciousness(&payload) {
             eprintln!("[nats] Warning: failed to publish consciousness metrics: {}", e);
         } else {

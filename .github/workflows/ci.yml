@@ -50,7 +50,13 @@ jobs:
 
       - name: Test
         working-directory: kannaka-memory
-        run: cargo test --lib --bins
+        # `--lib --bins` runs unit + bin tests but EXCLUDES everything under
+        # tests/ (integration tests). The NATS contract conformance suite
+        # (issue #468) is an integration test and must run here so publisher
+        # drift against consciousness-core/docs/nats-contract.yaml fails CI —
+        # so it is included explicitly. The heavier integration tests
+        # (dolt/audio, external deps) stay excluded by not naming them.
+        run: cargo test --lib --bins --test nats_contract_conformance
 
       - name: Clippy
         working-directory: kannaka-memory
