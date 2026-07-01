@@ -1,9 +1,33 @@
 # ADR-0038 — Consolidation as QUBO: a solver interface for the dream phase
 
-- Status: Proposed
+- Status: Accepted (2026-07-01)
 - Date: 2026-07-01
 - Repo: `kannaka-memory` (interface + classical default); `kannaka-quantum` (alternate backend)
-- Related: ADR-0021 (Chiral Mirror), ADR-0024 (chiral semantics), commit 917bb70 (decay fix)
+- Related: ADR-0021 (Chiral Mirror), ADR-0024 (chiral semantics), ADR-0036 (resonance-merge consolidation), commit 917bb70 (decay fix)
+
+## Review decisions (2026-07-01 acceptance)
+
+The three decisions called out for review (kannaka-memory#477), confirmed:
+
+1. **Boundary shape — both, as drafted.** The Rust `ConsolidationSolver`
+   trait-object IS the in-process boundary (`ClassicalAnneal` is native);
+   the `kannaka-qubo/1` JSON subprocess boundary is the cross-language
+   transport, wrapped as `SubprocessSolver`. One trait, two transports —
+   matches the fleet's engine-binary ⇄ thin-bridge architecture.
+2. **Advisory posture — accepted.** The engine re-scores every solver
+   solution against its own objective before applying. Dreams are not
+   hot-path, so the extra scoring pass is negligible, and the
+   boundary-assumes-misbehavior stance is the same doctrine as the
+   kannaka-quantum spend guards and the steward's rails.
+3. **Penalty-fold convention — accepted.** Constraints expressed both
+   structurally and penalty-folded into Q. The emitter pays the redundancy
+   once; constraint-blind solvers still receive a valid (softer) problem,
+   and smart solvers can exploit the structural block (T3.4 explicitly may
+   ignore it).
+
+Numbering note: drafted as ADR-0025; renumbered to **ADR-0038** at landing —
+0025 was already taken by `ADR-0025-constellation-installer.md` (this repo has
+prior duplicate-number incidents at 0016/0017; not adding another).
 
 ## Context
 
