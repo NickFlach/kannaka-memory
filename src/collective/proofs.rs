@@ -208,8 +208,6 @@ pub fn prove_existence(
 ///
 /// Checks: g^z_v · h^z_r == t · C^c
 pub fn verify_existence(proof: &ExistenceProof) -> bool {
-    let _order = PRIME - 1;
-
     // Recompute challenge
     let c = challenge_hash(&[proof.commitment, proof.t]);
 

@@ -2260,9 +2260,6 @@ fn main() {
                 .collect::<serde_json::Map<String, serde_json::Value>>()
                 .into();
 
-            // Check if HRM mode is active
-            let _is_hrm = true; // HRM is the canonical substrate
-
             let mut output = serde_json::json!({
                 "total_memories": stats.total_memories,
                 "active_memories": stats.active_memories,
@@ -2964,8 +2961,6 @@ fn main() {
         }
         "stats" => {
             let stats = sys.stats();
-            let _is_hrm = true; // HRM is the canonical substrate
-
             println!("Kannaka Memory System:");
             println!("  Total memories: {}", stats.total_memories);
             println!("  Active memories: {}", stats.active_memories);
