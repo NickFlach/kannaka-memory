@@ -1,0 +1,58 @@
+name: marketplace cascade
+
+# On every `v*` tag push, tell the Kannaka Constellation marketplace that a new
+# kannaka-memory is out. The marketplace's `plugin-released` receiver
+# (.github/workflows/version-bump.yml there) opens a PR bumping this plugin's
+# version in marketplace.json, regenerating its README, and bumping the
+# marketplace patch version. See the marketplace's CONTRIBUTING.md.
+#
+# This is the SENDER (kannaka-memory → marketplace). It is unrelated to the
+# cc-/ka-release-cascade receivers in this repo, which pull upstream deps in the
+# other direction.
+#
+# DORMANT until a secret is set. This workflow is a no-op unless the repo has a
+# `KANNAKA_CASCADE_PAT` secret — a fine-scoped PAT with `contents: write` +
+# `pull-requests: write` on NickFlach/kannaka-constellation-marketplace. Add it
+# under Settings → Secrets and variables → Actions to arm the cascade.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to announce (e.g. 2.1.1)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: v
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch plugin-released to the marketplace
+        env:
+          GH_TOKEN: ${{ secrets.KANNAKA_CASCADE_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::KANNAKA_CASCADE_PAT not set — cascade is dormant (no-op)."
+            exit 0
+          fi
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            /repos/NickFlach/kannaka-constellation-marketplace/dispatches \
+            -f event_type=plugin-released \
+            -f client_payload[plugin]="kannaka-memory" \
+            -f client_payload[version]="${{ steps.v.outputs.version }}"
+          echo "Dispatched plugin-released: kannaka-memory v${{ steps.v.outputs.version }}"
