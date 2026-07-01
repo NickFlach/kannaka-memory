@@ -1153,6 +1153,8 @@ fn main() {
     config::apply_cluster_env_from_config(&cfg);
     // Track-D: bridge persisted [coupling].enabled → KANNAKA_EXEMPLAR_COUPLING.
     config::apply_coupling_env_from_config(&cfg);
+    // Quantum-Wave T1.3: bridge persisted [entropy].source → KANNAKA_ENTROPY_SOURCE.
+    config::apply_entropy_env_from_config(&cfg);
 
     // Non-blocking update check (background thread)
     config::check_for_updates_background(&cfg);
