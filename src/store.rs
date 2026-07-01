@@ -97,6 +97,24 @@ pub trait MediumBackend: Send + Sync {
         self.resonate_query(query, top_k)
     }
 
+    /// Read-only resonance recall — resonance scoring WITHOUT the observation
+    /// write-back, so it never mutates the field. Unlike [`resonate_query`], a
+    /// caller can run many of these without amplifying amplitudes or marking the
+    /// store dirty. Used by the recall-scenario benchmark export (#476). Default
+    /// errors; the HRM backend overrides it.
+    ///
+    /// [`resonate_query`]: MediumBackend::resonate_query
+    fn recall_resonance_readonly(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<crate::medium::Resonance>, StoreError> {
+        let _ = (query, top_k);
+        Err(StoreError::Other(
+            "recall_resonance_readonly not supported by this backend".into(),
+        ))
+    }
+
     /// Sparse-attention recall — score only the memories in `beam`.
     ///
     /// Default impl falls back to full `resonate_query` so backends that
@@ -208,6 +226,13 @@ pub trait MediumBackend: Send + Sync {
     /// Perform a chiral dream pass (right hemisphere only for deep=true).
     /// Only meaningful for HrmStore with a chiral medium. Default is a no-op.
     fn chiral_dream(&mut self, _deep: bool, _cycles: usize) {}
+
+    /// Whether this backend is running the chiral (two-hemisphere) medium.
+    /// Default false; HrmStore reports its actual mode. Lets read-only callers
+    /// (e.g. the recall-scenario export) label which store a recall ran against.
+    fn is_chiral(&self) -> bool {
+        false
+    }
 
     /// ADR-0036 Phase 1: flush per-memory reactivation counts to the sidecar.
     /// Default no-op; HrmStore writes `.reactivation.json` (sidecar only, safe
