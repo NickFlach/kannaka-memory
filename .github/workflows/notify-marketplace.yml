@@ -31,13 +31,20 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # The marketplace tracks the PLUGIN version (.claude-plugin/plugin.json,
+      # 2.x), not the binary tag (v0.x) — announcing the tag would "bump" the
+      # manifest to a lower semver. Read the plugin version as recorded at the
+      # tagged commit. Binary-only releases re-announce an unchanged plugin
+      # version, which the marketplace receiver now skips.
       - name: Resolve version
         id: v
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             v="${{ inputs.version }}"
           else
-            v="${GITHUB_REF_NAME#v}"
+            v="$(node -p "JSON.parse(require('fs').readFileSync('.claude-plugin/plugin.json','utf8')).version")"
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
