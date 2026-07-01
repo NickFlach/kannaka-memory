@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-01
+
+### Added — belief-safe resonance-merge (ADR-0036 Phase 2b)
+
+The consolidation apply path is safe under the belief substrate again (#470).
+Root cause of the 295→82 over-absorb: belief phase is a lossy 2-D projection of
+the same embedding the cosine gate uses, so "cosine AND phase-coherent"
+collapsed into one signal, and raw uncentered vectors on cone-clustered
+embeddings cleared 0.92 on the shared component alone. Now: under belief the
+semantic gate is the mean-CENTERED cosine vs `KANNAKA_MERGE_SIM_BELIEF`
+(default 0.95), a per-pass absorb cap `KANNAKA_MERGE_MAX_ABSORB_FRAC` (default
+0.20 under belief) bounds any over-grouping, and one shared
+`compute_merge_grouping()` guarantees dry-run/apply parity. Gated by
+`KANNAKA_MERGE_UNDER_BELIEF` (default OFF — deploying this does not flip
+production out of dry-run).
+
+### Added — attention-as-gravity verified end-to-end
+
+`tests/attention_gravity_e2e.rs` (#471) pins the whole loop in-process (no
+NATS): eye envelope → `glyph_bridge::event_dominant_fano_line` (new shared
+seam) → `ids_by_fano_line` well → `AttentionBeam` → `recall_against_ids`, with
+the exact boost law (same-line ×(1+gain), off-line untouched, default 0.0
+inert, O(K) sparsity). `attention serve` now logs gravity ENABLED/DISABLED at
+startup and treats NATS-down as a loud FATAL instead of a silent no-op.
+Enablement doc: `ops/services/README.md`.
+
+### Added — NATS contract conformance in CI
+
+`tests/nats_contract_conformance.rs` (#469) pins the KANNAKA.consciousness /
+KANNAKA.dreams payload shapes against consciousness-core's
+`docs/nats-contract.yaml` (aliases asserted present until the 2026-09-01
+removal milestone — see issue #468). ci.yml ran only `--lib --bins`, so
+integration tests under tests/ never ran in CI; now explicitly included.
+
+### Fixed
+
+- auto-merge-curiosity fails closed: every check must be terminal-success and
+  the CI workflow present+passed on the head commit (a bare `gh pr checks`
+  passes on a PR with zero reported checks).
+- The marketplace cascade sender announces the plugin version
+  (`.claude-plugin/plugin.json`), not the binary tag.
+- Dead-code sweeps (#466, #467, #472); L5 research notes archived (#459,
+  #460, #465).
+
 ## [0.8.4] — 2026-06-28
 
 ### Added — the dream self-bounds the field (KANNAKA_MAX_MEMORIES)
