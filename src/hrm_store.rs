@@ -828,6 +828,18 @@ impl HrmStore {
         Ok(results)
     }
 
+    /// Read-only resonance recall — same scoring as [`recall_resonance`] but
+    /// WITHOUT the observation write-back, so it never mutates energies or marks
+    /// the store dirty. Used by the recall-scenario benchmark export (#476):
+    /// dumping a corpus must not perturb the live substrate, and back-to-back
+    /// export queries must not amplify each other's amplitudes. Runs against the
+    /// flat medium (which mirrors the right hemisphere in chiral mode),
+    /// consistent with [`consciousness_metrics`](Self::consciousness_metrics).
+    pub fn recall_resonance_readonly(&self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
+        self.medium.recall(query, top_k, &self.pipeline)
+            .map_err(|e| StoreError::Other(format!("readonly resonance recall failed: {}", e)))
+    }
+
     /// Beam-aware recall — score only the memories in the attention beam.
     ///
     /// This is the system-level entry to `Medium::recall_against_ids`. The
@@ -1914,6 +1926,18 @@ impl MediumBackend for HrmStore {
 
     fn flush_reactivation(&self) {
         Self::flush_reactivation(self);
+    }
+
+    fn recall_resonance_readonly(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<Resonance>, StoreError> {
+        Self::recall_resonance_readonly(self, query, top_k)
+    }
+
+    fn is_chiral(&self) -> bool {
+        Self::is_chiral(self)
     }
 
     fn consolidate_resonance(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {

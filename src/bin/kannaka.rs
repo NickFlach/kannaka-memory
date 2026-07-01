@@ -748,6 +748,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "radio" | "market" | "constellation"
         // ops / data movement
         | "orchestrate" | "config" | "export" | "export-json"
+        | "export-recall-scenarios"
         | "import" | "import-json" | "announce-status"
         // feature-gated
         | "classify" | "cross-modal-dream"
@@ -3151,6 +3152,105 @@ fn main() {
                 })
                 .collect();
             println!("{}", serde_json::to_string(&output).unwrap());
+        }
+        "export-recall-scenarios" => {
+            // T2.1 (#476): dump real recall events as `kannaka-recall-bench/1` —
+            // per query: candidate amplitudes, HASHED labels, classical argmax,
+            // hemisphere, timestamp. Labels are hashed so the corpus can leave the
+            // private repo without leaking memory content. Read-only: uses the
+            // non-observing recall path so exporting never perturbs the field, and
+            // caps candidates at 16 (4 qubits) for shallow circuits.
+            use kannaka_memory::recall_bench::{
+                build_scenario, hash_label, shuffled_indices, Candidate, RecallBench,
+                MAX_CANDIDATES, RECALL_BENCH_FORMAT,
+            };
+            const USAGE: &str = "Usage: kannaka export-recall-scenarios [--n N] [--seed S]";
+            let mut n = 50usize;
+            let mut seed = 42u64;
+            let mut i = command_start + 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--n" | "--count" => {
+                        n = parse_flag_value(&args, i, "--n", USAGE);
+                        i += 2;
+                    }
+                    "--seed" => {
+                        seed = parse_flag_value(&args, i, "--seed", USAGE);
+                        i += 2;
+                    }
+                    other if other.starts_with("--") => {
+                        eprintln!("export-recall-scenarios: unknown flag: {other}");
+                        eprintln!("{USAGE}");
+                        process::exit(2);
+                    }
+                    _ => i += 1,
+                }
+            }
+
+            let hemisphere = if sys.engine.store.is_chiral() { "right" } else { "flat" };
+            let all = sys.engine.store.all_memories().unwrap_or_default();
+            // Query seeds = real, live content memories — skip structural summaries,
+            // hallucinated bridges, and ghosted (zero-amplitude) traces.
+            let seeds: Vec<&kannaka_memory::memory::HyperMemory> = all
+                .iter()
+                .copied()
+                .filter(|m| {
+                    m.amplitude > 0.0
+                        && !m.hallucinated
+                        && !m.content.starts_with("__")
+                        && !m.content.trim().is_empty()
+                })
+                .collect();
+
+            let order = shuffled_indices(seeds.len(), seed);
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut scenarios = Vec::with_capacity(n);
+            for &si in &order {
+                if scenarios.len() >= n {
+                    break;
+                }
+                let seed_mem = seeds[si];
+                let cands: Vec<Candidate> = match sys
+                    .engine
+                    .store
+                    .recall_resonance_readonly(&seed_mem.content, MAX_CANDIDATES)
+                {
+                    Ok(rs) => rs
+                        .into_iter()
+                        .map(|r| Candidate {
+                            label: hash_label(&r.content),
+                            amplitude: r.resonance_strength,
+                        })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                if cands.is_empty() {
+                    continue;
+                }
+                scenarios.push(build_scenario(
+                    hash_label(&seed_mem.content),
+                    cands,
+                    hemisphere,
+                    now.clone(),
+                ));
+            }
+
+            if scenarios.len() < n {
+                eprintln!(
+                    "export-recall-scenarios: emitted {} of {} requested ({} eligible seed memories)",
+                    scenarios.len(),
+                    n,
+                    seeds.len()
+                );
+            }
+
+            let bench = RecallBench {
+                format: RECALL_BENCH_FORMAT.to_string(),
+                generated_at: now,
+                n: scenarios.len(),
+                scenarios,
+            };
+            println!("{}", serde_json::to_string_pretty(&bench).unwrap());
         }
         "import-json" => {
             if args.len() < command_start + 2 {
