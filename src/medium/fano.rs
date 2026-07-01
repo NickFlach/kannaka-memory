@@ -423,8 +423,6 @@ mod tests {
         let dims = 672;
         
         let source: Vec<f32> = (0..dims).map(|i| ((i as f32) * 0.01).sin()).collect();
-        let _source_energy: f32 = source.iter().map(|x| x * x).sum();
-        
         let folded = fp.fold(&source, dims, dims, 0);
         // Only the folded groups have energy (rest is zero)
         let folded_energy: f32 = folded.iter().map(|x| x * x).sum();

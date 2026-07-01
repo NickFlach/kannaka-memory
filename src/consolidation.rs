@@ -1992,8 +1992,8 @@ impl ConsolidationEngine {
 
     /// Stage 9: Apply chiral perturbation to break over-synchronization.
     ///
-    /// When order parameter R is high (over-synchronized), applies asymmetric phase
-    /// offsets AND small vector modifications to memories based on their cluster membership. 
+    /// Applies asymmetric phase offsets AND small vector modifications to memories
+    /// based on their cluster membership (when chiral_perturbation > 0). 
     /// Left-cluster memories get +?�sin(2�phase), right-cluster get -?�sin(2�phase), 
     /// matching queen.rs chirality math. Vector perturbations create Xi diversity.
     fn stage_chiral_perturbation(&self, engine: &mut ResonanceEngine, working_set: &[Uuid]) {
@@ -2001,10 +2001,6 @@ impl ConsolidationEngine {
             return;
         }
 
-        // Compute current order parameter to scale perturbation
-        let _order_parameter = self.compute_global_order_parameter(engine, working_set);
-        
-        // Apply perturbation regardless of order parameter to maximize Xi diversity effect
         let eta = self.chiral_perturbation;
 
         // Get clusters for handedness assignment
@@ -2778,7 +2774,6 @@ impl ConsolidationEngine {
         }
 
         // Compute swarm mean phase
-        let _n = swarm_phases.len() as f32;
         let sum_cos: f32 = swarm_phases.iter().map(|a| a.phase.cos()).sum();
         let sum_sin: f32 = swarm_phases.iter().map(|a| a.phase.sin()).sum();
         let swarm_mean = sum_sin.atan2(sum_cos);
