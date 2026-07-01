@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use uuid::Uuid;
-use chrono::Utc;
 
 use crate::memory::HyperMemory;
 use crate::store::ResonanceEngine;
@@ -189,7 +188,6 @@ pub fn compute_invariant_metrics(
 
 /// Cluster memories by their δ values - memories with similar δ are coboundary equivalent candidates
 pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCluster> {
-    let _now = Utc::now();
     let all_memories = match engine.store.all_memories() {
         Ok(mems) => mems,
         Err(_) => return Vec::new(),
