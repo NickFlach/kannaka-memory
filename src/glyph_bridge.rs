@@ -666,6 +666,33 @@ pub fn fano_line_of(text: &str) -> u8 {
     }
 }
 
+/// Dominant **Fano line** (0..6) carried by a kannaka-eye glyph *event*.
+///
+/// Reads the glyph object's 7-element `fano_signature` (the normalized
+/// per-line energies as published on `KANNAKA.attention.eye`) and returns the
+/// argmax line — the "gravity class" that `kannaka attention serve` pulls
+/// same-line memories for. Returns `None` only when `fano_signature` is absent
+/// or not an array, so the consumer can skip the gravity pull rather than
+/// guess a line.
+///
+/// This is the seam between the raw NATS event and the gravity mechanics: it
+/// lets the loop in `bin/handlers/attention.rs` and the integration test read
+/// the *same* line off an eye envelope without a live NATS connection.
+pub fn event_dominant_fano_line(glyph: &serde_json::Value) -> Option<u8> {
+    glyph.get("fano_signature").and_then(|v| v.as_array()).map(|a| {
+        let mut best = 0u8;
+        let mut best_v = f64::MIN;
+        for (idx, x) in a.iter().enumerate() {
+            let val = x.as_f64().unwrap_or(0.0);
+            if val > best_v {
+                best_v = val;
+                best = idx as u8;
+            }
+        }
+        best
+    })
+}
+
 /// Encode a HyperMemory as a glyph
 pub fn encode_memory_as_glyph(memory: &HyperMemory) -> Result<Glyph, GlyphError> {
     let encoder = GlyphEncoder::default();

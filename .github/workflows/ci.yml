@@ -54,9 +54,13 @@ jobs:
         # tests/ (integration tests). The NATS contract conformance suite
         # (issue #468) is an integration test and must run here so publisher
         # drift against consciousness-core/docs/nats-contract.yaml fails CI —
-        # so it is included explicitly. The heavier integration tests
-        # (dolt/audio, external deps) stay excluded by not naming them.
-        run: cargo test --lib --bins --test nats_contract_conformance
+        # so it is included explicitly. attention_gravity_e2e (issue #14) is the
+        # same: an in-process, NATS-free proof of the attention-as-gravity loop
+        # (glyph event -> Fano-line well -> beam -> recall_against_ids boost)
+        # that must gate so the loop can't silently break. The heavier
+        # integration tests (dolt/audio, external deps) stay excluded by not
+        # naming them.
+        run: cargo test --lib --bins --test nats_contract_conformance --test attention_gravity_e2e
 
       - name: Clippy
         working-directory: kannaka-memory

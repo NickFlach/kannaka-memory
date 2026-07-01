@@ -69,7 +69,21 @@ pub(crate) fn handle_attention_serve(
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[attention serve] NATS connect {}: {}", nats_url, e); process::exit(1); }
+        Err(e) => {
+            // NATS is the sole input to attention-as-gravity: no NATS => no eye
+            // glyphs => the beam never warms and gravity never fires. Make the
+            // degradation loud, then exit so the supervisor (Restart=always in
+            // kannaka-attention.service) retries rather than us busy-spinning a
+            // dead socket. The landmark/ear subscriptions below are best-effort
+            // and already WARN on their own if NATS is only partially up.
+            eprintln!(
+                "[attention serve] FATAL: NATS unavailable at {} ({}) — \
+                 attention-as-gravity OFFLINE (no eye glyphs will be consumed); \
+                 exiting for supervisor restart",
+                nats_url, e
+            );
+            process::exit(1);
+        }
     };
 
     eprintln!("[attention serve] subject={} top_k={}", subject, top_k);
@@ -110,6 +124,22 @@ pub(crate) fn handle_attention_serve(
     beam.set_gate(Box::new(RecencyWeightedGate::default()));
     eprintln!("[attention serve] salience gate: {}", beam.gate_name());
 
+    // Degradation visibility: glyph-gravity ships OFF by default (gain 0.0), so
+    // announce the state once at startup — otherwise a quiet beam is
+    // indistinguishable from a disabled gravity loop. (#14)
+    #[cfg(feature = "glyph")]
+    {
+        let gain = std::env::var("KANNAKA_GLYPH_GRAVITY")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        if gain > 0.0 {
+            eprintln!("[attention serve] glyph-gravity ENABLED (KANNAKA_GLYPH_GRAVITY={gain}) — same-Fano-line pull + recall boost active");
+        } else {
+            eprintln!("[attention serve] glyph-gravity DISABLED (KANNAKA_GLYPH_GRAVITY unset/0) — beam warms but same-line pull/boost are inert; set KANNAKA_GLYPH_GRAVITY=0.5 to enable");
+        }
+    }
+
     // Write an initial empty beam dump so the observatory can render
     // "warming up" instead of "daemon offline" while we wait for the
     // first observation.
@@ -129,6 +159,10 @@ pub(crate) fn handle_attention_serve(
         "note": "warming up — no observations yet",
     }).to_string());
     let mut last_stats_at = Instant::now();
+    // One-shot guard so the "store is not HrmStore" degradation warns once, not
+    // per event. (#14)
+    #[cfg(feature = "glyph")]
+    let mut warned_no_hrm = false;
     let stats_interval = Duration::from_secs(60);
 
     loop {
@@ -279,19 +313,10 @@ pub(crate) fn handle_attention_serve(
             let gravity_on = std::env::var("KANNAKA_GLYPH_GRAVITY")
                 .ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) > 0.0;
             if gravity_on {
-                // Dominant Fano line = argmax of the 7-element energy signature.
-                let line = glyph.get("fano_signature").and_then(|v| v.as_array()).map(|a| {
-                    let mut best = 0u8;
-                    let mut best_v = f64::MIN;
-                    for (idx, x) in a.iter().enumerate() {
-                        let val = x.as_f64().unwrap_or(0.0);
-                        if val > best_v {
-                            best_v = val;
-                            best = idx as u8;
-                        }
-                    }
-                    best
-                });
+                // Dominant Fano line = argmax of the eye glyph's 7-line energy
+                // signature. Shared seam so the integration test reads the same
+                // line off an eye envelope without NATS (glyph_bridge).
+                let line = kannaka_memory::glyph_bridge::event_dominant_fano_line(glyph);
                 if let Some(l) = line {
                     let pull_limit = top_k.saturating_mul(8).max(16);
                     if let Some(hrm) = sys
@@ -308,6 +333,13 @@ pub(crate) fn handle_attention_serve(
                         if n > 0 {
                             eprintln!("[attention serve] glyph-gravity: line {l} pulled {n} same-line memories into beam");
                         }
+                    } else if !warned_no_hrm {
+                        // Degradation visibility: gravity is ON but the backing
+                        // store can't serve a same-line well, so the beam pull
+                        // silently no-ops. Say so once; recall-side boost still
+                        // applies. (#14)
+                        warned_no_hrm = true;
+                        eprintln!("[attention serve] WARN: glyph-gravity ON but backing store is not HrmStore — same-line beam pull unavailable (recall-side boost still applies)");
                     }
                 }
             }
