@@ -54,6 +54,7 @@ pub fn is_lab_tool(name: &str) -> bool {
             | "lab_agent_list"
             | "lab_agent_read"
             | "lab_agent_send"
+            | "lab_agent_setup"
     )
 }
 
@@ -303,10 +304,27 @@ pub fn lab_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "lab_agent_setup",
+            description: "Prepare a remote instance so a launched claude agent runs AUTONOMOUSLY: injects your Anthropic \
+                          API key (resolved locally from ~/.kannaka config or ANTHROPIC_API_KEY — NOT passed here), \
+                          pre-accepts onboarding, and pins a valid model. Run once after lab_ssh_configure, before \
+                          lab_agent_launch. Uploads the key to the instance (stored 0600).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "provider": { "type": "string", "default": "anthropic", "description": "Currently 'anthropic' (claude)." },
+                    "model": { "type": "string", "default": "claude-sonnet-4-6", "description": "Model to pin (the image default may be unavailable)." }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
+        Tool {
             name: "lab_agent_launch",
             description: "Launch a coding agent (claude / codex / opencode) ON a remote provisioned instance over SSH — \
-                          have Kannaka drive another agent on cloud compute. Needs lab_ssh_configure first and the \
-                          instance running. The remote agent may incur its own model-API costs.",
+                          have Kannaka drive another agent on cloud compute. Run lab_ssh_configure + lab_agent_setup \
+                          first (else claude stops at its login prompt). qBraid's launch does NOT auto-submit \
+                          instructions — after launching, drive the agent with lab_agent_send. Instance must be running.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -594,6 +612,17 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             args.push(sid);
             args.push("--text".into());
             args.push(text);
+        }
+        "lab_agent_setup" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-agent-setup".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_str_opt(&mut args, "--provider", input, "provider");
+            push_str_opt(&mut args, "--model", input, "model");
         }
         other => return (format!("unknown lab tool: {other}"), true),
     }
