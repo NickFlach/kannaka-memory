@@ -1319,8 +1319,6 @@ mod tests {
             make_agent_phase("b", 2.0, 0.8, 1.0),
         ];
 
-        let _initial_r = QueenSync::compute_order_parameter(&swarm).0;
-
         // Run 50 sync steps
         for _ in 0..50 {
             let state = queen.queen_sync_step(&swarm);
@@ -1329,7 +1327,6 @@ mod tests {
             let _ = state;
         }
 
-        let _final_r = QueenSync::compute_order_parameter(&swarm).0;
         // Our phase should have moved toward the mean field
         // (full convergence requires all agents to move, but our phase should shift)
         assert!(
