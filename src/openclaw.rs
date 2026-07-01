@@ -830,25 +830,41 @@ impl KannakaMemorySystem {
         // kannaka-prime before any destructive apply (Phase 2) is enabled via
         // KANNAKA_CONSOLIDATE=on.
         let mut consolidate_opts = crate::medium::types::ConsolidateOpts::from_env();
-        // ADR-0037: the resonance-merge ABSORB (Apply) is VECTOR-cosine based
-        // (merge_sim 0.92), so on an anisotropic belief field it mass-merges the
-        // "redundant" blob — observed 295→82 on a num_clusters=1 field with
-        // KANNAKA_CONSOLIDATE=on. This is a SECOND destructive path, separate from
-        // the particle consolidate(0,2) gate. Force DRY-RUN under belief so the
-        // merge only PLANS (never absorbs); the belief wave dream + gated particle
-        // pass are the consolidation. Default path (flag off) is byte-identical —
-        // KANNAKA_CONSOLIDATE still drives Apply when belief is off.
-        if crate::medium::chiral::belief_phase_enabled() {
+        // ADR-0037/ADR-0036: the resonance-merge ABSORB (Apply) is VECTOR-cosine
+        // based (merge_sim 0.92), so on an anisotropic belief field it once
+        // mass-merged the "redundant" blob — observed 295→82 on a num_clusters=1
+        // field with KANNAKA_CONSOLIDATE=on. This is a SECOND destructive path,
+        // separate from the particle consolidate(0,2) gate.
+        //
+        // v0.7.3 force-gated Apply→DryRun whenever belief was active (an absolute
+        // block). ADR-0036 belief-safety makes that gate OPT-IN: Apply under
+        // belief now runs the belief-safe grouping (mean-centered semantic gate +
+        // per-pass absorb cap) — but ONLY when the operator explicitly sets
+        // KANNAKA_MERGE_UNDER_BELIEF=1. By default the gate still forces DryRun, so
+        // deploying with KANNAKA_CONSOLIDATE=on on a belief field NEVER flips to
+        // destructive apply merely by shipping this. Default path (belief off) is
+        // byte-identical — KANNAKA_CONSOLIDATE still drives Apply.
+        if crate::medium::chiral::belief_phase_enabled()
+            && !crate::medium::chiral::merge_under_belief_enabled()
+        {
             consolidate_opts.mode = crate::medium::types::ConsolidateMode::DryRun;
         }
         let consolidate_report = self.engine.store.consolidate_resonance(&consolidate_opts);
         if consolidate_report.mode != "off" {
             eprintln!(
-                "[dream] Consolidation plan ({}): {} memories → {} redundant groups would merge, absorbing {} wavefronts; ShortTerm {}/{} would evict → projected {} memories (applied={})",
-                consolidate_report.mode, consolidate_report.memories_examined,
+                "[dream] Consolidation plan ({}{}): {} memories → {} redundant groups would merge, absorbing {} wavefronts; ShortTerm {}/{} would evict → projected {} memories (applied={})",
+                consolidate_report.mode,
+                if consolidate_report.centered { ", belief-safe/centered" } else { "" },
+                consolidate_report.memories_examined,
                 consolidate_report.groups_found, consolidate_report.would_absorb,
                 consolidate_report.would_evict, consolidate_report.shortterm_total,
                 consolidate_report.projected_memories, consolidate_report.applied);
+            if consolidate_report.absorb_capped {
+                eprintln!(
+                    "[dream] ⚠ absorb cap engaged: criteria found {} groups / {} absorbable, but the per-pass cap admitted only {} groups / {} absorbed. Raise KANNAKA_MERGE_MAX_ABSORB_FRAC after inspecting the digest if this is genuine redundancy.",
+                    consolidate_report.groups_before_cap, consolidate_report.absorb_before_cap,
+                    consolidate_report.groups_found, consolidate_report.would_absorb);
+            }
         }
 
         // Phase 2: Consolidation engine (interference detection, skip links, pruning)
