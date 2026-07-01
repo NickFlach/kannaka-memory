@@ -64,6 +64,7 @@ pub mod medium;
 
 pub mod hrm_store;
 pub mod recall_bench;
+pub mod entropy;
 
 pub mod config;
 

@@ -36,6 +36,8 @@ pub struct KannakaConfig {
     pub cluster: ClusterConfig,
     #[serde(default = "CouplingConfig::default")]
     pub coupling: CouplingConfig,
+    #[serde(default = "EntropyConfig::default")]
+    pub entropy: EntropyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +169,27 @@ pub struct ClusterConfig {
 pub struct CouplingConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// Quantum-Wave T1.3 (#473): which entropy source seeds dreams / Ξ. env
+/// `KANNAKA_ENTROPY_SOURCE` OVERRIDES this; `apply_entropy_env_from_config`
+/// bridges config→env at startup only when the env var is unset. **Default
+/// `prng`** — the reservoir source is opt-in until T1.5 dogfood passes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntropyConfig {
+    /// `"prng"` (default) or `"reservoir"`.
+    #[serde(default = "default_entropy_source")]
+    pub source: String,
+}
+
+impl Default for EntropyConfig {
+    fn default() -> Self {
+        Self { source: default_entropy_source() }
+    }
+}
+
+fn default_entropy_source() -> String {
+    "prng".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +328,7 @@ impl Default for KannakaConfig {
             belief: BeliefConfig::default(),
             cluster: ClusterConfig::default(),
             coupling: CouplingConfig::default(),
+            entropy: EntropyConfig::default(),
         }
     }
 }
@@ -467,6 +491,15 @@ pub fn apply_cluster_env_from_config(cfg: &KannakaConfig) {
 pub fn apply_coupling_env_from_config(cfg: &KannakaConfig) {
     if std::env::var_os("KANNAKA_EXEMPLAR_COUPLING").is_none() && cfg.coupling.enabled {
         std::env::set_var("KANNAKA_EXEMPLAR_COUPLING", "on");
+    }
+}
+
+/// Quantum-Wave T1.3: bridge persisted `[entropy].source` → KANNAKA_ENTROPY_
+/// SOURCE (read by `entropy::EntropySelection::from_env`). **Env wins** — only set
+/// when unset. Call once at startup (single-threaded, before workers spawn).
+pub fn apply_entropy_env_from_config(cfg: &KannakaConfig) {
+    if std::env::var_os("KANNAKA_ENTROPY_SOURCE").is_none() {
+        std::env::set_var("KANNAKA_ENTROPY_SOURCE", &cfg.entropy.source);
     }
 }
 
