@@ -178,7 +178,7 @@ impl RhythmEngine {
         eta
     }
 
-    // hi_ms at t=0, lo_ms at t=1 (higher arousal → lower t-parameter → longer interval).
+    // hi_ms at t=0, lo_ms at t=1 (higher arousal → higher t → shorter interval).
     fn interval_lerp(hi_ms: f64, lo_ms: f64, t: f64) -> u64 {
         (hi_ms - t * (hi_ms - lo_ms)) as u64
     }
