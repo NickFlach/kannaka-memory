@@ -68,8 +68,28 @@ jobs:
           declare -a done_branches=()
           for num in $(gh pr list --state open --limit 100 --json number,headRefName \
                 --jq '.[] | select(.headRefName | startswith("kannaka-curiosity/")) | .number' | sort -n); do
-            if ! gh pr checks "$num" >/dev/null 2>&1; then
-              echo "skip #$num — checks not all green yet"
+            # ── CI gate (issue #468) ──────────────────────────────────────────
+            # A bare `gh pr checks "$num"` is NOT a sufficient gate: on a PR with
+            # ZERO reported checks it does not fail, so a bot PR could be merged
+            # without CI (ci.yml — including the NATS contract conformance test)
+            # ever running. Require, from the head commit's checks:
+            #   1. every reported check is in a terminal-success bucket
+            #      (`pass` or `skipping`) — nothing failing/pending/cancelled, and
+            #   2. the CI workflow (ci.yml, `name: CI`) is PRESENT and passed.
+            # `--json` prints the check JSON on stdout regardless of the aggregate
+            # exit code; we read that and ignore the exit code. Missing/empty
+            # output (no checks) falls through to `[]`, which fails the gate
+            # (ci_passing == 0) — i.e. it fails CLOSED.
+            checks_json=$(gh pr checks "$num" --json workflow,name,state,bucket 2>/dev/null)
+            [ -z "$checks_json" ] && checks_json='[]'
+            not_passing=$(echo "$checks_json" | jq '[.[] | select(.bucket != "pass" and .bucket != "skipping")] | length')
+            ci_passing=$(echo "$checks_json" | jq '[.[] | select(.workflow == "CI" and .bucket == "pass")] | length')
+            if [ "${not_passing:-1}" -ne 0 ]; then
+              echo "skip #$num — not all checks green yet (non-passing: $not_passing)"
+              continue
+            fi
+            if [ "${ci_passing:-0}" -eq 0 ]; then
+              echo "skip #$num — required CI workflow has not passed on the head commit"
               continue
             fi
 
