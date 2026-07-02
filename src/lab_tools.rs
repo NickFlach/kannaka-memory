@@ -412,22 +412,30 @@ pub fn lab_tools() -> Vec<Tool> {
                     "session": { "type": "string", "default": "qos", "description": "tmux session name on the instance." },
                     "fresh": { "type": "boolean", "default": false, "description": "Kill an existing session and reboot from a rebuilt kernel." },
                     "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 },
-                    "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." }
+                    "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." },
+                    "graphical": { "type": "boolean", "default": false, "description": "Boot with a real VGA framebuffer over VNC (paused), and install noVNC on the instance, so the wave-interference boot splash can be watched live in a browser. Watch with lab_watch(graphical=true). Default false = serial console only." },
+                    "web_port": { "type": "integer", "description": "websockify web port for --graphical (default 6080)." },
+                    "monitor_port": { "type": "integer", "description": "QEMU TCP monitor port for --graphical (paused-VM resume)." }
                 },
                 "required": ["ssh_alias"]
             }),
         },
         Tool {
             name: "lab_watch",
-            description: "Open a LOCAL terminal window attached to a tmux session on the instance (e.g. the \
-                          QuantumOS serial console from lab_qos_boot) so the user can watch the machine live. \
-                          Spawns a window on the user's desktop; the session survives the window closing. \
-                          If no window can be opened, returns the manual attach command instead.",
+            description: "Watch the QuantumOS instance live. Default (serial): opens a LOCAL terminal window \
+                          attached to the tmux serial console from lab_qos_boot. graphical=true: opens an SSH \
+                          tunnel to the instance's noVNC bridge, launches the browser at the VNC client, and \
+                          resumes the paused VM — so the user watches the graphical boot (wave-interference \
+                          splash) in a browser. Requires lab_qos_boot(graphical=true) first for the graphical mode.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
-                    "session": { "type": "string", "default": "qos", "description": "tmux session to attach." }
+                    "session": { "type": "string", "default": "qos", "description": "tmux session to attach (serial mode)." },
+                    "graphical": { "type": "boolean", "default": false, "description": "Watch the graphical noVNC boot (tunnel + browser + resume the paused VM) instead of the serial terminal." },
+                    "web_port": { "type": "integer", "description": "Instance websockify web port (default 6080), for graphical mode." },
+                    "monitor_port": { "type": "integer", "description": "QEMU monitor port to send 'cont' to (graphical resume)." },
+                    "local_port": { "type": "integer", "description": "Local tunnel port for the browser (graphical mode)." }
                 },
                 "required": ["ssh_alias"]
             }),
@@ -709,8 +717,13 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_flag(&mut args, "--fresh", input, "fresh");
             push_int(&mut args, "--timeout-secs", input, "timeout_secs");
             push_str_opt(&mut args, "--qseed", input, "qseed");
+            push_flag(&mut args, "--graphical", input, "graphical");
+            push_int(&mut args, "--web-port", input, "web_port");
+            push_int(&mut args, "--monitor-port", input, "monitor_port");
         }
-        // Local, not a bridge call: opens a window on the user's own desktop.
+        // Local, not a bridge call for serial: opens a window on the user's own
+        // desktop. graphical=true bridges to the quantum `lab-watch` CLI, which
+        // sets up the local SSH tunnel + browser + resumes the paused VM.
         "lab_watch" => {
             let alias = match req_str(input, "ssh_alias") {
                 Ok(s) => s,
@@ -721,6 +734,18 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("qos")
                 .to_string();
+            let graphical = input.get("graphical").and_then(|v| v.as_bool()).unwrap_or(false);
+            if graphical {
+                args.push("lab-watch".into());
+                args.push("--ssh-alias".into());
+                args.push(alias);
+                args.push("--session".into());
+                args.push(session);
+                push_int(&mut args, "--web-port", input, "web_port");
+                push_int(&mut args, "--monitor-port", input, "monitor_port");
+                push_int(&mut args, "--local-port", input, "local_port");
+                return run_bridge(&args);
+            }
             return spawn_watch_window(&alias, &session);
         }
         other => return (format!("unknown lab tool: {other}"), true),
