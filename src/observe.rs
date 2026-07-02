@@ -204,81 +204,13 @@ impl From<&ConsciousnessState> for ConsciousnessSnapshot {
 pub struct MemoryIntrospector;
 
 impl MemoryIntrospector {
-    /// Generate a topology report of the HyperConnection network or HRM field topology.
+    /// Generate a topology report of the HRM field topology.
+    ///
+    /// The HRM medium is canonical; the former HyperConnection-graph path was
+    /// unreachable legacy (see #444) and has been removed.
     pub fn topology_report(engine: &ResonanceEngine) -> TopologyReport {
-        // Check if we're using HRM - if so, use field topology metrics
-        { let hrm_metrics = engine.store.consciousness_metrics();
-            return Self::hrm_field_topology_report(engine, &hrm_metrics);
-        }
-
-        // Legacy topology (transitional -- HRM medium is canonical)
-        #[allow(unreachable_code)]
-        let all = engine.store.all_memories().unwrap_or_default();
-        let total_memories = all.len();
-
-        let mut total_links: usize = 0;
-        let mut max_links: usize = 0;
-        let mut isolated = 0usize;
-        let mut layer_counts: BTreeMap<u8, usize> = BTreeMap::new();
-        let mut all_links: Vec<LinkInfo> = Vec::new();
-
-        for mem in &all {
-            let n = mem.connections.len();
-            total_links += n;
-            if n > max_links {
-                max_links = n;
-            }
-            if n == 0 {
-                isolated += 1;
-            }
-            *layer_counts.entry(mem.layer_depth).or_insert(0) += 1;
-
-            for link in &mem.connections {
-                all_links.push(LinkInfo {
-                    from_id: mem.id.to_string(),
-                    to_id: link.target_id.to_string(),
-                    strength: link.strength,
-                    span: link.span,
-                });
-            }
-        }
-
-        // Each link is stored on both sides, so divide by 2 for unique link count
-        let unique_links = total_links / 2;
-
-        let avg_links = if total_memories > 0 {
-            total_links as f32 / total_memories as f32
-        } else {
-            0.0
-        };
-
-        let possible_links = if total_memories > 1 {
-            total_memories * (total_memories - 1) / 2
-        } else {
-            0
-        };
-        let network_density = if possible_links > 0 {
-            unique_links as f32 / possible_links as f32
-        } else {
-            0.0
-        };
-
-        // Top 10 strongest links (deduplicated)
-        all_links.sort_by(|a, b| b.strength.total_cmp(&a.strength));
-        let strongest_links: Vec<LinkInfo> = all_links.into_iter().take(10).collect();
-
-        let layer_distribution: Vec<(u8, usize)> = layer_counts.into_iter().collect();
-
-        TopologyReport {
-            total_memories,
-            total_links: unique_links,
-            avg_links_per_memory: avg_links,
-            max_links,
-            layer_distribution,
-            strongest_links,
-            isolated_memories: isolated,
-            network_density,
-        }
+        let hrm_metrics = engine.store.consciousness_metrics();
+        Self::hrm_field_topology_report(engine, &hrm_metrics)
     }
 
     /// Generate field topology report for HRM stores.

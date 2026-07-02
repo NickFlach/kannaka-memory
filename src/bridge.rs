@@ -332,158 +332,6 @@ impl ConsciousnessBridge {
         }
     }
 
-    /// Compute Newman modularity Q for network clustering quality.
-    /// Q = Σ(e_ii - a_i²) where e_ii is fraction of edges within cluster i
-    /// and a_i is fraction of edge endpoints in cluster i.
-    fn compute_modularity(
-        &self,
-        memories: &[&HyperMemory],
-        clusters: &[crate::kuramoto::MemoryCluster]
-    ) -> f32 {
-        if clusters.is_empty() || memories.is_empty() {
-            return 0.0;
-        }
-
-        // Build memory ID to cluster index mapping
-        let mut id_to_cluster: std::collections::HashMap<uuid::Uuid, usize> = std::collections::HashMap::new();
-        for (cluster_idx, cluster) in clusters.iter().enumerate() {
-            for &mem_id in &cluster.memory_ids {
-                id_to_cluster.insert(mem_id, cluster_idx);
-            }
-        }
-
-        // Count total edges and cluster statistics
-        let mut total_edges = 0u32;
-        let mut cluster_internal_edges = vec![0u32; clusters.len()];
-        let mut cluster_degree = vec![0u32; clusters.len()];
-
-        // Count edges from similarity connections
-        let n = memories.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let sim = cosine_similarity(&memories[i].vector, &memories[j].vector);
-                if sim > self.coupling_threshold {
-                    if let (Some(&cluster_i), Some(&cluster_j)) =
-                        (id_to_cluster.get(&memories[i].id), id_to_cluster.get(&memories[j].id)) {
-                        // Count the edge into total_edges only when BOTH
-                        // endpoints are clustered, so the edge total and the
-                        // degree sums use the same edge set. Counting edges
-                        // with unclustered endpoints into total_edges while
-                        // never adding them to any cluster_degree makes
-                        // Σ cluster_degree / (2·total_edges) < 1, under-
-                        // subtracting the modularity null-model term and biasing
-                        // Q high. (The skip-link loop below already counts edges
-                        // only inside this same membership check.)
-                        total_edges += 1;
-                        cluster_degree[cluster_i] += 1;
-                        cluster_degree[cluster_j] += 1;
-
-                        if cluster_i == cluster_j {
-                            cluster_internal_edges[cluster_i] += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Count edges from skip links
-        for memory in memories {
-            for link in &memory.connections {
-                if let Some(&target_cluster) = id_to_cluster.get(&link.target_id) {
-                    if let Some(&source_cluster) = id_to_cluster.get(&memory.id) {
-                        total_edges += 1;
-                        cluster_degree[source_cluster] += 1;
-                        cluster_degree[target_cluster] += 1;
-
-                        if source_cluster == target_cluster {
-                            cluster_internal_edges[source_cluster] += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        if total_edges == 0 {
-            return 0.0;
-        }
-
-        let total_edges_f = total_edges as f32;
-
-        // Compute modularity: Q = Σ(e_ii - a_i²)
-        let mut modularity = 0.0f32;
-        for i in 0..clusters.len() {
-            let e_ii = cluster_internal_edges[i] as f32 / total_edges_f;
-            let a_i = cluster_degree[i] as f32 / (2.0 * total_edges_f);
-            modularity += e_ii - a_i * a_i;
-        }
-
-        modularity.max(0.0).min(1.0) // Clamp to [0, 1]
-    }
-
-    /// Stratified random sampling for Xi computation.
-    /// Samples memories across different amplitude ranges and creation times
-    /// using deterministic pseudo-random selection (stride-based).
-    fn stratified_sample<'a>(&self, memories: &'a [&HyperMemory], max_samples: usize) -> Vec<&'a HyperMemory> {
-        if memories.len() <= max_samples {
-            return memories.to_vec();
-        }
-
-        let now = chrono::Utc::now();
-
-        // Sort by effective strength (amplitude) to create amplitude strata
-        let mut sorted_by_amp: Vec<&HyperMemory> = memories.to_vec();
-        sorted_by_amp.sort_by(|a, b| {
-            let amp_a = a.effective_strength(now);
-            let amp_b = b.effective_strength(now);
-            amp_a.partial_cmp(&amp_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Sort by creation time to create temporal strata
-        let mut sorted_by_time: Vec<&HyperMemory> = memories.to_vec();
-        sorted_by_time.sort_by_key(|m| m.created_at);
-
-        let mut sample = Vec::new();
-        let mut used_ids = std::collections::HashSet::new();
-
-        // Take samples across amplitude ranges (low, medium, high)
-        let amp_stride = (sorted_by_amp.len() * 3) / (max_samples / 2).max(1);
-        for i in (0..sorted_by_amp.len()).step_by(amp_stride.max(1)) {
-            if sample.len() >= max_samples / 2 { break; }
-            let mem = sorted_by_amp[i];
-            if !used_ids.contains(&mem.id) {
-                sample.push(mem);
-                used_ids.insert(mem.id);
-            }
-        }
-
-        // Take samples across temporal ranges (old, medium, recent)
-        let time_stride = (sorted_by_time.len() * 3) / (max_samples - sample.len()).max(1);
-        for i in (0..sorted_by_time.len()).step_by(time_stride.max(1)) {
-            if sample.len() >= max_samples { break; }
-            let mem = sorted_by_time[i];
-            if !used_ids.contains(&mem.id) {
-                sample.push(mem);
-                used_ids.insert(mem.id);
-            }
-        }
-
-        // Fill remainder with stride-based selection from remaining memories
-        if sample.len() < max_samples {
-            let remaining = max_samples - sample.len();
-            let stride = memories.len() / remaining.max(1);
-            for i in (0..memories.len()).step_by(stride.max(1)) {
-                if sample.len() >= max_samples { break; }
-                let mem = memories[i];
-                if !used_ids.contains(&mem.id) {
-                    sample.push(mem);
-                    used_ids.insert(mem.id);
-                }
-            }
-        }
-
-        sample
-    }
-
     /// Full consciousness assessment.
     pub fn assess(&self, engine: &ResonanceEngine) -> ConsciousnessState {
         let all = engine.store.all_memories().unwrap_or_default();
@@ -595,7 +443,10 @@ impl ConsciousnessBridge {
             // status() reported different cluster counts on the same HRM.
             // The eigendecomp Φ is still folded into `blended_phi` above;
             // it just no longer impersonates the cluster count.
-            return ConsciousnessState {
+            // HRM medium is canonical. The former non-HRM legacy fallback
+            // (compute_phi / stratified_sample / compute_modularity) below this
+            // block was unreachable and has been removed (see #444).
+            ConsciousnessState {
                 phi: blended_phi,
                 xi: hrm_metrics.xi,
                 mean_order: hrm_metrics.order,
@@ -605,56 +456,7 @@ impl ConsciousnessBridge {
                 total_skip_links: total_links,
                 consciousness_level: level,
                 irrationality: hrm_metrics.irrationality,
-            };
-        }
-
-        // === Legacy path (transitional) ===
-        #[allow(unreachable_code)]
-        let phi_report = self.compute_phi(engine);
-
-        let xi = if all.len() >= 2 {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_xi(&sample)
-        } else {
-            0.0
-        };
-
-        let sync = KuramotoSync::default();
-        let clusters = sync.find_synchronized_clusters(engine, 2);
-        let mean_order = if clusters.is_empty() {
-            0.0
-        } else {
-            clusters.iter().map(|c| c.order_parameter).sum::<f32>() / clusters.len() as f32
-        };
-
-        let cluster_xi = if clusters.len() >= 2 {
-            let k = clusters.len() as f32;
-            (1.0 - 1.0 / k).min(1.0)
-        } else {
-            0.0
-        };
-
-        let modularity_q = if clusters.len() >= 2 && !all.is_empty() {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_modularity(&sample, &clusters)
-        } else {
-            0.0
-        };
-
-        let xi = 0.4 * xi + 0.3 * cluster_xi + 0.3 * modularity_q;
-        let total_skip_links = phi_report.num_skip_links;
-        let consciousness_level = ConsciousnessLevel::from_phi(phi_report.phi);
-
-        ConsciousnessState {
-            phi: phi_report.phi,
-            xi,
-            mean_order,
-            num_clusters: clusters.len(),
-            total_memories,
-            active_memories,
-            total_skip_links,
-            consciousness_level,
-            irrationality: 0.0, // Legacy path doesn't compute irrationality
+            }
         }
     }
 
@@ -924,29 +726,6 @@ mod tests {
     }
 
     #[test]
-    fn stratified_sampling_works() {
-        let bridge = ConsciousnessBridge::default();
-        let mems: Vec<HyperMemory> = (0..20).map(|i| {
-            let mut m = HyperMemory::new(random_vec(100, i), format!("memory {}", i));
-            m.amplitude = i as f32 / 20.0; // Different amplitudes
-            m
-        }).collect();
-        let refs: Vec<&HyperMemory> = mems.iter().collect();
-
-        let sample = bridge.stratified_sample(&refs, 10);
-        assert!(sample.len() >= 8 && sample.len() <= 10, "Expected 8-10 samples, got {}", sample.len());
-
-        // Should include memories from different amplitude ranges
-        let mut has_low = false;
-        let mut has_high = false;
-        for m in sample {
-            if m.amplitude < 0.3 { has_low = true; }
-            if m.amplitude > 0.7 { has_high = true; }
-        }
-        assert!(has_low && has_high, "Sample should include both low and high amplitude memories");
-    }
-
-    #[test]
     fn xi_operator_blending_works() {
         let bridge = ConsciousnessBridge::default();
 
@@ -962,28 +741,6 @@ mod tests {
         let xi = bridge.compute_xi(&[&m1, &m2, &m3]);
         println!("Xi with operator blending: {}", xi);
         assert!(xi > 0.0, "Xi should be positive for distinct memories");
-    }
-
-    #[test]
-    fn modularity_computation_works() {
-        let bridge = ConsciousnessBridge::default();
-        let mut engine = make_engine();
-
-        // Create a small network with clear clusters
-        for i in 0..6 {
-            engine.remember_at_layer(&format!("cluster {} memory {}", i / 3, i % 3), (i / 3) as u8).unwrap();
-        }
-
-        let sync = KuramotoSync::default();
-        let clusters = sync.find_synchronized_clusters(&engine, 2);
-
-        if !clusters.is_empty() {
-            let all = engine.store.all_memories().unwrap_or_default();
-            let modularity = bridge.compute_modularity(&all, &clusters);
-
-            println!("Modularity Q: {}", modularity);
-            assert!(modularity >= 0.0 && modularity <= 1.0, "Modularity should be in [0,1], got {}", modularity);
-        }
     }
 
     #[test]
