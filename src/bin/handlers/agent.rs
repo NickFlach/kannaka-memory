@@ -176,6 +176,13 @@ fn tool_summary(name: &str, input: &Value) -> String {
                 .find_map(|k| input.get(k).and_then(|v| v.as_str()))
                 .unwrap_or("");
             let mut s = if target.is_empty() { name.to_string() } else { format!("{name} {target}") };
+            // lab_exec runs an arbitrary remote command — the human must see
+            // WHAT will run, not just where.
+            if name == "lab_exec" {
+                if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                    s.push_str(&format!(": {cmd}"));
+                }
+            }
             if lab_tools::is_lab_paid_tool(name) {
                 let allow = input.get("allow_spend").and_then(|v| v.as_bool()).unwrap_or(false);
                 match input.get("max_credits").and_then(|v| v.as_f64()) {
@@ -586,7 +593,7 @@ fn run_turn(
                 || is_memory_tool(&name)
                 || quantum_tools::is_quantum_tool(&name)
                 || lab_tools::is_lab_readonly_tool(&name);
-            let danger = (name == "bash"
+            let danger = ((name == "bash" || name == "lab_exec")
                 && input.get("command").and_then(|v| v.as_str()).map(coding_tools::bash_is_destructive).unwrap_or(false))
                 || lab_tools::is_lab_paid_tool(&name);
             emit(json!({
@@ -676,4 +683,31 @@ fn wait_for_approval(
         }
     }
     Decision::Deny("input closed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the new remote-shell/boot/watch tools to the free-mutation tier:
+    /// dispatched as lab tools, never auto-allowed as read-only, never
+    /// treated as paid (which would demand allow_spend+max_credits), asked
+    /// by default, allowed in yolo, refused in plan.
+    #[test]
+    fn phase5_lab_tools_land_in_the_free_mutation_tier() {
+        let empty = std::collections::HashSet::new();
+        for name in ["lab_exec", "lab_qos_boot", "lab_watch"] {
+            assert!(lab_tools::is_lab_tool(name), "{name} must route to dispatch_lab_tool");
+            assert!(!lab_tools::is_lab_readonly_tool(name), "{name} must not be auto-allowed");
+            assert!(!lab_tools::is_lab_paid_tool(name), "{name} must not require spend args");
+            assert!(matches!(decide(Mode::Default, name, &empty, name), Decision::Ask));
+            assert!(matches!(decide(Mode::Yolo, name, &empty, name), Decision::Allow));
+            assert!(matches!(decide(Mode::Plan, name, &empty, name), Decision::Deny(_)));
+        }
+        // Paid tools stay un-yolo-able — the invariant the tiers exist for.
+        assert!(matches!(
+            decide(Mode::Yolo, "lab_provision_instance", &empty, "lab_provision_instance"),
+            Decision::Ask
+        ));
+    }
 }
