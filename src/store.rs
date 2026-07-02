@@ -234,6 +234,15 @@ pub trait MediumBackend: Send + Sync {
         false
     }
 
+    /// Quantum-Wave T1.4 (#474): provenance of the entropy that last seeded a
+    /// dream/Ξ touching this wavefront, read from the canonical
+    /// `WavefrontMeta.provenance`. `None` ⇒ never stamped ⇒ `prng://legacy`.
+    /// Default `None`; HrmStore reads the authoritative metadata. Surfaced via
+    /// CLI inspect (`export-json`).
+    fn provenance_of(&self, _id: &Uuid) -> Option<crate::entropy::Provenance> {
+        None
+    }
+
     /// ADR-0036 Phase 1: flush per-memory reactivation counts to the sidecar.
     /// Default no-op; HrmStore writes `.reactivation.json` (sidecar only, safe
     /// under readonly). Called by the serve daemon and CLI `recall` so recall

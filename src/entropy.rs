@@ -33,10 +33,15 @@ pub struct Provenance {
     /// `reservoir://<mode>` where mode is `raw` or `drbg-expand`.
     pub source: String,
     /// QPU job ids in the entropy chain (empty for a PRNG source).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// NB: no `skip_serializing_if` — this type is bincode-serialized inside
+    /// `WavefrontMeta` (T1.4), and bincode is positional/non-self-describing, so
+    /// conditionally omitting a field would desync the on-disk layout. Every
+    /// field is always written; JSON just carries the (possibly empty) arrays.
+    #[serde(default)]
     pub qpu_jobs: Vec<String>,
     /// QPU devices in the chain (empty for a PRNG source).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub devices: Vec<String>,
 }
 
@@ -297,6 +302,23 @@ impl EntropySelection {
             EntropySelection::Reservoir => Box::new(ReservoirSource::new()),
         }
     }
+
+    /// The provenance LABEL of the configured source WITHOUT drawing — for T1.4
+    /// stamping (record which entropy regime seeded a dream/Ξ) that must NOT
+    /// change the deterministic dynamics or consume reservoir bytes. `Prng` →
+    /// `prng://`; `Reservoir` → `reservoir://configured` (a regime marker with no
+    /// QPU chain — the real chain attaches only when T1.5 wires actual
+    /// consumption into the dream).
+    pub fn provenance_label(self) -> Provenance {
+        match self {
+            EntropySelection::Prng => Provenance::prng(),
+            EntropySelection::Reservoir => Provenance {
+                source: "reservoir://configured".to_string(),
+                qpu_jobs: Vec::new(),
+                devices: Vec::new(),
+            },
+        }
+    }
 }
 
 /// The configured entropy source. Defaults to [`PrngSource`].
@@ -341,9 +363,13 @@ mod tests {
         assert!(!back.is_prng());
         assert_eq!(back.source, "reservoir://drbg-expand");
 
-        // PRNG provenance omits the empty QPU vecs from the wire.
+        // All fields always serialize (bincode-safety: no skip_serializing_if),
+        // and a bincode round-trip is exact — the property WavefrontMeta relies on.
+        let bin = bincode::serialize(&p).unwrap();
+        let back_bin: Provenance = bincode::deserialize(&bin).unwrap();
+        assert_eq!(p, back_bin);
         let sp = serde_json::to_string(&Provenance::prng()).unwrap();
-        assert!(!sp.contains("qpu_jobs"), "empty vecs skipped: {sp}");
+        assert!(sp.contains("qpu_jobs"), "empty vecs still present (bincode-safe): {sp}");
     }
 
     #[test]
@@ -381,6 +407,24 @@ mod tests {
     fn bits_to_bytes_pads_truncated_low_bits() {
         // 12 bits → 2 bytes; the last nibble's low 4 bits are zero-padded.
         assert_eq!(bits_to_bytes("101000001111", 12), vec![0b1010_0000, 0b1111_0000]);
+    }
+
+    /// Live end-to-end smoke against a real reservoir + the kannaka-quantum CLI.
+    /// `#[ignore]`d so CI never runs it (it needs the Python CLI on PATH and
+    /// consumes real, paid QPU entropy). Run manually:
+    ///   cargo test --lib entropy::tests::reservoir_source_live_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore = "live: needs kannaka-quantum CLI + a non-empty reservoir; consumes real entropy"]
+    fn reservoir_source_live_smoke() {
+        let mut s = ReservoirSource::new();
+        let d = s.draw(128).expect("live reservoir draw");
+        assert!(!d.bytes.is_empty(), "got entropy bytes");
+        assert!(d.provenance.source.starts_with("reservoir://"), "reservoir provenance");
+        assert!(!d.provenance.qpu_jobs.is_empty(), "carries a QPU job chain");
+        println!(
+            "LIVE ReservoirSource draw -> bytes={} source={} qpu_jobs={:?} devices={:?}",
+            d.bytes.len(), d.provenance.source, d.provenance.qpu_jobs, d.provenance.devices
+        );
     }
 
     #[test]

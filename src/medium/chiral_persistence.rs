@@ -50,6 +50,7 @@ impl From<WavefrontMetaLegacy> for WavefrontMeta {
             effective_at: None,
             observed_at: None,
             expires_at: None,
+            provenance: None,
         }
     }
 }
@@ -87,6 +88,7 @@ impl From<WavefrontMetaPreTier> for WavefrontMeta {
             effective_at: None,
             observed_at: None,
             expires_at: None,
+            provenance: None,
         }
     }
 }
@@ -127,8 +129,82 @@ impl From<WavefrontMetaPreTemporal> for WavefrontMeta {
             effective_at: None,
             observed_at: None,
             expires_at: None,
+            provenance: None,
         }
     }
+}
+
+/// Pre-provenance WavefrontMeta (after Wave 3 temporal fields, before Quantum-
+/// Wave T1.4 `provenance`). Matches the on-disk layout of every `.hrm` written
+/// between the temporal addition and the provenance addition — the newest legacy
+/// shape. First fallback step in the
+/// new → pre-provenance → pre-temporal → pre-tier → legacy chain: an old file
+/// lacks the trailing provenance bytes, so it fails the new-struct deserialize
+/// and decodes here with `provenance` defaulting to `None` (⇒ `prng://legacy`).
+#[derive(Deserialize)]
+pub(crate) struct WavefrontMetaPreProvenance {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub hallucinated: bool,
+    pub is_self_referential: bool,
+    #[serde(default)]
+    pub modality: Modality,
+    #[serde(default)]
+    pub tier: crate::medium::types::Tier,
+    #[serde(default)]
+    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub observed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl From<WavefrontMetaPreProvenance> for WavefrontMeta {
+    fn from(p: WavefrontMetaPreProvenance) -> Self {
+        WavefrontMeta {
+            id: p.id,
+            content: p.content,
+            tags: p.tags,
+            created_at: p.created_at,
+            hallucinated: p.hallucinated,
+            is_self_referential: p.is_self_referential,
+            sga_class: None,
+            fano_group: None,
+            category: None,
+            modality: p.modality,
+            tier: p.tier,
+            effective_at: p.effective_at,
+            observed_at: p.observed_at,
+            expires_at: p.expires_at,
+            provenance: None,
+        }
+    }
+}
+
+/// Decode a bincode wavefront-metadata blob through the full backward-compat
+/// fallback chain: new → pre-provenance (T1.4) → pre-temporal → pre-tier →
+/// legacy. Old `.hrm` files lack the newest trailing bytes, so they fail the
+/// new-struct decode and drop to the matching older shape (missing fields
+/// default). Shared by both the chiral and flat read paths so the chain has one
+/// definition.
+pub(crate) fn decode_wavefront_metadata(bytes: &[u8]) -> Result<Vec<WavefrontMeta>, MediumError> {
+    if let Ok(m) = bincode::deserialize::<Vec<WavefrontMeta>>(bytes) {
+        return Ok(m);
+    }
+    if let Ok(pre) = bincode::deserialize::<Vec<WavefrontMetaPreProvenance>>(bytes) {
+        return Ok(pre.into_iter().map(Into::into).collect());
+    }
+    if let Ok(pre) = bincode::deserialize::<Vec<WavefrontMetaPreTemporal>>(bytes) {
+        return Ok(pre.into_iter().map(Into::into).collect());
+    }
+    if let Ok(pre) = bincode::deserialize::<Vec<WavefrontMetaPreTier>>(bytes) {
+        return Ok(pre.into_iter().map(Into::into).collect());
+    }
+    let legacy: Vec<WavefrontMetaLegacy> =
+        bincode::deserialize(bytes).map_err(MediumError::Serialization)?;
+    Ok(legacy.into_iter().map(Into::into).collect())
 }
 
 /// Verify the trailing 32-byte blake3 checksum on a .hrm file.
@@ -534,28 +610,7 @@ impl ChiralMedium {
         }
         let mut meta_bytes = vec![0u8; meta_len];
         r.read_exact(&mut meta_bytes)?;
-        let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&meta_bytes) {
-            Ok(m) => m,
-            Err(_) => {
-                // Task 3.2b: pre-temporal format (has tier, lacks the temporal
-                // fields). Newest legacy shape — try it before older layouts.
-                match bincode::deserialize::<Vec<WavefrontMetaPreTemporal>>(&meta_bytes) {
-                    Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
-                    Err(_) => {
-                        // ADR-0031: pre-tier format (has modality, lacks tier).
-                        match bincode::deserialize::<Vec<WavefrontMetaPreTier>>(&meta_bytes) {
-                            Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
-                            Err(_) => {
-                                // Pre-NCS format: no modality and no tier — defaults.
-                                let legacy: Vec<WavefrontMetaLegacy> = bincode::deserialize(&meta_bytes)
-                                    .map_err(|e| MediumError::Serialization(e))?;
-                                legacy.into_iter().map(|l| l.into()).collect()
-                            }
-                        }
-                    }
-                }
-            }
-        };
+        let metadata: Vec<WavefrontMeta> = decode_wavefront_metadata(&meta_bytes)?;
 
         // #362: section sizes come from independent sources — `n` (the on-disk
         // count) sizes wavefronts/energy/frequency/phase/timestamps, while the
@@ -653,6 +708,76 @@ mod tests {
         let bytes = bincode::serialize(&vec![m]).unwrap();
         let back: Vec<WavefrontMeta> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back[0].tier, Tier::Pinned);
+    }
+
+    // Quantum-Wave T1.4 (#474): locks the bincode back-compat invariant for the
+    // `provenance` field. Pre-provenance metadata bytes (modality + tier +
+    // temporal, NO provenance — every .hrm written before this change) MUST fail
+    // the new-struct deserialize and succeed via the WavefrontMetaPreProvenance
+    // fallback with provenance defaulting to None (⇒ prng://legacy). A regression
+    // here would silently corrupt existing HRM files.
+    #[test]
+    fn preprovenance_metadata_decodes_via_fallback_with_none_provenance() {
+        use chrono::{DateTime, Utc};
+        use serde::Serialize;
+        use uuid::Uuid;
+
+        // Exact on-disk layout of pre-provenance WavefrontMeta.
+        #[derive(Serialize)]
+        struct OldMeta {
+            id: Uuid,
+            content: String,
+            tags: Vec<String>,
+            created_at: DateTime<Utc>,
+            hallucinated: bool,
+            is_self_referential: bool,
+            modality: Modality,
+            tier: Tier,
+            effective_at: Option<DateTime<Utc>>,
+            observed_at: Option<DateTime<Utc>>,
+            expires_at: Option<DateTime<Utc>>,
+        }
+        let old = vec![OldMeta {
+            id: Uuid::nil(),
+            content: "legacy".to_string(),
+            tags: vec![],
+            created_at: Utc::now(),
+            hallucinated: true,
+            is_self_referential: false,
+            modality: Modality::Audio,
+            tier: Tier::Pinned,
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
+        }];
+        let bytes = bincode::serialize(&old).unwrap();
+
+        // New struct (with provenance) must NOT decode old bytes — this is what
+        // makes the loader fall through to the pre-provenance path.
+        assert!(bincode::deserialize::<Vec<WavefrontMeta>>(&bytes).is_err());
+
+        // The full fallback chain decodes it, preserving every older field and
+        // defaulting provenance to None.
+        let decoded = decode_wavefront_metadata(&bytes).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].content, "legacy");
+        assert_eq!(decoded[0].tier, Tier::Pinned);
+        assert!(decoded[0].hallucinated);
+        assert_eq!(decoded[0].provenance, None, "old record ⇒ None ⇒ prng://legacy");
+    }
+
+    #[test]
+    fn new_metadata_roundtrips_provenance() {
+        let mut m = WavefrontMeta::new(uuid::Uuid::nil(), "x".to_string());
+        m.provenance = Some(crate::entropy::Provenance::reservoir(
+            "drbg-expand",
+            vec!["job-1".to_string()],
+            vec!["dev".to_string()],
+        ));
+        let bytes = bincode::serialize(&vec![m.clone()]).unwrap();
+        // New format decodes directly (no fallback needed).
+        let back = decode_wavefront_metadata(&bytes).unwrap();
+        assert_eq!(back[0].provenance, m.provenance);
     }
 
     // Wave 3 Task 3.2b: locks the bincode back-compat invariant for the temporal

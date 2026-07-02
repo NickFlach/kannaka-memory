@@ -964,16 +964,38 @@ impl HrmStore {
     pub fn dream(&mut self, cycles: usize, initial_temperature: Option<f32>) -> crate::medium::DreamReport {
         if self.chiral.is_some() {
             // Chiral dream: right hemisphere only (deep dream)
-            let chiral = self.chiral.as_mut().unwrap();
-            let report = chiral.dream(true, cycles);
+            let report = self.chiral.as_mut().unwrap().dream(true, cycles);
+            self.stamp_dream_provenance();
             self.rebuild_cache().ok();
             self.mark_dirty();
             self.log_spiral_telemetry();
             report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
+            self.stamp_dream_provenance();
             self.mark_dirty();
             report
+        }
+    }
+
+    /// T1.4 (#474): stamp the configured entropy source's provenance on the
+    /// wavefronts THIS dream produced (hallucinations) that don't already carry
+    /// it. Purely additive — it touches only new dream products' metadata, never
+    /// the (deterministic) dynamics, and consumes no entropy. Under the default
+    /// PrngSource this stamps `prng://`; the real QPU provenance chain attaches
+    /// once T1.5 wires actual reservoir consumption into the dream. Pre-existing
+    /// memories (not dream-born this cycle) keep `None` ⇒ `prng://legacy`.
+    fn stamp_dream_provenance(&mut self) {
+        let label = crate::entropy::EntropySelection::from_env().provenance_label();
+        let metadata = if let Some(ref mut chiral) = self.chiral {
+            &mut chiral.right.metadata
+        } else {
+            &mut self.medium.store.metadata
+        };
+        for m in metadata.iter_mut() {
+            if m.hallucinated && m.provenance.is_none() {
+                m.provenance = Some(label.clone());
+            }
         }
     }
 
@@ -1414,6 +1436,10 @@ impl HrmStore {
             // Flat medium: use Medium's eigenstructure annealing
             self.medium.dream(cycles, temperature)
         };
+
+        // T1.4: stamp entropy provenance on this dream's products (hallucinations)
+        // before the sync/save persists them.
+        self.stamp_dream_provenance();
 
         // Rebuild cache and sync after dreaming
         self.sync_medium_from_chiral();
@@ -1938,6 +1964,24 @@ impl MediumBackend for HrmStore {
 
     fn is_chiral(&self) -> bool {
         Self::is_chiral(self)
+    }
+
+    fn provenance_of(&self, id: &Uuid) -> Option<crate::entropy::Provenance> {
+        if let Some(ref chiral) = self.chiral {
+            chiral
+                .right
+                .id_to_index
+                .get(id)
+                .and_then(|&i| chiral.right.metadata.get(i))
+                .and_then(|m| m.provenance.clone())
+        } else {
+            self.medium
+                .store
+                .id_to_index
+                .get(id)
+                .and_then(|&i| self.medium.store.metadata.get(i))
+                .and_then(|m| m.provenance.clone())
+        }
     }
 
     fn consolidate_resonance(&mut self, opts: &ConsolidateOpts) -> ConsolidateReport {
@@ -2852,5 +2896,44 @@ mod tests {
         // Sanity: the 4 dups collapse to one carrier and the cold ShortTerm evicts.
         assert_eq!(plan.would_absorb, 3);
         assert_eq!(plan.would_evict, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // T1.4 (#474) — entropy provenance stamped on dream products.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dream_stamps_provenance_on_hallucinations_only() {
+        let mut store =
+            HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
+        // A dream product (hallucinated) and an ordinary memory.
+        let mut v = vec![0.0f32; WAVEFRONT_DIM]; v[0] = 1.0;
+        let hallu = insert_ctl(&mut store, v, "dream product", 1.0, 0.0, Tier::LongTerm, 0);
+        let mut v2 = vec![0.0f32; WAVEFRONT_DIM]; v2[1] = 1.0;
+        let ordinary = insert_ctl(&mut store, v2, "ordinary", 1.0, 0.0, Tier::LongTerm, 0);
+
+        // Mark the first as dream-born in the authoritative metadata.
+        let idx = store.medium.get_wavefront_index(&hallu).unwrap();
+        store.medium.store.metadata[idx].hallucinated = true;
+
+        assert_eq!(store.provenance_of(&hallu), None, "unstamped before dream");
+
+        store.stamp_dream_provenance();
+
+        // Default (prng) source stamps prng:// on the hallucination.
+        assert_eq!(
+            store.provenance_of(&hallu),
+            Some(crate::entropy::Provenance::prng()),
+            "dream product carries the configured (prng) provenance"
+        );
+        // The ordinary memory is never a dream product ⇒ stays legacy (None).
+        assert_eq!(
+            store.provenance_of(&ordinary), None,
+            "non-dream memory keeps None ⇒ prng://legacy"
+        );
+
+        // Idempotent: a second dream doesn't overwrite an existing stamp.
+        store.stamp_dream_provenance();
+        assert_eq!(store.provenance_of(&hallu), Some(crate::entropy::Provenance::prng()));
     }
 }

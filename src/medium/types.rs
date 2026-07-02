@@ -514,6 +514,15 @@ pub struct WavefrontMeta {
     /// When the fact is known to stop being true (None = no known expiry).
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// Quantum-Wave T1.4 (#474): provenance of the entropy that seeded the
+    /// dream/Ξ that last wrote this wavefront. `None` for records written before
+    /// provenance existed (loaded via the `WavefrontMetaPreProvenance` fallback)
+    /// ⇒ treated as `prng://legacy`. This is now the LAST serialized field — the
+    /// bincode fallback chain relies on `.hrm` files written before this change
+    /// lacking these trailing bytes, so they fail the new-struct deserialize and
+    /// drop to `WavefrontMetaPreProvenance`.
+    #[serde(default)]
+    pub provenance: Option<crate::entropy::Provenance>,
 }
 
 impl WavefrontMeta {
@@ -533,6 +542,7 @@ impl WavefrontMeta {
             effective_at: None,
             observed_at: None,
             expires_at: None,
+            provenance: None,
         }
     }
 

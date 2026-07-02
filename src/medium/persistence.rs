@@ -437,19 +437,8 @@ impl Medium {
         // Fall back through the legacy layouts for flat v1 files written before
         // newer fields were appended (mirrors the chiral read path):
         // new → pre-temporal (Task 3.2b) → pre-tier (ADR-0031).
-        let metadata: Vec<WavefrontMeta> = match bincode::deserialize(&metadata_bytes) {
-            Ok(m) => m,
-            Err(_) => {
-                match bincode::deserialize::<Vec<super::chiral_persistence::WavefrontMetaPreTemporal>>(&metadata_bytes) {
-                    Ok(pre) => pre.into_iter().map(|p| p.into()).collect(),
-                    Err(_) => {
-                        let pre: Vec<super::chiral_persistence::WavefrontMetaPreTier> =
-                            bincode::deserialize(&metadata_bytes)?;
-                        pre.into_iter().map(|p| p.into()).collect()
-                    }
-                }
-            }
-        };
+        let metadata: Vec<WavefrontMeta> =
+            super::chiral_persistence::decode_wavefront_metadata(&metadata_bytes)?;
 
         // Consciousness state (for info, not essential for loading)
         let mut len_bytes = [0u8; 4];
