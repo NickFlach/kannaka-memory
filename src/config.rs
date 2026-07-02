@@ -180,11 +180,16 @@ pub struct EntropyConfig {
     /// `"prng"` (default) or `"reservoir"`.
     #[serde(default = "default_entropy_source")]
     pub source: String,
+    /// T1.4: whether dreams/Ξ actually CONSUME entropy from `source` (and record
+    /// its provenance). **Default false** — decoupled from `source` so the dream
+    /// stays deterministic until explicitly opted in. env `KANNAKA_DREAM_ENTROPY`.
+    #[serde(default)]
+    pub dream_perturbation: bool,
 }
 
 impl Default for EntropyConfig {
     fn default() -> Self {
-        Self { source: default_entropy_source() }
+        Self { source: default_entropy_source(), dream_perturbation: false }
     }
 }
 
@@ -500,6 +505,10 @@ pub fn apply_coupling_env_from_config(cfg: &KannakaConfig) {
 pub fn apply_entropy_env_from_config(cfg: &KannakaConfig) {
     if std::env::var_os("KANNAKA_ENTROPY_SOURCE").is_none() {
         std::env::set_var("KANNAKA_ENTROPY_SOURCE", &cfg.entropy.source);
+    }
+    // T1.4: bridge [entropy].dream_perturbation → KANNAKA_DREAM_ENTROPY (env wins).
+    if std::env::var_os("KANNAKA_DREAM_ENTROPY").is_none() && cfg.entropy.dream_perturbation {
+        std::env::set_var("KANNAKA_DREAM_ENTROPY", "1");
     }
 }
 

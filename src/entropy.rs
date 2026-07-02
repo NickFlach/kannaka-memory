@@ -33,10 +33,15 @@ pub struct Provenance {
     /// `reservoir://<mode>` where mode is `raw` or `drbg-expand`.
     pub source: String,
     /// QPU job ids in the entropy chain (empty for a PRNG source).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// NB: no `skip_serializing_if` — this type is bincode-serialized inside
+    /// `WavefrontMeta` (T1.4), and bincode is positional/non-self-describing, so
+    /// conditionally omitting a field would desync the on-disk layout. Every
+    /// field is always written; JSON just carries the (possibly empty) arrays.
+    #[serde(default)]
     pub qpu_jobs: Vec<String>,
     /// QPU devices in the chain (empty for a PRNG source).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub devices: Vec<String>,
 }
 
@@ -299,6 +304,34 @@ impl EntropySelection {
     }
 }
 
+/// T1.4 (#474): whether dreams/Ξ perturbations actually CONSUME entropy from the
+/// configured source (and therefore record its provenance). **Default OFF** —
+/// set `KANNAKA_DREAM_ENTROPY=1|on|true` (config `[entropy].dream_perturbation`).
+///
+/// Deliberately decoupled from [`EntropySelection`]: "which source" and "whether
+/// dreams draw from it" are independent. Off ⇒ the dream stays byte-identically
+/// deterministic and records NO provenance (an honest absence, not a false
+/// `prng://` stamp). On ⇒ the dream draws, its dynamics depend on the entropy,
+/// and every stamped chain is TRUE (prng:// or reservoir://+QPU job). T1.5's
+/// dogfood config is `[entropy].source = reservoir` + this gate ON.
+pub fn dream_entropy_enabled() -> bool {
+    std::env::var("KANNAKA_DREAM_ENTROPY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Derive a deterministic 64-bit seed from drawn entropy bytes (little-endian
+/// fold). Makes the gated dream perturbation a reproducible function of the
+/// entropy it drew — same bytes ⇒ same perturbation.
+pub fn seed_from_bytes(bytes: &[u8]) -> u64 {
+    let mut seed = 0u64;
+    for (i, &b) in bytes.iter().enumerate() {
+        seed ^= (b as u64) << ((i % 8) * 8);
+        seed = seed.rotate_left(7).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    }
+    seed
+}
+
 /// The configured entropy source. Defaults to [`PrngSource`].
 pub fn default_source() -> Box<dyn EntropySource> {
     EntropySelection::from_env().build()
@@ -341,9 +374,13 @@ mod tests {
         assert!(!back.is_prng());
         assert_eq!(back.source, "reservoir://drbg-expand");
 
-        // PRNG provenance omits the empty QPU vecs from the wire.
+        // All fields always serialize (bincode-safety: no skip_serializing_if),
+        // and a bincode round-trip is exact — the property WavefrontMeta relies on.
+        let bin = bincode::serialize(&p).unwrap();
+        let back_bin: Provenance = bincode::deserialize(&bin).unwrap();
+        assert_eq!(p, back_bin);
         let sp = serde_json::to_string(&Provenance::prng()).unwrap();
-        assert!(!sp.contains("qpu_jobs"), "empty vecs skipped: {sp}");
+        assert!(sp.contains("qpu_jobs"), "empty vecs still present (bincode-safe): {sp}");
     }
 
     #[test]
@@ -381,6 +418,24 @@ mod tests {
     fn bits_to_bytes_pads_truncated_low_bits() {
         // 12 bits → 2 bytes; the last nibble's low 4 bits are zero-padded.
         assert_eq!(bits_to_bytes("101000001111", 12), vec![0b1010_0000, 0b1111_0000]);
+    }
+
+    /// Live end-to-end smoke against a real reservoir + the kannaka-quantum CLI.
+    /// `#[ignore]`d so CI never runs it (it needs the Python CLI on PATH and
+    /// consumes real, paid QPU entropy). Run manually:
+    ///   cargo test --lib entropy::tests::reservoir_source_live_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore = "live: needs kannaka-quantum CLI + a non-empty reservoir; consumes real entropy"]
+    fn reservoir_source_live_smoke() {
+        let mut s = ReservoirSource::new();
+        let d = s.draw(128).expect("live reservoir draw");
+        assert!(!d.bytes.is_empty(), "got entropy bytes");
+        assert!(d.provenance.source.starts_with("reservoir://"), "reservoir provenance");
+        assert!(!d.provenance.qpu_jobs.is_empty(), "carries a QPU job chain");
+        println!(
+            "LIVE ReservoirSource draw -> bytes={} source={} qpu_jobs={:?} devices={:?}",
+            d.bytes.len(), d.provenance.source, d.provenance.qpu_jobs, d.provenance.devices
+        );
     }
 
     #[test]

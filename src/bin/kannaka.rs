@@ -3134,6 +3134,10 @@ fn main() {
                         "created_at": m.created_at.to_rfc3339(),
                         "layer_depth": m.layer_depth,
                         "hallucinated": m.hallucinated,
+                        // T1.4 (#474): entropy provenance of the dream/Ξ that last
+                        // wrote this wavefront (null ⇒ prng://legacy). Read from
+                        // the canonical WavefrontMeta.
+                        "provenance": sys.engine.store.provenance_of(&m.id),
                         "parents": m.parents,
                         "connections": m.connections.iter().map(|c| {
                             serde_json::json!({
