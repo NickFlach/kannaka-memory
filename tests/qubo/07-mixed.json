@@ -1,0 +1,47 @@
+{
+  "format": "kannaka-qubo/1",
+  "problem_id": "golden-07-mixed",
+  "variables": [
+    {
+      "id": 0,
+      "kind": "keep_link",
+      "subject": "v0"
+    },
+    {
+      "id": 1,
+      "kind": "merge",
+      "subject": "v1"
+    },
+    {
+      "id": 2,
+      "kind": "keep_link",
+      "subject": "v2"
+    },
+    {
+      "id": 3,
+      "kind": "merge",
+      "subject": "v3"
+    },
+    {
+      "id": 4,
+      "kind": "strengthen",
+      "subject": "v4"
+    }
+  ],
+  "linear": {
+    "0": -2.0,
+    "1": 1.0,
+    "2": -1.0,
+    "3": 3.0,
+    "4": -0.5
+  },
+  "quadratic": {
+    "0,2": 1.5,
+    "2,4": -2.0
+  },
+  "metadata": {
+    "hemisphere": "right",
+    "phi_at_emit": 0.18,
+    "entropy_provenance": "prng://legacy"
+  }
+}

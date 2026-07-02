@@ -1,0 +1,47 @@
+{
+  "format": "kannaka-qubo/1",
+  "problem_id": "golden-05-budget-at-most-1",
+  "variables": [
+    {
+      "id": 0,
+      "kind": "merge",
+      "subject": "mem:a"
+    },
+    {
+      "id": 1,
+      "kind": "merge",
+      "subject": "mem:b"
+    },
+    {
+      "id": 2,
+      "kind": "merge",
+      "subject": "mem:c"
+    }
+  ],
+  "linear": {
+    "0": -13.0,
+    "1": -12.0,
+    "2": -11.0
+  },
+  "quadratic": {
+    "0,1": 20.0,
+    "0,2": 20.0,
+    "1,2": 20.0
+  },
+  "constraints": {
+    "budget": {
+      "vars": [
+        0,
+        1,
+        2
+      ],
+      "max_active": 1,
+      "penalty": 10.0
+    }
+  },
+  "metadata": {
+    "hemisphere": "flat",
+    "phi_at_emit": 0.18,
+    "entropy_provenance": "prng://legacy"
+  }
+}

@@ -1123,6 +1123,41 @@ impl HrmStore {
         report.would_evict = st_evict;
         report.projected_memories = n.saturating_sub(absorb).saturating_sub(st_evict);
 
+        // ADR-0038 (T3.2): emit a `kannaka-qubo/1` problem ALONGSIDE this
+        // procedural plan when KANNAKA_QUBO_EMIT is set. Advisory only — the plan
+        // above is untouched and authoritative; nothing consumes the QUBO yet
+        // (the re-score-before-apply path is T3.5). Default off ⇒ zero overhead.
+        if crate::qubo::emit::enabled() {
+            let merges: Vec<crate::qubo::MergeCandidate> = grouping
+                .admitted
+                .iter()
+                .map(|g| {
+                    let subject = g
+                        .iter()
+                        .map(|&i| format!("mem:{}", entries[i].0))
+                        .collect::<Vec<_>>()
+                        .join("+");
+                    // Cohesion: absorbed count × (1 + mean energy) — larger, hotter
+                    // groups make a stronger case to merge (emitted as linear −cohesion).
+                    let absorbed = g.len().saturating_sub(1) as f64;
+                    let mean_e =
+                        g.iter().map(|&i| entries[i].1.amplitude as f64).sum::<f64>() / g.len() as f64;
+                    crate::qubo::MergeCandidate { subject, cohesion: absorbed * (1.0 + mean_e) }
+                })
+                .collect();
+            let metadata = crate::qubo::Metadata {
+                hemisphere: Some(if belief { "right" } else { "flat" }.to_string()),
+                phi_at_emit: None,
+                entropy_provenance: None,
+                ..Default::default()
+            };
+            // Soft budget: cap kept merges at the absorb count (advisory).
+            let budget = Some((merges.len().max(1), 1.0));
+            let problem_id = format!("dream-{}", chrono::Utc::now().to_rfc3339());
+            let problem = crate::qubo::dream_merge_problem(problem_id, &merges, budget, metadata);
+            crate::qubo::emit::write_problem(&problem);
+        }
+
         report
     }
 

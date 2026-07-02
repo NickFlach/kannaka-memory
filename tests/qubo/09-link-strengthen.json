@@ -1,0 +1,40 @@
+{
+  "format": "kannaka-qubo/1",
+  "problem_id": "golden-09-link-strengthen",
+  "variables": [
+    {
+      "id": 0,
+      "kind": "keep_link",
+      "subject": "skip:A"
+    },
+    {
+      "id": 1,
+      "kind": "strengthen",
+      "subject": "skip:A"
+    },
+    {
+      "id": 2,
+      "kind": "keep_link",
+      "subject": "skip:B"
+    },
+    {
+      "id": 3,
+      "kind": "merge",
+      "subject": "mem:x+mem:y"
+    }
+  ],
+  "linear": {
+    "0": -1.0,
+    "1": 0.5,
+    "2": -0.5,
+    "3": -1.0
+  },
+  "quadratic": {
+    "0,1": -2.0
+  },
+  "metadata": {
+    "hemisphere": "right",
+    "phi_at_emit": 0.18,
+    "entropy_provenance": "prng://legacy"
+  }
+}
