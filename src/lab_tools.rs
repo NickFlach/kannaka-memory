@@ -411,7 +411,8 @@ pub fn lab_tools() -> Vec<Tool> {
                     "ref": { "type": "string", "description": "Branch / tag / sha to check out." },
                     "session": { "type": "string", "default": "qos", "description": "tmux session name on the instance." },
                     "fresh": { "type": "boolean", "default": false, "description": "Kill an existing session and reboot from a rebuilt kernel." },
-                    "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 }
+                    "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 },
+                    "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." }
                 },
                 "required": ["ssh_alias"]
             }),
@@ -707,6 +708,7 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_str_opt(&mut args, "--session", input, "session");
             push_flag(&mut args, "--fresh", input, "fresh");
             push_int(&mut args, "--timeout-secs", input, "timeout_secs");
+            push_str_opt(&mut args, "--qseed", input, "qseed");
         }
         // Local, not a bridge call: opens a window on the user's own desktop.
         "lab_watch" => {
