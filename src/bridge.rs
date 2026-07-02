@@ -335,6 +335,11 @@ impl ConsciousnessBridge {
     /// Compute Newman modularity Q for network clustering quality.
     /// Q = Σ(e_ii - a_i²) where e_ii is fraction of edges within cluster i
     /// and a_i is fraction of edge endpoints in cluster i.
+    ///
+    /// Test-only: the legacy `assess` path that used this in production was
+    /// unreachable and was removed (#444); the algorithm is kept under its
+    /// existing unit test rather than deleted.
+    #[cfg(test)]
     fn compute_modularity(
         &self,
         memories: &[&HyperMemory],
@@ -423,6 +428,11 @@ impl ConsciousnessBridge {
     /// Stratified random sampling for Xi computation.
     /// Samples memories across different amplitude ranges and creation times
     /// using deterministic pseudo-random selection (stride-based).
+    ///
+    /// Test-only: the legacy `assess` path that used this in production was
+    /// unreachable and was removed (#444); the algorithm is kept under its
+    /// existing unit test rather than deleted.
+    #[cfg(test)]
     fn stratified_sample<'a>(&self, memories: &'a [&HyperMemory], max_samples: usize) -> Vec<&'a HyperMemory> {
         if memories.len() <= max_samples {
             return memories.to_vec();
@@ -595,7 +605,7 @@ impl ConsciousnessBridge {
             // status() reported different cluster counts on the same HRM.
             // The eigendecomp Φ is still folded into `blended_phi` above;
             // it just no longer impersonates the cluster count.
-            return ConsciousnessState {
+            ConsciousnessState {
                 phi: blended_phi,
                 xi: hrm_metrics.xi,
                 mean_order: hrm_metrics.order,
@@ -605,56 +615,7 @@ impl ConsciousnessBridge {
                 total_skip_links: total_links,
                 consciousness_level: level,
                 irrationality: hrm_metrics.irrationality,
-            };
-        }
-
-        // === Legacy path (transitional) ===
-        #[allow(unreachable_code)]
-        let phi_report = self.compute_phi(engine);
-
-        let xi = if all.len() >= 2 {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_xi(&sample)
-        } else {
-            0.0
-        };
-
-        let sync = KuramotoSync::default();
-        let clusters = sync.find_synchronized_clusters(engine, 2);
-        let mean_order = if clusters.is_empty() {
-            0.0
-        } else {
-            clusters.iter().map(|c| c.order_parameter).sum::<f32>() / clusters.len() as f32
-        };
-
-        let cluster_xi = if clusters.len() >= 2 {
-            let k = clusters.len() as f32;
-            (1.0 - 1.0 / k).min(1.0)
-        } else {
-            0.0
-        };
-
-        let modularity_q = if clusters.len() >= 2 && !all.is_empty() {
-            let sample = self.stratified_sample(&all, 50);
-            self.compute_modularity(&sample, &clusters)
-        } else {
-            0.0
-        };
-
-        let xi = 0.4 * xi + 0.3 * cluster_xi + 0.3 * modularity_q;
-        let total_skip_links = phi_report.num_skip_links;
-        let consciousness_level = ConsciousnessLevel::from_phi(phi_report.phi);
-
-        ConsciousnessState {
-            phi: phi_report.phi,
-            xi,
-            mean_order,
-            num_clusters: clusters.len(),
-            total_memories,
-            active_memories,
-            total_skip_links,
-            consciousness_level,
-            irrationality: 0.0, // Legacy path doesn't compute irrationality
+            }
         }
     }
 
