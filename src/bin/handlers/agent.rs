@@ -27,9 +27,9 @@
 
 use kannaka_memory::agent::{self, AgentError, ContentBlock, Message, Tool};
 use kannaka_memory::coding_tools::{self, ToolCtx};
-use kannaka_memory::quantum_tools;
 use kannaka_memory::lab_tools;
 use kannaka_memory::openclaw::KannakaMemorySystem;
+use kannaka_memory::quantum_tools;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -87,13 +87,23 @@ fn memory_tools() -> Vec<Tool> {
 }
 
 fn is_memory_tool(name: &str) -> bool {
-    matches!(name, "recall" | "remember" | "status" | "list_clusters" | "observe" | "dream")
+    matches!(
+        name,
+        "recall" | "remember" | "status" | "list_clusters" | "observe" | "dream"
+    )
 }
 
 /// Decide whether a tool call may run. Read-only coding tools and all memory
 /// tools run freely; filesystem/shell mutations follow the permission mode.
-fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>, key: &str) -> Decision {
-    if coding_tools::is_read_only(name) || is_memory_tool(name) || quantum_tools::is_quantum_tool(name)
+fn decide(
+    mode: Mode,
+    name: &str,
+    allowlist: &std::collections::HashSet<String>,
+    key: &str,
+) -> Decision {
+    if coding_tools::is_read_only(name)
+        || is_memory_tool(name)
+        || quantum_tools::is_quantum_tool(name)
         || lab_tools::is_lab_readonly_tool(name)
     {
         // Quantum tools run on qBraid, not the local machine — never gated.
@@ -108,7 +118,9 @@ fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>,
             // launch needs a fresh human OK (plan refuses outright). This is the
             // one class of action where yolo does not blanket-approve.
             return match mode {
-                Mode::Plan => Decision::Deny("plan mode — propose the action instead of running it"),
+                Mode::Plan => {
+                    Decision::Deny("plan mode — propose the action instead of running it")
+                }
                 _ => Decision::Ask,
             };
         }
@@ -133,13 +145,21 @@ fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>,
         Mode::Plan => Decision::Deny("plan mode — propose the change instead of applying it"),
         Mode::AutoEdit => {
             if name == "bash" {
-                if allowlist.contains(key) { Decision::Allow } else { Decision::Ask }
+                if allowlist.contains(key) {
+                    Decision::Allow
+                } else {
+                    Decision::Ask
+                }
             } else {
                 Decision::Allow // write_file / edit_file auto-approved
             }
         }
         Mode::Default => {
-            if allowlist.contains(key) { Decision::Allow } else { Decision::Ask }
+            if allowlist.contains(key) {
+                Decision::Allow
+            } else {
+                Decision::Ask
+            }
         }
     }
 }
@@ -148,7 +168,10 @@ fn decide(mode: Mode, name: &str, allowlist: &std::collections::HashSet<String>,
 /// "allow always" doesn't bless every future command); edits by tool name.
 fn allow_key(name: &str, input: &Value) -> String {
     if name == "bash" {
-        format!("bash:{}", input.get("command").and_then(|v| v.as_str()).unwrap_or(""))
+        format!(
+            "bash:{}",
+            input.get("command").and_then(|v| v.as_str()).unwrap_or("")
+        )
     } else if lab_tools::is_lab_paid_tool(name) {
         // Scope "allow always" for paid compute to the specific profile/instance
         // so blessing one launch doesn't bless every future paid launch.
@@ -165,17 +188,38 @@ fn allow_key(name: &str, input: &Value) -> String {
 
 fn tool_summary(name: &str, input: &Value) -> String {
     match name {
-        "bash" => input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        "write_file" | "edit_file" => input.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "write_file" | "edit_file" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ if lab_tools::is_lab_tool(name) => {
             // Show the salient target (profile / slug / instance / env) for a
             // readable approval line, plus the spend ceiling for paid tools so
             // the human approves the real authorized amount.
-            let target = ["profile", "slug", "instance_id", "name", "env_id", "environment", "ssh_alias", "session_id"]
-                .iter()
-                .find_map(|k| input.get(k).and_then(|v| v.as_str()))
-                .unwrap_or("");
-            let mut s = if target.is_empty() { name.to_string() } else { format!("{name} {target}") };
+            let target = [
+                "profile",
+                "slug",
+                "instance_id",
+                "name",
+                "env_id",
+                "environment",
+                "ssh_alias",
+                "session_id",
+            ]
+            .iter()
+            .find_map(|k| input.get(k).and_then(|v| v.as_str()))
+            .unwrap_or("");
+            let mut s = if target.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} {target}")
+            };
             // lab_exec runs an arbitrary remote command — the human must see
             // WHAT will run, not just where.
             if name == "lab_exec" {
@@ -184,7 +228,10 @@ fn tool_summary(name: &str, input: &Value) -> String {
                 }
             }
             if lab_tools::is_lab_paid_tool(name) {
-                let allow = input.get("allow_spend").and_then(|v| v.as_bool()).unwrap_or(false);
+                let allow = input
+                    .get("allow_spend")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 match input.get("max_credits").and_then(|v| v.as_f64()) {
                     Some(m) => s.push_str(&format!(" [PAID allow_spend={allow} max_credits={m}]")),
                     None => s.push_str(&format!(" [PAID allow_spend={allow} max_credits=unset]")),
@@ -197,7 +244,13 @@ fn tool_summary(name: &str, input: &Value) -> String {
 }
 
 fn coding_system_prompt(cwd: &std::path::Path, mode: Mode) -> String {
-    let os = if cfg!(windows) { "Windows" } else if cfg!(target_os = "macos") { "macOS" } else { "Linux" };
+    let os = if cfg!(windows) {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    };
     format!(
         "You are Kannaka Agent, a careful, production-grade coding assistant operating \
          inside a terminal harness. You complete software-engineering tasks by calling \
@@ -306,11 +359,18 @@ fn warn_active_compute(set: &std::collections::HashSet<String>, emit: &impl Fn(V
 }
 
 fn session_path(id: &str) -> Option<PathBuf> {
-    let safe: String = id.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    let safe: String = id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     if safe.is_empty() {
         return None;
     }
-    dirs::home_dir().map(|h| h.join(".kannaka").join("sessions").join(format!("agent-{safe}.json")))
+    dirs::home_dir().map(|h| {
+        h.join(".kannaka")
+            .join("sessions")
+            .join(format!("agent-{safe}.json"))
+    })
 }
 
 /// Entry point dispatched from `kannaka.rs` for the `agent` subcommand.
@@ -435,8 +495,8 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
         if line.is_empty() {
             continue;
         }
-        let frame: Value = serde_json::from_str(line)
-            .unwrap_or_else(|_| json!({ "type": "user", "text": line }));
+        let frame: Value =
+            serde_json::from_str(line).unwrap_or_else(|_| json!({ "type": "user", "text": line }));
         match frame.get("type").and_then(|v| v.as_str()).unwrap_or("user") {
             "exit" | "quit" => break,
             "mode" => {
@@ -447,14 +507,29 @@ pub fn handle_agent(sys: &mut KannakaMemorySystem, cfg: &KannakaConfig, args: &[
                 continue;
             }
             "user" => {
-                let text = frame.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let text = frame
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if text.trim().is_empty() {
                     continue;
                 }
                 messages.push(Message::user_text(text));
                 run_turn(
-                    &mut client, &cfg_owned, &mut did_fallback, &system, &tools, &mut messages,
-                    sys, &mut tool_ctx, &mut allowlist, &mut active_compute, mode, &mut lines, &emit,
+                    &mut client,
+                    &cfg_owned,
+                    &mut did_fallback,
+                    &system,
+                    &tools,
+                    &mut messages,
+                    sys,
+                    &mut tool_ctx,
+                    &mut allowlist,
+                    &mut active_compute,
+                    mode,
+                    &mut lines,
+                    &emit,
                 );
                 if let Some(p) = &sess_path {
                     let _ = agent::save_session(p, &messages);
@@ -537,14 +612,15 @@ fn run_turn(
         }
         emit(json!({ "kind": "iteration", "n": iteration }));
 
-        let resp = match send_with_fallback(client, cfg, did_fallback, system, messages, tools, emit) {
-            Ok(v) => v,
-            Err(e) => {
-                emit(json!({ "kind": "error", "text": format!("LLM call failed: {e}") }));
-                emit(json!({ "kind": "done", "reason": "error" }));
-                return;
-            }
-        };
+        let resp =
+            match send_with_fallback(client, cfg, did_fallback, system, messages, tools, emit) {
+                Ok(v) => v,
+                Err(e) => {
+                    emit(json!({ "kind": "error", "text": format!("LLM call failed: {e}") }));
+                    emit(json!({ "kind": "done", "reason": "error" }));
+                    return;
+                }
+            };
 
         if let Some(u) = resp.get("usage") {
             emit(json!({
@@ -594,7 +670,11 @@ fn run_turn(
                 || quantum_tools::is_quantum_tool(&name)
                 || lab_tools::is_lab_readonly_tool(&name);
             let danger = ((name == "bash" || name == "lab_exec")
-                && input.get("command").and_then(|v| v.as_str()).map(coding_tools::bash_is_destructive).unwrap_or(false))
+                && input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(coding_tools::bash_is_destructive)
+                    .unwrap_or(false))
                 || lab_tools::is_lab_paid_tool(&name);
             emit(json!({
                 "kind": "tool_use", "id": id, "name": name, "input": input,
@@ -642,7 +722,10 @@ fn run_turn(
 
         // The tool results become a user message; loop back for the model's
         // next move.
-        messages.push(Message { role: "user".into(), content: result_blocks });
+        messages.push(Message {
+            role: "user".into(),
+            content: result_blocks,
+        });
     }
 }
 
@@ -668,7 +751,10 @@ fn wait_for_approval(
                 if frame.get("id").and_then(|v| v.as_str()) != Some(id) {
                     continue; // stale approval for a different tool — ignore
                 }
-                let dec = frame.get("decision").and_then(|v| v.as_str()).unwrap_or("deny");
+                let dec = frame
+                    .get("decision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("deny");
                 return match dec {
                     "allow" => Decision::Allow,
                     "allow_always" => {
@@ -696,17 +782,40 @@ mod tests {
     #[test]
     fn phase5_lab_tools_land_in_the_free_mutation_tier() {
         let empty = std::collections::HashSet::new();
-        for name in ["lab_exec", "lab_qos_boot", "lab_watch"] {
-            assert!(lab_tools::is_lab_tool(name), "{name} must route to dispatch_lab_tool");
-            assert!(!lab_tools::is_lab_readonly_tool(name), "{name} must not be auto-allowed");
-            assert!(!lab_tools::is_lab_paid_tool(name), "{name} must not require spend args");
-            assert!(matches!(decide(Mode::Default, name, &empty, name), Decision::Ask));
-            assert!(matches!(decide(Mode::Yolo, name, &empty, name), Decision::Allow));
-            assert!(matches!(decide(Mode::Plan, name, &empty, name), Decision::Deny(_)));
+        for name in ["lab_exec", "lab_qos_boot", "lab_watch", "lab_qos_watch"] {
+            assert!(
+                lab_tools::is_lab_tool(name),
+                "{name} must route to dispatch_lab_tool"
+            );
+            assert!(
+                !lab_tools::is_lab_readonly_tool(name),
+                "{name} must not be auto-allowed"
+            );
+            assert!(
+                !lab_tools::is_lab_paid_tool(name),
+                "{name} must not require spend args"
+            );
+            assert!(matches!(
+                decide(Mode::Default, name, &empty, name),
+                Decision::Ask
+            ));
+            assert!(matches!(
+                decide(Mode::Yolo, name, &empty, name),
+                Decision::Allow
+            ));
+            assert!(matches!(
+                decide(Mode::Plan, name, &empty, name),
+                Decision::Deny(_)
+            ));
         }
         // Paid tools stay un-yolo-able — the invariant the tiers exist for.
         assert!(matches!(
-            decide(Mode::Yolo, "lab_provision_instance", &empty, "lab_provision_instance"),
+            decide(
+                Mode::Yolo,
+                "lab_provision_instance",
+                &empty,
+                "lab_provision_instance"
+            ),
             Decision::Ask
         ));
     }

@@ -58,6 +58,7 @@ pub fn is_lab_tool(name: &str) -> bool {
             | "lab_exec"
             | "lab_qos_boot"
             | "lab_watch"
+            | "lab_qos_watch"
     )
 }
 
@@ -82,7 +83,10 @@ pub fn is_lab_readonly_tool(name: &str) -> bool {
 /// Tools that spend qBraid credits (per-minute compute) — must never be
 /// auto-approved, and the bridge requires `allow_spend` + a `max_credits` cap.
 pub fn is_lab_paid_tool(name: &str) -> bool {
-    matches!(name, "lab_compute_up" | "lab_provision_instance" | "lab_start_instance")
+    matches!(
+        name,
+        "lab_compute_up" | "lab_provision_instance" | "lab_start_instance"
+    )
 }
 
 /// The lab toolset exposed to the model. Names/descriptions are `'static` so the
@@ -412,7 +416,10 @@ pub fn lab_tools() -> Vec<Tool> {
                     "session": { "type": "string", "default": "qos", "description": "tmux session name on the instance." },
                     "fresh": { "type": "boolean", "default": false, "description": "Kill an existing session and reboot from a rebuilt kernel." },
                     "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 },
-                    "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." }
+                    "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." },
+                    "graphical": { "type": "boolean", "default": false, "description": "Boot with a VGA framebuffer over VNC (paused, -S) + install noVNC, instead of the serial console — so the wave-interference splash is watchable in a browser via lab_qos_watch." },
+                    "web_port": { "type": "integer", "default": 6080, "description": "websockify web port for --graphical." },
+                    "monitor_port": { "type": "integer", "default": 4444, "description": "QEMU TCP monitor port for --graphical (used by lab_qos_watch to resume)." }
                 },
                 "required": ["ssh_alias"]
             }),
@@ -428,6 +435,23 @@ pub fn lab_tools() -> Vec<Tool> {
                 "properties": {
                     "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
                     "session": { "type": "string", "default": "qos", "description": "tmux session to attach." }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
+        Tool {
+            name: "lab_qos_watch",
+            description: "Open the GRAPHICAL QuantumOS watch for a lab_qos_boot(graphical=true) VM: an SSH -L tunnel \
+                          to the instance's noVNC, the browser at vnc_lite.html, and a monitor 'cont' to resume the \
+                          paused (-S) VM so the wave-interference splash animates from frame 1. The graphical analog \
+                          of lab_watch (a browser window instead of a terminal). Runs locally on the user's desktop.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "session": { "type": "string", "default": "qos" },
+                    "web_port": { "type": "integer", "default": 6080, "description": "websockify web port (from lab_qos_boot)." },
+                    "monitor_port": { "type": "integer", "default": 4444, "description": "QEMU TCP monitor port (from lab_qos_boot)." }
                 },
                 "required": ["ssh_alias"]
             }),
@@ -545,7 +569,11 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
                 Ok(s) => s,
                 Err(e) => return (e, true),
             };
-            args.push(if name == "lab_add_kernel" { "lab-add-kernel".into() } else { "lab-remove-kernel".into() });
+            args.push(if name == "lab_add_kernel" {
+                "lab-add-kernel".into()
+            } else {
+                "lab-remove-kernel".into()
+            });
             args.push("--environment".into());
             args.push(env);
         }
@@ -709,6 +737,23 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_flag(&mut args, "--fresh", input, "fresh");
             push_int(&mut args, "--timeout-secs", input, "timeout_secs");
             push_str_opt(&mut args, "--qseed", input, "qseed");
+            push_flag(&mut args, "--graphical", input, "graphical");
+            push_int(&mut args, "--web-port", input, "web_port");
+            push_int(&mut args, "--monitor-port", input, "monitor_port");
+        }
+        // Graphical watch: the quantum CLI's lab-watch opens the SSH -L tunnel +
+        // browser + resume locally (detached), so a bridge call is the right shape.
+        "lab_qos_watch" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-watch".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_str_opt(&mut args, "--session", input, "session");
+            push_int(&mut args, "--web-port", input, "web_port");
+            push_int(&mut args, "--monitor-port", input, "monitor_port");
         }
         // Local, not a bridge call: opens a window on the user's own desktop.
         "lab_watch" => {
@@ -732,7 +777,9 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
 /// line without quoting concerns (ssh aliases and tmux session names are
 /// simple tokens; anything else is refused rather than escaped).
 fn is_plain_token(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// The ssh binary for the watch window. On Windows the alias config +
@@ -792,7 +839,10 @@ fn spawn_watch_window(alias: &str, session: &str) -> (String, bool) {
         }
     } else if cfg!(target_os = "macos") {
         Command::new("osascript")
-            .args(["-e", &format!("tell application \"Terminal\" to do script \"{attach}\"")])
+            .args([
+                "-e",
+                &format!("tell application \"Terminal\" to do script \"{attach}\""),
+            ])
             .args(["-e", "tell application \"Terminal\" to activate"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -870,7 +920,9 @@ fn req_str(input: &Value, key: &str) -> Result<String, String> {
 fn req_num(input: &Value, key: &str) -> Result<f64, String> {
     match input.get(key).and_then(|v| v.as_f64()) {
         Some(n) if n > 0.0 => Ok(n),
-        _ => Err(format!("paid lab tool requires a positive numeric '{key}' (committed credit ceiling)")),
+        _ => Err(format!(
+            "paid lab tool requires a positive numeric '{key}' (committed credit ceiling)"
+        )),
     }
 }
 
