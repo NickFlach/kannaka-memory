@@ -268,8 +268,35 @@ fn compute_merge_grouping(
     grouping
 }
 
+/// T1.4 (#474) gated dream-entropy core — **deterministic given `bytes`**: seed a
+/// PRNG from the drawn entropy, apply a small entropy-seeded phase jitter to the
+/// dream's hallucinated products, and stamp the TRUE `prov` on them. Returns how
+/// many were perturbed. Split out from the live draw so the entropy→dynamics
+/// mapping is unit-tested with fixed bytes (reproducibility) without a source.
+fn apply_entropy_perturbation(
+    metadata: &mut [crate::medium::types::WavefrontMeta],
+    phases: &mut [f32],
+    bytes: &[u8],
+    prov: &crate::entropy::Provenance,
+) -> usize {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::entropy::seed_from_bytes(bytes));
+    let mut count = 0;
+    for (i, m) in metadata.iter_mut().enumerate() {
+        if m.hallucinated {
+            let jitter = (rng.gen::<f32>() - 0.5) * 0.1; // ±0.05 rad, entropy-seeded
+            if let Some(p) = phases.get_mut(i) {
+                *p += jitter;
+            }
+            m.provenance = Some(prov.clone());
+            count += 1;
+        }
+    }
+    count
+}
+
 /// HRM-backed memory store that implements the MediumBackend trait.
-/// 
+///
 /// This wraps a Medium and provides the familiar MediumBackend interface,
 /// allowing HRM to be the sole storage backend.
 pub struct HrmStore {
@@ -965,37 +992,51 @@ impl HrmStore {
         if self.chiral.is_some() {
             // Chiral dream: right hemisphere only (deep dream)
             let report = self.chiral.as_mut().unwrap().dream(true, cycles);
-            self.stamp_dream_provenance();
+            self.apply_dream_entropy();
             self.rebuild_cache().ok();
             self.mark_dirty();
             self.log_spiral_telemetry();
             report
         } else {
             let report = self.medium.dream(cycles, initial_temperature);
-            self.stamp_dream_provenance();
+            self.apply_dream_entropy();
             self.mark_dirty();
             report
         }
     }
 
-    /// T1.4 (#474): stamp the configured entropy source's provenance on the
-    /// wavefronts THIS dream produced (hallucinations) that don't already carry
-    /// it. Purely additive — it touches only new dream products' metadata, never
-    /// the (deterministic) dynamics, and consumes no entropy. Under the default
-    /// PrngSource this stamps `prng://`; the real QPU provenance chain attaches
-    /// once T1.5 wires actual reservoir consumption into the dream. Pre-existing
-    /// memories (not dream-born this cycle) keep `None` ⇒ `prng://legacy`.
-    fn stamp_dream_provenance(&mut self) {
-        let label = crate::entropy::EntropySelection::from_env().provenance_label();
-        let metadata = if let Some(ref mut chiral) = self.chiral {
-            &mut chiral.right.metadata
-        } else {
-            &mut self.medium.store.metadata
-        };
-        for m in metadata.iter_mut() {
-            if m.hallucinated && m.provenance.is_none() {
-                m.provenance = Some(label.clone());
+    /// T1.4 (#474): GATED dream-entropy participation. When
+    /// `KANNAKA_DREAM_ENTROPY` is enabled, draw from the configured
+    /// [`EntropySource`](crate::entropy::EntropySource), let this dream's products
+    /// (hallucinations) genuinely depend on the drawn entropy (a small
+    /// entropy-seeded phase jitter), and stamp the TRUE provenance of what was
+    /// consumed (`prng://` or `reservoir://` + QPU job chain).
+    ///
+    /// **Default OFF** ⇒ no draw, no jitter, no stamp: the dream is
+    /// byte-identically deterministic and records an HONEST absence of provenance
+    /// (`None` ⇒ `prng://legacy`), never a false `prng://` claim about entropy
+    /// that was not consumed. A draw failure (e.g. empty reservoir) logs loudly
+    /// and leaves the cycle deterministic — never a silent fabricated stamp.
+    fn apply_dream_entropy(&mut self) {
+        if !crate::entropy::dream_entropy_enabled() {
+            return;
+        }
+        let mut source = crate::entropy::default_source();
+        let draw = match source.draw(256) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!(
+                    "[entropy] dream draw failed ({e}); this dream stays deterministic and records no provenance"
+                );
+                return;
             }
+        };
+        if let Some(ref mut chiral) = self.chiral {
+            if let Some(ph) = chiral.right.phase.as_slice_mut() {
+                apply_entropy_perturbation(&mut chiral.right.metadata, ph, &draw.bytes, &draw.provenance);
+            }
+        } else if let Some(ph) = self.medium.store.phase.as_slice_mut() {
+            apply_entropy_perturbation(&mut self.medium.store.metadata, ph, &draw.bytes, &draw.provenance);
         }
     }
 
@@ -1437,9 +1478,10 @@ impl HrmStore {
             self.medium.dream(cycles, temperature)
         };
 
-        // T1.4: stamp entropy provenance on this dream's products (hallucinations)
-        // before the sync/save persists them.
-        self.stamp_dream_provenance();
+        // T1.4: gated dream-entropy participation (default off = deterministic,
+        // no provenance). When enabled, consumes entropy + stamps its true
+        // provenance on this dream's products before the sync/save persists them.
+        self.apply_dream_entropy();
 
         // Rebuild cache and sync after dreaming
         self.sync_medium_from_chiral();
@@ -2899,41 +2941,65 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T1.4 (#474) — entropy provenance stamped on dream products.
+    // T1.4 (#474) — gated dream entropy: default-off determinism + honest,
+    // reproducible provenance only when a draw actually occurs.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn dream_stamps_provenance_on_hallucinations_only() {
+    fn dream_entropy_gate_off_is_deterministic_and_records_no_provenance() {
+        // Default (KANNAKA_DREAM_ENTROPY unset) ⇒ apply_dream_entropy is a no-op:
+        // no draw, no jitter, no stamp — the honest absence, never a false prng://.
         let mut store =
             HrmStore::new(make_test_pipeline(), NamedTempFile::new().unwrap().path().to_path_buf());
-        // A dream product (hallucinated) and an ordinary memory.
         let mut v = vec![0.0f32; WAVEFRONT_DIM]; v[0] = 1.0;
-        let hallu = insert_ctl(&mut store, v, "dream product", 1.0, 0.0, Tier::LongTerm, 0);
-        let mut v2 = vec![0.0f32; WAVEFRONT_DIM]; v2[1] = 1.0;
-        let ordinary = insert_ctl(&mut store, v2, "ordinary", 1.0, 0.0, Tier::LongTerm, 0);
-
-        // Mark the first as dream-born in the authoritative metadata.
+        let hallu = insert_ctl(&mut store, v, "dream product", 1.0, 0.3, Tier::LongTerm, 0);
         let idx = store.medium.get_wavefront_index(&hallu).unwrap();
         store.medium.store.metadata[idx].hallucinated = true;
+        let phase_before = store.medium.store.phase[idx];
 
-        assert_eq!(store.provenance_of(&hallu), None, "unstamped before dream");
+        store.apply_dream_entropy(); // gate off (default)
 
-        store.stamp_dream_provenance();
-
-        // Default (prng) source stamps prng:// on the hallucination.
+        assert_eq!(store.provenance_of(&hallu), None, "no provenance stamped when gate off");
         assert_eq!(
-            store.provenance_of(&hallu),
-            Some(crate::entropy::Provenance::prng()),
-            "dream product carries the configured (prng) provenance"
+            store.medium.store.phase[idx], phase_before,
+            "phase unchanged — dream stays byte-identically deterministic"
         );
-        // The ordinary memory is never a dream product ⇒ stays legacy (None).
-        assert_eq!(
-            store.provenance_of(&ordinary), None,
-            "non-dream memory keeps None ⇒ prng://legacy"
-        );
+    }
 
-        // Idempotent: a second dream doesn't overwrite an existing stamp.
-        store.stamp_dream_provenance();
-        assert_eq!(store.provenance_of(&hallu), Some(crate::entropy::Provenance::prng()));
+    #[test]
+    fn entropy_perturbation_is_reproducible_and_honest() {
+        use crate::entropy::Provenance;
+        use crate::medium::types::WavefrontMeta;
+
+        let prov = Provenance::reservoir("drbg-expand", vec!["job-x".into()], vec!["dev".into()]);
+        let mk = || {
+            let mut h = WavefrontMeta::new(uuid::Uuid::new_v4(), "hallu".into());
+            h.hallucinated = true;
+            let ordinary = WavefrontMeta::new(uuid::Uuid::new_v4(), "ordinary".into());
+            vec![h, ordinary]
+        };
+        let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+        // Same bytes ⇒ identical perturbation (reproducible dynamics).
+        let (mut ma, mut pa) = (mk(), vec![0.5f32, 0.5]);
+        let (mut mb, mut pb) = (mk(), vec![0.5f32, 0.5]);
+        let ca = apply_entropy_perturbation(&mut ma, &mut pa, &bytes, &prov);
+        let cb = apply_entropy_perturbation(&mut mb, &mut pb, &bytes, &prov);
+        assert_eq!(ca, 1, "only the hallucination is perturbed");
+        assert_eq!(cb, 1);
+        assert_eq!(pa, pb, "same entropy ⇒ same phase jitter (reproducible)");
+
+        // Honest stamping: the TRUE drawn provenance on the hallucination only.
+        assert_eq!(ma[0].provenance.as_ref().unwrap().source, "reservoir://drbg-expand");
+        assert_eq!(ma[0].provenance.as_ref().unwrap().qpu_jobs, vec!["job-x".to_string()]);
+        assert_eq!(ma[1].provenance, None, "a non-hallucination is never stamped");
+        assert_ne!(pa[0], 0.5, "the hallucination's phase actually jittered");
+        assert_eq!(pa[1], 0.5, "the ordinary wavefront's phase is untouched");
+
+        // Different bytes ⇒ different jitter: the dynamics genuinely depend on
+        // the drawn entropy (not a cosmetic stamp).
+        let (mut mc, mut pc) = (mk(), vec![0.5f32, 0.5]);
+        apply_entropy_perturbation(&mut mc, &mut pc, &[42u8; 10], &prov);
+        assert_ne!(pa[0], pc[0], "different entropy ⇒ different dream perturbation");
     }
 }

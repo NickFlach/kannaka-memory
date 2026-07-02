@@ -302,23 +302,34 @@ impl EntropySelection {
             EntropySelection::Reservoir => Box::new(ReservoirSource::new()),
         }
     }
+}
 
-    /// The provenance LABEL of the configured source WITHOUT drawing — for T1.4
-    /// stamping (record which entropy regime seeded a dream/Ξ) that must NOT
-    /// change the deterministic dynamics or consume reservoir bytes. `Prng` →
-    /// `prng://`; `Reservoir` → `reservoir://configured` (a regime marker with no
-    /// QPU chain — the real chain attaches only when T1.5 wires actual
-    /// consumption into the dream).
-    pub fn provenance_label(self) -> Provenance {
-        match self {
-            EntropySelection::Prng => Provenance::prng(),
-            EntropySelection::Reservoir => Provenance {
-                source: "reservoir://configured".to_string(),
-                qpu_jobs: Vec::new(),
-                devices: Vec::new(),
-            },
-        }
+/// T1.4 (#474): whether dreams/Ξ perturbations actually CONSUME entropy from the
+/// configured source (and therefore record its provenance). **Default OFF** —
+/// set `KANNAKA_DREAM_ENTROPY=1|on|true` (config `[entropy].dream_perturbation`).
+///
+/// Deliberately decoupled from [`EntropySelection`]: "which source" and "whether
+/// dreams draw from it" are independent. Off ⇒ the dream stays byte-identically
+/// deterministic and records NO provenance (an honest absence, not a false
+/// `prng://` stamp). On ⇒ the dream draws, its dynamics depend on the entropy,
+/// and every stamped chain is TRUE (prng:// or reservoir://+QPU job). T1.5's
+/// dogfood config is `[entropy].source = reservoir` + this gate ON.
+pub fn dream_entropy_enabled() -> bool {
+    std::env::var("KANNAKA_DREAM_ENTROPY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Derive a deterministic 64-bit seed from drawn entropy bytes (little-endian
+/// fold). Makes the gated dream perturbation a reproducible function of the
+/// entropy it drew — same bytes ⇒ same perturbation.
+pub fn seed_from_bytes(bytes: &[u8]) -> u64 {
+    let mut seed = 0u64;
+    for (i, &b) in bytes.iter().enumerate() {
+        seed ^= (b as u64) << ((i % 8) * 8);
+        seed = seed.rotate_left(7).wrapping_add(0x9E37_79B9_7F4A_7C15);
     }
+    seed
 }
 
 /// The configured entropy source. Defaults to [`PrngSource`].
