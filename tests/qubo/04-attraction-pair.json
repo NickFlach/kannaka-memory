@@ -1,0 +1,28 @@
+{
+  "format": "kannaka-qubo/1",
+  "problem_id": "golden-04-attraction-pair",
+  "variables": [
+    {
+      "id": 0,
+      "kind": "strengthen",
+      "subject": "skip:a"
+    },
+    {
+      "id": 1,
+      "kind": "strengthen",
+      "subject": "skip:b"
+    }
+  ],
+  "linear": {
+    "0": -1.0,
+    "1": -1.0
+  },
+  "quadratic": {
+    "0,1": -3.0
+  },
+  "metadata": {
+    "hemisphere": "right",
+    "phi_at_emit": 0.18,
+    "entropy_provenance": "prng://legacy"
+  }
+}

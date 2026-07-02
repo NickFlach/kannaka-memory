@@ -1,0 +1,188 @@
+{
+  "format": "kannaka-qubo-golden/1",
+  "note": "Golden ADR-0038 QUBOs. Regenerate with `cargo run --example gen_qubo_corpus`. optimum_energy is over ConsolidationProblem::energy (penalties already folded); exact_solvable=true means <20 vars (brute-forceable in tests).",
+  "files": [
+    {
+      "file": "01-all-keep.json",
+      "num_vars": 3,
+      "exact_solvable": true,
+      "optimum_energy": -6.5,
+      "optimum_assignment": [
+        true,
+        true,
+        true
+      ],
+      "description": "3 keep_link, all negative linear; optimum keeps all."
+    },
+    {
+      "file": "02-all-drop.json",
+      "num_vars": 3,
+      "exact_solvable": true,
+      "optimum_energy": 0.0,
+      "optimum_assignment": [
+        false,
+        false,
+        false
+      ],
+      "description": "3 merge, all positive linear; optimum activates none (E=0)."
+    },
+    {
+      "file": "03-repulsion-pair.json",
+      "num_vars": 2,
+      "exact_solvable": true,
+      "optimum_energy": -2.0,
+      "optimum_assignment": [
+        true,
+        false
+      ],
+      "description": "2 merge, negative linear, strong positive coupling; optimum takes exactly one."
+    },
+    {
+      "file": "04-attraction-pair.json",
+      "num_vars": 2,
+      "exact_solvable": true,
+      "optimum_energy": -5.0,
+      "optimum_assignment": [
+        true,
+        true
+      ],
+      "description": "2 strengthen, negative linear + negative coupling; optimum takes both."
+    },
+    {
+      "file": "05-budget-at-most-1.json",
+      "num_vars": 3,
+      "exact_solvable": true,
+      "optimum_energy": -13.0,
+      "optimum_assignment": [
+        true,
+        false,
+        false
+      ],
+      "description": "3 merge, budget max_active=1 (folded); optimum keeps only the strongest."
+    },
+    {
+      "file": "06-budget-at-most-2.json",
+      "num_vars": 4,
+      "exact_solvable": true,
+      "optimum_energy": -47.0,
+      "optimum_assignment": [
+        true,
+        true,
+        false,
+        false
+      ],
+      "description": "4 merge, budget max_active=2 (folded); optimum keeps the strongest two."
+    },
+    {
+      "file": "07-mixed.json",
+      "num_vars": 5,
+      "exact_solvable": true,
+      "optimum_energy": -4.0,
+      "optimum_assignment": [
+        true,
+        false,
+        true,
+        false,
+        true
+      ],
+      "description": "5 mixed-kind vars, mixed-sign linear + two couplings; brute-force optimum."
+    },
+    {
+      "file": "08-frustrated-triangle.json",
+      "num_vars": 3,
+      "exact_solvable": true,
+      "optimum_energy": -1.0,
+      "optimum_assignment": [
+        true,
+        false,
+        false
+      ],
+      "description": "3 merge, negative linear, all pairs repel; optimum takes exactly one."
+    },
+    {
+      "file": "09-link-strengthen.json",
+      "num_vars": 4,
+      "exact_solvable": true,
+      "optimum_energy": -4.0,
+      "optimum_assignment": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "description": "keep_link/strengthen coupling; optimum keeps+strengthens A, keeps B, merges."
+    },
+    {
+      "file": "10-single.json",
+      "num_vars": 1,
+      "exact_solvable": true,
+      "optimum_energy": -1.0,
+      "optimum_assignment": [
+        true
+      ],
+      "description": "1 keep_link, negative linear; optimum keeps it."
+    },
+    {
+      "file": "11-large-independent.json",
+      "num_vars": 24,
+      "exact_solvable": false,
+      "optimum_energy": -23.2,
+      "optimum_assignment": [
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true
+      ],
+      "description": "24 independent vars, mixed signs; optimum = each var iff its linear<0."
+    },
+    {
+      "file": "12-large-ferromagnet.json",
+      "num_vars": 20,
+      "exact_solvable": false,
+      "optimum_energy": -29.0,
+      "optimum_assignment": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "description": "20 vars, all-negative linear + negative chain coupling; optimum is all-true."
+    }
+  ]
+}

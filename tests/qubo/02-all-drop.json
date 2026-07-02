@@ -1,0 +1,31 @@
+{
+  "format": "kannaka-qubo/1",
+  "problem_id": "golden-02-all-drop",
+  "variables": [
+    {
+      "id": 0,
+      "kind": "merge",
+      "subject": "mem:a"
+    },
+    {
+      "id": 1,
+      "kind": "merge",
+      "subject": "mem:b"
+    },
+    {
+      "id": 2,
+      "kind": "merge",
+      "subject": "mem:c"
+    }
+  ],
+  "linear": {
+    "0": 1.0,
+    "1": 2.0,
+    "2": 0.5
+  },
+  "metadata": {
+    "hemisphere": "flat",
+    "phi_at_emit": 0.18,
+    "entropy_provenance": "prng://legacy"
+  }
+}
