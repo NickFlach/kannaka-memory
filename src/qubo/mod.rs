@@ -18,8 +18,13 @@
 
 pub mod emit;
 pub mod problem;
+pub mod solver;
 
 pub use problem::{
     dream_merge_problem, ConsolidationProblem, Constraint, MergeCandidate, Metadata, ProblemBuilder,
     VarKind, Variable, FORMAT,
+};
+pub use solver::{
+    ClassicalAnneal, ConsolidationSolution, ConsolidationSolver, SolveBudget, SolveError,
+    EXACT_THRESHOLD,
 };
