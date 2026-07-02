@@ -523,10 +523,18 @@ mod tests {
     #[test]
     fn test_hints_reduce_effective_difficulty() {
         let mut store = GlyphStore::new();
-        let result = make_seal_result("secret", 32, "agent-1");
+
+        // create_hint's search is work-bounded (4x expected), so for an
+        // unlucky salt it returns None BY DESIGN (~2% at difficulty 8).
+        // Roll fresh glyphs (new salt each) instead of flaking on one draw.
+        let (result, hint) = (0..8)
+            .find_map(|i| {
+                let r = make_seal_result(&format!("secret-{i}"), 32, "agent-1");
+                create_hint(&r.glyph, 8, "agent-1").map(|h| (r, h))
+            })
+            .expect("8 straight bounded-search misses is ~1e-14 — a real bug");
         let hash = result.glyph.glyph_hash.clone();
 
-        let hint = create_hint(&result.glyph, 8, "agent-1").unwrap();
         store.insert(result);
         store.publish_hint(hint);
 

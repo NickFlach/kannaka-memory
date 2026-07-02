@@ -55,6 +55,9 @@ pub fn is_lab_tool(name: &str) -> bool {
             | "lab_agent_read"
             | "lab_agent_send"
             | "lab_agent_setup"
+            | "lab_exec"
+            | "lab_qos_boot"
+            | "lab_watch"
     )
 }
 
@@ -377,6 +380,57 @@ pub fn lab_tools() -> Vec<Tool> {
                 "required": ["ssh_alias", "session_id", "text"]
             }),
         },
+        // --- Phase 5: remote shell + QuantumOS boot ----------------------- //
+        Tool {
+            name: "lab_exec",
+            description: "Run a shell command on a provisioned instance over its SSH alias and return rc + capped \
+                          stdout/stderr (a non-zero exit comes back as data, not an error). Costs nothing beyond \
+                          the instance's own per-minute bill. Requires lab_ssh_configure first.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "command": { "type": "string" },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "default": 90 }
+                },
+                "required": ["ssh_alias", "command"]
+            }),
+        },
+        Tool {
+            name: "lab_qos_boot",
+            description: "Boot QuantumOS in QEMU on a provisioned instance: installs missing deps, clones/updates \
+                          the repo, builds the kernel, and boots it in a detached tmux session (serial console). \
+                          Returns the boot tail with a 'booted' flag keyed on the kernel's 'QuantumOS ready' line. \
+                          Idempotent — an already-running session is reported, not clobbered (pass fresh=true to \
+                          rebuild+reboot). Watch it live with lab_watch. Requires lab_ssh_configure + an active lease.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "repo": { "type": "string", "description": "Clone URL (default: flaukowski/QuantumOS)." },
+                    "ref": { "type": "string", "description": "Branch / tag / sha to check out." },
+                    "session": { "type": "string", "default": "qos", "description": "tmux session name on the instance." },
+                    "fresh": { "type": "boolean", "default": false, "description": "Kill an existing session and reboot from a rebuilt kernel." },
+                    "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
+        Tool {
+            name: "lab_watch",
+            description: "Open a LOCAL terminal window attached to a tmux session on the instance (e.g. the \
+                          QuantumOS serial console from lab_qos_boot) so the user can watch the machine live. \
+                          Spawns a window on the user's desktop; the session survives the window closing. \
+                          If no window can be opened, returns the manual attach command instead.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "session": { "type": "string", "default": "qos", "description": "tmux session to attach." }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
     ]
 }
 
@@ -624,9 +678,183 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_str_opt(&mut args, "--provider", input, "provider");
             push_str_opt(&mut args, "--model", input, "model");
         }
+        "lab_exec" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            let cmd = match req_str(input, "command") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-exec".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            args.push("--command".into());
+            args.push(cmd);
+            push_int(&mut args, "--timeout-secs", input, "timeout_secs");
+        }
+        "lab_qos_boot" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-qos-boot".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_str_opt(&mut args, "--repo", input, "repo");
+            push_str_opt(&mut args, "--ref", input, "ref");
+            push_str_opt(&mut args, "--session", input, "session");
+            push_flag(&mut args, "--fresh", input, "fresh");
+            push_int(&mut args, "--timeout-secs", input, "timeout_secs");
+        }
+        // Local, not a bridge call: opens a window on the user's own desktop.
+        "lab_watch" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            let session = input
+                .get("session")
+                .and_then(|v| v.as_str())
+                .unwrap_or("qos")
+                .to_string();
+            return spawn_watch_window(&alias, &session);
+        }
         other => return (format!("unknown lab tool: {other}"), true),
     }
     run_bridge(&args)
+}
+
+/// True when a string is safe to pass into a locally-spawned terminal command
+/// line without quoting concerns (ssh aliases and tmux session names are
+/// simple tokens; anything else is refused rather than escaped).
+fn is_plain_token(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The ssh binary for the watch window. On Windows the alias config +
+/// ProxyCommand written by lab_ssh_configure target native OpenSSH; an MSYS
+/// ssh (e.g. Git's) can't parse the Windows-path Include, so prefer the
+/// System32 binary explicitly over whatever shadows `ssh` on PATH.
+fn ssh_bin() -> String {
+    if cfg!(windows) {
+        let native = r"C:\Windows\System32\OpenSSH\ssh.exe";
+        if std::path::Path::new(native).exists() {
+            return native.to_string();
+        }
+    }
+    "ssh".to_string()
+}
+
+/// Open a LOCAL terminal window running `ssh -t <alias> tmux attach -t <session>`
+/// so the user can watch a session (e.g. the QuantumOS serial console) live.
+/// Returns `(result_text, is_error)` like every other dispatch path. The
+/// manual attach command is always included so a failed spawn is
+/// self-serviceable.
+fn spawn_watch_window(alias: &str, session: &str) -> (String, bool) {
+    if !is_plain_token(alias) || !is_plain_token(session) {
+        return (
+            format!("lab_watch: refusing non-plain ssh_alias/session ('{alias}' / '{session}')"),
+            true,
+        );
+    }
+    let ssh = ssh_bin();
+    let attach = format!("{ssh} -t {alias} tmux attach -t {session}");
+    let ssh_args = ["-t", alias, "tmux", "attach", "-t", session];
+
+    let spawned: Result<String, String> = if cfg!(windows) {
+        // Windows Terminal opens a clean new window; classic `start` via cmd
+        // is the fallback on hosts without wt.
+        let wt = Command::new("wt.exe")
+            .arg("new-window")
+            .arg("--")
+            .arg(&ssh)
+            .args(ssh_args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match wt {
+            Ok(_) => Ok("Windows Terminal".to_string()),
+            Err(_) => Command::new("cmd")
+                .args(["/C", "start", "kannaka lab watch"])
+                .arg(&ssh)
+                .args(ssh_args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map(|_| "console window".to_string())
+                .map_err(|e| e.to_string()),
+        }
+    } else if cfg!(target_os = "macos") {
+        Command::new("osascript")
+            .args(["-e", &format!("tell application \"Terminal\" to do script \"{attach}\"")])
+            .args(["-e", "tell application \"Terminal\" to activate"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| "Terminal.app".to_string())
+            .map_err(|e| e.to_string())
+    } else {
+        // Linux: honor $TERMINAL, then the common emulators. `-e` is the
+        // widest-supported "run this command" flag.
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(t) = std::env::var("TERMINAL") {
+            if !t.is_empty() {
+                candidates.push(t);
+            }
+        }
+        for c in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
+            candidates.push(c.to_string());
+        }
+        let mut last_err = "no terminal emulator found".to_string();
+        let mut opened = None;
+        for term in candidates {
+            let r = Command::new(&term)
+                .arg("-e")
+                .arg(&attach)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            match r {
+                Ok(_) => {
+                    opened = Some(term);
+                    break;
+                }
+                Err(e) => last_err = format!("{term}: {e}"),
+            }
+        }
+        opened.ok_or(last_err)
+    };
+
+    match spawned {
+        Ok(via) => (
+            json!({
+                "opened": true,
+                "via": via,
+                "ssh_alias": alias,
+                "session": session,
+                "attach": attach,
+                "note": "window is a viewer only — the tmux session (and QEMU) survive closing it"
+            })
+            .to_string(),
+            false,
+        ),
+        Err(e) => (
+            json!({
+                "opened": false,
+                "error": format!("could not open a terminal window: {e}"),
+                "attach": attach,
+                "note": "run the attach command manually in any terminal"
+            })
+            .to_string(),
+            true,
+        ),
+    }
 }
 
 fn req_str(input: &Value, key: &str) -> Result<String, String> {
