@@ -59,6 +59,7 @@ pub fn is_lab_tool(name: &str) -> bool {
             | "lab_qos_boot"
             | "lab_watch"
             | "lab_qos_watch"
+            | "lab_qos_swarm_bridge"
     )
 }
 
@@ -456,6 +457,27 @@ pub fn lab_tools() -> Vec<Tool> {
                 "required": ["ssh_alias"]
             }),
         },
+        Tool {
+            name: "lab_qos_swarm_bridge",
+            description: "Join a booted QuantumOS instance to the NATS swarm under its OWN Lamport-signed \
+                          boot identity. QuantumOS's ring-3 swarm service emits a signed attestation on COM2 \
+                          as it boots; this tails that COM2 log (from lab_qos_boot's com2_log), verifies the \
+                          attestation, and ONLY if it verifies joins the swarm as qos-<qseed> — refusing to \
+                          join on a bad attestation, so peer-presence is backed by a genuine signed boot. \
+                          Runs locally on the user's desktop against the local kannaka + ~/.kannaka-nats.env. \
+                          Returns the joined agent-id and a background join_pid holding presence; confirm with \
+                          `kannaka swarm peers`. Graphical flow only (needs COM2, which the graphical boot wires).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "ssh_alias": { "type": "string", "description": "From lab_ssh_configure." },
+                    "session": { "type": "string", "default": "qos", "description": "Boot session id (from lab_qos_boot) — selects the COM2 log." },
+                    "qseed": { "type": "string", "description": "The qseed hex from lab_qos_boot's return; cross-checked against the attestation and used to derive the agent-id. Omit to skip the cross-check and derive the id from the attestation." },
+                    "agent_id": { "type": "string", "description": "Override the derived qos-<qseed> agent-id." }
+                },
+                "required": ["ssh_alias"]
+            }),
+        },
     ]
 }
 
@@ -754,6 +776,18 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_str_opt(&mut args, "--session", input, "session");
             push_int(&mut args, "--web-port", input, "web_port");
             push_int(&mut args, "--monitor-port", input, "monitor_port");
+        }
+        "lab_qos_swarm_bridge" => {
+            let alias = match req_str(input, "ssh_alias") {
+                Ok(s) => s,
+                Err(e) => return (e, true),
+            };
+            args.push("lab-qos-swarm-bridge".into());
+            args.push("--ssh-alias".into());
+            args.push(alias);
+            push_str_opt(&mut args, "--session", input, "session");
+            push_str_opt(&mut args, "--qseed", input, "qseed");
+            push_str_opt(&mut args, "--agent-id", input, "agent_id");
         }
         // Local, not a bridge call: opens a window on the user's own desktop.
         "lab_watch" => {

@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn phase5_lab_tools_land_in_the_free_mutation_tier() {
         let empty = std::collections::HashSet::new();
-        for name in ["lab_exec", "lab_qos_boot", "lab_watch", "lab_qos_watch"] {
+        for name in ["lab_exec", "lab_qos_boot", "lab_watch", "lab_qos_watch", "lab_qos_swarm_bridge"] {
             assert!(
                 lab_tools::is_lab_tool(name),
                 "{name} must route to dispatch_lab_tool"
