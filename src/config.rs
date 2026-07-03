@@ -708,6 +708,14 @@ pub fn self_update() -> Result<(), String> {
 
     if !version_is_newer(remote_version, current_version) {
         eprintln!("Already up to date (v{}).", current_version);
+        // The TUI ships on its OWN release cadence, so a stale sibling
+        // must still be refreshed even when the kannaka binary is
+        // current — otherwise `kannaka update` never touches the TUI once
+        // kannaka itself has caught up. update_sibling_tui hits the
+        // kannaka-tui repo and no-ops when the TUI is already at latest.
+        if let Ok(current_exe) = std::env::current_exe() {
+            update_sibling_tui(&agent, &body, tag, &current_exe, remote_version);
+        }
         return Ok(());
     }
 
@@ -926,6 +934,23 @@ fn update_sibling_tui(
     let tui_tag = tui_release["tag_name"].as_str().unwrap_or("unknown");
     let tui_version = tui_tag.trim_start_matches('v');
 
+    // Skip the download when the sibling is already at the latest TUI
+    // release. This function now runs on every `kannaka update` (even when
+    // the kannaka binary is current), so without this it would re-download
+    // and re-swap the TUI binary each time — wasteful, and noisy on Windows
+    // when the TUI is open. A Rust release binary carries no readable
+    // version resource, so we track the installed version in a sidecar
+    // written alongside the binary at install time.
+    let tui_version_sidecar = dir.join(".kannaka-tui.version");
+    if tui_version != "unknown" {
+        if let Ok(installed) = std::fs::read_to_string(&tui_version_sidecar) {
+            if installed.trim() == tui_version {
+                eprintln!("kannaka-tui already at v{tui_version}.");
+                return;
+            }
+        }
+    }
+
     let asset_name = asset_name_hint;
     let download_url = match tui_release["assets"].as_array()
         .and_then(|assets| {
@@ -981,6 +1006,10 @@ fn update_sibling_tui(
             return;
         }
     }
+    // Record the installed version so the next `kannaka update` can skip
+    // the download when the TUI is already current (see the sidecar read
+    // above). Best-effort: a failed write only costs a redundant refresh.
+    let _ = std::fs::write(&tui_version_sidecar, tui_version);
     eprintln!("kannaka-tui also updated to v{}.", tui_version);
 }
 
