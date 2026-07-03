@@ -3604,13 +3604,22 @@ fn run_experiment_l5_session(params: &Params) {
 
     // Flat-frequency emergence test: build corpus with ALL memories at 0.1 Hz,
     // run dream chain, measure whether 2 Hz emerges from uniform input.
+    //
+    // Warmup: run one extra cycle (chain_depth=5) so the flat corpus can
+    // partially equilibrate before the 4-cycle DFT window. Cycle 0 sees a
+    // ~23× initialization spike (all 0.1 Hz memories maximally interfere on
+    // first contact) that splits power equally across all DFT bins, creating
+    // a structural carrier floor at ~0.527 independent of drive. Skipping
+    // cycle 0's delta and measuring cycles 1-4 instead reveals the post-
+    // equilibration oscillation structure that actually reflects emergence.
     let corpus_flat = build_corpus_l5_a_flat(dim, 2, params.encoder_seed);
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
+    let flat_params = { let mut p = (*params).clone(); p.chain_depth = 5; p };
     let start_flat = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_flat");
     let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, amp_deltas_flat,
          _inj_flat, _orig_flat, _init_amp_flat) =
-        run_l5_dream_chain(params, &mut engine_flat);
+        run_l5_dream_chain(&flat_params, &mut engine_flat);
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
@@ -3619,8 +3628,10 @@ fn run_experiment_l5_session(params: &Params) {
     let _ = actual_cycles_flat;
     let _ = consolidation_ms_flat;
     let cycle_period_flat: f32 = 0.125;
-    // carrier_emergence = the FLAT-corpus FFT score (emergence, not passthrough)
-    let carrier_emergence = eval_carrier_emergence(&amp_deltas_flat, cycle_period_flat);
+    // carrier_emergence = the FLAT-corpus FFT score over cycles 1-4 (skip cycle 0
+    // initialization burst; see warmup comment above).
+    let flat_dft_slice = if amp_deltas_flat.len() > 4 { &amp_deltas_flat[1..] } else { &amp_deltas_flat[..] };
+    let carrier_emergence = eval_carrier_emergence(flat_dft_slice, cycle_period_flat);
 
     // L5.7: frequency_transfer — does the 2 Hz band structure survive cross-corpus transfer?
     let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
