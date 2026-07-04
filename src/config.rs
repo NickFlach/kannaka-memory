@@ -571,12 +571,22 @@ pub fn check_for_updates_background(config: &KannakaConfig) {
 
 /// Simple semver comparison: returns true if `remote` > `current`.
 fn version_is_newer(remote: &str, current: &str) -> bool {
+    // Per-position numeric prefix, NOT filter_map: a component that fails to
+    // parse must degrade in place ("10-rc1" → 10), never be dropped — dropping
+    // shifts later components left, so "0.10.4-1" used to parse as (0, 10, 1)-
+    // style nonsense and a hotfix-suffixed tag compared OLDER than its base.
     let parse = |s: &str| -> (u32, u32, u32) {
-        let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
+        let mut it = s.split('.').map(|p| {
+            p.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        });
         (
-            parts.first().copied().unwrap_or(0),
-            parts.get(1).copied().unwrap_or(0),
-            parts.get(2).copied().unwrap_or(0),
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
         )
     };
     parse(remote) > parse(current)
@@ -643,7 +653,7 @@ fn windows_swap_binary(
         let _ = std::fs::rename(&backup, target);
         return Err(e.to_string());
     }
-    cleanup_stale_backups(target);
+    cleanup_stale_backups(target, Some(&backup));
     Ok(backup)
 }
 
@@ -651,8 +661,12 @@ fn windows_swap_binary(
 /// (`<stem>.exe.bak-*`, the legacy `<stem>.exe.old`, and orphan
 /// `<stem>.new`). Locked ones (a process still running from them) are
 /// silently skipped — they free up on their own once that process exits.
+/// `keep` is the backup created by the current swap — it must survive the
+/// sweep so the "previous binary saved as …" rollback artifact actually
+/// exists (previously it survived only when Windows happened to have the
+/// old image locked; for a non-running TUI it was deleted immediately).
 #[cfg(windows)]
-fn cleanup_stale_backups(target: &std::path::Path) {
+fn cleanup_stale_backups(target: &std::path::Path, keep: Option<&std::path::Path>) {
     let (Some(dir), Some(stem)) = (
         target.parent(),
         target.file_stem().and_then(|s| s.to_str()),
@@ -662,7 +676,7 @@ fn cleanup_stale_backups(target: &std::path::Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == *target {
+            if path == *target || keep.is_some_and(|k| path == *k) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -765,7 +779,15 @@ pub fn self_update() -> Result<(), String> {
             ));
         }
         Err(VerifyError::Other(e)) => {
-            eprintln!("Note: SHA-256 fetch failed ({e}). Skipping verification.");
+            // The release HAS a sidecar (we found its URL in the same release
+            // JSON as the binary), so an unfetchable sidecar means we cannot
+            // verify a binary we know is verifiable — fail closed rather than
+            // silently installing unverified bytes.
+            return Err(format!(
+                "SHA-256 sidecar could not be fetched after retry ({e}) — \
+                 refusing to install unverified binary. Retry when the network \
+                 is stable."
+            ));
         }
     }
 
@@ -781,11 +803,17 @@ pub fn self_update() -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(&tmp_path, perms)
-            .map_err(|e| format!("chmod failed: {e}"))?;
+        if let Err(e) = std::fs::set_permissions(&tmp_path, perms) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("chmod failed: {e}"));
+        }
         // Atomic rename
-        std::fs::rename(&tmp_path, &current_exe)
-            .map_err(|e| format!("failed to replace binary: {e}"))?;
+        if let Err(e) = std::fs::rename(&tmp_path, &current_exe) {
+            // Don't leave a stale `<name>.new` next to the binary — nothing
+            // on Unix ever sweeps it (cleanup_stale_backups is Windows-only).
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("failed to replace binary: {e}"));
+        }
         eprintln!("Updated to v{}!", remote_version);
     }
 
@@ -979,6 +1007,28 @@ fn update_sibling_tui(
         return;
     }
 
+    // ADR-0029 Phase 4a — this is the most-traveled path that puts TUI bytes
+    // on disk (it runs on every `kannaka update`), so it verifies the sidecar
+    // just like self_update and bootstrap_install_tui. Best-effort refresh:
+    // an unverifiable download skips the TUI update rather than aborting.
+    match fetch_and_verify_sha256(agent, &tui_release, &asset_name, &bytes) {
+        Ok(()) => eprintln!("SHA-256 verified."),
+        Err(VerifyError::SidecarMissing) => {
+            eprintln!("Note: no SHA-256 sidecar in kannaka-tui {tui_tag}. Skipping verification.");
+        }
+        Err(VerifyError::Mismatch { expected, actual }) => {
+            eprintln!(
+                "Note: kannaka-tui SHA-256 mismatch — skipping TUI update.\n  \
+                 expected: {expected}\n  actual:   {actual}"
+            );
+            return;
+        }
+        Err(VerifyError::Other(e)) => {
+            eprintln!("Note: kannaka-tui SHA-256 sidecar unfetchable after retry ({e}) — skipping TUI update.");
+            return;
+        }
+    }
+
     let tmp_path = tui_path.with_extension("new");
     if let Err(e) = std::fs::write(&tmp_path, &bytes) {
         eprintln!("Note: tui write failed: {e}");
@@ -990,6 +1040,8 @@ fn update_sibling_tui(
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
         if let Err(e) = std::fs::rename(&tmp_path, &tui_path) {
+            // Don't strand `<name>.new` — nothing on Unix sweeps it.
+            let _ = std::fs::remove_file(&tmp_path);
             eprintln!("Note: tui install failed: {e}");
             return;
         }
@@ -1046,12 +1098,28 @@ pub fn fetch_and_verify_sha256(
         .ok_or(VerifyError::SidecarMissing)?
         .to_string();
 
-    let resp = agent.get(&sidecar_url)
-        .set("User-Agent", "kannaka-update")
-        .call()
-        .map_err(|e| VerifyError::Other(format!("sidecar fetch: {e}")))?;
-    let sidecar_body = resp.into_string()
-        .map_err(|e| VerifyError::Other(format!("sidecar read: {e}")))?;
+    // One retry on the sidecar fetch: the release provably ships a sidecar
+    // (the URL came from the same release JSON as the binary), so a transient
+    // network blip shouldn't downgrade the install to unverified — and callers
+    // treat `Other` as fatal for exactly that reason.
+    let sidecar_body = {
+        let fetch = || -> Result<String, String> {
+            agent
+                .get(&sidecar_url)
+                .set("User-Agent", "kannaka-update")
+                .call()
+                .map_err(|e| format!("sidecar fetch: {e}"))?
+                .into_string()
+                .map_err(|e| format!("sidecar read: {e}"))
+        };
+        match fetch() {
+            Ok(b) => b,
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                fetch().map_err(VerifyError::Other)?
+            }
+        }
+    };
 
     // First whitespace-delimited token is the digest. Tolerate either
     // `sha256sum`'s `<hex>  <filename>\n` or just the hex digest alone.
@@ -1161,7 +1229,13 @@ pub fn bootstrap_install_tui() -> Result<std::path::PathBuf, String> {
             ));
         }
         Err(VerifyError::Other(e)) => {
-            eprintln!("Note: SHA-256 fetch failed ({e}). Skipping verification.");
+            // Same posture as self_update: the sidecar exists in the release,
+            // so failing to fetch it means we can't verify a verifiable binary.
+            return Err(format!(
+                "SHA-256 sidecar could not be fetched after retry ({e}) — \
+                 refusing to install unverified binary. Retry when the network \
+                 is stable."
+            ));
         }
     }
 
@@ -1173,6 +1247,15 @@ pub fn bootstrap_install_tui() -> Result<std::path::PathBuf, String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tui_path, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("chmod: {e}"))?;
+    }
+
+    // Record the installed version so the next `kannaka update` skips the
+    // redundant re-download/re-swap (update_sibling_tui reads this sidecar;
+    // until now only update_sibling_tui wrote it, so the first update after
+    // a bootstrap always re-installed an already-current TUI).
+    let tui_version = tui_tag.trim_start_matches('v');
+    if tui_version != "unknown" {
+        let _ = std::fs::write(dir.join(".kannaka-tui.version"), tui_version);
     }
 
     Ok(tui_path)
@@ -1207,8 +1290,11 @@ fn platform_triple() -> (&'static str, &'static str, &'static str) {
 pub fn install_tui_binary(install_dir: &std::path::Path) {
     let (os, arch, ext) = platform_triple();
     let tui_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
+    // The TUI moved to its own repo at v0.5.12 (release.yml no longer ships a
+    // kannaka-tui asset here) — the old kannaka-memory URL 404'd on every
+    // fresh install, so first-time installs silently never got a TUI.
     let url = format!(
-        "https://github.com/NickFlach/kannaka-memory/releases/latest/download/{}",
+        "https://github.com/NickFlach/kannaka-tui/releases/latest/download/{}",
         tui_name
     );
     let target = install_dir.join(format!("kannaka-tui{}", ext));
@@ -1241,7 +1327,10 @@ pub fn install_tui_binary(install_dir: &std::path::Path) {
             }
         }
         Err(_) => {
-            eprintln!(" {}not available yet (build with: cargo build --features tui){}", a.gray, a.reset);
+            // No `tui` feature exists in this crate anymore — the TUI lives in
+            // NickFlach/kannaka-tui. Point users there instead of at a
+            // cargo command that can't work.
+            eprintln!(" {}not available (install later with: kannaka update, or from https://github.com/NickFlach/kannaka-tui/releases){}", a.gray, a.reset);
         }
     }
 }
@@ -1349,23 +1438,42 @@ pub fn run_update_from_download(installed_path: &std::path::Path) {
 
     #[cfg(windows)]
     {
-        // On Windows, can't overwrite a running exe. Rename old → .old, copy new.
-        let old_path = installed_path.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old_path);
-        if let Err(e) = std::fs::rename(installed_path, &old_path) {
-            eprintln!("  {}Failed to rename old binary: {}{}", a.red, e, a.reset);
+        // On Windows, can't overwrite a running exe. Move the installed
+        // binary aside to a UNIQUE backup name, then copy the new one in.
+        // A fixed `.exe.old` is the pattern windows_swap_binary was written
+        // to kill: renaming onto a fixed name that a stale worker still runs
+        // from fails forever with "Access is denied" (see its doc comment).
+        let backup = installed_path.with_extension(format!("exe.bak-{}", std::process::id()));
+        let _ = std::fs::remove_file(&backup);
+        let mut moved = false;
+        let mut last_err = String::from("unknown error");
+        for attempt in 0..5u64 {
+            match std::fs::rename(installed_path, &backup) {
+                Ok(_) => {
+                    moved = true;
+                    break;
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    std::thread::sleep(std::time::Duration::from_millis(150 * (attempt + 1)));
+                }
+            }
+        }
+        if !moved {
+            eprintln!("  {}Failed to rename old binary: {}{}", a.red, last_err, a.reset);
             println!("\n  Press Enter to exit...");
             let _ = std::io::stdin().read_line(&mut String::new());
             return;
         }
         match std::fs::copy(&current_exe, installed_path) {
             Ok(_) => {
-                println!("  {}✓ Updated {} (old saved as .exe.old){}",
-                    a.green, installed_path.display(), a.reset);
+                cleanup_stale_backups(installed_path, Some(&backup));
+                println!("  {}✓ Updated {} (old saved as {}){}",
+                    a.green, installed_path.display(), backup.display(), a.reset);
             }
             Err(e) => {
                 // Try to restore the old binary
-                let _ = std::fs::rename(&old_path, installed_path);
+                let _ = std::fs::rename(&backup, installed_path);
                 eprintln!("  {}Failed to install: {}{}", a.red, e, a.reset);
                 println!("\n  Press Enter to exit...");
                 let _ = std::io::stdin().read_line(&mut String::new());
@@ -3677,14 +3785,16 @@ mod config_field_tests {
         ] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        cleanup_stale_backups(&target);
+        let keep = dir.path().join("kannaka.exe.bak-222");
+        cleanup_stale_backups(&target, Some(&keep));
         // stale update siblings are gone
         assert!(!dir.path().join("kannaka.exe.bak-111").exists());
-        assert!(!dir.path().join("kannaka.exe.bak-222").exists());
         assert!(!dir.path().join("kannaka.exe.old").exists());
         assert!(!dir.path().join("kannaka.new").exists());
-        // the live binary and unrelated files are kept
+        // the live binary, the just-created backup (rollback artifact), and
+        // unrelated files are kept
         assert!(target.exists());
+        assert!(keep.exists());
         assert!(dir.path().join("kannaka-other.txt").exists());
         assert!(dir.path().join("kannaka.exe.config").exists());
     }
@@ -3711,5 +3821,24 @@ mod config_field_tests {
         assert!(res.is_ok(), "swap must succeed with a legacy .old present: {res:?}");
         assert_eq!(std::fs::read(&target).unwrap(), b"v2"); // new binary installed
         assert!(!new_file.exists()); // the staged .new was consumed
+        // the returned backup is the rollback artifact — it must survive the
+        // post-swap sweep (previously it was deleted whenever it wasn't
+        // OS-locked, so "previous binary saved as X" was a false promise)
+        let backup = res.unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), b"v1");
+    }
+
+    // A hotfix/pre-release suffix must degrade to its numeric prefix in
+    // place — the old filter_map dropped the unparsable component entirely,
+    // shifting later components left ("0.10.4-1" compared OLDER than 0.10.3,
+    // so `kannaka update` reported "Already up to date" for everyone below).
+    #[test]
+    fn version_compare_handles_suffixed_components() {
+        assert!(version_is_newer("0.10.4", "0.10.3"));
+        assert!(version_is_newer("0.10.4-1", "0.10.3"));
+        assert!(version_is_newer("0.6.10-rc.1", "0.6.9"));
+        assert!(!version_is_newer("0.10.3", "0.10.3"));
+        assert!(!version_is_newer("0.10.3-hotfix", "0.10.3"));
+        assert!(version_is_newer("1.0.0", "0.99.99"));
     }
 }
