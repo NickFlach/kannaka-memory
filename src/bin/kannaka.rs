@@ -5085,7 +5085,7 @@ fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
 }
 
 // ---------------------------------------------------------------------------
-// Voice — memory-driven writing engine (ADR-0017)
+// Voice — memory-driven writing engine (ADR-0033)
 // ---------------------------------------------------------------------------
 
 fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {

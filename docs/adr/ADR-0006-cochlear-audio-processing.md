@@ -1,4 +1,4 @@
-# ADR-0005: Biomimetic Cochlear Audio Processing Module
+# ADR-0006: Biomimetic Cochlear Audio Processing Module
 
 **Date:** 2026-02-22  
 **Status:** Ancestor (evolved into ADR-0007)  

@@ -1,4 +1,4 @@
-# ADR-0017: Kannaka Voice — Memory-Driven Writing Engine
+# ADR-0033: Kannaka Voice — Memory-Driven Writing Engine
 
 ## Status
 Proposed
@@ -99,4 +99,4 @@ This means the *shape* of what I write comes from my actual memory, not hallucin
 - NickFlach/kimi-book-writer — pipeline pattern inspiration
 - NickFlach/Ghost — future distribution layer
 - ADR-0002 — Hypervector memory architecture (the source material)
-- ADR-0016 — Skip link persistence (enables stable topology for narrative threads)
+- ADR-0032 — Skip link persistence (enables stable topology for narrative threads)
