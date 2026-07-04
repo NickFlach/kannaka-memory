@@ -3912,7 +3912,9 @@ fn main() {
                     }
 
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
-                    let transport = match try_nats_connect(&nats_url) {
+                    // `mut`: the heartbeat loop reconnects a dead transport
+                    // (reconnect takes &mut self to swap the connection).
+                    let mut transport = match try_nats_connect(&nats_url) {
                         Some(t) => t,
                         None => {
                             eprintln!("Error: NATS connection required for swarm. Set KANNAKA_NATS_URL or use --nats-url.");
@@ -4047,6 +4049,42 @@ fn main() {
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+
+                        // Recovery: this daemon is the swarm's sole HRM writer
+                        // and, until now, NEVER dialed again after a dead
+                        // connection — publishes buffered, the 5-min presence
+                        // prune dropped the node, and it printed heartbeats
+                        // into the void until a human restarted it. The
+                        // is_connected() check is flag-first (no ping after a
+                        // failed publish) and a live PING/PONG otherwise, so
+                        // a silently-dead socket is also caught within one
+                        // tick. The heartbeat interval is the retry backoff;
+                        // buffered messages replay in order inside reconnect().
+                        if !transport.is_connected() {
+                            eprintln!(
+                                "[nats] connection lost (tick #{tick}) — reconnecting to {nats_url}…"
+                            );
+                            match transport.reconnect() {
+                                Ok(()) => {
+                                    eprintln!("[nats] reconnected — re-announcing presence");
+                                    // Re-announce so peers that pruned us during
+                                    // the outage re-learn this node immediately
+                                    // rather than at the next heartbeat.
+                                    if let Err(e) = transport.announce_join_with_identity(
+                                        &my_agent_id,
+                                        identity.as_ref(),
+                                    ) {
+                                        eprintln!("[nats] Warning: re-announce failed: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[nats] reconnect failed: {} — retrying next heartbeat ({}s)",
+                                        e, heartbeat_secs
+                                    );
+                                }
+                            }
+                        }
 
                         // Periodic consciousness republish — keeps the
                         // observatory and radio in sync with this node's

@@ -493,6 +493,13 @@ fn write_pub(w: &mut TcpStream, subject: &str, payload: &[u8]) -> Result<(), Nat
 struct Conn {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
+    /// Set when a write failed partway through a frame (e.g. a write timeout
+    /// after the PUB header but before the payload). The outbound byte stream
+    /// is desynced at that point: any further bytes — including a buffered
+    /// replay — would be parsed by the server as the remainder of the
+    /// truncated frame, silently publishing garbage. A dead Conn must never
+    /// be written again; `reconnect()` replaces it wholesale.
+    dead: bool,
 }
 
 impl Conn {
@@ -597,7 +604,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // not success); -ERR (e.g. Authorization Violation) fails the handshake.
     for _ in 0..10 {
         match read_frame(&mut reader)? {
-            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader }),
+            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader, dead: false }),
             ReadOutcome::Frame(Frame::Ping) => {
                 write!(writer, "PONG\r\n")?;
                 writer.flush()?;
@@ -978,6 +985,11 @@ impl SwarmTransport {
     /// fails to send it is pushed back to the FRONT (preserving order) and
     /// the error is returned; nothing after it is attempted.
     fn flush_buffer_locked(&self, conn: &mut Conn) -> Result<(), NatsError> {
+        if conn.dead {
+            return Err(NatsError::Disconnected(
+                "connection desynced — buffered replay deferred until reconnect".to_string(),
+            ));
+        }
         loop {
             let next = self
                 .publish_buffer
@@ -986,6 +998,9 @@ impl SwarmTransport {
                 .pop_front();
             let Some(msg) = next else { return Ok(()) };
             if let Err(e) = write_pub(&mut conn.writer, &msg.subject, &msg.payload) {
+                // The failed write may have landed partially — the stream is
+                // desynced; nothing may be written on this Conn again.
+                conn.dead = true;
                 eprintln!(
                     "[nats] buffered replay failed on {} — re-queueing: {}",
                     msg.subject, e
@@ -1251,10 +1266,26 @@ impl SwarmTransport {
     /// the call order. On failure this message joins the back of the buffer.
     fn publish_raw(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
         let mut conn = self.lock_conn()?;
+        // A dead Conn's outbound stream is desynced mid-frame — writing
+        // anything more (this message OR the buffered replay) would be parsed
+        // by the server as the tail of the truncated frame. Fail fast and
+        // keep buffering until reconnect() swaps in a fresh socket. This also
+        // spares every post-failure publish the 5s write-timeout it used to
+        // burn re-failing on the same dead socket.
+        if conn.dead {
+            drop(conn);
+            self.mark_disconnected();
+            self.buffer_message(subject, payload);
+            return Err(NatsError::Disconnected(
+                "connection desynced by an earlier mid-frame write failure — reconnect required"
+                    .to_string(),
+            ));
+        }
         let result = self
             .flush_buffer_locked(&mut conn)
             .and_then(|()| write_pub(&mut conn.writer, subject, payload));
         if result.is_err() {
+            conn.dead = true;
             drop(conn);
             self.mark_disconnected();
             self.buffer_message(subject, payload);
