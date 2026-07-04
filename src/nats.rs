@@ -388,13 +388,40 @@ enum ReadOutcome {
     Closed,
 }
 
+/// Ceiling on a single MSG payload allocation. The NATS server default
+/// max_payload is 1 MiB and nothing in the constellation raises it past
+/// that; 8 MiB leaves generous headroom while making `MSG x 1 99999999999`
+/// from a compromised/desynced peer a protocol error instead of an
+/// allocation abort (#501).
+const MAX_MSG_PAYLOAD: usize = 8 * 1024 * 1024;
+
+/// Ceiling on one control line. INFO with auth/cluster metadata runs a few
+/// KB; MSG headers and -ERR lines are tiny. A line that hasn't ended after
+/// 16 KiB is not NATS protocol traffic.
+const MAX_CONTROL_LINE: u64 = 16 * 1024;
+
 /// Read exactly one protocol frame. Returns `Err` on any condition that
 /// desyncs the byte stream (partial line consumed before a timeout, short
 /// payload read, unparseable MSG header, missing CRLF, non-UTF-8 control
 /// line) — after such an error the connection must be considered dead.
 fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsError> {
     let mut line = String::new();
-    match reader.read_line(&mut line) {
+    // Bound control-line growth: `take` caps how many bytes this read_line
+    // can pull, so a stream that never sends '\n' (desync, garbage peer)
+    // errors out instead of growing `line` without bound.
+    let read_result = {
+        let mut limited = (&mut *reader).take(MAX_CONTROL_LINE);
+        limited.read_line(&mut line)
+    };
+    if let Ok(n) = read_result {
+        if n as u64 >= MAX_CONTROL_LINE && !line.ends_with('\n') {
+            return Err(NatsError::Protocol(format!(
+                "control line exceeds {} bytes without newline — protocol desync",
+                MAX_CONTROL_LINE
+            )));
+        }
+    }
+    match read_result {
         Ok(0) => return Ok(ReadOutcome::Closed),
         Ok(_) => {}
         Err(e)
@@ -435,6 +462,15 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
         let nbytes: usize = nbytes_str.parse().map_err(|_| {
             NatsError::Protocol(format!("invalid MSG byte count: {}", trimmed))
         })?;
+        if nbytes > MAX_MSG_PAYLOAD {
+            // Wire-controlled size: allocating it unchecked lets one bogus
+            // header abort the process. Nothing legitimate approaches this
+            // (server max_payload defaults to 1 MiB).
+            return Err(NatsError::Protocol(format!(
+                "MSG payload {} exceeds {} byte cap — refusing allocation",
+                nbytes, MAX_MSG_PAYLOAD
+            )));
+        }
         let mut payload = vec![0u8; nbytes];
         reader.read_exact(&mut payload).map_err(|e| {
             NatsError::Protocol(format!("short MSG payload read: {}", e))
