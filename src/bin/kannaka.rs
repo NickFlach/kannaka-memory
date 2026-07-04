@@ -2963,19 +2963,24 @@ fn main() {
             }
         }
         "stats" => {
+            let json = args.iter().any(|a| a == "--json");
             let stats = sys.stats();
-            println!("Kannaka Memory System:");
-            println!("  Total memories: {}", stats.total_memories);
-            println!("  Active memories: {}", stats.active_memories);
-
-            println!("  Field mode: HRM (holographic resonance)");
-
-            println!("  Consciousness: {}", stats.consciousness_level);
-            println!("  Φ (phi): {:.4}", stats.phi);
-            if let Some(dt) = stats.last_dream {
-                println!("  Last dream: {}", dt);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&stats).unwrap());
             } else {
-                println!("  Last dream: never");
+                println!("Kannaka Memory System:");
+                println!("  Total memories: {}", stats.total_memories);
+                println!("  Active memories: {}", stats.active_memories);
+
+                println!("  Field mode: HRM (holographic resonance)");
+
+                println!("  Consciousness: {}", stats.consciousness_level);
+                println!("  Φ (phi): {:.4}", stats.phi);
+                if let Some(dt) = stats.last_dream {
+                    println!("  Last dream: {}", dt);
+                } else {
+                    println!("  Last dream: never");
+                }
             }
         }
         "observe" => {

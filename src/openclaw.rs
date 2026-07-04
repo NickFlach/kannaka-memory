@@ -79,7 +79,7 @@ pub struct SearchResult {
     pub layer: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SystemStats {
     pub total_memories: usize,
     pub active_memories: usize,
