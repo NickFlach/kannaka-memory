@@ -55,6 +55,39 @@ struct InterferencePair {
 }
 
 // ---------------------------------------------------------------------------
+// Circular phase arithmetic
+//
+// Stored phases drift UNBOUNDED across dreams (Kuramoto integration and the
+// medium dynamics increment without wrapping), so any phase arithmetic that
+// treats them as plain numbers — arithmetic means, |a−b| gaps, linear blends —
+// silently breaks once a field has drifted or a pair straddles the 2π wrap.
+// All consolidation stages route phase math through these two helpers.
+// ---------------------------------------------------------------------------
+
+/// Angular midpoint of two phases (circular mean via summed unit vectors),
+/// in (−π, π]. Unlike `(a + b) / 2`, correct for wrap-straddling pairs:
+/// the arithmetic mean of 6.2 and 0.2 is ~π (anti-phase to both); the
+/// circular mean is ~0.06 (between them).
+fn circular_mean2(a: f32, b: f32) -> f32 {
+    (a.sin() + b.sin()).atan2(a.cos() + b.cos())
+}
+
+/// Wrapped signed angular difference `to − from`, in (−π, π].
+fn wrapped_phase_delta(to: f32, from: f32) -> f32 {
+    (to - from).sin().atan2((to - from).cos())
+}
+
+/// Signed phase-repulsion step for a pair (applied `+` to a, `−` to b):
+/// pushes the WRAPPED gap |φa−φb| toward π/2, carrying the sign of the
+/// gap so the pair always widens (a fixed sign attracts whenever φa < φb).
+fn repulsion_phase_correction(phase_a: f32, phase_b: f32, strength: f32) -> f32 {
+    let target_diff = std::f32::consts::FRAC_PI_2;
+    let wrapped_diff = wrapped_phase_delta(phase_a, phase_b);
+    // f32::signum(0.0) is 1.0, which conveniently breaks the identical-phase tie.
+    strength * 0.5 * (target_diff - wrapped_diff.abs()) * wrapped_diff.signum()
+}
+
+// ---------------------------------------------------------------------------
 // Coboundary Validation for Hallucination Synthesis
 // ---------------------------------------------------------------------------
 
@@ -534,7 +567,11 @@ impl ConsolidationEngine {
                     _ => continue,
                 }
             };
-            let avg_phase = (phase_a + phase_b) / 2.0;
+            // Circular mean, not arithmetic: a constructive pair straddling
+            // the 2π wrap (e.g. 6.2 and 0.2) has an arithmetic mean near π —
+            // anti-phase to the pair's own neighborhood, which the next dream
+            // then classifies destructive and dampens.
+            let avg_phase = circular_mean2(phase_a, phase_b);
 
             // Boost amplitude and align phase for memory A (skip ghosts and sub-noise-floor)
             if let Some(mem) = engine.store.get_mut(&pair.id_a).ok().flatten() {
@@ -714,10 +751,15 @@ impl ConsolidationEngine {
                     mem.phase += (mem.id.as_u128() as f32 % 100.0) * 0.001;  // Tiny deterministic noise
                 }
             } else if final_order < 0.40 {
-                // Too chaotic - nudge toward mean phase
+                // Too chaotic - nudge toward mean phase. Step along the WRAPPED
+                // angular difference: mean_phase is in (−π, π] while stored
+                // phases drift unbounded across dreams, so the old linear blend
+                // `0.9φ + 0.1·mean` kicked a drifted-but-aligned memory by 10%
+                // of its accumulated drift — destabilizing the exact memories
+                // it meant to gently align.
                 let mean_phase = self.compute_mean_phase(&cat_mems);
                 for mem in &mut cat_mems {
-                    mem.phase = 0.9 * mem.phase + 0.1 * mean_phase;
+                    mem.phase += 0.1 * wrapped_phase_delta(mean_phase, mem.phase);
                 }
             }
             
@@ -970,11 +1012,15 @@ impl ConsolidationEngine {
                 }
             };
             
-            // Push phases apart (create p/2 phase difference for maximum differentiation)
-            let target_diff = std::f32::consts::PI / 2.0;
-            let current_diff = (phase_a - phase_b).abs();
-            let phase_correction = repulsion_strength * 0.5 * (target_diff - current_diff);
-            
+            // Push phases apart toward a π/2 wrapped gap. Two subtleties both
+            // previously inverted the effect for ~half of all pairs: the diff
+            // must be WRAPPED (|φa−φb| can be 5.9 when the real angular gap is
+            // 0.38), and the correction must carry the SIGN of the gap — a
+            // fixed "+ to a, − to b" contracts (attracts!) whenever φa < φb,
+            // which of the two you got depended solely on iteration order.
+            let phase_correction =
+                repulsion_phase_correction(phase_a, phase_b, repulsion_strength);
+
             // Apply phase separation
             if let Ok(Some(mem_a)) = engine.store.get_mut(&id_a) {
                 mem_a.phase += phase_correction;
@@ -2694,8 +2740,12 @@ impl ConsolidationEngine {
             let mean_phase = self.compute_mean_phase(&mems);
             for id in ids {
                 if let Ok(Some(mem)) = engine.store.get_mut(id) {
-                    // Gentle phase alignment toward the modality mean (5% per cycle)
-                    mem.phase = 0.95 * mem.phase + 0.05 * mean_phase;
+                    // Gentle phase alignment toward the modality mean (5% per
+                    // cycle), stepped along the WRAPPED angular difference —
+                    // a linear blend against the (−π, π] atan2 mean kicks
+                    // drift-accumulated phases by 5% of their unbounded drift
+                    // instead of 5% of the real angular gap.
+                    mem.phase += 0.05 * wrapped_phase_delta(mean_phase, mem.phase);
                     // Small amplitude boost for correctly-classified memories
                     // (#368: clamp like every other strengthen site — this path
                     // was missed by the #360 ceiling fix).
@@ -2958,6 +3008,12 @@ impl DreamState {
                 mem.amplitude *= 0.995;
                 if mem.amplitude < self.engine.prune_threshold {
                     mem.amplitude = 0.0;
+                    // ADR-0037: stamp updated_at on ghosting so the recovery
+                    // window holds — stage_prune and the noise-floor sweep both
+                    // stamp; without it a lite-ghosted old memory (updated_at
+                    // == created_at, past the 7-day horizon) is hard-deleted by
+                    // the very next deep dream's compact stage.
+                    mem.updated_at = Some(now);
                     to_prune.push(*id);
                     report.memories_pruned += 1;
                 }
@@ -3028,6 +3084,91 @@ mod tests {
             mem.phase = phase;
         }
         id
+    }
+
+    // -----------------------------------------------------------------------
+    // Circular phase arithmetic (the 2π-wrap family of bugs)
+    // -----------------------------------------------------------------------
+
+    /// Absolute angular distance between two phases, for assertions.
+    fn angular_distance(a: f32, b: f32) -> f32 {
+        wrapped_phase_delta(a, b).abs()
+    }
+
+    #[test]
+    fn circular_mean_handles_wrap_straddling_pair() {
+        // 6.2 rad ≡ −0.083 rad; the angular midpoint with 0.2 is ~0.058 —
+        // the arithmetic mean (3.2 ≈ π) is anti-phase to both inputs.
+        let mean = circular_mean2(6.2, 0.2);
+        assert!(
+            angular_distance(mean, 0.058) < 0.05,
+            "circular mean of a wrap-straddling pair must land between the \
+             inputs, got {mean}"
+        );
+        // Sanity: a non-straddling pair matches the arithmetic mean.
+        let plain = circular_mean2(1.0, 2.0);
+        assert!(angular_distance(plain, 1.5) < 1e-3, "got {plain}");
+    }
+
+    #[test]
+    fn wrapped_delta_measures_real_angular_gap() {
+        // Raw diff is −6.0; the real angular step from 6.2 to 0.2 is +0.283.
+        let d = wrapped_phase_delta(0.2, 6.2);
+        assert!((d - 0.283).abs() < 1e-2, "got {d}");
+        assert!(wrapped_phase_delta(2.0, 1.6) > 0.0);
+        assert!(wrapped_phase_delta(1.6, 2.0) < 0.0);
+    }
+
+    #[test]
+    fn repulsion_widens_gap_regardless_of_pair_order() {
+        // The old fixed-sign correction widened only when φa > φb and
+        // CONTRACTED the pair otherwise (direction picked by iteration
+        // order). Both orderings must now widen toward π/2.
+        for (a, b) in [(1.6f32, 2.0f32), (2.0, 1.6)] {
+            let before = angular_distance(a, b);
+            let c = repulsion_phase_correction(a, b, 1.0);
+            let after = angular_distance(a + c, b - c);
+            assert!(
+                after > before,
+                "repulsion must widen the gap: ({a}, {b}) went {before} -> {after}"
+            );
+            assert!(
+                after <= std::f32::consts::FRAC_PI_2 + 1e-3,
+                "must not overshoot π/2: got {after}"
+            );
+        }
+        // Drifted pair: raw |Δ| = 5.9 but the real gap is ~0.38 — the
+        // correction must be based on the wrapped gap (small, widening),
+        // not the raw one (huge, sign-flipped).
+        let (a, b) = (6.1f32, 0.2f32);
+        let before = angular_distance(a, b);
+        let c = repulsion_phase_correction(a, b, 1.0);
+        let after = angular_distance(a + c, b - c);
+        assert!(after > before, "drifted pair must widen: {before} -> {after}");
+    }
+
+    #[test]
+    fn dream_lite_ghosting_stamps_recovery_window() {
+        let mut engine = make_engine();
+        let state = DreamState::new(ConsolidationEngine::default(), 1);
+        let id = insert_with_phase_and_layer(&mut engine, "fading trace", 0.0, 0);
+        // Force the memory below the prune threshold so this lite pass
+        // ghosts it, and clear updated_at to model an old field.
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.01;
+            mem.updated_at = None;
+        }
+        let report = state.dream_lite(&mut engine);
+        assert!(report.memories_pruned >= 1, "memory should be ghosted");
+        let mem = engine.get_memory(&id).unwrap().unwrap();
+        assert_eq!(mem.amplitude, 0.0, "ghosted");
+        // ADR-0037: the ghost must carry a fresh updated_at so the deep
+        // dream's compact stage honors the recovery window instead of
+        // hard-deleting it in the same cycle.
+        assert!(
+            mem.updated_at.is_some(),
+            "lite ghosting must stamp updated_at (recovery window)"
+        );
     }
 
     #[test]
