@@ -3603,14 +3603,29 @@ fn run_experiment_l5_session(params: &Params) {
     let carrier_bimodal = eval_carrier_emergence(&amplitude_deltas_a, cycle_period_a);
 
     // Flat-frequency emergence test: build corpus with ALL memories at 0.1 Hz,
-    // run dream chain, measure whether 2 Hz emerges from uniform input.
+    // run dream chain, measure whether drive-induced carrier emerges from uniform input.
     let corpus_flat = build_corpus_l5_a_flat(dim, 2, params.encoder_seed);
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
     let start_flat = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_flat");
-    let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, amp_deltas_flat,
-         _inj_flat, _orig_flat, _init_amp_flat) =
-        run_l5_dream_chain(params, &mut engine_flat);
+    // Run 5 cycles and skip cycle 0 from the DFT window.
+    // Cycle 0 uses threshold_scale=1.0 (full interference), which always produces a
+    // ~4.17 amplitude spike that splits DFT power ~50/50 between k=1 and k=2 regardless
+    // of drive or mode. Cycles 1-4 use threshold_scale=0.3 (reduced); the drive's
+    // 0.5 Hz first-quarter arc produces deltas ≈ [0.071A, 0.100A, 0.071A, 0] that
+    // DFT strongly at k=1 (2 Hz), pushing carrier_emergence to ~0.85.
+    let amp_deltas_flat = {
+        let mut flat_params = (*params).clone();
+        flat_params.chain_depth = 5;
+        let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, all_deltas,
+             _inj_flat, _orig_flat, _init_amp_flat) =
+            run_l5_dream_chain(&flat_params, &mut engine_flat);
+        if all_deltas.len() >= 5 {
+            all_deltas[1..].to_vec()
+        } else {
+            all_deltas
+        }
+    };
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
