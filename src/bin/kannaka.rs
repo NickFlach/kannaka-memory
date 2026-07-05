@@ -1250,19 +1250,17 @@ fn main() {
 
     // ADR-0036: a dream that loses the write-lock race used to discover that
     // only AFTER the ~60s HRM load (the lock try lived inside the dream arm).
-    // Acquire it BEFORE the load: a skipped dream exits in milliseconds, and a
-    // dream that does run holds the writer slot through the load window too.
-    let early_dream_lock: Option<WriteLock> = if args[command_start] == "dream" {
-        match try_acquire_write_lock() {
-            Some(lock) => Some(lock),
-            None => {
-                eprintln!("[dream] another writer/dream holds the write lock — skipping (single-writer policy)");
-                process::exit(0);
-            }
-        }
-    } else {
-        None
-    };
+    // PROBE the lock before the load — and release immediately — so a dream
+    // that would be skipped exits in milliseconds. Deliberately NOT held
+    // through the load: the writer service's acquire gives up after 60s and
+    // proceeds unlocked ("a writer that refuses to run is worse"), so holding
+    // here would widen the double-writer window during deploy restarts. The
+    // authoritative acquisition still happens in the dream arm, exactly as
+    // before.
+    if args[command_start] == "dream" && try_acquire_write_lock().is_none() {
+        eprintln!("[dream] another writer/dream holds the write lock — skipping (single-writer policy)");
+        process::exit(0);
+    }
 
     // HRM is the sole backend
     let quiet = std::env::var("KANNAKA_QUIET").is_ok();
@@ -2432,10 +2430,17 @@ fn main() {
             // filled the disk). dream-cron stops the writer first, so the nightly
             // deep dream acquires cleanly; a rogue `dream --mode lite` from a
             // Node service while the writer runs now no-ops instead of colliding.
-            // The lock itself was acquired BEFORE the HRM load (see
-            // early_dream_lock above) so a skipped dream never pays the load.
-            let _write_lock = early_dream_lock
-                .expect("dream write lock is acquired before the HRM load");
+            // (A pre-load PROBE of the same lock already ran before init, so a
+            // skipped dream usually exits without paying the ~60s HRM load —
+            // this is the authoritative acquisition for the race the probe
+            // can't close.)
+            let _write_lock = match try_acquire_write_lock() {
+                Some(lock) => lock,
+                None => {
+                    eprintln!("[dream] another writer/dream holds the write lock — skipping (single-writer policy)");
+                    process::exit(0);
+                }
+            };
 
             // ADR-0037: optional belief re-phase before the dream — the one-time
             // migration that desyncs an already-collapsed field (born phase only

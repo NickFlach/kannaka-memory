@@ -36,9 +36,13 @@ pub struct SpiralReport {
     pub net_charge: i32,
 }
 
-/// Wrap a phase difference into [−π, π).
+/// Wrap a phase difference into [−π, π). `pub(crate)` — the canonical wrap
+/// for the whole crate; consolidation's `wrapped_phase_delta` routes through
+/// it so there is exactly one wrapping convention and one implementation
+/// (rem_euclid stays exact for large drifted inputs where sin/atan2 loses
+/// precision).
 #[inline]
-fn wrap(d: f32) -> f32 {
+pub(crate) fn wrap(d: f32) -> f32 {
     (d + PI).rem_euclid(TAU) - PI
 }
 

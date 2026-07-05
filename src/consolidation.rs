@@ -72,14 +72,20 @@ fn circular_mean2(a: f32, b: f32) -> f32 {
     (a.sin() + b.sin()).atan2(a.cos() + b.cos())
 }
 
-/// Wrapped signed angular difference `to − from`, in (−π, π].
+/// Wrapped signed angular difference `to − from`, in [−π, π). Delegates to
+/// the crate's canonical wrap (spiral.rs) — one convention, one
+/// implementation, and rem_euclid stays exact for large drifted inputs.
 fn wrapped_phase_delta(to: f32, from: f32) -> f32 {
-    (to - from).sin().atan2((to - from).cos())
+    crate::spiral::wrap(to - from)
 }
 
 /// Signed phase-repulsion step for a pair (applied `+` to a, `−` to b):
-/// pushes the WRAPPED gap |φa−φb| toward π/2, carrying the sign of the
-/// gap so the pair always widens (a fixed sign attracts whenever φa < φb).
+/// moves the WRAPPED gap |φa−φb| toward the π/2 differentiation target,
+/// carrying the sign of the gap so the movement direction is correct for
+/// either pair ordering (a fixed sign attracted whenever φa < φb). Pairs
+/// closer than π/2 widen; pairs beyond π/2 (e.g. near-anti-phase) relax
+/// back toward π/2 — the stage targets maximal differentiation, not
+/// maximal separation.
 fn repulsion_phase_correction(phase_a: f32, phase_b: f32, strength: f32) -> f32 {
     let target_diff = std::f32::consts::FRAC_PI_2;
     let wrapped_diff = wrapped_phase_delta(phase_a, phase_b);
@@ -2296,9 +2302,14 @@ impl ConsolidationEngine {
             }
         }
         
-        // Compute phase transformation
-        let phase_diff = b.phase - a.phase;
-        let phase_scale = if a.phase.abs() > 1e-6 { b.phase / a.phase } else { 1.0 };
+        // Compute phase transformation. Angles compose by offset, not scale:
+        // dividing one drifting phase by another (`b.phase / a.phase`) is
+        // meaningless, so the scale component is identity and the offset is
+        // the WRAPPED angular difference (raw subtraction of unbounded-drift
+        // phases is noise). NB: `phase_transform` currently has no readers —
+        // this keeps the recorded transform honest for when one appears.
+        let phase_diff = wrapped_phase_delta(b.phase, a.phase);
+        let phase_scale = 1.0_f32;
         
         // Compute frequency transformation  
         let freq_diff = b.frequency - a.frequency;

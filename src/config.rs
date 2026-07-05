@@ -575,6 +575,12 @@ fn version_is_newer(remote: &str, current: &str) -> bool {
     // parse must degrade in place ("10-rc1" → 10), never be dropped — dropping
     // shifts later components left, so "0.10.4-1" used to parse as (0, 10, 1)-
     // style nonsense and a hotfix-suffixed tag compared OLDER than its base.
+    //
+    // Known limitation (deliberate): suffixes are IGNORED, so "0.10.4-1"
+    // compares EQUAL to "0.10.4" and would not propagate as an update.
+    // Treating a suffix as "newer" would be wrong for the opposite semver
+    // convention ("0.6.10-rc.1" is a PRE-release, older than "0.6.10").
+    // Release policy: hotfixes bump the patch (v0.10.5), never suffix a tag.
     let parse = |s: &str| -> (u32, u32, u32) {
         let mut it = s.split('.').map(|p| {
             p.chars()
@@ -1290,13 +1296,6 @@ fn platform_triple() -> (&'static str, &'static str, &'static str) {
 pub fn install_tui_binary(install_dir: &std::path::Path) {
     let (os, arch, ext) = platform_triple();
     let tui_name = format!("kannaka-tui-{}-{}{}", os, arch, ext);
-    // The TUI moved to its own repo at v0.5.12 (release.yml no longer ships a
-    // kannaka-tui asset here) — the old kannaka-memory URL 404'd on every
-    // fresh install, so first-time installs silently never got a TUI.
-    let url = format!(
-        "https://github.com/NickFlach/kannaka-tui/releases/latest/download/{}",
-        tui_name
-    );
     let target = install_dir.join(format!("kannaka-tui{}", ext));
 
     let a = Ansi::new(enable_ansi_support());
@@ -1307,10 +1306,57 @@ pub fn install_tui_binary(install_dir: &std::path::Path) {
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
+    // The TUI moved to its own repo at v0.5.12 (release.yml no longer ships a
+    // kannaka-tui asset here) — the old kannaka-memory URL 404'd on every
+    // fresh install, so first-time installs silently never got a TUI. Going
+    // via the release JSON (not /latest/download) also gives us the tag for
+    // the version sidecar and the asset list for SHA-256 verification, the
+    // same posture as bootstrap_install_tui and update_sibling_tui.
+    let release: serde_json::Value = match agent
+        .get("https://api.github.com/repos/NickFlach/kannaka-tui/releases/latest")
+        .set("User-Agent", "kannaka-install")
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+        .and_then(|r| r.into_json().map_err(Into::into))
+    {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!(" {}not available (install later with: kannaka update, or from https://github.com/NickFlach/kannaka-tui/releases){}", a.gray, a.reset);
+            return;
+        }
+    };
+    let tui_tag = release["tag_name"].as_str().unwrap_or("unknown");
+    let url = match release["assets"].as_array()
+        .and_then(|assets| {
+            assets.iter().find(|as_| as_["name"].as_str().is_some_and(|n| n == tui_name))
+        })
+        .and_then(|as_| as_["browser_download_url"].as_str())
+    {
+        Some(u) => u.to_string(),
+        None => {
+            eprintln!(" {}no {} asset in kannaka-tui {}{}", a.gray, tui_name, tui_tag, a.reset);
+            return;
+        }
+    };
+
     match agent.get(&url).call() {
         Ok(resp) => {
             let mut bytes = Vec::new();
             if resp.into_reader().read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
+                // Best-effort path (fresh install): skip the TUI rather than
+                // abort the whole install when unverifiable — but never
+                // write bytes that failed or dodged verification.
+                match fetch_and_verify_sha256(&agent, &release, &tui_name, &bytes) {
+                    Ok(()) | Err(VerifyError::SidecarMissing) => {}
+                    Err(VerifyError::Mismatch { .. }) => {
+                        eprintln!(" {}SHA-256 mismatch — skipping TUI install{}", a.red, a.reset);
+                        return;
+                    }
+                    Err(VerifyError::Other(e)) => {
+                        eprintln!(" {}SHA-256 sidecar unfetchable ({}) — skipping TUI install{}", a.gray, e, a.reset);
+                        return;
+                    }
+                }
                 if let Err(e) = std::fs::write(&target, &bytes) {
                     eprintln!(" {}failed: {}{}", a.red, e, a.reset);
                     return;
@@ -1320,6 +1366,15 @@ pub fn install_tui_binary(install_dir: &std::path::Path) {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&target,
                         std::fs::Permissions::from_mode(0o755));
+                }
+                // Version sidecar so the next `kannaka update` skips the
+                // redundant re-download/re-swap (same as bootstrap).
+                let tui_version = tui_tag.trim_start_matches('v');
+                if tui_version != "unknown" {
+                    let _ = std::fs::write(
+                        install_dir.join(".kannaka-tui.version"),
+                        tui_version,
+                    );
                 }
                 eprintln!(" {}✓{}", a.green, a.reset);
             } else {
