@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-07-05
+
+### Added — network + quiet on the lab_qos_boot MCP tool
+
+The `lab_qos_boot` MCP tool exposes two new booleans and passes them through
+to the kannaka-quantum CLI, so the TUI `/qos` flow can boot QuantumOS with
+its full network stack and/or a clean interactive console:
+
+- **`network`** → `--network`: boots QEMU with an rtl8139 NIC on user-mode
+  networking (SLIRP, rootless), so QuantumOS runs ARP/DHCP/ICMP/DNS and the
+  ring-3 shell's `nslookup`/`udping`/`http` work against the real internet.
+- **`quiet`** → `--quiet`: silences the demo kernel's steady-state console
+  chatter (timer-tick heartbeat + paradoxd/ghostd narration) so the
+  interactive `qsh` prompt stays legible.
+
+Both default `false`; the tool schema documents them. Pairs with the
+kannaka-tui `/qos` update that boots networked + quiet by default.
+
 ## [0.10.0] — 2026-07-01
 
 ### Added — belief-safe resonance-merge (ADR-0036 Phase 2b)
