@@ -388,13 +388,40 @@ enum ReadOutcome {
     Closed,
 }
 
+/// Ceiling on a single MSG payload allocation. The NATS server default
+/// max_payload is 1 MiB and nothing in the constellation raises it past
+/// that; 8 MiB leaves generous headroom while making `MSG x 1 99999999999`
+/// from a compromised/desynced peer a protocol error instead of an
+/// allocation abort (#501).
+const MAX_MSG_PAYLOAD: usize = 8 * 1024 * 1024;
+
+/// Ceiling on one control line. INFO with auth/cluster metadata runs a few
+/// KB; MSG headers and -ERR lines are tiny. A line that hasn't ended after
+/// 16 KiB is not NATS protocol traffic.
+const MAX_CONTROL_LINE: u64 = 16 * 1024;
+
 /// Read exactly one protocol frame. Returns `Err` on any condition that
 /// desyncs the byte stream (partial line consumed before a timeout, short
 /// payload read, unparseable MSG header, missing CRLF, non-UTF-8 control
 /// line) — after such an error the connection must be considered dead.
 fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsError> {
     let mut line = String::new();
-    match reader.read_line(&mut line) {
+    // Bound control-line growth: `take` caps how many bytes this read_line
+    // can pull, so a stream that never sends '\n' (desync, garbage peer)
+    // errors out instead of growing `line` without bound.
+    let read_result = {
+        let mut limited = (&mut *reader).take(MAX_CONTROL_LINE);
+        limited.read_line(&mut line)
+    };
+    if let Ok(n) = read_result {
+        if n as u64 >= MAX_CONTROL_LINE && !line.ends_with('\n') {
+            return Err(NatsError::Protocol(format!(
+                "control line exceeds {} bytes without newline — protocol desync",
+                MAX_CONTROL_LINE
+            )));
+        }
+    }
+    match read_result {
         Ok(0) => return Ok(ReadOutcome::Closed),
         Ok(_) => {}
         Err(e)
@@ -435,6 +462,15 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
         let nbytes: usize = nbytes_str.parse().map_err(|_| {
             NatsError::Protocol(format!("invalid MSG byte count: {}", trimmed))
         })?;
+        if nbytes > MAX_MSG_PAYLOAD {
+            // Wire-controlled size: allocating it unchecked lets one bogus
+            // header abort the process. Nothing legitimate approaches this
+            // (server max_payload defaults to 1 MiB).
+            return Err(NatsError::Protocol(format!(
+                "MSG payload {} exceeds {} byte cap — refusing allocation",
+                nbytes, MAX_MSG_PAYLOAD
+            )));
+        }
         let mut payload = vec![0u8; nbytes];
         reader.read_exact(&mut payload).map_err(|e| {
             NatsError::Protocol(format!("short MSG payload read: {}", e))
@@ -478,13 +514,16 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
     )))
 }
 
-/// Write one PUB frame (header + payload + CRLF) and flush.
-fn write_pub(w: &mut TcpStream, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
-    write!(w, "PUB {} {}\r\n", subject, payload.len())?;
-    w.write_all(payload)?;
-    w.write_all(b"\r\n")?;
-    w.flush()?;
-    Ok(())
+/// Write one PUB frame (header + payload + CRLF) and flush, through the
+/// dead-flag choke point. Building the frame in one buffer means a failure
+/// is all-or-mostly-nothing at the syscall level, and `write_frames` marks
+/// the Conn dead on any partial landing either way.
+fn write_pub(conn: &mut Conn, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+    let mut frame = Vec::with_capacity(payload.len() + subject.len() + 32);
+    let _ = write!(frame, "PUB {} {}\r\n", subject, payload.len());
+    frame.extend_from_slice(payload);
+    frame.extend_from_slice(b"\r\n");
+    conn.write_frames(&frame)
 }
 
 /// The two halves of one NATS connection. The reader is persistent: it must
@@ -493,6 +532,13 @@ fn write_pub(w: &mut TcpStream, subject: &str, payload: &[u8]) -> Result<(), Nat
 struct Conn {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
+    /// Set when a write failed partway through a frame (e.g. a write timeout
+    /// after the PUB header but before the payload). The outbound byte stream
+    /// is desynced at that point: any further bytes — including a buffered
+    /// replay — would be parsed by the server as the remainder of the
+    /// truncated frame, silently publishing garbage. A dead Conn must never
+    /// be written again; `reconnect()` replaces it wholesale.
+    dead: bool,
 }
 
 impl Conn {
@@ -509,8 +555,30 @@ impl Conn {
     }
 
     fn pong(&mut self) -> Result<(), NatsError> {
-        write!(self.writer, "PONG\r\n")?;
-        self.writer.flush()?;
+        self.write_frames(b"PONG\r\n")
+    }
+
+    /// The single choke point for outbound bytes. Refuses to touch a
+    /// desynced stream, and marks the stream desynced when a write fails
+    /// (any I/O error here may have left partial frame bytes on the wire —
+    /// further writes would be parsed as the tail of the truncated frame).
+    /// Every writer MUST route through this; direct `self.writer` access
+    /// is reserved for `try_clone` in subscription setup.
+    fn write_frames(&mut self, bytes: &[u8]) -> Result<(), NatsError> {
+        if self.dead {
+            return Err(NatsError::Disconnected(
+                "connection desynced by an earlier mid-frame write failure — reconnect required"
+                    .to_string(),
+            ));
+        }
+        let result = self
+            .writer
+            .write_all(bytes)
+            .and_then(|()| self.writer.flush());
+        if let Err(e) = result {
+            self.dead = true;
+            return Err(NatsError::Io(e));
+        }
         Ok(())
     }
 }
@@ -597,7 +665,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // not success); -ERR (e.g. Authorization Violation) fails the handshake.
     for _ in 0..10 {
         match read_frame(&mut reader)? {
-            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader }),
+            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader, dead: false }),
             ReadOutcome::Frame(Frame::Ping) => {
                 write!(writer, "PONG\r\n")?;
                 writer.flush()?;
@@ -631,7 +699,18 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
 struct BufferedMessage {
     subject: String,
     payload: Vec<u8>,
+    /// Failed replay attempts. Replay is strictly order-preserving, so a
+    /// message that can never be written (e.g. it exceeds the server's
+    /// max_payload and kills the connection every time) would otherwise
+    /// pin the buffer head forever — every later message, including
+    /// presence announces, queues behind it while the daemon logs
+    /// "reconnected" each cycle. Dropped loudly after MAX_REPLAY_ATTEMPTS.
+    attempts: u32,
 }
+
+/// Replay attempts before a head-of-buffer message is declared poison and
+/// dropped so the queue behind it can drain.
+const MAX_REPLAY_ATTEMPTS: u32 = 5;
 
 /// A minimal synchronous NATS client with JetStream KV, events, and reconnection.
 pub struct SwarmTransport {
@@ -644,7 +723,14 @@ pub struct SwarmTransport {
     jetstream_ok: bool,
     connected: Arc<Mutex<bool>>,
     publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
+    /// Last in-place revival attempt (see `try_revive_locked`). Rate-limits
+    /// redials so a daemon publishing frequently against a downed server
+    /// pays one connect timeout per REVIVE_INTERVAL, not per publish.
+    last_revive: Arc<Mutex<Option<Instant>>>,
 }
+
+/// Minimum spacing between in-place redial attempts from `try_revive_locked`.
+const REVIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 // ──────────────────────────────────────────────────────────────────
 // ADR-0028 — durable event-sourced HRM. Streams declared as data;
@@ -849,6 +935,7 @@ impl SwarmTransport {
             jetstream_ok: false,
             connected: Arc::new(Mutex::new(true)),
             publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            last_revive: Arc::new(Mutex::new(None)),
         };
 
         // Try to ensure JetStream streams exist
@@ -914,18 +1001,24 @@ impl SwarmTransport {
         }
 
         // Replay buffered messages in order. On failure the unsent remainder
-        // stays queued (in order, at the front) for the next attempt.
+        // stays queued (in order, at the front) for the next attempt — and
+        // the reconnect reports FAILURE, so callers don't log "reconnected"
+        // and re-announce presence on a connection whose replay just
+        // re-killed it (the node would look recovered in its own logs while
+        // still absent from the swarm). Poison head messages are dropped by
+        // flush_buffer_locked after MAX_REPLAY_ATTEMPTS, so repeated calls
+        // converge instead of looping forever.
         let replay_result = {
             let mut conn = self.lock_conn()?;
             self.flush_buffer_locked(&mut conn)
         };
         if let Err(e) = replay_result {
             self.mark_disconnected();
-            eprintln!(
-                "[nats] reconnect: buffered replay incomplete ({} still queued): {}",
+            return Err(NatsError::Disconnected(format!(
+                "reconnected but buffered replay incomplete ({} still queued): {}",
                 self.buffered_count(),
                 e
-            );
+            )));
         }
 
         Ok(())
@@ -963,6 +1056,7 @@ impl SwarmTransport {
         buf.push_back(BufferedMessage {
             subject: subject.to_string(),
             payload: payload.to_vec(),
+            attempts: 0,
         });
     }
 
@@ -978,22 +1072,38 @@ impl SwarmTransport {
     /// fails to send it is pushed back to the FRONT (preserving order) and
     /// the error is returned; nothing after it is attempted.
     fn flush_buffer_locked(&self, conn: &mut Conn) -> Result<(), NatsError> {
+        if conn.dead {
+            return Err(NatsError::Disconnected(
+                "connection desynced — buffered replay deferred until reconnect".to_string(),
+            ));
+        }
         loop {
             let next = self
                 .publish_buffer
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .pop_front();
-            let Some(msg) = next else { return Ok(()) };
-            if let Err(e) = write_pub(&mut conn.writer, &msg.subject, &msg.payload) {
-                eprintln!(
-                    "[nats] buffered replay failed on {} — re-queueing: {}",
-                    msg.subject, e
-                );
-                self.publish_buffer
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push_front(msg);
+            let Some(mut msg) = next else { return Ok(()) };
+            if let Err(e) = write_pub(conn, &msg.subject, &msg.payload) {
+                // write_pub's choke point already marked the Conn dead.
+                msg.attempts += 1;
+                if msg.attempts >= MAX_REPLAY_ATTEMPTS {
+                    eprintln!(
+                        "[nats] DROPPING poison buffered message on {} after {} failed replays ({} bytes): {}",
+                        msg.subject, msg.attempts, msg.payload.len(), e
+                    );
+                    // Don't re-queue — let the messages behind it drain on
+                    // the next replay instead of starving forever.
+                } else {
+                    eprintln!(
+                        "[nats] buffered replay failed on {} (attempt {}) — re-queueing: {}",
+                        msg.subject, msg.attempts, e
+                    );
+                    self.publish_buffer
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push_front(msg);
+                }
                 return Err(e);
             }
         }
@@ -1024,12 +1134,13 @@ impl SwarmTransport {
         let sid = self.alloc_sid();
         let inbox = new_inbox("js");
 
-        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
-        write!(conn.writer, "UNSUB {} 1\r\n", sid)?;
-        write!(conn.writer, "PUB {} {} {}\r\n", api_subject, inbox, request.len())?;
-        conn.writer.write_all(request)?;
-        conn.writer.write_all(b"\r\n")?;
-        conn.writer.flush()?;
+        let mut frame = Vec::with_capacity(request.len() + 128);
+        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "PUB {} {} {}\r\n", api_subject, inbox, request.len());
+        frame.extend_from_slice(request);
+        frame.extend_from_slice(b"\r\n");
+        conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(timeout))?;
@@ -1081,8 +1192,7 @@ impl SwarmTransport {
         // If no reply was delivered, the auto-unsub never fired — remove the
         // subscription explicitly so it can't leak server-side.
         if !matches!(result, Ok(Some(_))) {
-            let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
-            let _ = conn.writer.flush();
+            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -1251,15 +1361,66 @@ impl SwarmTransport {
     /// the call order. On failure this message joins the back of the buffer.
     fn publish_raw(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
         let mut conn = self.lock_conn()?;
+        // A dead Conn's outbound stream is desynced mid-frame — writing
+        // anything more (this message OR the buffered replay) would be parsed
+        // by the server as the tail of the truncated frame. Try an in-place
+        // revival (rate-limited); if that fails, fail fast to the buffer.
+        // The revival is what lets long-lived daemons that hold an IMMUTABLE
+        // transport (swarm serve, attention, substrate, inbox watch) recover
+        // from one transient write timeout — only `swarm join` has a `mut`
+        // transport and the full reconnect() path.
+        if conn.dead && !self.try_revive_locked(&mut conn) {
+            drop(conn);
+            self.mark_disconnected();
+            self.buffer_message(subject, payload);
+            return Err(NatsError::Disconnected(
+                "connection desynced by an earlier mid-frame write failure — awaiting revival"
+                    .to_string(),
+            ));
+        }
         let result = self
             .flush_buffer_locked(&mut conn)
-            .and_then(|()| write_pub(&mut conn.writer, subject, payload));
+            .and_then(|()| write_pub(&mut conn, subject, payload));
         if result.is_err() {
+            // The choke point already marked the Conn dead on a write error.
             drop(conn);
             self.mark_disconnected();
             self.buffer_message(subject, payload);
         }
         result
+    }
+
+    /// Replace a dead `Conn` with a freshly-handshaked one, in place and
+    /// through interior mutability — the counterpart to `reconnect()` for
+    /// callers that hold `&self`. Rate-limited to one dial per
+    /// REVIVE_INTERVAL so a busy publisher against a downed server pays one
+    /// connect timeout per window, not per publish. Does NOT re-ensure
+    /// JetStream streams (stream config is durable server-side) and does not
+    /// touch subscriptions — a subscription's reader owns clones of the OLD
+    /// socket and either keeps working (server still serves that
+    /// connection) or sees EOF and takes its own Closed path.
+    fn try_revive_locked(&self, conn: &mut Conn) -> bool {
+        {
+            let mut last = self.last_revive.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = *last {
+                if t.elapsed() < REVIVE_INTERVAL {
+                    return false;
+                }
+            }
+            *last = Some(Instant::now());
+        }
+        match handshake(&self.url) {
+            Ok(fresh) => {
+                *conn = fresh;
+                *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                eprintln!("[nats] revived connection to {}", self.url);
+                true
+            }
+            Err(e) => {
+                eprintln!("[nats] revive failed ({}): retry in {}s", e, REVIVE_INTERVAL.as_secs());
+                false
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1655,9 +1816,7 @@ impl SwarmTransport {
         let sid = self.alloc_sid();
         let sid_str = sid.to_string();
 
-        write!(conn.writer, "SUB QUEEN.phase.* {}\r\n", sid)?;
-        write!(conn.writer, "PING\r\n")?;
-        conn.writer.flush()?;
+        conn.write_frames(format!("SUB QUEEN.phase.* {}\r\nPING\r\n", sid).as_bytes())?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(Duration::from_millis(1500)))?;
@@ -1696,8 +1855,7 @@ impl SwarmTransport {
             }
         }
 
-        let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
-        let _ = conn.writer.flush();
+        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
         let _ = conn.set_read_timeout(prev);
 
         if let Some(e) = fatal {
@@ -1910,13 +2068,14 @@ impl SwarmTransport {
     pub fn subscribe_phases_and_memories(&self, include_memories: bool) -> Result<NatsSubscription, NatsError> {
         let mut conn = self.lock_conn()?;
         let first_sid = self.alloc_sid();
-        write!(conn.writer, "SUB QUEEN.phase.* {}\r\n", first_sid)?;
-        write!(conn.writer, "SUB QUEEN.announce {}\r\n", self.alloc_sid())?;
+        let mut frame = Vec::new();
+        let _ = write!(frame, "SUB QUEEN.phase.* {}\r\n", first_sid);
+        let _ = write!(frame, "SUB QUEEN.announce {}\r\n", self.alloc_sid());
         if include_memories {
-            write!(conn.writer, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid())?;
-            write!(conn.writer, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid())?;
+            let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
+            let _ = write!(frame, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid());
         }
-        conn.writer.flush()?;
+        conn.write_frames(&frame)?;
         let stream_clone = conn.writer.try_clone()?;
 
         Ok(NatsSubscription {
@@ -1946,8 +2105,7 @@ impl SwarmTransport {
         let deadline = Instant::now() + Duration::from_secs(2);
 
         let result = (|conn: &mut Conn| -> Result<(), NatsError> {
-            write!(conn.writer, "PING\r\n")?;
-            conn.writer.flush()?;
+            conn.write_frames(b"PING\r\n")?;
             loop {
                 if Instant::now() > deadline {
                     return Err(NatsError::Protocol("no PONG within 2s".to_string()));
@@ -2011,12 +2169,13 @@ impl SwarmTransport {
 
         // SUB inbox first so we don't race the reply; UNSUB <sid> 1 lets the
         // server clean up automatically after the first delivery.
-        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
-        write!(conn.writer, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
-        conn.writer.write_all(payload)?;
-        conn.writer.write_all(b"\r\n")?;
-        write!(conn.writer, "UNSUB {} 1\r\n", sid)?;
-        conn.writer.flush()?;
+        let mut frame = Vec::with_capacity(payload.len() + 128);
+        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
+        frame.extend_from_slice(payload);
+        frame.extend_from_slice(b"\r\n");
+        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(timeout))?;
@@ -2064,8 +2223,7 @@ impl SwarmTransport {
         if result.is_err() {
             // No reply was delivered, so the auto-unsub never fired —
             // remove the subscription explicitly.
-            let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
-            let _ = conn.writer.flush();
+            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -2089,11 +2247,12 @@ impl SwarmTransport {
         let sid = self.alloc_sid();
         let mut conn = self.lock_conn()?;
 
-        write!(conn.writer, "SUB {} {}\r\n", inbox, sid)?;
-        write!(conn.writer, "PUB {} {} {}\r\n", subject, inbox, payload.len())?;
-        conn.writer.write_all(payload)?;
-        conn.writer.write_all(b"\r\n")?;
-        conn.writer.flush()?;
+        let mut frame = Vec::with_capacity(payload.len() + 128);
+        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
+        frame.extend_from_slice(payload);
+        frame.extend_from_slice(b"\r\n");
+        conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -2136,8 +2295,7 @@ impl SwarmTransport {
         }
 
         // UNSUB so the server stops delivering on this inbox.
-        let _ = write!(conn.writer, "UNSUB {}\r\n", sid);
-        let _ = conn.writer.flush();
+        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
         let _ = conn.set_read_timeout(prev);
         if fatal {
             drop(conn);
@@ -2174,10 +2332,9 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let sid = self.alloc_sid();
         match queue_group {
-            Some(g) => write!(conn.writer, "SUB {} {} {}\r\n", subject, g, sid)?,
-            None => write!(conn.writer, "SUB {} {}\r\n", subject, sid)?,
+            Some(g) => conn.write_frames(format!("SUB {} {} {}\r\n", subject, g, sid).as_bytes())?,
+            None => conn.write_frames(format!("SUB {} {}\r\n", subject, sid).as_bytes())?,
         }
-        conn.writer.flush()?;
         let stream_clone = conn.writer.try_clone().map_err(NatsError::Io)?;
         // NOTE: the read timeout is a property of the underlying socket,
         // which is shared with the transport — this also clears the
@@ -2432,6 +2589,7 @@ mod tests {
         let msg = BufferedMessage {
             subject: "QUEEN.event.join".to_string(),
             payload: b"test".to_vec(),
+            attempts: 0,
         };
         let cloned = msg.clone();
         assert_eq!(cloned.subject, msg.subject);
@@ -2451,6 +2609,7 @@ mod tests {
                 guard.push_back(BufferedMessage {
                     subject: format!("test.{}", i),
                     payload: vec![],
+                    attempts: 0,
                 });
             }
             assert_eq!(guard.len(), PUBLISH_BUFFER_LIMIT);

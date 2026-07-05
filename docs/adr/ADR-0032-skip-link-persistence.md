@@ -1,4 +1,4 @@
-# ADR-0016: Skip Link Persistence in Dolt Backend
+# ADR-0032: Skip Link Persistence in Dolt Backend
 
 ## Status
 **Proposed** — 2026-03-12

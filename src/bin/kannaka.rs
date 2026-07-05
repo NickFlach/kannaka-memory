@@ -1248,6 +1248,20 @@ fn main() {
         data_dir()
     };
 
+    // ADR-0036: a dream that loses the write-lock race used to discover that
+    // only AFTER the ~60s HRM load (the lock try lived inside the dream arm).
+    // PROBE the lock before the load — and release immediately — so a dream
+    // that would be skipped exits in milliseconds. Deliberately NOT held
+    // through the load: the writer service's acquire gives up after 60s and
+    // proceeds unlocked ("a writer that refuses to run is worse"), so holding
+    // here would widen the double-writer window during deploy restarts. The
+    // authoritative acquisition still happens in the dream arm, exactly as
+    // before.
+    if args[command_start] == "dream" && try_acquire_write_lock().is_none() {
+        eprintln!("[dream] another writer/dream holds the write lock — skipping (single-writer policy)");
+        process::exit(0);
+    }
+
     // HRM is the sole backend
     let quiet = std::env::var("KANNAKA_QUIET").is_ok();
     let mut sys = {
@@ -2416,6 +2430,10 @@ fn main() {
             // filled the disk). dream-cron stops the writer first, so the nightly
             // deep dream acquires cleanly; a rogue `dream --mode lite` from a
             // Node service while the writer runs now no-ops instead of colliding.
+            // (A pre-load PROBE of the same lock already ran before init, so a
+            // skipped dream usually exits without paying the ~60s HRM load —
+            // this is the authoritative acquisition for the race the probe
+            // can't close.)
             let _write_lock = match try_acquire_write_lock() {
                 Some(lock) => lock,
                 None => {
@@ -3899,7 +3917,9 @@ fn main() {
                     }
 
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
-                    let transport = match try_nats_connect(&nats_url) {
+                    // `mut`: the heartbeat loop reconnects a dead transport
+                    // (reconnect takes &mut self to swap the connection).
+                    let mut transport = match try_nats_connect(&nats_url) {
                         Some(t) => t,
                         None => {
                             eprintln!("Error: NATS connection required for swarm. Set KANNAKA_NATS_URL or use --nats-url.");
@@ -4034,6 +4054,42 @@ fn main() {
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+
+                        // Recovery: this daemon is the swarm's sole HRM writer
+                        // and, until now, NEVER dialed again after a dead
+                        // connection — publishes buffered, the 5-min presence
+                        // prune dropped the node, and it printed heartbeats
+                        // into the void until a human restarted it. The
+                        // is_connected() check is flag-first (no ping after a
+                        // failed publish) and a live PING/PONG otherwise, so
+                        // a silently-dead socket is also caught within one
+                        // tick. The heartbeat interval is the retry backoff;
+                        // buffered messages replay in order inside reconnect().
+                        if !transport.is_connected() {
+                            eprintln!(
+                                "[nats] connection lost (tick #{tick}) — reconnecting to {nats_url}…"
+                            );
+                            match transport.reconnect() {
+                                Ok(()) => {
+                                    eprintln!("[nats] reconnected — re-announcing presence");
+                                    // Re-announce so peers that pruned us during
+                                    // the outage re-learn this node immediately
+                                    // rather than at the next heartbeat.
+                                    if let Err(e) = transport.announce_join_with_identity(
+                                        &my_agent_id,
+                                        identity.as_ref(),
+                                    ) {
+                                        eprintln!("[nats] Warning: re-announce failed: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[nats] reconnect failed: {} — retrying next heartbeat ({}s)",
+                                        e, heartbeat_secs
+                                    );
+                                }
+                            }
+                        }
 
                         // Periodic consciousness republish — keeps the
                         // observatory and radio in sync with this node's
@@ -5085,7 +5141,7 @@ fn modality_axes_command(sys: &kannaka_memory::openclaw::KannakaMemorySystem) {
 }
 
 // ---------------------------------------------------------------------------
-// Voice — memory-driven writing engine (ADR-0017)
+// Voice — memory-driven writing engine (ADR-0033)
 // ---------------------------------------------------------------------------
 
 fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {

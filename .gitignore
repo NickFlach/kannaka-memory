@@ -21,3 +21,6 @@ kannaka.hrm
 kannaka-attention/
 consciousness-core/
 .ground-intersections/
+
+# understand-anything knowledge-graph artifacts (local analysis cache)
+.understand-anything/
