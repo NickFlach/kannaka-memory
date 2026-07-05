@@ -419,6 +419,8 @@ pub fn lab_tools() -> Vec<Tool> {
                     "timeout_secs": { "type": "integer", "minimum": 30, "default": 540 },
                     "qseed": { "type": "string", "description": "Kernel boot entropy (qseed= cmdline): 'reservoir' draws 64 raw QPU bits from the local quantum-entropy reservoir (provenance chain included, errors if empty); or pass <=16 hex digits. The kernel echoes the accepted seed; qseed_confirmed reports the round-trip." },
                     "graphical": { "type": "boolean", "default": false, "description": "Boot with a VGA framebuffer over VNC (paused, -S) + install noVNC, instead of the serial console — so the wave-interference splash is watchable in a browser via lab_qos_watch." },
+                    "network": { "type": "boolean", "default": false, "description": "Boot with an rtl8139 NIC on QEMU user-mode networking (SLIRP, rootless, NAT to the instance's real internet) so QuantumOS runs its full stack: the boot self-test does ARP/DHCP/ICMP/DNS and the ring-3 shell gains a working nslookup/udping/http (the TCP client fetches real pages). Default is NIC-less." },
+                    "quiet": { "type": "boolean", "default": false, "description": "Silence the demo kernel's steady-state console chatter (the timer-tick heartbeat + paradoxd/ghostd narration) for a clean interactive qsh prompt. Pairs with network for a usable networked shell." },
                     "web_port": { "type": "integer", "default": 6080, "description": "websockify web port for --graphical." },
                     "monitor_port": { "type": "integer", "default": 4444, "description": "QEMU TCP monitor port for --graphical (used by lab_qos_watch to resume)." }
                 },
@@ -760,6 +762,8 @@ pub fn dispatch_lab_tool(name: &str, input: &Value) -> (String, bool) {
             push_int(&mut args, "--timeout-secs", input, "timeout_secs");
             push_str_opt(&mut args, "--qseed", input, "qseed");
             push_flag(&mut args, "--graphical", input, "graphical");
+            push_flag(&mut args, "--network", input, "network");
+            push_flag(&mut args, "--quiet", input, "quiet");
             push_int(&mut args, "--web-port", input, "web_port");
             push_int(&mut args, "--monitor-port", input, "monitor_port");
         }
