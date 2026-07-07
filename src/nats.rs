@@ -328,10 +328,10 @@ fn parse_nats_url(url: &str) -> Result<(String, u16, Option<(String, String)>), 
         2 => {
             let port = parts[1]
                 .parse::<u16>()
-                .map_err(|e| NatsError::Connect(format!("invalid port: {}", e)))?;
+                .map_err(|e| NatsError::Connect(format!("invalid port: {e}")))?;
             Ok((parts[0].to_string(), port, creds))
         }
-        _ => Err(NatsError::Connect(format!("invalid NATS URL: {}", url))),
+        _ => Err(NatsError::Connect(format!("invalid NATS URL: {url}"))),
     }
 }
 
@@ -415,10 +415,7 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
     };
     if let Ok(n) = read_result {
         if n as u64 >= MAX_CONTROL_LINE && !line.ends_with('\n') {
-            return Err(NatsError::Protocol(format!(
-                "control line exceeds {} bytes without newline — protocol desync",
-                MAX_CONTROL_LINE
-            )));
+            return Err(NatsError::Protocol(format!("control line exceeds {MAX_CONTROL_LINE} bytes without newline — protocol desync")));
         }
     }
     match read_result {
@@ -453,31 +450,25 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
             3 => (parts[0], parts[1], None, parts[2]),
             4 => (parts[0], parts[1], Some(parts[2]), parts[3]),
             n => {
-                return Err(NatsError::Protocol(format!(
-                    "malformed MSG header ({} fields): {}",
-                    n, trimmed
-                )))
+                return Err(NatsError::Protocol(format!("malformed MSG header ({n} fields): {trimmed}")))
             }
         };
         let nbytes: usize = nbytes_str.parse().map_err(|_| {
-            NatsError::Protocol(format!("invalid MSG byte count: {}", trimmed))
+            NatsError::Protocol(format!("invalid MSG byte count: {trimmed}"))
         })?;
         if nbytes > MAX_MSG_PAYLOAD {
             // Wire-controlled size: allocating it unchecked lets one bogus
             // header abort the process. Nothing legitimate approaches this
             // (server max_payload defaults to 1 MiB).
-            return Err(NatsError::Protocol(format!(
-                "MSG payload {} exceeds {} byte cap — refusing allocation",
-                nbytes, MAX_MSG_PAYLOAD
-            )));
+            return Err(NatsError::Protocol(format!("MSG payload {nbytes} exceeds {MAX_MSG_PAYLOAD} byte cap — refusing allocation")));
         }
         let mut payload = vec![0u8; nbytes];
         reader.read_exact(&mut payload).map_err(|e| {
-            NatsError::Protocol(format!("short MSG payload read: {}", e))
+            NatsError::Protocol(format!("short MSG payload read: {e}"))
         })?;
         let mut crlf = [0u8; 2];
         reader.read_exact(&mut crlf).map_err(|e| {
-            NatsError::Protocol(format!("missing CRLF after MSG payload: {}", e))
+            NatsError::Protocol(format!("missing CRLF after MSG payload: {e}"))
         })?;
         if &crlf != b"\r\n" {
             return Err(NatsError::Protocol(
@@ -589,15 +580,15 @@ impl Conn {
 /// credentials). ADR-0026 #73.
 fn handshake(url: &str) -> Result<Conn, NatsError> {
     let (host, port, url_creds) = parse_nats_url(url)?;
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     use std::net::ToSocketAddrs;
     let socket_addr = addr
         .to_socket_addrs()
-        .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
+        .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {addr}: {e}")))?
         .next()
-        .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
+        .ok_or_else(|| NatsError::Connect(format!("no addresses found for {addr}")))?;
     let stream = TcpStream::connect_timeout(&socket_addr, DEFAULT_IO_TIMEOUT)
-        .map_err(|e| NatsError::Connect(format!("failed to connect to {}: {}", addr, e)))?;
+        .map_err(|e| NatsError::Connect(format!("failed to connect to {addr}: {e}")))?;
 
     stream.set_read_timeout(Some(DEFAULT_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(DEFAULT_IO_TIMEOUT))?;
@@ -671,10 +662,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
                 writer.flush()?;
             }
             ReadOutcome::Frame(Frame::ServerErr(m)) => {
-                return Err(NatsError::Connect(format!(
-                    "server rejected connect: {}",
-                    m
-                )));
+                return Err(NatsError::Connect(format!("server rejected connect: {m}")));
             }
             ReadOutcome::Frame(_) => continue,
             ReadOutcome::TimedOut => {
@@ -857,16 +845,16 @@ impl<'a> EventPayload<'a> {
     pub fn subject(&self) -> String {
         match self {
             EventPayload::MemoryRemember { agent_id, .. } => {
-                format!("KANNAKA.events.memory.{}.remember", agent_id)
+                format!("KANNAKA.events.memory.{agent_id}.remember")
             }
             EventPayload::MemoryForget { agent_id, .. } => {
-                format!("KANNAKA.events.memory.{}.forget", agent_id)
+                format!("KANNAKA.events.memory.{agent_id}.forget")
             }
             EventPayload::SubstrateAbsorb { .. } => {
                 "KANNAKA.events.substrate.absorb".to_string()
             }
             EventPayload::SnapshotFull { agent_id, .. } => {
-                format!("KANNAKA.snapshots.{}.full", agent_id)
+                format!("KANNAKA.snapshots.{agent_id}.full")
             }
         }
     }
@@ -972,7 +960,7 @@ impl SwarmTransport {
     fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Conn>, NatsError> {
         self.conn
             .lock()
-            .map_err(|e| NatsError::Protocol(format!("connection lock poisoned: {}", e)))
+            .map_err(|e| NatsError::Protocol(format!("connection lock poisoned: {e}")))
     }
 
     // -----------------------------------------------------------------------
@@ -1158,7 +1146,7 @@ impl SwarmTransport {
                     break serde_json::from_slice::<serde_json::Value>(&payload)
                         .map(Some)
                         .map_err(|e| {
-                            NatsError::Protocol(format!("bad JetStream API reply: {}", e))
+                            NatsError::Protocol(format!("bad JetStream API reply: {e}"))
                         });
                 }
                 // A frame for some other subscription on this connection —
@@ -1192,7 +1180,7 @@ impl SwarmTransport {
         // If no reply was delivered, the auto-unsub never fired — remove the
         // subscription explicitly so it can't leak server-side.
         if !matches!(result, Ok(Some(_))) {
-            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+            let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -1213,7 +1201,7 @@ impl SwarmTransport {
         max_messages: usize,
     ) -> Result<Vec<(String, Vec<u8>)>, NatsError> {
         let mut conn = self.lock_conn()?;
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let mut out: Vec<(String, Vec<u8>)> = Vec::new();
         let mut next_seq: u64 = 1;
 
@@ -1308,14 +1296,11 @@ impl SwarmTransport {
         let payload = config.to_string();
         let mut conn = self.lock_conn()?;
 
-        let create_subject = format!("$JS.API.STREAM.CREATE.{}", stream_name);
+        let create_subject = format!("$JS.API.STREAM.CREATE.{stream_name}");
         let resp = self
             .js_api_call_locked(&mut conn, &create_subject, payload.as_bytes(), JS_API_TIMEOUT)?
             .ok_or_else(|| {
-                NatsError::Protocol(format!(
-                    "no JetStream reply for stream create: {}",
-                    stream_name
-                ))
+                NatsError::Protocol(format!("no JetStream reply for stream create: {stream_name}"))
             })?;
 
         if let Some(err) = resp.get("error") {
@@ -1325,7 +1310,7 @@ impl SwarmTransport {
                 // Best-effort: an UPDATE rejection (e.g. immutable field)
                 // still leaves a usable stream, so the reply is drained
                 // and ignored.
-                let update_subject = format!("$JS.API.STREAM.UPDATE.{}", stream_name);
+                let update_subject = format!("$JS.API.STREAM.UPDATE.{stream_name}");
                 let _ = self.js_api_call_locked(
                     &mut conn,
                     &update_subject,
@@ -1334,10 +1319,7 @@ impl SwarmTransport {
                 );
                 return Ok(());
             }
-            return Err(NatsError::Protocol(format!(
-                "JetStream stream create error: {}",
-                err
-            )));
+            return Err(NatsError::Protocol(format!("JetStream stream create error: {err}")));
         }
         Ok(())
     }
@@ -1466,7 +1448,7 @@ impl SwarmTransport {
         cluster_id: u32,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.exemplar.{}.{}", agent_id, cluster_id);
+        let subject = format!("KANNAKA.exemplar.{agent_id}.{cluster_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1497,7 +1479,7 @@ impl SwarmTransport {
         from_agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, NatsError> {
         let subject_filter = match from_agent {
-            Some(a) => format!("KANNAKA.exemplar.{}.>", a),
+            Some(a) => format!("KANNAKA.exemplar.{a}.>"),
             None => "KANNAKA.exemplar.>".to_string(),
         };
         self.get_stream_messages("KANNAKA_EXEMPLARS", &subject_filter, 500)
@@ -1512,7 +1494,7 @@ impl SwarmTransport {
         agent_id: &str,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.cores.{}", agent_id);
+        let subject = format!("KANNAKA.cores.{agent_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1543,7 +1525,7 @@ impl SwarmTransport {
         from_agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, NatsError> {
         let subject_filter = match from_agent {
-            Some(a) => format!("KANNAKA.cores.{}", a),
+            Some(a) => format!("KANNAKA.cores.{a}"),
             None => "KANNAKA.cores.>".to_string(),
         };
         self.get_stream_messages("KANNAKA_CORES", &subject_filter, 500)
@@ -1573,7 +1555,7 @@ impl SwarmTransport {
         agent_id: &str,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.presence.{}", agent_id);
+        let subject = format!("KANNAKA.presence.{agent_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1662,7 +1644,7 @@ impl SwarmTransport {
         phase: f32,
         frequency: f32,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.substrate.absorb.{}", agent_id);
+        let subject = format!("KANNAKA.substrate.absorb.{agent_id}");
         let mut payload = serde_json::json!({
             "agent_id": agent_id,
             "class_index": class_index,
@@ -1757,7 +1739,7 @@ impl SwarmTransport {
     /// or "broadcast" for all agents. JetStream retains for 7 days.
     pub fn publish_shared_wavefront(&self, wavefront: &SharedWavefront) -> Result<(), NatsError> {
         let target = wavefront.target.as_deref().unwrap_or("broadcast");
-        let subject = format!("queen.memory.shared.{}", target);
+        let subject = format!("queen.memory.shared.{target}");
         let payload = serde_json::to_vec(wavefront)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &payload)
@@ -1778,7 +1760,7 @@ impl SwarmTransport {
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "details": details,
         });
-        let event_name = format!("dream.{}", event_type);
+        let event_name = format!("dream.{event_type}");
         self.announce_event(&event_name, &payload)
     }
 
@@ -1816,7 +1798,7 @@ impl SwarmTransport {
         let sid = self.alloc_sid();
         let sid_str = sid.to_string();
 
-        conn.write_frames(format!("SUB QUEEN.phase.* {}\r\nPING\r\n", sid).as_bytes())?;
+        conn.write_frames(format!("SUB QUEEN.phase.* {sid}\r\nPING\r\n").as_bytes())?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(Duration::from_millis(1500)))?;
@@ -1855,7 +1837,7 @@ impl SwarmTransport {
             }
         }
 
-        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+        let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         let _ = conn.set_read_timeout(prev);
 
         if let Some(e) = fatal {
@@ -1898,7 +1880,7 @@ impl SwarmTransport {
         add_envelope(&mut flat);
         let bytes = serde_json::to_vec(&flat)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let subject = format!("queen.event.{}", event_type);
+        let subject = format!("queen.event.{event_type}");
         self.publish_raw(&subject, &bytes)
     }
 
@@ -1960,8 +1942,8 @@ impl SwarmTransport {
     /// `$KV.<name>.>`, max 1 message per subject (last-value semantics),
     /// and an optional TTL in seconds.
     pub fn create_kv_bucket(&self, name: &str, ttl_seconds: u64) -> Result<(), NatsError> {
-        let stream_name = format!("KV_{}", name);
-        let subjects = format!("$KV.{}.>", name);
+        let stream_name = format!("KV_{name}");
+        let subjects = format!("$KV.{name}.>");
         let config = if ttl_seconds > 0 {
             serde_json::json!({
                 "name": stream_name,
@@ -1991,7 +1973,7 @@ impl SwarmTransport {
 
     /// Put a value into a NATS KV bucket.
     pub fn kv_put(&self, bucket: &str, key: &str, value: &str) -> Result<(), NatsError> {
-        let subject = format!("$KV.{}.{}", bucket, key);
+        let subject = format!("$KV.{bucket}.{key}");
         self.publish_raw(&subject, value.as_bytes())
     }
 
@@ -2000,9 +1982,9 @@ impl SwarmTransport {
     /// Returns the latest value for the given key, or `NatsError::KvNotFound`
     /// if the key does not exist (or the server didn't reply in time).
     pub fn kv_get(&self, bucket: &str, key: &str) -> Result<String, NatsError> {
-        let stream_name = format!("KV_{}", bucket);
-        let target_subject = format!("$KV.{}.{}", bucket, key);
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let stream_name = format!("KV_{bucket}");
+        let target_subject = format!("$KV.{bucket}.{key}");
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let req = serde_json::json!({ "last_by_subj": target_subject }).to_string();
 
         let resp = {
@@ -2017,14 +1999,14 @@ impl SwarmTransport {
             .and_then(|d| d.as_str())
             .and_then(|b64| base64_decode(b64).ok())
             .map(|decoded| String::from_utf8_lossy(&decoded).to_string())
-            .ok_or_else(|| NatsError::KvNotFound(format!("{}/{}", bucket, key)))
+            .ok_or_else(|| NatsError::KvNotFound(format!("{bucket}/{key}")))
     }
 
     /// List all keys in a NATS KV bucket.
     pub fn kv_keys(&self, bucket: &str) -> Result<Vec<String>, NatsError> {
-        let stream_name = format!("KV_{}", bucket);
-        let prefix = format!("$KV.{}.", bucket);
-        let filter = format!("$KV.{}.>", bucket);
+        let stream_name = format!("KV_{bucket}");
+        let prefix = format!("$KV.{bucket}.");
+        let filter = format!("$KV.{bucket}.>");
         let msgs = self.stream_walk(&stream_name, &filter, STREAM_WALK_LIMIT)?;
         Ok(msgs
             .into_iter()
@@ -2223,7 +2205,7 @@ impl SwarmTransport {
         if result.is_err() {
             // No reply was delivered, so the auto-unsub never fired —
             // remove the subscription explicitly.
-            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+            let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -2295,7 +2277,7 @@ impl SwarmTransport {
         }
 
         // UNSUB so the server stops delivering on this inbox.
-        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+        let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         let _ = conn.set_read_timeout(prev);
         if fatal {
             drop(conn);
@@ -2332,8 +2314,8 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let sid = self.alloc_sid();
         match queue_group {
-            Some(g) => conn.write_frames(format!("SUB {} {} {}\r\n", subject, g, sid).as_bytes())?,
-            None => conn.write_frames(format!("SUB {} {}\r\n", subject, sid).as_bytes())?,
+            Some(g) => conn.write_frames(format!("SUB {subject} {g} {sid}\r\n").as_bytes())?,
+            None => conn.write_frames(format!("SUB {subject} {sid}\r\n").as_bytes())?,
         }
         let stream_clone = conn.writer.try_clone().map_err(NatsError::Io)?;
         // NOTE: the read timeout is a property of the underlying socket,
@@ -2516,7 +2498,7 @@ mod tests {
         match SwarmTransport::connect("nats://127.0.0.1:19999") {
             Ok(_) => panic!("should not connect to nonexistent server"),
             Err(e) => {
-                let msg = format!("{}", e);
+                let msg = format!("{e}");
                 assert!(
                     msg.contains("connect") || msg.contains("Connect"),
                     "error should mention connect: {}",
@@ -2578,10 +2560,10 @@ mod tests {
     #[test]
     fn nats_error_display_variants() {
         let e = NatsError::Disconnected("lost connection".into());
-        assert!(format!("{}", e).contains("disconnected"));
+        assert!(format!("{e}").contains("disconnected"));
 
         let e = NatsError::KvNotFound("mybucket/mykey".into());
-        assert!(format!("{}", e).contains("KV key not found"));
+        assert!(format!("{e}").contains("KV key not found"));
     }
 
     #[test]
@@ -2607,7 +2589,7 @@ mod tests {
                     guard.pop_front();
                 }
                 guard.push_back(BufferedMessage {
-                    subject: format!("test.{}", i),
+                    subject: format!("test.{i}"),
                     payload: vec![],
                     attempts: 0,
                 });
