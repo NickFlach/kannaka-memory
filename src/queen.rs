@@ -1164,7 +1164,7 @@ impl QueenSync {
         let nats_phases = match transport.get_all_phases() {
             Ok(phases) => phases,
             Err(e) => {
-                warning = Some(format!("NATS read failed, using persistent phases only: {}", e));
+                warning = Some(format!("NATS read failed, using persistent phases only: {e}"));
                 vec![]
             }
         };
@@ -1202,9 +1202,9 @@ impl QueenSync {
             me.map(|p| p.link_count).unwrap_or(0),
         );
         if let Err(e) = transport.publish_phase(&updated) {
-            let msg = format!("NATS publish failed: {}", e);
+            let msg = format!("NATS publish failed: {e}");
             warning = Some(match warning {
-                Some(prev) => format!("{}; {}", prev, msg),
+                Some(prev) => format!("{prev}; {msg}"),
                 None => msg,
             });
         }
@@ -1287,8 +1287,8 @@ mod tests {
             make_agent_phase("c", 1.0, 1.0, 1.0),
         ];
         let (r, psi) = QueenSync::compute_order_parameter(&swarm);
-        assert!((r - 1.0).abs() < 0.01, "identical phases -> r~1.0, got {}", r);
-        assert!((psi - 1.0).abs() < 0.01, "mean phase should be 1.0, got {}", psi);
+        assert!((r - 1.0).abs() < 0.01, "identical phases -> r~1.0, got {r}");
+        assert!((psi - 1.0).abs() < 0.01, "mean phase should be 1.0, got {psi}");
     }
 
     #[test]
@@ -1298,7 +1298,7 @@ mod tests {
             make_agent_phase("b", PI, 1.0, 1.0),
         ];
         let (r, _) = QueenSync::compute_order_parameter(&swarm);
-        assert!(r < 0.1, "opposite phases -> r~0, got {}", r);
+        assert!(r < 0.1, "opposite phases -> r~0, got {r}");
     }
 
     #[test]
@@ -1307,7 +1307,7 @@ mod tests {
         let swarm: Vec<AgentPhase> = (0..n)
             .map(|i| {
                 make_agent_phase(
-                    &format!("a{}", i),
+                    &format!("a{i}"),
                     TAU * i as f32 / n as f32,
                     1.0,
                     1.0,
@@ -1315,7 +1315,7 @@ mod tests {
             })
             .collect();
         let (r, _) = QueenSync::compute_order_parameter(&swarm);
-        assert!(r < 0.3, "evenly spaced -> low r, got {}", r);
+        assert!(r < 0.3, "evenly spaced -> low r, got {r}");
     }
 
     #[test]
@@ -1334,7 +1334,7 @@ mod tests {
         ];
         let (r, psi) = QueenSync::compute_order_parameter(&swarm);
         // Only agent a contributes, so r = 1/2 and psi ~ 0
-        assert!(psi.abs() < 0.1, "mean phase should follow trusted agent, got {}", psi);
+        assert!(psi.abs() < 0.1, "mean phase should follow trusted agent, got {psi}");
     }
 
     // -----------------------------------------------------------------------
@@ -1354,7 +1354,7 @@ mod tests {
         let psi = 1.0;
         let left = queen.compute_chiral_coupling(Handedness::Left, psi);
         let right = queen.compute_chiral_coupling(Handedness::Right, psi);
-        assert!((left + right).abs() < 1e-6, "left and right should be opposite: {} vs {}", left, right);
+        assert!((left + right).abs() < 1e-6, "left and right should be opposite: {left} vs {right}");
     }
 
     // -----------------------------------------------------------------------
@@ -1375,7 +1375,7 @@ mod tests {
         let (r_high, _) = QueenSync::compute_order_parameter(&high);
         let phi_low = QueenSync::compute_swarm_phi(&low, r_low);
         let phi_high = QueenSync::compute_swarm_phi(&high, r_high);
-        assert!(phi_high > phi_low, "coherent -> higher Phi: {} vs {}", phi_high, phi_low);
+        assert!(phi_high > phi_low, "coherent -> higher Phi: {phi_high} vs {phi_low}");
     }
 
     #[test]
@@ -1524,7 +1524,7 @@ mod tests {
         for i in 0..5 {
             let mem = crate::memory::HyperMemory::new(
                 vec![0.1 + i as f32 * 0.15; WAVEFRONT_DIM],
-                format!("test memory {}", i),
+                format!("test memory {i}"),
             );
             store.insert(mem).unwrap();
         }
@@ -1567,7 +1567,7 @@ mod tests {
         for i in 0..4 {
             let mem = crate::memory::HyperMemory::new(
                 vec![0.5; WAVEFRONT_DIM],
-                format!("identical {}", i),
+                format!("identical {i}"),
             );
             store.insert(mem).unwrap();
         }
@@ -1604,7 +1604,7 @@ mod tests {
         for i in 0..3 {
             let mem = crate::memory::HyperMemory::new(
                 vec![0.3 + i as f32 * 0.2; WAVEFRONT_DIM],
-                format!("mem {}", i),
+                format!("mem {i}"),
             );
             store.insert(mem).unwrap();
         }
@@ -1649,7 +1649,7 @@ mod tests {
         for i in 0..10 {
             let mem = crate::memory::HyperMemory::new(
                 vec![0.4; WAVEFRONT_DIM],
-                format!("freq test {}", i),
+                format!("freq test {i}"),
             );
             store.insert(mem).unwrap();
         }
@@ -1901,12 +1901,12 @@ mod tests {
         let baseline = vec![self_phase.clone()];
         let (r_f, psi_f) = QueenSync::compute_order_parameter(&filtered);
         let (r_b, psi_b) = QueenSync::compute_order_parameter(&baseline);
-        assert!((r_f - r_b).abs() < 1e-6, "order parameter moved: {} vs {}", r_f, r_b);
-        assert!((psi_f - psi_b).abs() < 1e-6, "mean phase moved: {} vs {}", psi_f, psi_b);
+        assert!((r_f - r_b).abs() < 1e-6, "order parameter moved: {r_f} vs {r_b}");
+        assert!((psi_f - psi_b).abs() < 1e-6, "mean phase moved: {psi_f} vs {psi_b}");
 
         let phi_f = QueenSync::compute_swarm_phi(&filtered, r_f);
         let phi_b = QueenSync::compute_swarm_phi(&baseline, r_b);
-        assert!((phi_f - phi_b).abs() < 1e-6, "phi moved: {} vs {}", phi_f, phi_b);
+        assert!((phi_f - phi_b).abs() < 1e-6, "phi moved: {phi_f} vs {phi_b}");
     }
 
     #[test]
