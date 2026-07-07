@@ -244,10 +244,17 @@ pub(crate) fn handle_ask_remote(
                     let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
                     let text = parsed.get("text").and_then(|v| v.as_str())
                         .unwrap_or("(no text)");
+                    // SECURITY (increment-0): reply came from a peer over the
+                    // open swarm — sanitize the id + body before printing and
+                    // flag replies from ids not on the trusted allowlist.
+                    let from_s = kannaka_memory::sanitize_display(from);
+                    let trusted = from == cfg.agent.id
+                        || kannaka_memory::agent_matches_allowlist(from, &cfg.swarm_trust.trusted_agents);
+                    let mark = if trusted { "" } else { " (unverified)" };
                     if !quiet_tools {
-                        eprintln!("─── reply {} from {} ───", i + 1, from);
+                        eprintln!("─── reply {} from {}{} ───", i + 1, from_s, mark);
                     }
-                    println!("{}", text);
+                    println!("{}", kannaka_memory::sanitize_display(text));
                     if !quiet_tools && i + 1 < replies.len() { println!(); }
                 }
             }
@@ -261,7 +268,8 @@ pub(crate) fn handle_ask_remote(
                     .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
                 let text = parsed.get("text").and_then(|v| v.as_str())
                     .unwrap_or("(no text)");
-                println!("{}", text);
+                // SECURITY (increment-0): wire-sourced reply body — never print raw.
+                println!("{}", kannaka_memory::sanitize_display(text));
             }
             Err(e) => { eprintln!("request_one: {e}"); process::exit(1); }
         }

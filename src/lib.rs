@@ -133,6 +133,7 @@ pub use paradox::{
 };
 
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, HiveInfo, Handedness, SwarmAgent, PartitionPhiResult};
+pub use queen::{filter_wire_phases, sanitize_display, agent_matches_allowlist, wire_source_trusted};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance
