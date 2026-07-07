@@ -216,6 +216,19 @@ pub struct SwarmTrustConfig {
     pub metrics_trusted_only: bool,
     #[serde(default = "default_wire_trust_cap")]
     pub wire_trust_cap: f32,
+    /// SECURITY (inc-1): trust threshold θ. A verified-pubkey trust score
+    /// `>= trust_threshold` is Live-eligible; anything below lands in
+    /// Quarantine. Consumed by the enrollment/reputation layer (lands after
+    /// a design review) — inert until that path is wired.
+    /// env: `KANNAKA_TRUST_THRESHOLD`.
+    #[serde(default = "default_trust_threshold")]
+    pub trust_threshold: f32,
+    /// SECURITY (inc-1): agent-id prefixes/exact-names reserved for
+    /// operator enrollment only. First-sight/self-serve enrollment for a
+    /// matching id is an alarm, never an auto-pin. Consumed by the
+    /// enrollment layer later — inert until wired.
+    #[serde(default = "default_reserved_prefixes")]
+    pub reserved_prefixes: Vec<String>,
 }
 
 impl Default for SwarmTrustConfig {
@@ -224,6 +237,8 @@ impl Default for SwarmTrustConfig {
             trusted_agents: default_trusted_agents(),
             metrics_trusted_only: true,
             wire_trust_cap: default_wire_trust_cap(),
+            trust_threshold: default_trust_threshold(),
+            reserved_prefixes: default_reserved_prefixes(),
         }
     }
 }
@@ -245,6 +260,17 @@ fn default_trusted_agents() -> Vec<String> {
 
 fn default_wire_trust_cap() -> f32 {
     0.5
+}
+
+fn default_trust_threshold() -> f32 {
+    0.6
+}
+
+fn default_reserved_prefixes() -> Vec<String> {
+    ["kannaka-*", "qos-*", "0xSCADA-*", "Kannaka", "Flaukowski"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +533,14 @@ impl KannakaConfig {
             let v = v.trim().to_ascii_lowercase();
             self.swarm_trust.metrics_trusted_only =
                 !matches!(v.as_str(), "0" | "false" | "no" | "off");
+        }
+        // SECURITY (inc-1): trust threshold θ override. Inert until the
+        // enrollment/reputation layer consumes it; wired here for parity
+        // with the other swarm-trust env escape hatches.
+        if let Ok(v) = std::env::var("KANNAKA_TRUST_THRESHOLD") {
+            if let Ok(t) = v.trim().parse::<f32>() {
+                self.swarm_trust.trust_threshold = t;
+            }
         }
     }
 

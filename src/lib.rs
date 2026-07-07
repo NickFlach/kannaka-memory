@@ -94,6 +94,11 @@ pub mod openalex;
 // Dispatch — research-grounded broadcast-ready voice shared by all surfaces.
 pub mod dispatch;
 
+// ed25519 provenance substrate (inc-1a): sign/verify swarm memory + phase
+// statements, bounded replay protection, node key at rest. Identity/
+// attribution/integrity only — no absorb/trust/enrollment behaviour here.
+pub mod provenance;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
@@ -134,6 +139,13 @@ pub use paradox::{
 
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, HiveInfo, Handedness, SwarmAgent, PartitionPhiResult};
 pub use queen::{filter_wire_phases, sanitize_display, agent_matches_allowlist, wire_source_trusted};
+
+// ed25519 provenance substrate (inc-1a).
+pub use provenance::{
+    canonical_mem, canonical_phase, node_signing_key, sign_mem, verify_mem, verifying_key_bytes,
+    ProvenanceSig, ReplayLru, VerifyErr, DOMAIN_BIND, DOMAIN_BOOT, DOMAIN_HRM, DOMAIN_MEM,
+    DOMAIN_PHASE, DOMAIN_ROT, PROV_ALG_ED25519, REPLAY_CAP, SKEW_MS,
+};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance
