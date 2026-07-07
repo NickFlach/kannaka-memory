@@ -522,12 +522,12 @@ fn resolve_plugin(verb: &str, args: Vec<String>) -> Dispatch {
         .iter()
         .find(|(alias, _)| *alias == verb)
         .map(|(_, real)| (*real).to_string())
-        .unwrap_or_else(|| format!("kannaka-{}", verb));
+        .unwrap_or_else(|| format!("kannaka-{verb}"));
 
     match which::which(OsStr::new(&target_name)) {
         Ok(path) => Dispatch::Plugin { binary: path, args },
         Err(_) => {
-            eprintln!("error: '{}' is not a kannaka subcommand and no plugin '{}' was found on PATH", verb, target_name);
+            eprintln!("error: '{verb}' is not a kannaka subcommand and no plugin '{target_name}' was found on PATH");
             eprintln!();
             eprintln!("Try:");
             eprintln!("  kannaka --help          # built-in subcommands");
@@ -550,7 +550,7 @@ fn print_plugins() {
     for (verb, target) in KNOWN_ALIASES {
         if let Ok(p) = which::which(OsStr::new(target)) {
             if seen.insert(target.to_string()) {
-                rows.push((format!("kannaka {}", verb), p.display().to_string()));
+                rows.push((format!("kannaka {verb}"), p.display().to_string()));
             }
         }
     }
@@ -586,7 +586,7 @@ fn print_plugins() {
                 let Some(suffix) = stem.strip_prefix("kannaka-") else { continue };
                 if suffix.is_empty() { continue; }
                 if seen.insert(stem.clone()) {
-                    rows.push((format!("kannaka {}", suffix), ent.path().display().to_string()));
+                    rows.push((format!("kannaka {suffix}"), ent.path().display().to_string()));
                 }
             }
         }
@@ -596,14 +596,14 @@ fn print_plugins() {
         println!("  (none — install a kannaka-* binary or one of the aliased targets)");
         println!();
         for (verb, target) in KNOWN_ALIASES {
-            println!("  alias 'kannaka {}' would exec '{}' (not on PATH)", verb, target);
+            println!("  alias 'kannaka {verb}' would exec '{target}' (not on PATH)");
         }
         return;
     }
 
     rows.sort();
     for (verb, path) in rows {
-        println!("  {:<28} {}", verb, path);
+        println!("  {verb:<28} {path}");
     }
 }
 
@@ -801,7 +801,7 @@ pub fn print_envelope(command: &str, data: serde_json::Value) {
         "data": data,
         "errors": [],
     });
-    println!("{}", env);
+    println!("{env}");
 }
 
 /// Same as `print_envelope` but with a single error attached.
@@ -817,7 +817,7 @@ pub fn print_envelope_error(command: &str, error_message: impl Into<String>) {
         "data": serde_json::Value::Null,
         "errors": [error_message.into()],
     });
-    println!("{}", env);
+    println!("{env}");
 }
 
 /// Exec the plugin binary, inheriting stdio so the operator sees the
