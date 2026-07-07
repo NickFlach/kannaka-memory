@@ -405,21 +405,39 @@ fn handle_beacon() {
     // operator-reject log is wired (then fold each reject via
     // kannaka_memory::beacon::roll_reject_root before signing).
     let beacon = Beacon::sign(&seed, epoch, kannaka_memory::beacon::EMPTY_REJECT_ROOT);
-    let v = serde_json::json!({
-        "epoch": beacon.epoch,
-        "prev_reject_root": crate::b64_encode_std(&beacon.prev_reject_root),
-        "pubkey": crate::b64_encode_std(&beacon.pubkey),
-        "sig": crate::b64_encode_std(&beacon.sig),
-    });
-    println!("{v}");
+    // Print the beacon's JSON wire form (the SAME serde shape published below,
+    // so a captured line can be replayed by an operator/cron by hand).
+    match serde_json::to_string(&beacon) {
+        Ok(j) => println!("{j}"),
+        Err(e) => {
+            eprintln!("  beacon: failed to encode JSON: {e}");
+            process::exit(1);
+        }
+    }
     eprintln!("  \u{2713} signed heartbeat beacon for epoch {epoch}");
-    // TODO(inc-1): publish this over NATS from the swarm serve/join loop, and on
-    // the receive side verify + feed QuarantineStaging::ingest_beacon so peers'
-    // freshness advances automatically instead of via this manual emit.
-    eprintln!(
-        "  Publish this to the swarm; receivers verify it and feed the beacon tracker \
-         (a stale/absent seed beacon freezes promotion — anti-eclipse fail-closed)."
-    );
+
+    // PART A: PUBLISH to the swarm so peers' freshness advances automatically.
+    // The `swarm listen --auto-sync` loop subscribes to BEACON_SUBJECT, verifies
+    // and feeds QuarantineStaging::ingest_beacon (a stale/absent seed beacon
+    // freezes promotion — anti-eclipse fail-closed). The beacon is already
+    // printed above, so a publish failure is a warning, not a hard error — an
+    // operator can still relay the printed line.
+    let nats_url = if cfg.swarm.nats_url.is_empty() {
+        kannaka_memory::nats::DEFAULT_NATS_URL.to_string()
+    } else {
+        cfg.swarm.nats_url.clone()
+    };
+    match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+        Ok(transport) => match transport.publish_beacon(&beacon) {
+            Ok(()) => eprintln!(
+                "  \u{2713} published beacon to {} on {}",
+                nats_url,
+                kannaka_memory::BEACON_SUBJECT
+            ),
+            Err(e) => eprintln!("  warning: beacon signed but NATS publish failed: {e}"),
+        },
+        Err(e) => eprintln!("  warning: beacon signed but NATS connect failed ({nats_url}): {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

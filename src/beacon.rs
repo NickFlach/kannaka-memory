@@ -38,6 +38,13 @@ use crate::reputation::PubKey;
 /// The rolling reject-root before any reject has been folded in.
 pub const EMPTY_REJECT_ROOT: [u8; 32] = [0u8; 32];
 
+/// NATS subject a signed heartbeat [`Beacon`] is published on (PART A
+/// anti-eclipse). Deliberately under `KANNAKA.events.>` so it rides the swarm's
+/// existing anon publish/subscribe ACL — no server ACL change is needed for
+/// seeds to emit or peers to receive. Seeds publish here (`publish_beacon`) and
+/// the `swarm listen --auto-sync` loop subscribes + ingests.
+pub const BEACON_SUBJECT: &str = "KANNAKA.events.beacon";
+
 /// Fold one operator-rejected mem-hash into the rolling reject-root:
 /// `root' = blake3(root ‖ rejected)`. A lightweight, order-sensitive stand-in
 /// for a full Merkle root of recent rejects (synthesis §3.4) — enough to bind a
@@ -92,6 +99,49 @@ impl Beacon {
         let msg = canonical_beacon(self.epoch, &self.prev_reject_root);
         vk.verify_strict(&msg, &signature).map_err(|_| VerifyErr::BadSig)?;
         Ok(self.pubkey)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Beacon JSON wire form
+// ---------------------------------------------------------------------------
+
+/// On-wire JSON shape of a [`Beacon`] — the fixed-width byte fields base64
+/// encoded (standard alphabet), exactly mirroring how
+/// [`crate::provenance::ProvenanceSig`] is put on the NATS wire. `epoch` is a
+/// plain integer. Unknown extra keys (e.g. the `schema_version`/`ts` envelope a
+/// publisher may add) are ignored on decode — no `deny_unknown_fields`.
+#[derive(Serialize, Deserialize)]
+struct BeaconWire {
+    epoch: u64,
+    prev_reject_root: String,
+    pubkey: String,
+    sig: String,
+}
+
+impl Serialize for Beacon {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        BeaconWire {
+            epoch: self.epoch,
+            prev_reject_root: crate::provenance::b64_encode(&self.prev_reject_root),
+            pubkey: crate::provenance::b64_encode(&self.pubkey),
+            sig: crate::provenance::b64_encode(&self.sig),
+        }
+        .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Beacon {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use crate::provenance::b64_decode_arr;
+        let w = BeaconWire::deserialize(d)?;
+        Ok(Beacon {
+            epoch: w.epoch,
+            prev_reject_root: b64_decode_arr::<32>(&w.prev_reject_root)
+                .map_err(serde::de::Error::custom)?,
+            pubkey: b64_decode_arr::<32>(&w.pubkey).map_err(serde::de::Error::custom)?,
+            sig: b64_decode_arr::<64>(&w.sig).map_err(serde::de::Error::custom)?,
+        })
     }
 }
 
@@ -268,6 +318,31 @@ mod tests {
         let mut b = Beacon::sign(&signing, 42, EMPTY_REJECT_ROOT);
         b.prev_reject_root[0] ^= 0xFF;
         assert_eq!(b.verify(), Err(VerifyErr::BadSig));
+    }
+
+    // The JSON wire form round-trips exactly, and a tampered wire byte (a
+    // flipped signature byte carried across the wire) fails verify.
+    #[test]
+    fn wire_round_trip_and_tampered_byte_fails_verify() {
+        let (signing, pk) = seed_key(1);
+        let b = Beacon::sign(&signing, 77, EMPTY_REJECT_ROOT);
+
+        // to_wire -> from_wire equal, and the round-tripped beacon still verifies.
+        let json = serde_json::to_string(&b).expect("encode");
+        let back: Beacon = serde_json::from_str(&json).expect("decode");
+        assert_eq!(b, back, "wire round-trip is the identity");
+        assert_eq!(back.verify(), Ok(pk), "round-tripped beacon still verifies");
+
+        // Tamper ONE signature byte, carry it across the wire, and verify fails.
+        let mut tampered = back.clone();
+        tampered.sig[0] ^= 0xFF;
+        let j2 = serde_json::to_string(&tampered).expect("encode tampered");
+        let back2: Beacon = serde_json::from_str(&j2).expect("decode tampered");
+        assert_eq!(
+            back2.verify(),
+            Err(VerifyErr::BadSig),
+            "a tampered wire byte fails verify"
+        );
     }
 
     // roll_reject_root is deterministic and order-sensitive.

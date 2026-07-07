@@ -177,7 +177,9 @@ pub use absorb_gate::{
 };
 
 // heartbeat beacons (inc-1b PART A).
-pub use beacon::{roll_reject_root, Beacon, BeaconReject, BeaconTracker, EMPTY_REJECT_ROOT};
+pub use beacon::{
+    roll_reject_root, Beacon, BeaconReject, BeaconTracker, BEACON_SUBJECT, EMPTY_REJECT_ROOT,
+};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance

@@ -692,7 +692,7 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
 const B64_ALPHA: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn b64_encode(data: &[u8]) -> String {
+pub(crate) fn b64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0];
@@ -743,7 +743,7 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Decode base64 into a fixed-size array, erroring on the wrong length.
-fn b64_decode_arr<const N: usize>(s: &str) -> Result<[u8; N], String> {
+pub(crate) fn b64_decode_arr<const N: usize>(s: &str) -> Result<[u8; N], String> {
     let v = b64_decode(s)?;
     if v.len() != N {
         return Err(format!("expected {N} bytes, got {}", v.len()));

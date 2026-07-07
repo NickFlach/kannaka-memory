@@ -1756,6 +1756,30 @@ impl SwarmTransport {
     }
 
     // -----------------------------------------------------------------------
+    // Heartbeat beacons (inc-1b PART A anti-eclipse)
+    // -----------------------------------------------------------------------
+
+    /// Publish a signed heartbeat [`Beacon`](crate::beacon::Beacon) to
+    /// [`BEACON_SUBJECT`](crate::beacon::BEACON_SUBJECT). A seed emits one per
+    /// epoch; receivers (`swarm listen --auto-sync`) verify + feed
+    /// `QuarantineStaging::ingest_beacon` so an ARMED corroboration gate sees a
+    /// fresh beacon and un-freezes Live promotion (a stale/absent seed beacon
+    /// freezes it — anti-eclipse fail-closed).
+    ///
+    /// The subject is under `KANNAKA.events.>`, which the deployed server's
+    /// anon ACL already allows, so no server ACL change is required. The
+    /// canonical `schema_version`/`ts` envelope is stamped (matching every other
+    /// publisher); the extra keys are ignored when the beacon is decoded.
+    pub fn publish_beacon(&self, beacon: &crate::beacon::Beacon) -> Result<(), NatsError> {
+        let mut value =
+            serde_json::to_value(beacon).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        add_envelope(&mut value);
+        let payload =
+            serde_json::to_vec(&value).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(crate::beacon::BEACON_SUBJECT, &payload)
+    }
+
+    // -----------------------------------------------------------------------
     // SharedWavefront protocol (QS-5, #56)
     // -----------------------------------------------------------------------
 
@@ -2082,6 +2106,11 @@ impl SwarmTransport {
         if include_memories {
             let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
             let _ = write!(frame, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid());
+            // PART A anti-eclipse: heartbeat beacons ride the SAME auto-sync
+            // subscription so the corroboration gate's freshness advances from
+            // the one reader this connection already polls. Under the
+            // anon-allowed KANNAKA.events.> ACL (no server ACL change).
+            let _ = write!(frame, "SUB {} {}\r\n", crate::beacon::BEACON_SUBJECT, self.alloc_sid());
         }
         conn.write_frames(&frame)?;
         let stream_clone = conn.writer.try_clone()?;

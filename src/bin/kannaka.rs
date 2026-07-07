@@ -4348,8 +4348,6 @@ fn main() {
                         );
                     }
 
-                    let _ = sub.set_timeout(None);
-
                     let mut queen = kannaka_memory::QueenSync::new(
                         kannaka_memory::QueenConfig::default(),
                         &agent_id,
@@ -4386,7 +4384,87 @@ fn main() {
                         );
                     }
 
+                    // PART A anti-eclipse (heartbeat beacons over NATS). Resolve the
+                    // pinned seed set ONCE (config is loaded once for the listener's
+                    // life). ingest_beacon accepts only seed beacons; when dormant the
+                    // set is empty ⇒ every beacon is a NotSeed no-op (no behavior
+                    // change). This is the SAME `staging` admit() reads, so an ingested
+                    // fresh beacon un-freezes Live promotion.
+                    let seed_set: std::collections::HashSet<[u8; 32]> =
+                        rep_store.seeds().copied().collect();
+                    // A node whose OWN key is a pinned seed emits heartbeats. Only when
+                    // the gate is actually armed (gate_on) do we touch the node key, so
+                    // dormant nodes keep EXACT inc-0 behavior (no key load, no emit).
+                    let beacon_emit: Option<[u8; 32]> = if gate_on {
+                        match kannaka_memory::node_signing_key(&data_dir()) {
+                            Ok(seed) => {
+                                let me = kannaka_memory::verifying_key_bytes(&seed);
+                                if seed_set.contains(&me) {
+                                    eprintln!(
+                                        "[beacon] this node is a seed — emitting heartbeats \u{2264}1/epoch on {}",
+                                        kannaka_memory::BEACON_SUBJECT
+                                    );
+                                    Some(seed)
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[beacon] node key error — not emitting: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let mut last_beacon_epoch: Option<u64> = None;
+
+                    // A seed wakes on a per-epoch tick so it can emit even when the
+                    // swarm is quiet; a non-seed keeps the prior indefinite block (no
+                    // busy-loop, exact prior behavior).
+                    if beacon_emit.is_some() {
+                        let tick = std::time::Duration::from_millis(
+                            cfg.swarm_trust.epoch_length_ms.clamp(1_000, 60_000) as u64,
+                        );
+                        let _ = sub.set_timeout(Some(tick));
+                    } else {
+                        let _ = sub.set_timeout(None);
+                    }
+
                     loop {
+                        // PART A anti-eclipse EMIT (seed-only, \u{2264}1 per epoch). A node
+                        // that is itself a pinned seed publishes a signed heartbeat so an
+                        // ARMED gate anywhere on the swarm sees a fresh beacon and
+                        // un-freezes Live promotion. Non-seeds never emit.
+                        // TODO(ceremony): this listener owns emit + ingest for now. Which
+                        // production service is the canonical emitter (this listener vs
+                        // `serve` vs a dedicated beacon cron) is a seed-ceremony topology
+                        // decision — do NOT rewire serve/worker in this pass.
+                        if let Some(seed) = beacon_emit.as_ref() {
+                            let now = kannaka_memory::provenance::now_ms();
+                            let epoch = kannaka_memory::epoch_now(&cfg, now);
+                            if last_beacon_epoch != Some(epoch) {
+                                let beacon = kannaka_memory::Beacon::sign(
+                                    seed,
+                                    epoch,
+                                    kannaka_memory::EMPTY_REJECT_ROOT,
+                                );
+                                match transport.publish_beacon(&beacon) {
+                                    Ok(()) => {
+                                        last_beacon_epoch = Some(epoch);
+                                        // Keep THIS node's own gate fresh regardless of
+                                        // whether the broadcast echoes back to us.
+                                        let _ = staging.ingest_beacon(&beacon, &seed_set, epoch);
+                                        let _ = staging.save();
+                                        eprintln!("[beacon] published heartbeat for epoch {epoch}");
+                                    }
+                                    Err(e) => eprintln!(
+                                        "[beacon] publish failed for epoch {epoch}: {e}"
+                                    ),
+                                }
+                            }
+                        }
+
                         let msg = match sub.next_event() {
                             kannaka_memory::nats::SubEvent::Msg(m) => m,
                             kannaka_memory::nats::SubEvent::Timeout => continue,
@@ -4536,6 +4614,39 @@ fn main() {
                                     // source just needs sanitizing before it reaches the terminal.
                                     println!("[dream] {} completed dream: {} cycles, {} strengthened, {} pruned",
                                         kannaka_memory::sanitize_display(source_agent), cycles, strengthened, pruned);
+                                }
+                            }
+                        } else if msg.subject == kannaka_memory::BEACON_SUBJECT
+                            && auto_sync
+                            && !seed_set.is_empty()
+                        {
+                            // PART A anti-eclipse RECEIVE: verify + ingest a seed
+                            // heartbeat into the SAME `staging` admit() reads. Once a
+                            // fresh seed beacon lands, admit()'s freshness check passes
+                            // and Live promotion un-freezes. ingest_beacon rejects
+                            // non-seed / future / replayed epochs. Fully dormant (no
+                            // seeds pinned) ⇒ seed_set empty ⇒ this arm is skipped and
+                            // beacons are ignored silently (no behavior change, no noise).
+                            if let Some(beacon) = msg
+                                .as_json()
+                                .and_then(|v| serde_json::from_value::<kannaka_memory::Beacon>(v).ok())
+                            {
+                                let now = kannaka_memory::provenance::now_ms();
+                                let now_epoch = kannaka_memory::epoch_now(&cfg, now);
+                                match staging.ingest_beacon(&beacon, &seed_set, now_epoch) {
+                                    Ok(pk) => {
+                                        let _ = staging.save();
+                                        let pk_b64 = b64_encode_std(&pk);
+                                        eprintln!(
+                                            "[beacon] fresh seed beacon epoch {} from {}",
+                                            beacon.epoch,
+                                            &pk_b64[..pk_b64.len().min(12)]
+                                        );
+                                    }
+                                    // Our own broadcast echo / a replay re-ingests as
+                                    // Stale — expected, kept quiet.
+                                    Err(kannaka_memory::BeaconReject::Stale) => {}
+                                    Err(e) => eprintln!("[beacon] rejected: {e}"),
                                 }
                             }
                         }

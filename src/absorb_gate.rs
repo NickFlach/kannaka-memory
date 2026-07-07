@@ -951,6 +951,64 @@ mod tests {
         assert!(rep.dag().is_promoted(&h), "promoted once beacons resumed");
     }
 
+    // --- PART A wired: a beacon that crossed the JSON wire un-freezes the gate -
+    // Proves the receive→ingest path this increment adds: a seed beacon is signed,
+    // serialized to the NATS wire form, parsed back, and ingested into the SAME
+    // staging admit() reads — un-freezing an otherwise-frozen Live promotion. No
+    // real NATS (library-level).
+    #[test]
+    fn wire_beacon_ingest_unfreezes_gate() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let now = 1_000_000;
+        let content = "a fact observed while beacons crossed the wire";
+        let now_epoch = epoch_now(&cfg, now);
+
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory(); // NO beacon ⇒ eclipsed
+
+        // author (non-seed) + 2 seeds ⇒ would be Live, but FROZEN with no beacon.
+        let id0 = Uuid::new_v4();
+        let s0 = signed(&NON_SEED, id0, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id0, Some(&s0),
+            &mut staging, &mut rep, &cfg, now);
+        let id1 = Uuid::new_v4();
+        let s1 = signed(&seeds.seed(0), id1, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id1, Some(&s1),
+            &mut staging, &mut rep, &cfg, now);
+        let id2 = Uuid::new_v4();
+        let s2 = signed(&seeds.seed(1), id2, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (frozen, _, frozen_pending) = admit(content, 0.5, 0.0, 0.1, false,
+            SUBJECT_MEMORY_NEW, id2, Some(&s2), &mut staging, &mut rep, &cfg, now);
+        let h = content_hash(content);
+        assert_eq!(frozen, AdmitDecision::Quarantine, "no beacon ⇒ frozen");
+        assert!(frozen_pending.is_none());
+        assert!(!rep.dag().is_promoted(&h), "frozen: not promoted");
+
+        // A seed signs a beacon; it crosses the JSON wire (publish → receive); the
+        // receiver parses it and ingests it into the SAME staging.
+        let beacon = Beacon::sign(&seeds.seed(0), now_epoch, crate::beacon::EMPTY_REJECT_ROOT);
+        let wire = serde_json::to_vec(&beacon).expect("encode beacon to wire");
+        let received: Beacon = serde_json::from_slice(&wire).expect("decode beacon from wire");
+        assert_eq!(received, beacon, "beacon survives the wire intact");
+        let seed_set: HashSet<PubKey> = (0..seeds.signing.len())
+            .map(|i| verifying_key_bytes(&seeds.seed(i)))
+            .collect();
+        staging
+            .ingest_beacon(&received, &seed_set, now_epoch)
+            .expect("a fresh seed beacon ingests");
+
+        // The next corroboration of the SAME content now promotes ⇒ receive→ingest
+        // un-froze the gate.
+        let id3 = Uuid::new_v4();
+        let s3 = signed(&seeds.seed(2), id3, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (thawed, _, pending) = admit(content, 0.5, 0.0, 0.1, false,
+            SUBJECT_MEMORY_NEW, id3, Some(&s3), &mut staging, &mut rep, &cfg, now);
+        assert_eq!(thawed, AdmitDecision::Live, "wire beacon un-freezes Live promotion");
+        commit_promotion(pending, &mut rep, &mut staging, &cfg);
+        assert!(rep.dag().is_promoted(&h), "promoted after wire beacon ingest");
+    }
+
     // --- (e) echo: already-Live content ⇒ no new memory, accrues nothing ---
     #[test]
     fn echo_earns_nothing() {
