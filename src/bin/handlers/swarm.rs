@@ -714,7 +714,7 @@ pub(crate) fn handle_swarm_absorb(
             let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
             let now = kannaka_memory::provenance::now_ms();
-            let (decision, clean) = kannaka_memory::admit(
+            let (decision, clean, pending) = kannaka_memory::admit(
                 content, amp as f32, wire_phase, wire_freq, false,
                 kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
                 &mut staging, &mut rep_store, cfg, now,
@@ -725,7 +725,13 @@ pub(crate) fn handle_swarm_absorb(
                     // Tag with provenance so we can identify swarm-origin memories later.
                     let category = format!("swarm:{}", source);
                     match sys.remember_with_category(content, &category, clean.amplitude as f64) {
-                        Ok(id) => { eprintln!("      remembered as {}", id); absorbed += 1; }
+                        Ok(id) => {
+                            // #8: commit the pending promotion ONLY after the medium
+                            // write succeeds (no-op when dormant / non-Live).
+                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
+                            eprintln!("      remembered as {}", id); absorbed += 1;
+                        }
+                        // #8: write failed — drop the pending, do not commit.
                         Err(e) => { eprintln!("      remember failed: {e}"); }
                     }
                 }
@@ -961,7 +967,7 @@ pub(crate) fn handle_swarm_autoabsorb(
             let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
             let now = kannaka_memory::provenance::now_ms();
-            let (decision, clean) = kannaka_memory::admit(
+            let (decision, clean, pending) = kannaka_memory::admit(
                 content, amp as f32, wire_phase, wire_freq, false,
                 kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
                 &mut staging, &mut rep_store, cfg, now,
@@ -972,10 +978,14 @@ pub(crate) fn handle_swarm_autoabsorb(
                     let category = format!("swarm:{}", source);
                     match sys.remember_with_category(content, &category, clean.amplitude as f64) {
                         Ok(id) => {
+                            // #8: commit the pending promotion ONLY after the medium
+                            // write succeeds (no-op when dormant / non-Live).
+                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
                             eprintln!("[autoabsorb]   remembered {}", id);
                             state.record_absorb(&today_key, &source);
                             absorbed += 1;
                         }
+                        // #8: write failed — drop the pending, do not commit.
                         Err(e) => eprintln!("[autoabsorb]   remember failed: {e}"),
                     }
                 }

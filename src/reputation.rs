@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::SwarmTrustConfig;
+use crate::provenance;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -385,6 +386,12 @@ struct Snapshot {
     vouch_edges: Vec<(PubKey, PubKey)>,
     /// `(mem_hash, epoch, corroborators)`.
     promotions: Vec<(MemHash, u64, Vec<(PubKey, Option<PubKey>)>)>,
+    /// #10: per-pubkey `(epoch, accrued)` anti-burst cap state, so a compact
+    /// that truncates the log doesn't reopen a fresh full α mid-epoch. `default`
+    /// so a pre-#10 snapshot (no field) still deserializes (empty ⇒ rebuilt from
+    /// the replayed log where possible).
+    #[serde(default)]
+    epoch_accrual: Vec<(PubKey, u64, f32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -556,7 +563,11 @@ impl RepStore {
                     .filter_map(|(_, root, _)| *root)
                     .collect();
                 roots.insert(origin_pk); // the origin seed is its own lineage
-                if roots.len() as u32 >= k_high {
+                // #9: floor K_high at 2 (mirrors the non-seed branch's
+                // `k_high.max(2)`) so a LONE seed — a single lineage < 2 — can
+                // never self-promote a high-impact write at n=1 (`k_for(1)`
+                // yields raw K_high=0, which would otherwise admit `1 >= 0`).
+                if roots.len() as u32 >= k_high.max(2) {
                     return Promotion::Live { accrue: 0.0 };
                 }
                 return Promotion::Quarantine;
@@ -745,10 +756,13 @@ impl RepStore {
     pub fn load(data_dir: &Path, cfg: &SwarmTrustConfig) -> RepStore {
         let mut store = RepStore::new_at(cfg, data_dir.to_path_buf());
 
-        // 1. Optional compact snapshot.
+        // 1. Optional compact snapshot. #4: the snapshot MUST carry a valid
+        // signature by THIS node's own key. An unsigned, foreign, or tampered
+        // snapshot is fail-closed (poisoned) rather than unioned — it must never
+        // bypass the log's hash chain to inject seeds/reps/promotions.
         let snap_path = data_dir.join("reputation.snapshot.gz");
         if snap_path.exists() {
-            match read_snapshot(&snap_path) {
+            match read_verified_snapshot(data_dir) {
                 Some(snap) => store.apply_snapshot(snap),
                 None => return RepStore::poisoned_store(cfg, Some(data_dir.to_path_buf())),
             }
@@ -783,6 +797,11 @@ impl RepStore {
                 }
                 head = expect;
                 store.apply_op(&ll.op, cfg);
+                // #10: rebuild the per-epoch accrual cap from each promotion so
+                // a mid-epoch restart can't re-grant a fresh full α.
+                if let LogOp::Promotion { origin, epoch, accrue, .. } = &ll.op {
+                    store.reconstruct_epoch_accrual(*origin, *epoch, *accrue);
+                }
             }
             store.log_head = head;
         }
@@ -805,6 +824,23 @@ impl RepStore {
         for rec in snap.reps {
             self.reps.insert(rec.pubkey, rec);
         }
+        // #10: restore the per-epoch accrual cap captured at compact time.
+        for (pk, epoch, accrued) in snap.epoch_accrual {
+            self.epoch_accrual.insert(pk, (epoch, accrued));
+        }
+    }
+
+    /// Rebuild the transient per-epoch accrual cap from a replayed `Promotion`
+    /// op (finding #10). The log stores the ALREADY-capped `accrue` delta and
+    /// its epoch; replaying in append order leaves each pk's entry at its most
+    /// recent epoch's running total, so a mid-epoch restart cannot re-grant a
+    /// fresh full α (the anti-burst cap survives the restart).
+    fn reconstruct_epoch_accrual(&mut self, pk: PubKey, epoch: u64, accrue: f32) {
+        let entry = self.epoch_accrual.entry(pk).or_insert((epoch, 0.0));
+        if entry.0 != epoch {
+            *entry = (epoch, 0.0);
+        }
+        entry.1 += accrue;
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -822,6 +858,13 @@ impl RepStore {
             reps: self.reps.values().cloned().collect(),
             vouch_edges,
             promotions,
+            // #10: persist the per-epoch accrual cap so a compact (which
+            // truncates the log) still preserves the anti-burst state.
+            epoch_accrual: self
+                .epoch_accrual
+                .iter()
+                .map(|(pk, (e, a))| (*pk, *e, *a))
+                .collect(),
         }
     }
 
@@ -842,7 +885,17 @@ impl RepStore {
         enc.write_all(&bytes)
             .map_err(|e| format!("reputation: gzip: {e}"))?;
         let gz = enc.finish().map_err(|e| format!("reputation: gzip finish: {e}"))?;
+        // #4: sign the snapshot with THIS node's ed25519 key and store the
+        // signature + signer pubkey in a sidecar, so a planted/foreign or
+        // tampered snapshot fails verification on load (fail-closed).
+        let seed = provenance::node_signing_key(&dir)?;
+        let signer = provenance::verifying_key_bytes(&seed);
+        let sig = provenance::sign_snapshot(&seed, &gz);
+        let mut sidecar = Vec::with_capacity(96);
+        sidecar.extend_from_slice(&signer); // signer pubkey[32] (diagnostic)
+        sidecar.extend_from_slice(&sig); // ed25519 sig[64] over the gz bytes
         atomic_write(&dir.join("reputation.snapshot.gz"), &gz)?;
+        atomic_write(&dir.join("reputation.snapshot.sig"), &sidecar)?;
         // Truncate the log — the snapshot captures state up to log_head; new
         // appends chain forward from the same head.
         atomic_write(&dir.join("reputation.log"), b"")?;
@@ -896,9 +949,25 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Read + gunzip + bincode-decode a snapshot; `None` on any error (fail-closed).
-fn read_snapshot(path: &Path) -> Option<Snapshot> {
-    let gz = std::fs::read(path).ok()?;
+/// Verify (finding #4) + read + gunzip + bincode-decode a snapshot. `None` on
+/// ANY failure (fail-closed): missing/short signature sidecar, no node key on
+/// disk, a signature that does not verify against THIS node's own key, or a
+/// decode error. The `.sig` sidecar is `signer_pubkey[32] ‖ sig[64]`; the
+/// signature is checked over the on-disk gz bytes using the node's OWN
+/// verifying key, so a foreign/planted snapshot (signed by a different key) or
+/// a tampered one is refused.
+fn read_verified_snapshot(data_dir: &Path) -> Option<Snapshot> {
+    let gz = std::fs::read(data_dir.join("reputation.snapshot.gz")).ok()?;
+    let sidecar = std::fs::read(data_dir.join("reputation.snapshot.sig")).ok()?;
+    if sidecar.len() != 96 {
+        return None; // unsigned / malformed sidecar ⇒ fail-closed
+    }
+    let mut sig = [0u8; 64];
+    sig.copy_from_slice(&sidecar[32..96]);
+    let vk = provenance::node_verifying_key(data_dir)?; // no key ⇒ can't verify
+    if !provenance::verify_snapshot(&vk, &gz, &sig) {
+        return None; // foreign/tampered ⇒ fail-closed
+    }
     let mut dec = flate2::read::GzDecoder::new(&gz[..]);
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut dec, &mut bytes).ok()?;
@@ -1229,6 +1298,108 @@ mod tests {
         assert!(!reloaded.refuses_promotion());
         assert!(reloaded.rep(&origin) > 0.0, "rep survived compact+reload");
         assert!(reloaded.dag().is_promoted(&hash(1)));
+    }
+
+    // (#9) a LONE seed cannot self-promote a HIGH-IMPACT write at n=1: with one
+    // live seed, K_high floors at 2 and one seed is a single lineage (1 < 2) ⇒
+    // Quarantine. Guards the seed-branch `k_high.max(2)`.
+    #[test]
+    fn lone_seed_high_impact_quarantines() {
+        let c = cfg();
+        let mut store = RepStore::in_memory(&c);
+        let s = pk(1);
+        store.seeds.insert(s);
+        assert_eq!(store.live_seed_count(), 1);
+        assert_eq!(k_for(1), (2, 1)); // raw K_high=1 — the bug would admit `1 >= 1`
+        // Lone seed, high-impact, no other lineages ⇒ Quarantine (1 < max(1,2)).
+        let d = store.decide(hash(1), s, &[], 1, 1, /* high_impact = */ true, false, &c);
+        assert_eq!(d, Promotion::Quarantine, "lone seed high-impact at n=1 ⇒ Quarantine");
+        // Sanity: a NORMAL lone-seed write is still Live (inc-0 behaviour intact).
+        let d_norm = store.decide(hash(2), s, &[], 1, 1, false, false, &c);
+        assert_eq!(d_norm, Promotion::Live { accrue: 0.0 }, "normal lone-seed write ⇒ Live");
+    }
+
+    // (#10) the per-epoch accrual cap survives a restart: a mid-epoch crash must
+    // NOT re-grant a fresh full α. Promote (accrue), reload from the log, promote
+    // again in the SAME epoch — total accrual stays capped at α.
+    #[test]
+    fn epoch_cap_survives_reload() {
+        let c = cfg();
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg2 = c.clone();
+        // 3 seed-disjoint lineages so a promotion accrues real rep (D=3).
+        cfg2.seed_pubkeys = vec![
+            b64_encode_test(&pk(1)),
+            b64_encode_test(&pk(2)),
+            b64_encode_test(&pk(3)),
+        ];
+        let origin = pk(100);
+        let epoch = 7u64;
+        let corrs = || vec![(pk(1), Some(pk(1))), (pk(2), Some(pk(2))), (pk(3), Some(pk(3)))];
+        {
+            let mut store = RepStore::load(dir.path(), &cfg2);
+            store.record_promotion(hash(1), origin, epoch, corrs(), &cfg2);
+            assert!(store.rep(&origin) > 0.0, "first promotion accrues");
+        }
+        // Mid-epoch restart: the log replay must rebuild the epoch cap.
+        let mut reloaded = RepStore::load(dir.path(), &cfg2);
+        assert!(!reloaded.refuses_promotion());
+        // Second promotion, SAME epoch, different content.
+        reloaded.record_promotion(hash(2), origin, epoch, corrs(), &cfg2);
+        assert!(
+            reloaded.rep(&origin) <= cfg2.accrual_alpha + 1e-4,
+            "epoch cap survived reload — no fresh α (rep={})",
+            reloaded.rep(&origin)
+        );
+    }
+
+    // (#4) a node-signed snapshot loads clean; a tampered or unsigned snapshot
+    // fails the signature check ⇒ fail-closed (poisoned), never unioned.
+    #[test]
+    fn snapshot_signature_gates_load() {
+        let c = cfg();
+        let mut cfg2 = c.clone();
+        cfg2.seed_pubkeys = vec![b64_encode_test(&pk(9))];
+        let origin = pk(100);
+
+        let make_snapshot = |dir: &Path| {
+            let mut store = RepStore::load(dir, &cfg2);
+            store.record_promotion(hash(1), origin, 1, vec![(pk(9), Some(pk(9)))], &cfg2);
+            store.compact().unwrap();
+        };
+
+        // (i) clean: compact writes a node-signed snapshot; reload verifies + loads.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            make_snapshot(dir.path());
+            assert!(dir.path().join("reputation.snapshot.gz").exists());
+            assert!(dir.path().join("reputation.snapshot.sig").exists(), "snapshot is signed");
+            let reloaded = RepStore::load(dir.path(), &cfg2);
+            assert!(!reloaded.refuses_promotion(), "node-signed snapshot loads clean");
+            assert!(reloaded.rep(&origin) > 0.0, "state survived signed compact+reload");
+        }
+
+        // (ii) tampered snapshot bytes ⇒ signature fails ⇒ poisoned.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            make_snapshot(dir.path());
+            let gz_path = dir.path().join("reputation.snapshot.gz");
+            let mut gz = std::fs::read(&gz_path).unwrap();
+            let mid = gz.len() / 2;
+            gz[mid] ^= 0xFF;
+            std::fs::write(&gz_path, &gz).unwrap();
+            let reloaded = RepStore::load(dir.path(), &cfg2);
+            assert!(reloaded.refuses_promotion(), "tampered snapshot ⇒ fail-closed");
+        }
+
+        // (iii) unsigned snapshot (sig sidecar removed) ⇒ poisoned.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            make_snapshot(dir.path());
+            std::fs::remove_file(dir.path().join("reputation.snapshot.sig")).unwrap();
+            let reloaded = RepStore::load(dir.path(), &cfg2);
+            assert!(reloaded.refuses_promotion(), "unsigned snapshot ⇒ fail-closed");
+        }
     }
 
     // (h) seed_root DAG walk resolves a vouch chain to the seed; a cycle

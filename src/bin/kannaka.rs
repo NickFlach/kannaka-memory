@@ -4462,7 +4462,7 @@ fn main() {
                                                             .get("provenance_sig")
                                                             .and_then(|v| serde_json::from_value(v.clone()).ok());
                                                         let now = kannaka_memory::provenance::now_ms();
-                                                        let (decision, clean) = kannaka_memory::admit(
+                                                        let (decision, clean, pending) = kannaka_memory::admit(
                                                             &mem.content,
                                                             mem.amplitude,
                                                             mem.phase,
@@ -4491,9 +4491,15 @@ fn main() {
                                                                 if admit_import {
                                                                     match sys.engine.store.insert(mem) {
                                                                         Ok(_) => {
+                                                                            // #8: commit the pending promotion ONLY after the
+                                                                            // medium insert succeeds, so the DAG ledger and the
+                                                                            // live medium commit together (no-op when dormant).
+                                                                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, &cfg);
                                                                             println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
                                                                         }
                                                                         Err(e) => {
+                                                                            // #8: insert failed — DROP the pending (do not commit)
+                                                                            // so the content re-decides on retry, no ledger/medium divergence.
                                                                             eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
                                                                         }
                                                                     }

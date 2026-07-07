@@ -196,16 +196,23 @@ pub fn content_hash(content: &str) -> [u8; 32] {
 // admit() — the chokepoint
 // ---------------------------------------------------------------------------
 
-/// The absorb chokepoint. Returns the promotion decision plus the sanitized
-/// fields the caller must apply before any insert.
+/// The absorb chokepoint. Returns the promotion decision, the sanitized fields
+/// the caller must apply before any insert, and — for a `Live` decision — a
+/// [`PendingPromotion`] the caller commits AFTER a successful medium insert.
 ///
-/// - **Dormant** (`!gate_active` or no live seeds): returns `(Live, cleaned)` —
-///   inc-0 behaviour preserved. The caller still applies `cleaned` (the
+/// - **Dormant** (`!gate_active` or no live seeds): returns `(Live, cleaned,
+///   None)` — inc-0 behaviour preserved. The caller still applies `cleaned` (the
 ///   unconditional field bug-fix) and keeps whatever inc-0 source gating it had.
 /// - **Active**: a valid, fresh signature is required (`Drop` otherwise). An echo
 ///   of already-Live content records the corroboration edge and returns `Drop`
 ///   (no new memory, no accrual). Otherwise the signer is accumulated into the
 ///   per-content staging set and [`RepStore::decide`] governs.
+/// - **#8 commit ordering**: on a `Live` decision `admit` does NOT record the
+///   promotion inline. It returns `Some(PendingPromotion)`; the caller inserts
+///   into the live medium and calls [`commit_promotion`] ONLY on `Ok`. If the
+///   insert fails the caller drops the pending — the DAG stays un-promoted and
+///   the content re-decides `Live` on retry (no ledger/medium divergence). Every
+///   non-`Live` decision returns `None`.
 #[allow(clippy::too_many_arguments)]
 pub fn admit(
     content: &str,
@@ -220,13 +227,13 @@ pub fn admit(
     rep: &mut RepStore,
     cfg: &KannakaConfig,
     now_ms: i64,
-) -> (AdmitDecision, CleanFields) {
+) -> (AdmitDecision, CleanFields, Option<PendingPromotion>) {
     // (a) ALWAYS sanitize — unconditional inc-1b bug fix.
     let clean = sanitize(wire_amp, wire_phase, wire_freq);
 
     // (b) Dormant: no promotion logic, no signature requirement.
     if !gate_active(cfg) || rep.live_seed_count() == 0 {
-        return (AdmitDecision::Live, clean);
+        return (AdmitDecision::Live, clean, None);
     }
 
     // (c) Active: a valid + fresh signature is a hard precondition.
@@ -250,13 +257,13 @@ pub fn admit(
                         .check_and_insert(memory_id, &s.nonce, now_ms)
                         .is_err()
                 {
-                    return (AdmitDecision::Drop, clean);
+                    return (AdmitDecision::Drop, clean, None);
                 }
                 pk
             }
-            Err(_) => return (AdmitDecision::Drop, clean),
+            Err(_) => return (AdmitDecision::Drop, clean, None),
         },
-        None => return (AdmitDecision::Drop, clean),
+        None => return (AdmitDecision::Drop, clean, None),
     };
 
     let epoch = epoch_now(cfg, now_ms);
@@ -269,7 +276,7 @@ pub fn admit(
         let root = rep.seed_root_of(&pk);
         rep.record_promotion(h, pk, epoch, vec![(pk, root)], &cfg.swarm_trust);
         let _ = staging.save();
-        return (AdmitDecision::Drop, clean);
+        return (AdmitDecision::Drop, clean, None);
     }
 
     // (e) Accumulate this distinct signer, then decide.
@@ -302,29 +309,70 @@ pub fn admit(
             // content re-decides Live the moment a fresh beacon arrives.
             if !staging.beacons.fresh(epoch, cfg.swarm_trust.beacon_grace_epochs) {
                 let _ = staging.save();
-                return (AdmitDecision::Quarantine, clean);
+                return (AdmitDecision::Quarantine, clean, None);
             }
-            // Promote: accrue to the origin + mark Live in the DAG, then drop the
-            // staged copy (the caller inserts the current memory into the medium).
-            rep.record_promotion(h, origin, epoch, corroborators, &cfg.swarm_trust);
-            let _ = staging.promote(&h);
+            // (#8) DEFER the commit. The medium insert is the commit point: the
+            // caller inserts, then calls `commit_promotion` ONLY on Ok. We save
+            // the accumulated corroborator set (so a retry re-reaches quorum) but
+            // do NOT record the DAG promotion or drop the staged copy here — if
+            // the caller's insert fails it drops the pending and the content
+            // re-decides Live on the next attempt (no ledger/medium divergence).
             let _ = staging.save();
-            (AdmitDecision::Live, clean)
+            let pending = PendingPromotion { h, origin, epoch, corroborators };
+            (AdmitDecision::Live, clean, Some(pending))
         }
         Promotion::ProbationLive => {
             let _ = staging.save();
-            (AdmitDecision::ProbationLive, clean)
+            (AdmitDecision::ProbationLive, clean, None)
         }
         Promotion::Quarantine => {
             let _ = staging.save();
-            (AdmitDecision::Quarantine, clean)
+            (AdmitDecision::Quarantine, clean, None)
         }
         // decide() never emits Drop, but map it for completeness.
         Promotion::Drop => {
             let _ = staging.promote(&h);
-            (AdmitDecision::Drop, clean)
+            (AdmitDecision::Drop, clean, None)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// PendingPromotion + commit_promotion — the #8 commit-ordering split
+// ---------------------------------------------------------------------------
+
+/// The deferred commit of a `Live` [`admit`] decision (finding #8). Returned by
+/// [`admit`] when a memory reaches quorum; the caller passes it to
+/// [`commit_promotion`] ONLY after the live-medium insert returns `Ok`, so the
+/// DAG ledger never records a promotion the medium is missing. Opaque to
+/// callers — construct it only via [`admit`].
+#[derive(Debug, Clone)]
+pub struct PendingPromotion {
+    h: [u8; 32],
+    origin: PubKey,
+    epoch: u64,
+    corroborators: Vec<(PubKey, Option<PubKey>)>,
+}
+
+/// Commit the deferred half of a `Live` [`admit`] decision AFTER a successful
+/// medium insert (finding #8): record the DAG promotion + rep accrual and drop
+/// the staged copy. Call this ONLY once `store.insert(...)` (or
+/// `remember_with_category`) has returned `Ok`. On an insert error the caller
+/// drops the pending WITHOUT calling this — the DAG stays un-promoted and the
+/// same content re-decides `Live` on retry, so the ledger and the live medium
+/// never diverge. A `None` (dormant / non-`Live` decision) is a no-op.
+pub fn commit_promotion(
+    pending: Option<PendingPromotion>,
+    rep: &mut RepStore,
+    staging: &mut QuarantineStaging,
+    cfg: &KannakaConfig,
+) {
+    let Some(p) = pending else {
+        return;
+    };
+    rep.record_promotion(p.h, p.origin, p.epoch, p.corroborators, &cfg.swarm_trust);
+    let _ = staging.promote(&p.h);
+    let _ = staging.save();
 }
 
 // ---------------------------------------------------------------------------
@@ -383,14 +431,21 @@ impl QuarantineStaging {
     /// treated as empty (the corroboration record is reconstructable from the
     /// append-only reputation log). The replay set fails closed on corruption.
     pub fn load(data_dir: &Path) -> Self {
+        Self::load_bounded(data_dir, STAGING_CAP, STAGING_TTL_MS, now_ms())
+    }
+
+    /// [`load`](QuarantineStaging::load) with explicit bounds + clock so the #12
+    /// re-eviction is testable deterministically. Production `load` passes the
+    /// [`STAGING_CAP`] / [`STAGING_TTL_MS`] constants and `now_ms()`.
+    fn load_bounded(data_dir: &Path, cap: usize, ttl_ms: i64, now: i64) -> Self {
         let dir = data_dir.join("quarantine");
         let mut s = Self {
-            replay: ReplayLru::load(&dir.join("replay.json"), now_ms()),
+            replay: ReplayLru::load(&dir.join("replay.json"), now),
             beacons: BeaconTracker::load(&dir.join("beacons.json")),
             dir: Some(dir.clone()),
             entries: HashMap::new(),
-            cap: STAGING_CAP,
-            ttl_ms: STAGING_TTL_MS,
+            cap,
+            ttl_ms,
         };
         if let Ok(bytes) = std::fs::read(dir.join("staging.json")) {
             if let Ok(wire) = serde_json::from_slice::<StagingWire>(&bytes) {
@@ -412,6 +467,14 @@ impl QuarantineStaging {
                     );
                 }
             }
+        }
+        // #12: a persisted staging.json is untrusted input. Re-apply the SAME
+        // eviction the write path (`add_corroborator`) enforces — drop entries
+        // past the TTL, then evict oldest until under the cap — so a stale or
+        // over-cap file can't smuggle entries past the disk-full defense.
+        s.evict_expired(now);
+        while s.entries.len() > s.cap {
+            s.evict_oldest();
         }
         s
     }
@@ -694,7 +757,7 @@ mod tests {
         assert!(!gate_active(&cfg), "seeds pinned + gate off => NOT active");
         let mut rep = RepStore::in_memory(&cfg.swarm_trust);
         let mut staging = QuarantineStaging::in_memory();
-        let (dec, clean) = admit(
+        let (dec, clean, _) = admit(
             "rollout-state content",
             5.0, 100.0, 9e9, true, // absurd + wire immune flag set
             SUBJECT_MEMORY_NEW,
@@ -716,7 +779,7 @@ mod tests {
         let cfg = test_cfg(vec![], false); // gate off, no seeds
         let mut rep = RepStore::in_memory(&cfg.swarm_trust);
         let mut staging = QuarantineStaging::in_memory();
-        let (dec, clean) = admit(
+        let (dec, clean, _) = admit(
             "hello world",
             5.0,   // absurd amplitude
             100.0, // absurd phase
@@ -744,7 +807,7 @@ mod tests {
         let cfg = test_cfg(seeds.pubkeys_b64(), true);
         let mut rep = RepStore::in_memory(&cfg.swarm_trust);
         let mut staging = QuarantineStaging::in_memory();
-        let (dec, _clean) = admit(
+        let (dec, _clean, _) = admit(
             "novel content here that is long enough",
             0.5,
             0.0,
@@ -772,7 +835,7 @@ mod tests {
         let content = "an uncorroborated claim from an unknown handle";
         let mem_id = Uuid::new_v4();
         let sig = signed(&NON_SEED, mem_id, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (dec, _c) = admit(
+        let (dec, _c, _) = admit(
             content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, mem_id, Some(&sig),
             &mut staging, &mut rep, &cfg, now,
         );
@@ -805,23 +868,26 @@ mod tests {
         // author (non-seed) → Quarantine
         let id0 = Uuid::new_v4();
         let s0 = signed(&NON_SEED, id0, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (d0, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id0, Some(&s0),
+        let (d0, _, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id0, Some(&s0),
             &mut staging, &mut rep, &cfg, now);
         assert_eq!(d0, AdmitDecision::Quarantine);
 
         // seed 0 corroborates → ProbationLive (C=1 < K=2, seed present)
         let id1 = Uuid::new_v4();
         let s1 = signed(&seeds.seed(0), id1, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (d1, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id1, Some(&s1),
+        let (d1, _, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id1, Some(&s1),
             &mut staging, &mut rep, &cfg, now);
         assert_eq!(d1, AdmitDecision::ProbationLive);
 
-        // seed 1 corroborates → Live (C=2 ≥ K=2)
+        // seed 1 corroborates → Live (C=2 ≥ K=2). #8: admit returns a pending
+        // promotion; commit it (simulating a successful medium insert) so the
+        // DAG records the promotion the same way the wired callers do.
         let id2 = Uuid::new_v4();
         let s2 = signed(&seeds.seed(1), id2, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (d2, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
+        let (d2, _, pending) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
             &mut staging, &mut rep, &cfg, now);
         assert_eq!(d2, AdmitDecision::Live);
+        commit_promotion(pending, &mut rep, &mut staging, &cfg);
 
         let h = content_hash(content);
         (rep, staging, cfg, h, verifying_key_bytes(&NON_SEED))
@@ -861,11 +927,12 @@ mod tests {
             &mut staging, &mut rep, &cfg, now);
         let id2 = Uuid::new_v4();
         let s2 = signed(&seeds.seed(1), id2, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (frozen, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
+        let (frozen, _, frozen_pending) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
             &mut staging, &mut rep, &cfg, now);
 
         let h = content_hash(content);
         assert_eq!(frozen, AdmitDecision::Quarantine, "stale/absent beacons freeze promotion");
+        assert!(frozen_pending.is_none(), "a frozen promotion yields no pending commit");
         assert!(!rep.dag().is_promoted(&h), "frozen: not promoted to live");
         assert!(staging.contains(&h), "frozen content preserved in staging (never dropped)");
 
@@ -877,9 +944,10 @@ mod tests {
         staging.ingest_beacon(&beacon, &seed_set, now_epoch).unwrap();
         let id3 = Uuid::new_v4();
         let s3 = signed(&seeds.seed(2), id3, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (thawed, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
+        let (thawed, _, thawed_pending) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
             &mut staging, &mut rep, &cfg, now);
         assert_eq!(thawed, AdmitDecision::Live, "a fresh seed beacon thaws promotion");
+        commit_promotion(thawed_pending, &mut rep, &mut staging, &cfg);
         assert!(rep.dag().is_promoted(&h), "promoted once beacons resumed");
     }
 
@@ -895,7 +963,7 @@ mod tests {
         // A NEW seed (index 2) re-signs the already-Live content.
         let id3 = Uuid::new_v4();
         let s3 = signed(&seeds.seed(2), id3, content, SUBJECT_MEMORY_NEW, 0.5, now);
-        let (dec, _c) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
+        let (dec, _c, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
             &mut staging, &mut rep, &cfg, now);
 
         assert_eq!(dec, AdmitDecision::Drop, "echo ⇒ no new memory");
@@ -912,13 +980,13 @@ mod tests {
         let mut staging = QuarantineStaging::in_memory();
 
         // Task (f): wire hallucinated=false, amplitude=1.0.
-        let (_d, clean) = admit("x", 1.0, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, Uuid::new_v4(),
+        let (_d, clean, _) = admit("x", 1.0, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, Uuid::new_v4(),
             None, &mut staging, &mut rep, &cfg, 1);
         assert!(clean.amplitude <= MAX_WIRE_AMPLITUDE, "amplitude clamped ≤0.95");
         assert!(!clean.hallucinated, "hallucinated is the local default");
 
         // Stronger: attacker sets the wire immune flag TRUE — must NOT be taken.
-        let (_d2, clean2) = admit("y", 1.0, 0.0, 0.1, true, SUBJECT_MEMORY_NEW, Uuid::new_v4(),
+        let (_d2, clean2, _) = admit("y", 1.0, 0.0, 0.1, true, SUBJECT_MEMORY_NEW, Uuid::new_v4(),
             None, &mut staging, &mut rep, &cfg, 1);
         assert!(!clean2.hallucinated, "the wire immune flag is never trusted");
 
@@ -936,7 +1004,10 @@ mod tests {
         let seeds = Seeds::new(3);
         let cfg = test_cfg(seeds.pubkeys_b64(), true);
         let dir = tempfile::tempdir().unwrap();
-        let now = 1_000_000;
+        // Use a real wall-clock `now`: #12 now re-applies the staging TTL on load
+        // (against `now_ms()`), so a fixture must stamp `first_seen` at real time
+        // or the entry is (correctly) aged out on reload.
+        let now = now_ms();
         let content = "a claim awaiting corroboration";
         let h = content_hash(content);
         {
@@ -944,11 +1015,191 @@ mod tests {
             let mut staging = QuarantineStaging::load(dir.path());
             let id = Uuid::new_v4();
             let sig = signed(&NON_SEED, id, content, SUBJECT_MEMORY_NEW, 0.5, now);
-            let (dec, _c) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id, Some(&sig),
+            let (dec, _c, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id, Some(&sig),
                 &mut staging, &mut rep, &cfg, now);
             assert_eq!(dec, AdmitDecision::Quarantine);
         }
         let reloaded = QuarantineStaging::load(dir.path());
         assert!(reloaded.contains(&h), "staged entry survived reload");
+    }
+
+    // --- (#6) invalid signature ⇒ Drop, not staged, not promoted -------------
+    #[test]
+    fn active_invalid_signature_drops() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory();
+        let now = 1_000_000;
+        let mem_id = Uuid::new_v4();
+        // Sign over ONE content, then admit a DIFFERENT content with that sig —
+        // the signature verifies FALSE over the swapped bytes.
+        let sig = signed(&NON_SEED, mem_id, "the originally-signed content", SUBJECT_MEMORY_NEW, 0.5, now);
+        let forged = "attacker-swapped content the signature does NOT cover";
+        let (dec, _c, pending) = admit(
+            forged, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, mem_id, Some(&sig),
+            &mut staging, &mut rep, &cfg, now,
+        );
+        assert_eq!(dec, AdmitDecision::Drop, "sig verifies FALSE ⇒ Drop");
+        assert!(pending.is_none(), "a dropped memory yields no pending promotion");
+        let h = content_hash(forged);
+        assert!(!staging.contains(&h), "invalid-sig content is NOT staged");
+        assert!(!rep.dag().is_promoted(&h), "invalid-sig content is NOT promoted");
+    }
+
+    // --- (#7) SUBJECT_EXEMPLAR path round-trips (sign/verify amp from separate
+    // variables) ⇒ correct decision --------------------------------------------
+    #[test]
+    fn active_exemplar_path_round_trips() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory();
+        let now = 1_000_000;
+        let content = "an exemplar observation awaiting corroboration";
+        let mem_id = Uuid::new_v4();
+        // SEPARATE variables for the signed vs verified amplitude; equal here, so
+        // verify passes. A sign/verify desync in the exemplar path would make the
+        // amp_q16 differ ⇒ BadSig ⇒ Drop, so asserting Quarantine proves the
+        // subject + amplitude are threaded consistently.
+        let sign_amp: f32 = 0.5;
+        let wire_amp: f32 = 0.5;
+        let sig = signed(&NON_SEED, mem_id, content, SUBJECT_EXEMPLAR, sign_amp, now);
+        let (dec, _c, pending) = admit(
+            content, wire_amp, 0.0, 0.1, false, SUBJECT_EXEMPLAR, mem_id, Some(&sig),
+            &mut staging, &mut rep, &cfg, now,
+        );
+        assert_eq!(dec, AdmitDecision::Quarantine, "exemplar verifies ⇒ single non-seed ⇒ Quarantine");
+        assert!(pending.is_none());
+        let h = content_hash(content);
+        assert!(staging.contains(&h), "exemplar sits in staging awaiting corroboration");
+    }
+
+    // --- (#14) replay: same (memory_id, nonce, sig) twice ⇒ 2nd is Drop ------
+    #[test]
+    fn active_replayed_sig_drops_second() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory();
+        let now = 1_000_000;
+        let content = "a claim delivered twice with the identical signed envelope";
+        let mem_id = Uuid::new_v4();
+        let sig = signed(&NON_SEED, mem_id, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        // First delivery: verifies + fresh ⇒ Quarantine (single non-seed).
+        let (d1, _c1, _p1) = admit(
+            content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, mem_id, Some(&sig),
+            &mut staging, &mut rep, &cfg, now,
+        );
+        assert_eq!(d1, AdmitDecision::Quarantine, "first delivery ⇒ Quarantine");
+        // Second delivery: SAME (memory_id, nonce) ⇒ replay ⇒ Drop.
+        let (d2, _c2, p2) = admit(
+            content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, mem_id, Some(&sig),
+            &mut staging, &mut rep, &cfg, now,
+        );
+        assert_eq!(d2, AdmitDecision::Drop, "replayed (memory_id, nonce, sig) ⇒ Drop");
+        assert!(p2.is_none());
+    }
+
+    // --- (#8) insert-failure ordering: Live is pending until committed -------
+    #[test]
+    fn live_is_pending_until_committed_and_retryable() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory();
+        let now = 1_000_000;
+        let content = "a fact whose live-medium insert fails on the first attempt";
+        let h = content_hash(content);
+
+        // Fresh beacon so the anti-eclipse gate doesn't freeze the promotion.
+        let seed_set: HashSet<PubKey> = (0..seeds.signing.len())
+            .map(|i| verifying_key_bytes(&seeds.seed(i)))
+            .collect();
+        let now_epoch = epoch_now(&cfg, now);
+        let beacon = Beacon::sign(&seeds.seed(0), now_epoch, [0u8; 32]);
+        staging.ingest_beacon(&beacon, &seed_set, now_epoch).unwrap();
+
+        // Drive to quorum: author (non-seed) + seed0 + seed1 ⇒ Live (K=2).
+        let id0 = Uuid::new_v4();
+        let s0 = signed(&NON_SEED, id0, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (_d0, _, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id0, Some(&s0),
+            &mut staging, &mut rep, &cfg, now);
+        let id1 = Uuid::new_v4();
+        let s1 = signed(&seeds.seed(0), id1, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (_d1, _, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id1, Some(&s1),
+            &mut staging, &mut rep, &cfg, now);
+        let id2 = Uuid::new_v4();
+        let s2 = signed(&seeds.seed(1), id2, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (d2, _c2, pending) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
+            &mut staging, &mut rep, &cfg, now);
+
+        assert_eq!(d2, AdmitDecision::Live, "quorum reached ⇒ Live");
+        assert!(pending.is_some(), "Live returns a pending promotion, not a committed one");
+        // The ledger is NOT yet mutated — commit is the caller's post-insert step.
+        assert!(!rep.dag().is_promoted(&h), "not committed until the medium insert succeeds");
+        assert!(staging.contains(&h), "content stays staged while the promotion is pending");
+
+        // SIMULATE INSERT FAILURE: the caller drops the pending WITHOUT committing.
+        drop(pending);
+        assert!(!rep.dag().is_promoted(&h), "insert failed ⇒ ledger still NOT promoted (re-decidable)");
+        assert!(staging.contains(&h), "content preserved for retry");
+
+        // RETRY: a fresh corroboration of the SAME content re-decides Live; this
+        // time the caller commits (insert Ok).
+        let id3 = Uuid::new_v4();
+        let s3 = signed(&seeds.seed(0), id3, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (d3, _c3, pending3) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
+            &mut staging, &mut rep, &cfg, now);
+        assert_eq!(d3, AdmitDecision::Live, "same content re-decides Live on retry");
+        commit_promotion(pending3, &mut rep, &mut staging, &cfg);
+        assert!(rep.dag().is_promoted(&h), "committed after a successful insert");
+        assert!(!staging.contains(&h), "promoted content leaves staging on commit");
+    }
+
+    // --- (#12) load re-applies TTL + cap to a persisted staging.json ---------
+    #[test]
+    fn load_reapplies_ttl_and_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let qdir = dir.path().join("quarantine");
+        std::fs::create_dir_all(&qdir).unwrap();
+        let now = 10 * STAGING_TTL_MS; // well past the TTL for the "old" entries
+
+        // 2 STALE (first_seen ancient) + 5 FRESH entries persisted to disk.
+        let mut entries = Vec::new();
+        for i in 0..2u8 {
+            entries.push(StagedWire {
+                hash: [i; 32],
+                content: format!("stale-{i}"),
+                amplitude: 0.1,
+                phase: 0.0,
+                frequency: 0.1,
+                hallucinated: false,
+                first_seen: 0, // ancient ⇒ TTL-evicted on load
+                origin: [i; 32],
+                corroborators: vec![[i; 32]],
+            });
+        }
+        for i in 10..15u8 {
+            entries.push(StagedWire {
+                hash: [i; 32],
+                content: format!("fresh-{i}"),
+                amplitude: 0.1,
+                phase: 0.0,
+                frequency: 0.1,
+                hallucinated: false,
+                first_seen: now, // fresh
+                origin: [i; 32],
+                corroborators: vec![[i; 32]],
+            });
+        }
+        let wire = StagingWire { entries };
+        std::fs::write(qdir.join("staging.json"), serde_json::to_vec(&wire).unwrap()).unwrap();
+
+        // Load with a small cap (2) + the real TTL: stale gone, fresh trimmed to cap.
+        let loaded = QuarantineStaging::load_bounded(dir.path(), 2, STAGING_TTL_MS, now);
+        assert_eq!(loaded.len(), 2, "trimmed to cap after TTL eviction");
+        assert!(!loaded.contains(&[0u8; 32]), "stale entry evicted by TTL");
+        assert!(!loaded.contains(&[1u8; 32]), "stale entry evicted by TTL");
     }
 }

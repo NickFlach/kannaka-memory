@@ -16,8 +16,8 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use kannaka_memory::absorb_gate::{
-    admit, content_hash, epoch_now, AdmitDecision, QuarantineStaging, PROV_TIER, SIGN_AGENT_ID,
-    SUBJECT_MEMORY_NEW,
+    admit, commit_promotion, content_hash, epoch_now, AdmitDecision, QuarantineStaging, PROV_TIER,
+    SIGN_AGENT_ID, SUBJECT_MEMORY_NEW,
 };
 use kannaka_memory::beacon::Beacon;
 use kannaka_memory::config::KannakaConfig;
@@ -95,9 +95,14 @@ fn admit_one(
 ) -> AdmitDecision {
     let id = Uuid::new_v4();
     let sig = sign(signing, id, content, amp, now);
-    let (dec, _clean) = admit(
+    let (dec, _clean, pending) = admit(
         content, amp, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id, Some(&sig), staging, rep, c, now,
     );
+    // #8: admit now DEFERS the promotion commit to the medium-insert point.
+    // These library-level tests have no live medium, so a Live decision commits
+    // immediately (simulating a successful insert); non-Live ⇒ pending is None,
+    // and commit_promotion is a no-op.
+    commit_promotion(pending, rep, staging, c);
     dec
 }
 

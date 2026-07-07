@@ -171,9 +171,9 @@ pub use reputation::{
 
 // absorb chokepoint (inc-1b).
 pub use absorb_gate::{
-    admit, content_hash, epoch_now, gate_active, AdmitDecision, CleanFields, QuarantineStaging,
-    StagedMemory, HIGH_IMPACT_AMPLITUDE, MAX_WIRE_AMPLITUDE, PROV_TIER, SIGN_AGENT_ID,
-    SUBJECT_EXEMPLAR, SUBJECT_MEMORY_NEW,
+    admit, commit_promotion, content_hash, epoch_now, gate_active, AdmitDecision, CleanFields,
+    PendingPromotion, QuarantineStaging, StagedMemory, HIGH_IMPACT_AMPLITUDE, MAX_WIRE_AMPLITUDE,
+    PROV_TIER, SIGN_AGENT_ID, SUBJECT_EXEMPLAR, SUBJECT_MEMORY_NEW,
 };
 
 // heartbeat beacons (inc-1b PART A).

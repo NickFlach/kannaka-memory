@@ -65,6 +65,9 @@ pub const DOMAIN_BOOT: &[u8] = b"kannaka/prov/boot/v1\0";
 pub const DOMAIN_HRM: &[u8] = b"kannaka/prov/hrm/v1\0";
 /// Domain prefix for a heartbeat beacon statement ([`canonical_beacon`]).
 pub const DOMAIN_BEACON: &[u8] = b"kannaka/prov/beacon/v1\0";
+/// Domain prefix for a reputation-store snapshot at-rest signature
+/// ([`sign_snapshot`] / [`verify_snapshot`]).
+pub const DOMAIN_SNAPSHOT: &[u8] = b"kannaka/prov/repsnap/v1\0";
 
 // ---------------------------------------------------------------------------
 // ProvenanceSig
@@ -501,8 +504,10 @@ impl ReplayLru {
         let mut lru = ReplayLru::new();
         for e in wire.entries {
             if let Ok(nonce) = b64_decode_arr::<16>(&e.nonce) {
-                // Drop already-stale entries on load.
-                if now_ms - e.ts <= SKEW_MS {
+                // Drop already-stale entries on load. #11: widen to i128 so a
+                // hostile persisted `ts` (e.g. `i64::MIN`) can't overflow the
+                // subtraction (debug panic / release wrap) — mirrors verify_mem.
+                if (now_ms as i128 - e.ts as i128) <= SKEW_MS as i128 {
                     lru.seen.insert((e.id, nonce), e.ts);
                 }
             }
@@ -559,6 +564,55 @@ pub fn node_signing_key(data_dir: &Path) -> Result<[u8; 32], String> {
 /// The verifying (public) key bytes derived from a raw signing seed.
 pub fn verifying_key_bytes(signing_seed: &[u8; 32]) -> [u8; 32] {
     SigningKey::from_bytes(signing_seed).verifying_key().to_bytes()
+}
+
+/// This node's verifying (public) key IF its signing seed already exists on
+/// disk — READ-ONLY: unlike [`node_signing_key`] it NEVER generates one
+/// (finding #4). `None` when the key file is absent or the wrong length, so a
+/// fail-closed loader that must verify a snapshot against its OWN key can treat
+/// "no key" as "can't have signed this" ⇒ refuse.
+pub fn node_verifying_key(data_dir: &Path) -> Option<[u8; 32]> {
+    let path = data_dir.join("node_key.ed25519");
+    let bytes = std::fs::read(&path).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    Some(verifying_key_bytes(&seed))
+}
+
+/// The domain-separated message signed for a reputation snapshot:
+/// `DOMAIN_SNAPSHOT ‖ blake3(snapshot_bytes)` (finding #4). Hashing keeps the
+/// signed message small regardless of snapshot size while binding every byte.
+fn snapshot_signing_msg(snapshot_bytes: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(DOMAIN_SNAPSHOT.len() + 32);
+    msg.extend_from_slice(DOMAIN_SNAPSHOT);
+    msg.extend_from_slice(blake3::hash(snapshot_bytes).as_bytes());
+    msg
+}
+
+/// Sign a reputation-store snapshot's bytes with this node's raw ed25519 seed
+/// (finding #4). Domain-separated (see [`snapshot_signing_msg`]) so the 64-byte
+/// signature can't be lifted onto another statement type. The caller stores the
+/// returned signature beside the snapshot and, on load, verifies it against the
+/// node's OWN verifying key — a planted/foreign or tampered snapshot fails.
+pub fn sign_snapshot(signing_seed: &[u8; 32], snapshot_bytes: &[u8]) -> [u8; 64] {
+    let sk = SigningKey::from_bytes(signing_seed);
+    sk.sign(&snapshot_signing_msg(snapshot_bytes)).to_bytes()
+}
+
+/// Verify a reputation-store snapshot signature (finding #4). Returns `true`
+/// only when `sig` is a valid ed25519 signature by `pubkey` over the
+/// domain-separated hash of `snapshot_bytes`. A malformed key/point ⇒ `false`
+/// (fail-closed).
+pub fn verify_snapshot(pubkey: &[u8; 32], snapshot_bytes: &[u8], sig: &[u8; 64]) -> bool {
+    let Ok(vk) = VerifyingKey::from_bytes(pubkey) else {
+        return false;
+    };
+    let signature = Signature::from_bytes(sig);
+    vk.verify_strict(&snapshot_signing_msg(snapshot_bytes), &signature)
+        .is_ok()
 }
 
 /// Fill a buffer with OS CSPRNG bytes. Uses `rand`'s `OsRng` (already a dep;
@@ -848,5 +902,40 @@ mod tests {
         assert!(lru.poisoned());
         assert!(lru.refuses_live(TS));
         assert!(!lru.refuses_live(TS + SKEW_MS + 1));
+    }
+
+    // (#11) a persisted replay entry with a hostile `ts` (i64::MIN) must not
+    // overflow the freshness subtraction on load — the entry is treated as
+    // stale and dropped, and `load` does NOT panic. Without the i128 widening
+    // `now_ms - e.ts` overflows i64 (debug panic / release wrap).
+    #[test]
+    fn replay_lru_load_hostile_ts_no_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replay.json");
+        // Hand-craft a well-formed sidecar whose only entry carries ts=i64::MIN.
+        let wire = format!(
+            "{{\"entries\":[{{\"id\":\"{}\",\"nonce\":\"{}\",\"ts\":{}}}]}}",
+            fixed_id(),
+            b64_encode(&NONCE),
+            i64::MIN
+        );
+        std::fs::write(&path, wire).unwrap();
+        // Must NOT panic (i128 widening); the ancient entry is dropped as stale.
+        let lru = ReplayLru::load(&path, TS);
+        assert!(!lru.poisoned(), "well-formed JSON loads (not poisoned)");
+        assert_eq!(lru.len(), 0, "i64::MIN ts is ancient ⇒ dropped as stale");
+    }
+
+    // (#4) snapshot signing round-trips; a tampered snapshot fails verification.
+    #[test]
+    fn snapshot_sign_verify_round_trip_and_tamper() {
+        let bytes = b"a reputation snapshot payload";
+        let sig = sign_snapshot(&SEED, bytes);
+        let vk = verifying_key_bytes(&SEED);
+        assert!(verify_snapshot(&vk, bytes, &sig), "own-key signature verifies");
+        // A different key must NOT verify.
+        assert!(!verify_snapshot(&verifying_key_bytes(&[8u8; 32]), bytes, &sig));
+        // Tampered bytes must NOT verify.
+        assert!(!verify_snapshot(&vk, b"a reputation snapshot payloaX", &sig));
     }
 }
