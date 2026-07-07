@@ -99,6 +99,11 @@ pub mod dispatch;
 // attribution/integrity only — no absorb/trust/enrollment behaviour here.
 pub mod provenance;
 
+// pubkey-keyed swarm-trust decision core (inc-1b): pure corroboration formulas,
+// reputation store, append-only corroboration DAG, fail-closed persistence.
+// Adds a module + config fields; NO absorb-path wiring / admit() chokepoint yet.
+pub mod reputation;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
@@ -145,6 +150,12 @@ pub use provenance::{
     canonical_mem, canonical_phase, node_signing_key, sign_mem, verify_mem, verifying_key_bytes,
     ProvenanceSig, ReplayLru, VerifyErr, DOMAIN_BIND, DOMAIN_BOOT, DOMAIN_HRM, DOMAIN_MEM,
     DOMAIN_PHASE, DOMAIN_ROT, PROV_ALG_ED25519, REPLAY_CAP, SKEW_MS,
+};
+
+// pubkey-keyed swarm-trust decision core (inc-1b).
+pub use reputation::{
+    accrual, distinct_lineage_count, g, k_for, lineage_weight, promotion_weight, w,
+    CorroborationDag, Promotion, RepRecord, RepStore, SeedStatus, P_POISON, P_VOUCH,
 };
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
