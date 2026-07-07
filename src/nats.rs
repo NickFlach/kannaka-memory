@@ -1723,6 +1723,7 @@ impl SwarmTransport {
         agent_id: &str,
         memory_count: usize,
         cluster_count: usize,
+        sig: Option<&crate::provenance::ProvenanceSig>,
     ) -> Result<(), NatsError> {
         let mut payload = serde_json::json!({
             "agent_id": agent_id,
@@ -1731,6 +1732,13 @@ impl SwarmTransport {
             "cluster_count": cluster_count,
         });
         add_envelope(&mut payload);
+        // inc-1b: attach the optional provenance signature so peers running the
+        // corroboration gate can verify + accrue. Additive + harmless when off.
+        if let Some(s) = sig {
+            if let (Some(obj), Ok(v)) = (payload.as_object_mut(), serde_json::to_value(s)) {
+                obj.insert("provenance_sig".to_string(), v);
+            }
+        }
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.memory.new", &bytes)
@@ -1744,7 +1752,7 @@ impl SwarmTransport {
         memory: &crate::memory::HyperMemory,
         agent_id: &str,
     ) -> Result<(), NatsError> {
-        self.publish_memory_new_with_counts(memory, agent_id, 0, 0)
+        self.publish_memory_new_with_counts(memory, agent_id, 0, 0, None)
     }
 
     // -----------------------------------------------------------------------

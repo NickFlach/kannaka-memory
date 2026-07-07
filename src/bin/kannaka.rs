@@ -1458,11 +1458,33 @@ fn main() {
                                 .try_cached_consciousness_metrics()
                                 .map(|m| m.num_clusters)
                                 .unwrap_or(0);
+                            // inc-1b: ALWAYS sign our own emits with the node key
+                            // (additive; lets peers running the corroboration gate
+                            // verify + accrue). Best-effort — a key error just omits
+                            // the signature (dormant peers ignore it anyway).
+                            let prov_sig = kannaka_memory::provenance::node_signing_key(&data_dir())
+                                .ok()
+                                .map(|seed| {
+                                    let nonce = *uuid::Uuid::new_v4().as_bytes();
+                                    let ts = kannaka_memory::provenance::now_ms();
+                                    kannaka_memory::sign_mem(
+                                        &seed,
+                                        kannaka_memory::SIGN_AGENT_ID,
+                                        mem.id,
+                                        &nonce,
+                                        ts,
+                                        &mem.content,
+                                        kannaka_memory::SUBJECT_MEMORY_NEW,
+                                        kannaka_memory::provenance::amp_to_q16(mem.amplitude),
+                                        kannaka_memory::PROV_TIER,
+                                    )
+                                });
                             if let Err(e) = transport.publish_memory_new_with_counts(
                                 mem,
                                 agent_id,
                                 total_mems,
                                 cluster_count,
+                                prov_sig.as_ref(),
                             ) {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
@@ -4264,6 +4286,16 @@ fn main() {
                     // the lifetime of the listener.
                     let trust = cfg.swarm_trust.clone();
 
+                    // inc-1b: the corroboration admit() chokepoint state. DORMANT
+                    // unless corroboration_gate_enabled AND seeds are pinned, in
+                    // which case the memory.new import gate below routes through
+                    // admit(). Loaded once — reused across the listen loop.
+                    let mut rep_store =
+                        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+                    let mut staging =
+                        kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+                    let gate_on = kannaka_memory::gate_active(&cfg);
+
                     loop {
                         let msg = match sub.next_event() {
                             kannaka_memory::nats::SubEvent::Msg(m) => m,
@@ -4322,7 +4354,7 @@ fn main() {
                                         match serde_json::from_value::<kannaka_memory::HyperMemory>(
                                             mem_json.clone(),
                                         ) {
-                                            Ok(mem) => {
+                                            Ok(mut mem) => {
                                                 let mem_id = mem.id;
                                                 // Check if memory already exists
                                                 match sys.engine.store.get(&mem_id) {
@@ -4330,18 +4362,61 @@ fn main() {
                                                         eprintln!("[sync] Memory {} already exists, skipping", mem_id);
                                                     }
                                                     _ => {
-                                                        // SECURITY (increment-0 interim; increment-1 replaces this allowlist gate with signature+trust verification)
-                                                        if kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only) {
-                                                            match sys.engine.store.insert(mem) {
-                                                                Ok(_) => {
-                                                                    println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
-                                                                }
-                                                                Err(e) => {
-                                                                    eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
+                                                        // inc-1b: route the wire import through the corroboration
+                                                        // admit() chokepoint. DORMANT ⇒ admit returns Live and we
+                                                        // keep the inc-0 allowlist gate below unchanged; only the
+                                                        // sanitized fields (amplitude/phase/frequency clamp +
+                                                        // hallucinated forced to local default) are newly applied.
+                                                        // ACTIVE ⇒ admit's decision governs (Live/Quarantine/Drop).
+                                                        let prov_sig: Option<kannaka_memory::ProvenanceSig> = json
+                                                            .get("provenance_sig")
+                                                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                                                        let now = kannaka_memory::provenance::now_ms();
+                                                        let (decision, clean) = kannaka_memory::admit(
+                                                            &mem.content,
+                                                            mem.amplitude,
+                                                            mem.phase,
+                                                            mem.frequency,
+                                                            mem.hallucinated,
+                                                            kannaka_memory::SUBJECT_MEMORY_NEW,
+                                                            mem_id,
+                                                            prov_sig.as_ref(),
+                                                            &mut staging,
+                                                            &mut rep_store,
+                                                            &cfg,
+                                                            now,
+                                                        );
+                                                        // Apply sanitized fields regardless of gate state.
+                                                        clean.apply(&mut mem);
+                                                        use kannaka_memory::AdmitDecision::*;
+                                                        match decision {
+                                                            Live => {
+                                                                // Dormant: preserve the inc-0 allowlist gate. Active:
+                                                                // corroboration already authorized the import.
+                                                                let admit_import = if gate_on {
+                                                                    true
+                                                                } else {
+                                                                    kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only)
+                                                                };
+                                                                if admit_import {
+                                                                    match sys.engine.store.insert(mem) {
+                                                                        Ok(_) => {
+                                                                            println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    eprintln!("[sync] skip untrusted source {} (increment-0 gate)", kannaka_memory::sanitize_display(source_agent));
                                                                 }
                                                             }
-                                                        } else {
-                                                            eprintln!("[sync] skip untrusted source {} (increment-0 gate)", kannaka_memory::sanitize_display(source_agent));
+                                                            Quarantine | ProbationLive => {
+                                                                eprintln!("[sync] quarantined memory {} from {} (awaiting corroboration)", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                            }
+                                                            Drop => {
+                                                                eprintln!("[sync] dropped memory {} from {} (invalid signature / echo)", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                            }
                                                         }
                                                     }
                                                 }

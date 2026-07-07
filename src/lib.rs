@@ -104,6 +104,11 @@ pub mod provenance;
 // Adds a module + config fields; NO absorb-path wiring / admit() chokepoint yet.
 pub mod reputation;
 
+// absorb chokepoint (inc-1b): the `admit()` gate every wire→store path routes
+// through — unconditional field sanitization + a DORMANT-BY-DEFAULT corroboration
+// promotion gate (armed only when corroboration_gate_enabled AND seeds pinned).
+pub mod absorb_gate;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
@@ -156,6 +161,13 @@ pub use provenance::{
 pub use reputation::{
     accrual, distinct_lineage_count, g, k_for, lineage_weight, promotion_weight, w,
     CorroborationDag, Promotion, RepRecord, RepStore, SeedStatus, P_POISON, P_VOUCH,
+};
+
+// absorb chokepoint (inc-1b).
+pub use absorb_gate::{
+    admit, content_hash, epoch_now, gate_active, AdmitDecision, CleanFields, QuarantineStaging,
+    StagedMemory, HIGH_IMPACT_AMPLITUDE, MAX_WIRE_AMPLITUDE, PROV_TIER, SIGN_AGENT_ID,
+    SUBJECT_EXEMPLAR, SUBJECT_MEMORY_NEW,
 };
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
