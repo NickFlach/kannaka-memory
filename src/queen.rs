@@ -1020,6 +1020,126 @@ impl QueenSync {
 }
 
 // ---------------------------------------------------------------------------
+// Wire-trust gate (increment-0)
+// ---------------------------------------------------------------------------
+//
+// The swarm runs on an OPEN NATS bus: anyone may publish an `AgentPhase`.
+// A confirmed attacker forges phases with `trust_score: 1.0`, fake
+// `coherence`, and throwaway `agent-<hex>` ids to steer the READ side —
+// the Kuramoto metrics weight `trust_score * coherence` straight off the
+// wire, and the display prints wire strings verbatim. These helpers are the
+// read-side gate: they DO NOT change the write/absorb path and add no crypto.
+
+/// Return true if `agent_id` matches the trusted allowlist. Each entry is
+/// either an exact agent-id or a `prefix*` wildcard (an entry ending in
+/// `*` matches any id starting with the text before it, e.g. `"qos-*"`).
+pub fn agent_matches_allowlist(agent_id: &str, trusted: &[String]) -> bool {
+    trusted.iter().any(|t| match t.strip_suffix('*') {
+        Some(prefix) => agent_id.starts_with(prefix),
+        None => agent_id == t,
+    })
+}
+
+/// Decide whether a wire-sourced peer may cross the trust boundary — i.e.
+/// drive a pairwise sync step or have its memory absorbed into the store.
+///
+/// SECURITY (increment-0 interim; increment-1 replaces this allowlist gate
+/// with signature+trust verification). Returns `true` iff the metrics-trust
+/// filter is disabled (`metrics_trusted_only == false`, the escape hatch
+/// `KANNAKA_METRICS_TRUSTED_ONLY=0`) OR `source_id` is on the allowlist.
+/// Callers must exclude their own id first — self-trust is a separate concern.
+pub fn wire_source_trusted(source_id: &str, trusted: &[String], metrics_trusted_only: bool) -> bool {
+    !metrics_trusted_only || agent_matches_allowlist(source_id, trusted)
+}
+
+/// Gate a set of wire-sourced phases before they feed the swarm metrics.
+///
+/// A phase is kept iff its `agent_id` is this node's own id (`self_id`,
+/// always trusted) OR it matches the allowlist. Every kept phase then has
+/// its attacker-controllable fields clamped: `trust_score` to
+/// `[0, trust_cap]` and `coherence` to `[0, 1]`. This neutralizes a forged
+/// `trust_score: 1.0` / `coherence: 1.0` flood — the throwaway ids are
+/// dropped entirely and any surviving allowlisted phase cannot exceed the
+/// trust cap on the wire.
+pub fn filter_wire_phases(
+    phases: Vec<AgentPhase>,
+    self_id: &str,
+    trusted: &[String],
+    trust_cap: f32,
+) -> Vec<AgentPhase> {
+    phases
+        .into_iter()
+        .filter(|p| p.agent_id == self_id || agent_matches_allowlist(&p.agent_id, trusted))
+        .map(|mut p| {
+            p.trust_score = p.trust_score.clamp(0.0, trust_cap);
+            p.coherence = p.coherence.clamp(0.0, 1.0);
+            p
+        })
+        .collect()
+}
+
+/// Make a wire-sourced string safe to print to a terminal.
+///
+/// Strips ANSI/OSC escape sequences (CSI `\x1b[…`, OSC `\x1b]…`) and all
+/// C0/C1 control characters (including `\n`, `\t`, `\r`, DEL and the C1
+/// range) — mapping them to nothing — so a forged `agent_id`, email, or
+/// memory body cannot move the cursor, recolor the terminal, or inject
+/// control codes. The result is truncated to 2000 characters with an
+/// ellipsis. Content from the wire must never be printed raw.
+pub fn sanitize_display(s: &str) -> String {
+    const MAX_CHARS: usize = 2000;
+    let mut out = String::with_capacity(s.len().min(MAX_CHARS + 4));
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.peek() {
+                // CSI: ESC '[' params… final-byte in 0x40..=0x7E
+                Some('[') => {
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        chars.next();
+                        if ('\x40'..='\x7e').contains(&p) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: ESC ']' … terminated by BEL (0x07) or ST (ESC '\')
+                Some(']') => {
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        if p == '\x07' {
+                            chars.next();
+                            break;
+                        }
+                        if p == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                // Lone ESC or other escape form: drop the ESC introducer only.
+                _ => {}
+            },
+            // Drop C0 controls (0x00-0x1F) and DEL/C1 (0x7F-0x9F).
+            c if (c as u32) < 0x20 => {}
+            c if (0x7f..=0x9f).contains(&(c as u32)) => {}
+            c => out.push(c),
+        }
+    }
+    if out.chars().count() > MAX_CHARS {
+        let mut truncated: String = out.chars().take(MAX_CHARS).collect();
+        truncated.push('\u{2026}');
+        truncated
+    } else {
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // NATS-augmented sync
 // ---------------------------------------------------------------------------
 
@@ -1047,6 +1167,25 @@ impl QueenSync {
                 warning = Some(format!("NATS read failed, using persistent phases only: {}", e));
                 vec![]
             }
+        };
+
+        // SECURITY (increment-0): gate wire phases before they are merged for
+        // the metric. Open NATS lets anyone publish an AgentPhase, so only
+        // allowlisted (+ our own) ids may weight the Kuramoto order parameter /
+        // Phi, and their wire trust_score is capped. `self.agent_id` is always
+        // trusted. Escape hatch: KANNAKA_METRICS_TRUSTED_ONLY=0. The trusted
+        // config is read here (rather than threaded through the signature) to
+        // keep this method's public API unchanged.
+        let trust_cfg = crate::config::KannakaConfig::load().swarm_trust;
+        let nats_phases = if trust_cfg.metrics_trusted_only {
+            filter_wire_phases(
+                nats_phases,
+                &self.agent_id,
+                &trust_cfg.trusted_agents,
+                trust_cfg.wire_trust_cap,
+            )
+        } else {
+            nats_phases
         };
 
         // 2. Merge: NATS phases override persistent phases (more recent)
@@ -1682,5 +1821,112 @@ mod tests {
     fn format_hive_topology_empty() {
         let output = QueenSync::format_hive_topology(&[]);
         assert!(output.contains("No hives detected"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Wire-trust gate tests (increment-0)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_matches_allowlist_exact_and_prefix() {
+        let trusted = vec!["Kannaka".to_string(), "qos-*".to_string()];
+        assert!(agent_matches_allowlist("Kannaka", &trusted)); // exact
+        assert!(agent_matches_allowlist("qos-alpha", &trusted)); // prefix
+        assert!(agent_matches_allowlist("qos-", &trusted)); // prefix boundary
+        assert!(!agent_matches_allowlist("kannaka", &trusted)); // case-sensitive
+        assert!(!agent_matches_allowlist("agent-deadbeef", &trusted)); // forged
+        assert!(!agent_matches_allowlist("qo", &trusted)); // not long enough for prefix
+    }
+
+    #[test]
+    fn wire_source_trusted_gate_decision() {
+        let trusted = vec!["Kannaka".to_string(), "qos-*".to_string()];
+        // metrics_trusted_only = true (default): only allowlisted sources pass
+        // the gate (pairwise sync + absorb both use this decision).
+        assert!(wire_source_trusted("Kannaka", &trusted, true)); // exact
+        assert!(wire_source_trusted("qos-beta", &trusted, true)); // prefix
+        assert!(!wire_source_trusted("agent-deadbeef", &trusted, true)); // forged
+        assert!(!wire_source_trusted("attacker-1", &trusted, true)); // forged
+        // metrics_trusted_only = false (escape hatch): every source passes.
+        assert!(wire_source_trusted("agent-deadbeef", &trusted, false));
+        assert!(wire_source_trusted("Kannaka", &trusted, false));
+    }
+
+    #[test]
+    fn filter_wire_phases_drops_untrusted_keeps_self_and_caps() {
+        let trusted = crate::config::SwarmTrustConfig::default().trusted_agents;
+        let self_id = "my-node-xyz"; // deliberately NOT on the allowlist
+        let phases = vec![
+            make_agent_phase("Kannaka", 0.1, 1.0, 1.0),        // allowlisted (exact)
+            make_agent_phase("qos-alpha", 0.2, 1.0, 1.0),      // allowlisted (prefix qos-*)
+            make_agent_phase("my-node-xyz", 0.3, 0.8, 0.4),    // self
+            make_agent_phase("agent-deadbeef", 0.4, 1.0, 1.0), // forged -> dropped
+            make_agent_phase("attacker-1", 0.5, 1.0, 1.0),     // forged -> dropped
+        ];
+        let kept = filter_wire_phases(phases, self_id, &trusted, 0.5);
+        let ids: Vec<&str> = kept.iter().map(|p| p.agent_id.as_str()).collect();
+        assert!(ids.contains(&"Kannaka"));
+        assert!(ids.contains(&"qos-alpha"), "prefix match qos-* must keep qos-alpha");
+        assert!(ids.contains(&"my-node-xyz"), "self must always be kept");
+        assert!(!ids.contains(&"agent-deadbeef"), "forged id must be dropped");
+        assert!(!ids.contains(&"attacker-1"), "forged id must be dropped");
+        assert_eq!(kept.len(), 3);
+        // Wire trust_score is capped at the trust_cap for every kept phase.
+        for p in &kept {
+            assert!(p.trust_score <= 0.5 + 1e-6, "trust not capped: {} {}", p.agent_id, p.trust_score);
+            assert!(p.coherence <= 1.0 + 1e-6);
+        }
+        // "Kannaka" published trust_score=1.0 on the wire -> must be clamped to 0.5.
+        let kannaka = kept.iter().find(|p| p.agent_id == "Kannaka").unwrap();
+        assert!((kannaka.trust_score - 0.5).abs() < 1e-6, "cap not applied: {}", kannaka.trust_score);
+    }
+
+    #[test]
+    fn filter_wire_phases_metrics_invariant_under_forged_flood() {
+        let trusted = crate::config::SwarmTrustConfig::default().trusted_agents;
+        let self_id = "legit-self-node"; // not on allowlist -> kept only via self_id
+        let self_phase = make_agent_phase(self_id, 0.7, 0.9, 0.5);
+
+        // 48 forged phases: throwaway ids, maxed-out wire trust/coherence.
+        let mut forged: Vec<AgentPhase> = (0..48u32)
+            .map(|i| make_agent_phase(&format!("agent-{:08x}", 0xdead_0000u32 + i), i as f32 * 0.13, 1.0, 1.0))
+            .collect();
+        // The swarm as read off the wire: forged flood + our own legit phase.
+        forged.push(self_phase.clone());
+
+        let filtered = filter_wire_phases(forged, self_id, &trusted, 0.5);
+        assert_eq!(filtered.len(), 1, "only the self phase should survive the flood");
+
+        // Metrics over the filtered set must equal metrics over just [self].
+        let baseline = vec![self_phase.clone()];
+        let (r_f, psi_f) = QueenSync::compute_order_parameter(&filtered);
+        let (r_b, psi_b) = QueenSync::compute_order_parameter(&baseline);
+        assert!((r_f - r_b).abs() < 1e-6, "order parameter moved: {} vs {}", r_f, r_b);
+        assert!((psi_f - psi_b).abs() < 1e-6, "mean phase moved: {} vs {}", psi_f, psi_b);
+
+        let phi_f = QueenSync::compute_swarm_phi(&filtered, r_f);
+        let phi_b = QueenSync::compute_swarm_phi(&baseline, r_b);
+        assert!((phi_f - phi_b).abs() < 1e-6, "phi moved: {} vs {}", phi_f, phi_b);
+    }
+
+    #[test]
+    fn sanitize_display_strips_ansi_and_controls_and_truncates() {
+        // ANSI color, BEL, embedded newline + tab, ANSI reset.
+        let dirty = "\x1b[31mRED\x07\nnext\tline\x1b[0m done";
+        let clean = sanitize_display(dirty);
+        assert!(!clean.contains('\x1b'), "ESC survived: {:?}", clean);
+        assert!(!clean.contains('\x07'), "BEL survived: {:?}", clean);
+        assert!(!clean.contains('\n'), "newline survived: {:?}", clean);
+        assert!(!clean.contains('\t'), "tab survived: {:?}", clean);
+        assert_eq!(clean, "REDnextline done");
+
+        // OSC (window-title injection) is stripped whole.
+        assert_eq!(sanitize_display("\x1b]0;pwned\x07visible"), "visible");
+
+        // Over-long input is capped to 2000 chars + a single ellipsis.
+        let long = "a".repeat(5000);
+        let truncated = sanitize_display(&long);
+        assert_eq!(truncated.chars().count(), 2001);
+        assert!(truncated.ends_with('\u{2026}'));
     }
 }

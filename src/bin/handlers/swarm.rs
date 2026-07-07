@@ -422,8 +422,17 @@ pub(crate) fn handle_swarm_exemplars(
                 let cid = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("(no content)");
-                let preview: String = content.chars().take(120).collect();
-                println!("[{:3}] {} c{:<3} amp={:.3}", i + 1, agent, cid, amp);
+                // SECURITY (increment-0): agent_id + content are attacker-
+                // controllable wire strings — sanitize before printing (strip
+                // ANSI/control bytes) and flag sources not on the trusted
+                // allowlist as observe-only. Never print wire content raw.
+                let agent_s = kannaka_memory::sanitize_display(agent);
+                let trusted = agent == agent_id
+                    || kannaka_memory::agent_matches_allowlist(agent, &cfg.swarm_trust.trusted_agents);
+                let mark = if trusted { "" } else { " (unverified)" };
+                let preview: String =
+                    kannaka_memory::sanitize_display(content).chars().take(120).collect();
+                println!("[{:3}] {}{} c{:<3} amp={:.3}", i + 1, agent_s, mark, cid, amp);
                 println!("       {}", preview);
             }
             println!();
@@ -716,17 +725,26 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
     println!("{:<24} {:<8} {:<8} {}", "AGENT", "MEMS", "VERSION", "CAPABILITIES");
     println!("{}", "─".repeat(78));
     for p in &peers {
-        let agent = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
-        let display = p.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+        let agent_raw = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let display_raw = p.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
         let mem = p.get("memory_count").and_then(|v| v.as_u64()).unwrap_or(0);
-        let ver = p.get("kannaka_version").and_then(|v| v.as_str()).unwrap_or("?");
+        let ver_raw = p.get("kannaka_version").and_then(|v| v.as_str()).unwrap_or("?");
         let caps_obj = p.get("capabilities").and_then(|v| v.as_object());
-        let caps = caps_obj
+        let caps_raw = caps_obj
             .map(|o| o.iter().filter_map(|(k, v)| if v.as_bool() == Some(true) { Some(k.as_str()) } else { None })
                 .collect::<Vec<_>>().join(","))
             .unwrap_or_default();
+        // SECURITY (increment-0): every field here is attacker-controllable
+        // wire data on the open swarm — sanitize before printing (strip
+        // ANSI/control bytes) and flag any peer whose id is not on the
+        // trusted allowlist as observe-only (` (unverified)`). Matching is on
+        // the raw id; our own id is always trusted.
+        let agent = kannaka_memory::sanitize_display(agent_raw);
+        let display = kannaka_memory::sanitize_display(display_raw);
+        let ver = kannaka_memory::sanitize_display(ver_raw);
+        let caps = kannaka_memory::sanitize_display(&caps_raw);
         let mut label = if display.is_empty() || display == agent {
-            agent.to_string()
+            agent.clone()
         } else {
             format!("{} ({})", display, agent)
         };
@@ -734,7 +752,12 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
         // that joined while logged in via `kannaka identity` carry
         // {user_id, email} in their presence record — show the email.
         if let Some(email) = kannaka_memory::nats::AnnounceIdentity::email_from(p) {
-            label = format!("{} <{}>", label, email);
+            label = format!("{} <{}>", label, kannaka_memory::sanitize_display(email));
+        }
+        let trusted = agent_raw == cfg.agent.id
+            || kannaka_memory::agent_matches_allowlist(agent_raw, &cfg.swarm_trust.trusted_agents);
+        if !trusted {
+            label.push_str(" (unverified)");
         }
         println!("{:<24} {:<8} {:<8} {}", label, mem, ver, caps);
     }
@@ -1260,11 +1283,18 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                 match sub.next_event() {
                     SubEvent::Msg(msg) => {
                         let payload_str = std::str::from_utf8(&msg.payload).unwrap_or("<binary>");
+                        // SECURITY (increment-0): subject + payload are wire
+                        // data on the open swarm. A valid-JSON payload is
+                        // re-escaped by serde on output (so control bytes can't
+                        // reach the terminal raw), but the subject and the
+                        // non-JSON fallback are embedded as bare strings —
+                        // sanitize those to strip ANSI/control sequences.
                         let payload_json: serde_json::Value = serde_json::from_str(payload_str)
-                            .unwrap_or_else(|_| serde_json::Value::String(payload_str.to_string()));
+                            .unwrap_or_else(|_| serde_json::Value::String(
+                                kannaka_memory::sanitize_display(payload_str)));
                         let line = serde_json::json!({
                             "ts": chrono::Utc::now().timestamp_millis(),
-                            "subject": msg.subject,
+                            "subject": kannaka_memory::sanitize_display(&msg.subject),
                             "payload": payload_json,
                         });
                         let _guard = mu.lock();

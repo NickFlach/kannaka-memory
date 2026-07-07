@@ -4257,6 +4257,13 @@ fn main() {
                         &agent_id,
                     );
 
+                    // SECURITY (increment-0 interim; increment-1 replaces this
+                    // allowlist gate with signature+trust verification). Load the
+                    // swarm-trust config ONCE up front — the listen loop consults
+                    // it on every wire message but the config never changes for
+                    // the lifetime of the listener.
+                    let trust = cfg.swarm_trust.clone();
+
                     loop {
                         let msg = match sub.next_event() {
                             kannaka_memory::nats::SubEvent::Msg(m) => m,
@@ -4269,10 +4276,22 @@ fn main() {
                         if msg.subject.starts_with("QUEEN.phase.") {
                             if let Some(phase) = msg.as_phase() {
                                 println!("[{}] \u{03b8}={:.3} \u{03c9}={:.3} coherence={:.3} phi={:.3} memories={}",
-                                    phase.agent_id, phase.phase, phase.frequency,
+                                    kannaka_memory::sanitize_display(&phase.agent_id), phase.phase, phase.frequency,
                                     phase.coherence, phase.phi, phase.memory_count);
 
-                                if auto_sync && phase.agent_id != agent_id {
+                                // SECURITY (increment-0 interim; increment-1 replaces this
+                                // allowlist gate with signature+trust verification). Only let a
+                                // TRUSTED wire phase drive a pairwise Kuramoto sync step — self is
+                                // already excluded by `!= agent_id`; the gate is a no-op when the
+                                // escape hatch KANNAKA_METRICS_TRUSTED_ONLY=0 is set.
+                                if auto_sync
+                                    && phase.agent_id != agent_id
+                                    && kannaka_memory::wire_source_trusted(
+                                        &phase.agent_id,
+                                        &trust.trusted_agents,
+                                        trust.metrics_trusted_only,
+                                    )
+                                {
                                     let my_phase =
                                         queen.to_agent_phase(0, sys.engine.store.count(), 0);
                                     let swarm = vec![my_phase, phase];
@@ -4289,7 +4308,10 @@ fn main() {
                             if let Some(json) = msg.as_json() {
                                 let event = json["event"].as_str().unwrap_or("unknown");
                                 let agent = json["agent_id"].as_str().unwrap_or("?");
-                                println!("[announce] {} {}", agent, event);
+                                // Both fields are wire-sourced — sanitize before printing.
+                                println!("[announce] {} {}",
+                                    kannaka_memory::sanitize_display(agent),
+                                    kannaka_memory::sanitize_display(event));
                             }
                         } else if msg.subject == "KANNAKA.memory.new" && auto_sync {
                             if let Some(json) = msg.as_json() {
@@ -4308,19 +4330,24 @@ fn main() {
                                                         eprintln!("[sync] Memory {} already exists, skipping", mem_id);
                                                     }
                                                     _ => {
-                                                        match sys.engine.store.insert(mem) {
-                                                            Ok(_) => {
-                                                                println!("[sync] Imported memory {} from {}", mem_id, source_agent);
+                                                        // SECURITY (increment-0 interim; increment-1 replaces this allowlist gate with signature+trust verification)
+                                                        if kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only) {
+                                                            match sys.engine.store.insert(mem) {
+                                                                Ok(_) => {
+                                                                    println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                                }
+                                                                Err(e) => {
+                                                                    eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
+                                                                }
                                                             }
-                                                            Err(e) => {
-                                                                eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, source_agent, e);
-                                                            }
+                                                        } else {
+                                                            eprintln!("[sync] skip untrusted source {} (increment-0 gate)", kannaka_memory::sanitize_display(source_agent));
                                                         }
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!("[sync] Failed to deserialize memory from {}: {}", source_agent, e);
+                                                eprintln!("[sync] Failed to deserialize memory from {}: {}", kannaka_memory::sanitize_display(source_agent), e);
                                             }
                                         }
                                     }
@@ -4334,8 +4361,10 @@ fn main() {
                                     let strengthened =
                                         json["memories_strengthened"].as_u64().unwrap_or(0);
                                     let pruned = json["memories_pruned"].as_u64().unwrap_or(0);
+                                    // KANNAKA.dreams is print-only (no store insert), so the wire
+                                    // source just needs sanitizing before it reaches the terminal.
                                     println!("[dream] {} completed dream: {} cycles, {} strengthened, {} pruned",
-                                        source_agent, cycles, strengthened, pruned);
+                                        kannaka_memory::sanitize_display(source_agent), cycles, strengthened, pruned);
                                 }
                             }
                         }
@@ -4358,11 +4387,37 @@ fn main() {
                     match try_nats_connect(&nats_url) {
                         Some(transport) => {
                             let nats_phases = transport.get_all_phases().unwrap_or_default();
+                            // SECURITY (increment-0): the open NATS swarm lets
+                            // anyone publish an AgentPhase. Report BOTH counts
+                            // truthfully — `peer_count` is every phase observed
+                            // on the wire (raw, unfiltered), `trusted_peer_count`
+                            // is the allowlisted (+ our own) subset that actually
+                            // feeds the sync/queen metrics — so a forged
+                            // `agent-<hex>` flood shows up as the gap between the
+                            // two instead of silently inflating one number.
+                            // Escape hatch KANNAKA_METRICS_TRUSTED_ONLY=0 makes
+                            // trusted_peer_count == peer_count.
                             peer_count = nats_phases.len();
+                            let trusted_peer_count = if cfg.swarm_trust.metrics_trusted_only {
+                                kannaka_memory::filter_wire_phases(
+                                    nats_phases,
+                                    &agent_id,
+                                    &cfg.swarm_trust.trusted_agents,
+                                    cfg.swarm_trust.wire_trust_cap,
+                                )
+                                .len()
+                            } else {
+                                peer_count
+                            };
                             nats_status = serde_json::json!({
                                 "connected": true,
                                 "url": nats_url,
+                                // `peers` kept as a back-compat alias (== raw observed)
+                                // for existing consumers; `peer_count`/`trusted_peer_count`
+                                // are the increment-0 pair.
                                 "peers": peer_count,
+                                "peer_count": peer_count,
+                                "trusted_peer_count": trusted_peer_count,
                             });
                         }
                         None => {
@@ -4404,6 +4459,20 @@ fn main() {
                     };
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
+                    // SECURITY (increment-0): gate wire phases before they
+                    // weight the Kuramoto sync/metric — only allowlisted
+                    // (+ our own) ids count, wire trust_score capped. Escape
+                    // hatch: KANNAKA_METRICS_TRUSTED_ONLY=0.
+                    let nats_phases = if cfg.swarm_trust.metrics_trusted_only {
+                        kannaka_memory::filter_wire_phases(
+                            nats_phases,
+                            &agent_id,
+                            &cfg.swarm_trust.trusted_agents,
+                            cfg.swarm_trust.wire_trust_cap,
+                        )
+                    } else {
+                        nats_phases
+                    };
                     if nats_phases.is_empty() {
                         eprintln!(
                             "No swarm phases found via NATS. Publish first with 'swarm publish'."
@@ -4438,6 +4507,20 @@ fn main() {
                     };
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
+                    // SECURITY (increment-0): gate wire phases before they
+                    // weight the queen metric — only allowlisted (+ our own)
+                    // ids count, wire trust_score capped. Escape hatch:
+                    // KANNAKA_METRICS_TRUSTED_ONLY=0.
+                    let nats_phases = if cfg.swarm_trust.metrics_trusted_only {
+                        kannaka_memory::filter_wire_phases(
+                            nats_phases,
+                            &agent_id,
+                            &cfg.swarm_trust.trusted_agents,
+                            cfg.swarm_trust.wire_trust_cap,
+                        )
+                    } else {
+                        nats_phases
+                    };
                     if nats_phases.is_empty() {
                         eprintln!(
                             "No swarm phases found. Run 'swarm publish' and 'swarm sync' first."
@@ -4465,6 +4548,20 @@ fn main() {
                     };
 
                     let nats_phases = transport.get_all_phases().unwrap_or_default();
+                    // SECURITY (increment-0): gate wire phases before hive
+                    // detection weights them — only allowlisted (+ our own)
+                    // ids count, wire trust_score capped. Escape hatch:
+                    // KANNAKA_METRICS_TRUSTED_ONLY=0.
+                    let nats_phases = if cfg.swarm_trust.metrics_trusted_only {
+                        kannaka_memory::filter_wire_phases(
+                            nats_phases,
+                            &agent_id,
+                            &cfg.swarm_trust.trusted_agents,
+                            cfg.swarm_trust.wire_trust_cap,
+                        )
+                    } else {
+                        nats_phases
+                    };
                     if nats_phases.is_empty() {
                         eprintln!(
                             "No swarm phases found. Run 'swarm publish' and 'swarm sync' first."

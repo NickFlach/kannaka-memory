@@ -38,6 +38,8 @@ pub struct KannakaConfig {
     pub coupling: CouplingConfig,
     #[serde(default = "EntropyConfig::default")]
     pub entropy: EntropyConfig,
+    #[serde(default = "SwarmTrustConfig::default")]
+    pub swarm_trust: SwarmTrustConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +199,54 @@ fn default_entropy_source() -> String {
     "prng".to_string()
 }
 
+/// SECURITY (increment-0): read-side trust gate for the OPEN NATS swarm.
+/// Anonymous publish stays allowed, so the read side must not trust
+/// attacker-controlled wire fields. `trusted_agents` is an allowlist of
+/// agent-ids — each entry is either an exact id or a `prefix*` wildcard
+/// (e.g. `"qos-*"`). When `metrics_trusted_only` is set (default), only
+/// allowlisted (plus this node's own) phases feed the swarm metrics, and
+/// every kept phase has its wire `trust_score` clamped to `wire_trust_cap`.
+/// env: `KANNAKA_TRUSTED_AGENTS` (comma-separated, REPLACES the list) and
+/// `KANNAKA_METRICS_TRUSTED_ONLY=0` (disable the metrics filter — escape hatch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmTrustConfig {
+    #[serde(default = "default_trusted_agents")]
+    pub trusted_agents: Vec<String>,
+    #[serde(default = "default_true")]
+    pub metrics_trusted_only: bool,
+    #[serde(default = "default_wire_trust_cap")]
+    pub wire_trust_cap: f32,
+}
+
+impl Default for SwarmTrustConfig {
+    fn default() -> Self {
+        Self {
+            trusted_agents: default_trusted_agents(),
+            metrics_trusted_only: true,
+            wire_trust_cap: default_wire_trust_cap(),
+        }
+    }
+}
+
+fn default_trusted_agents() -> Vec<String> {
+    [
+        "Kannaka",
+        "kannaka-prime",
+        "0xSCADA-QE",
+        "kannaka-witness-01",
+        "kannaktopus-01",
+        "Flaukowski",
+        "qos-*",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn default_wire_trust_cap() -> f32 {
+    0.5
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -334,6 +384,7 @@ impl Default for KannakaConfig {
             cluster: ClusterConfig::default(),
             coupling: CouplingConfig::default(),
             entropy: EntropyConfig::default(),
+            swarm_trust: SwarmTrustConfig::default(),
         }
     }
 }
@@ -439,6 +490,24 @@ impl KannakaConfig {
         if let Ok(v) = std::env::var("KANNAKA_OBSERVATORY_URL") { self.constellation.observatory_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_HUB_URL") { self.ghostsignals.hub_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_TOKEN") { self.ghostsignals.token = v; }
+        // SECURITY (increment-0): swarm-trust overrides. KANNAKA_TRUSTED_AGENTS
+        // is a comma-separated allowlist that REPLACES the default list (empty
+        // entries dropped, whitespace trimmed; an all-empty value trusts only
+        // this node's own id). KANNAKA_METRICS_TRUSTED_ONLY=0 (or false/no/off)
+        // disables the metrics filter — the escape hatch.
+        if let Ok(v) = std::env::var("KANNAKA_TRUSTED_AGENTS") {
+            self.swarm_trust.trusted_agents = v
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if let Ok(v) = std::env::var("KANNAKA_METRICS_TRUSTED_ONLY") {
+            let v = v.trim().to_ascii_lowercase();
+            self.swarm_trust.metrics_trusted_only =
+                !matches!(v.as_str(), "0" | "false" | "no" | "off");
+        }
     }
 
     /// Load the on-disk config WITHOUT applying environment overrides.
