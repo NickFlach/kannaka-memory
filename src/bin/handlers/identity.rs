@@ -17,11 +17,12 @@ use kannaka_memory::config::KannakaConfig;
 use kannaka_memory::identity::{
     self, AuthClient, IdentityError, IdentityStore, UserInfo,
 };
+use kannaka_memory::beacon::Beacon;
 use kannaka_memory::provenance::{node_signing_key, verifying_key_bytes};
 use kannaka_memory::reputation::{RepStore, SeedStatus};
 
 const USAGE: &str = "Usage: kannaka identity \
-    <register|login|whoami|logout|keygen|pubkey|enroll-seed|vouch|revoke> [args]";
+    <register|login|whoami|logout|keygen|pubkey|enroll-seed|vouch|revoke|beacon> [args]";
 
 pub(crate) fn handle_identity(args: &[String]) {
     let sub = match args.get(1) {
@@ -44,6 +45,7 @@ pub(crate) fn handle_identity(args: &[String]) {
         "enroll-seed" => handle_enroll_seed(args),
         "vouch" => handle_vouch(args),
         "revoke" => handle_revoke(args),
+        "beacon" => handle_beacon(),
         _ => {
             eprintln!("{USAGE}");
             process::exit(1);
@@ -370,6 +372,54 @@ fn handle_revoke(args: &[String]) {
             "  \u{2713} revoked — was not a pinned seed; rep floored to 0 ({events} poison event(s))"
         );
     }
+}
+
+/// `kannaka identity beacon` — if THIS node is a pinned seed, emit a signed
+/// heartbeat beacon for the current epoch (PART A anti-eclipse). Prints the
+/// beacon as JSON to stdout so an operator can publish it to the swarm; a
+/// receiver verifies it and feeds `QuarantineStaging::ingest_beacon`
+/// (`BeaconTracker::ingest`). A non-seed is refused — only seed beacons count
+/// toward freshness. Changes NO automatic runtime behaviour (the gate stays
+/// dormant until seeds are pinned AND `corroboration_gate_enabled`).
+fn handle_beacon() {
+    let dir = KannakaConfig::data_dir();
+    let cfg = KannakaConfig::load();
+    let seed = match node_signing_key(&dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  beacon: node key error: {e}");
+            process::exit(1);
+        }
+    };
+    let me = verifying_key_bytes(&seed);
+    let store = RepStore::load(&dir, &cfg.swarm_trust);
+    if store.seed_status(&me) != SeedStatus::Seed {
+        eprintln!("  beacon refused: only pinned seeds emit heartbeat beacons; this node is not a seed.");
+        eprintln!("  this node's pubkey: {}", crate::b64_encode_std(&me));
+        process::exit(1);
+    }
+
+    let now = kannaka_memory::provenance::now_ms();
+    let epoch = kannaka_memory::absorb_gate::epoch_now(&cfg, now);
+    // prev_reject_root: lightweight stand-in — the empty root until a persisted
+    // operator-reject log is wired (then fold each reject via
+    // kannaka_memory::beacon::roll_reject_root before signing).
+    let beacon = Beacon::sign(&seed, epoch, kannaka_memory::beacon::EMPTY_REJECT_ROOT);
+    let v = serde_json::json!({
+        "epoch": beacon.epoch,
+        "prev_reject_root": crate::b64_encode_std(&beacon.prev_reject_root),
+        "pubkey": crate::b64_encode_std(&beacon.pubkey),
+        "sig": crate::b64_encode_std(&beacon.sig),
+    });
+    println!("{v}");
+    eprintln!("  \u{2713} signed heartbeat beacon for epoch {epoch}");
+    // TODO(inc-1): publish this over NATS from the swarm serve/join loop, and on
+    // the receive side verify + feed QuarantineStaging::ingest_beacon so peers'
+    // freshness advances automatically instead of via this manual emit.
+    eprintln!(
+        "  Publish this to the swarm; receivers verify it and feed the beacon tracker \
+         (a stale/absent seed beacon freezes promotion — anti-eclipse fail-closed)."
+    );
 }
 
 // ---------------------------------------------------------------------------

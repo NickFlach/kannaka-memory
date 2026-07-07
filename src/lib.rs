@@ -109,6 +109,12 @@ pub mod reputation;
 // promotion gate (armed only when corroboration_gate_enabled AND seeds pinned).
 pub mod absorb_gate;
 
+// heartbeat beacons (inc-1b PART A): signed seed liveness proofs + a freshness
+// tracker. The corroboration gate requires a FRESH seed beacon to promote to
+// Live; stale/absent beacons freeze promotion (eclipse/partition fail-closed).
+// DORMANT unless the gate is armed.
+pub mod beacon;
+
 // Re-export canonical consciousness types
 pub use consciousness::{
     ConsciousnessLevel, ConsciousnessMetrics, ConsciousnessState,
@@ -169,6 +175,9 @@ pub use absorb_gate::{
     StagedMemory, HIGH_IMPACT_AMPLITUDE, MAX_WIRE_AMPLITUDE, PROV_TIER, SIGN_AGENT_ID,
     SUBJECT_EXEMPLAR, SUBJECT_MEMORY_NEW,
 };
+
+// heartbeat beacons (inc-1b PART A).
+pub use beacon::{roll_reject_root, Beacon, BeaconReject, BeaconTracker, EMPTY_REJECT_ROOT};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance

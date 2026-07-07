@@ -43,6 +43,14 @@
 //!   its own `memory.new`/exemplar emits, gated behind nothing. Signing is
 //!   additive and harmless when the gate is off, and it is the ONLY way
 //!   corroboration can accrue before an operator flips the gate on.
+//! - **Beacon freshness rides in [`QuarantineStaging`].** The anti-eclipse
+//!   [`BeaconTracker`] (PART A) lives inside the staging store that `admit`
+//!   already threads, so the chokepoint signature is unchanged. When the gate is
+//!   ACTIVE, a `Live` promotion additionally requires a FRESH seed beacon; if
+//!   beacons are stale/absent (eclipse or partition) the promotion **freezes to
+//!   Quarantine** (never Drop — legit content is preserved and promotes once
+//!   beacons resume). Feeding the tracker is [`QuarantineStaging::ingest_beacon`]
+//!   (called from the swarm receive path / `kannaka identity beacon`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,6 +58,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::beacon::{Beacon, BeaconReject, BeaconTracker};
 use crate::config::KannakaConfig;
 use crate::memory::HyperMemory;
 use crate::provenance::{amp_to_q16, now_ms, verify_mem, ProvenanceSig, ReplayLru};
@@ -285,6 +294,16 @@ pub fn admit(
 
     match decision {
         Promotion::Live { .. } => {
+            // (f) PART A anti-eclipse fail-closed: a Live promotion additionally
+            // requires a FRESH seed heartbeat beacon. If beacons are stale/absent
+            // (eclipse or partition), FREEZE — return Quarantine so the content
+            // stays staged (never Drop legit content) and promotes once beacons
+            // resume. Corroboration is NOT recorded while frozen, so the same
+            // content re-decides Live the moment a fresh beacon arrives.
+            if !staging.beacons.fresh(epoch, cfg.swarm_trust.beacon_grace_epochs) {
+                let _ = staging.save();
+                return (AdmitDecision::Quarantine, clean);
+            }
             // Promote: accrue to the origin + mark Live in the DAG, then drop the
             // staged copy (the caller inserts the current memory into the medium).
             rep.record_promotion(h, origin, epoch, corroborators, &cfg.swarm_trust);
@@ -338,6 +357,10 @@ pub struct QuarantineStaging {
     entries: HashMap<[u8; 32], StagedMemory>,
     /// (memory_id, nonce) replay freshness for [`admit`].
     replay: ReplayLru,
+    /// PART A anti-eclipse: per-seed latest verified heartbeat epoch. A Live
+    /// promotion requires this to be fresh (see [`admit`]). Rides here so the
+    /// chokepoint signature stays unchanged.
+    beacons: BeaconTracker,
     cap: usize,
     ttl_ms: i64,
 }
@@ -349,6 +372,7 @@ impl QuarantineStaging {
             dir: None,
             entries: HashMap::new(),
             replay: ReplayLru::new(),
+            beacons: BeaconTracker::new(),
             cap: STAGING_CAP,
             ttl_ms: STAGING_TTL_MS,
         }
@@ -362,6 +386,7 @@ impl QuarantineStaging {
         let dir = data_dir.join("quarantine");
         let mut s = Self {
             replay: ReplayLru::load(&dir.join("replay.json"), now_ms()),
+            beacons: BeaconTracker::load(&dir.join("beacons.json")),
             dir: Some(dir.clone()),
             entries: HashMap::new(),
             cap: STAGING_CAP,
@@ -404,6 +429,26 @@ impl QuarantineStaging {
     /// Whether `h` is currently staged.
     pub fn contains(&self, h: &[u8; 32]) -> bool {
         self.entries.contains_key(h)
+    }
+
+    /// PART A: verify a heartbeat beacon and, if it is a fresh SEED beacon,
+    /// record its epoch in the anti-eclipse tracker. Non-seed / replayed /
+    /// future-dated beacons are rejected (see [`BeaconTracker::ingest`]). This is
+    /// the receive path a swarm serve/join loop (or `kannaka identity beacon`
+    /// out-of-band) calls; `seeds` is the pinned seed set (`RepStore::seeds`).
+    pub fn ingest_beacon(
+        &mut self,
+        beacon: &Beacon,
+        seeds: &HashSet<PubKey>,
+        now_epoch: u64,
+    ) -> Result<PubKey, BeaconReject> {
+        self.beacons.ingest(beacon, seeds, now_epoch)
+    }
+
+    /// PART A: whether at least one seed beacon is fresh within `grace` epochs of
+    /// `now_epoch` — the freshness predicate [`admit`] gates Live promotion on.
+    pub fn beacons_fresh(&self, now_epoch: u64, grace: u32) -> bool {
+        self.beacons.fresh(now_epoch, grace)
     }
 
     /// The accrual origin (first signer) of a staged content-hash.
@@ -500,6 +545,10 @@ impl QuarantineStaging {
         // Replay persistence is best-effort — a lost replay set only re-opens the
         // skew window, and the set fails closed on a corrupt reload.
         let _ = self.replay.persist(&dir.join("replay.json"));
+        // Beacon freshness is best-effort — a lost/corrupt file reloads empty,
+        // which freezes promotion (the fail-closed direction) until a fresh
+        // beacon is re-ingested.
+        let _ = self.beacons.save(&dir.join("beacons.json"));
         Ok(())
     }
 }
@@ -560,6 +609,7 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::beacon::Beacon;
     use crate::provenance::{sign_mem, verifying_key_bytes};
     use crate::reputation::RepStore;
 
@@ -715,6 +765,15 @@ mod tests {
         let mut rep = RepStore::in_memory(&cfg.swarm_trust);
         let mut staging = QuarantineStaging::in_memory();
 
+        // PART A: seed a fresh heartbeat so the Live promotion below isn't frozen
+        // by the anti-eclipse gate.
+        let seed_set: HashSet<PubKey> = (0..seeds.signing.len())
+            .map(|i| verifying_key_bytes(&seeds.seed(i)))
+            .collect();
+        let now_epoch = epoch_now(&cfg, now);
+        let beacon = Beacon::sign(&seeds.seed(0), now_epoch, [0u8; 32]);
+        staging.ingest_beacon(&beacon, &seed_set, now_epoch).unwrap();
+
         // author (non-seed) → Quarantine
         let id0 = Uuid::new_v4();
         let s0 = signed(&NON_SEED, id0, content, SUBJECT_MEMORY_NEW, 0.5, now);
@@ -749,6 +808,51 @@ mod tests {
         let (rep, staging, _cfg, h, _origin) = promote_to_live(&seeds, content, now);
         assert!(rep.dag().is_promoted(&h), "promoted to live");
         assert!(!staging.contains(&h), "moved out of staging on promotion");
+    }
+
+    // --- PART A: stale/absent beacon freezes an otherwise-promotable memory --
+    #[test]
+    fn stale_beacon_freezes_then_fresh_beacon_thaws() {
+        let seeds = Seeds::new(3);
+        let cfg = test_cfg(seeds.pubkeys_b64(), true);
+        let now = 1_000_000;
+        let content = "an otherwise-promotable fact observed during an eclipse";
+        let now_epoch = epoch_now(&cfg, now);
+
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory(); // NO beacon ⇒ eclipsed
+
+        // author → Quarantine; seed0 → ProbationLive; seed1 → would be Live (C=2≥K=2).
+        let id0 = Uuid::new_v4();
+        let s0 = signed(&NON_SEED, id0, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id0, Some(&s0),
+            &mut staging, &mut rep, &cfg, now);
+        let id1 = Uuid::new_v4();
+        let s1 = signed(&seeds.seed(0), id1, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id1, Some(&s1),
+            &mut staging, &mut rep, &cfg, now);
+        let id2 = Uuid::new_v4();
+        let s2 = signed(&seeds.seed(1), id2, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (frozen, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id2, Some(&s2),
+            &mut staging, &mut rep, &cfg, now);
+
+        let h = content_hash(content);
+        assert_eq!(frozen, AdmitDecision::Quarantine, "stale/absent beacons freeze promotion");
+        assert!(!rep.dag().is_promoted(&h), "frozen: not promoted to live");
+        assert!(staging.contains(&h), "frozen content preserved in staging (never dropped)");
+
+        // Beacons resume ⇒ the next corroboration promotes the SAME content.
+        let seed_set: HashSet<PubKey> = (0..seeds.signing.len())
+            .map(|i| verifying_key_bytes(&seeds.seed(i)))
+            .collect();
+        let beacon = Beacon::sign(&seeds.seed(0), now_epoch, [0u8; 32]);
+        staging.ingest_beacon(&beacon, &seed_set, now_epoch).unwrap();
+        let id3 = Uuid::new_v4();
+        let s3 = signed(&seeds.seed(2), id3, content, SUBJECT_MEMORY_NEW, 0.5, now);
+        let (thawed, _) = admit(content, 0.5, 0.0, 0.1, false, SUBJECT_MEMORY_NEW, id3, Some(&s3),
+            &mut staging, &mut rep, &cfg, now);
+        assert_eq!(thawed, AdmitDecision::Live, "a fresh seed beacon thaws promotion");
+        assert!(rep.dag().is_promoted(&h), "promoted once beacons resumed");
     }
 
     // --- (e) echo: already-Live content ⇒ no new memory, accrues nothing ---

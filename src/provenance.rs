@@ -63,6 +63,8 @@ pub const DOMAIN_ROT: &[u8] = b"kannaka/prov/rotate/v1\0";
 pub const DOMAIN_BOOT: &[u8] = b"kannaka/prov/boot/v1\0";
 /// Domain prefix for a `.hrm` at-rest authenticity signature.
 pub const DOMAIN_HRM: &[u8] = b"kannaka/prov/hrm/v1\0";
+/// Domain prefix for a heartbeat beacon statement ([`canonical_beacon`]).
+pub const DOMAIN_BEACON: &[u8] = b"kannaka/prov/beacon/v1\0";
 
 // ---------------------------------------------------------------------------
 // ProvenanceSig
@@ -233,6 +235,25 @@ pub fn canonical_phase(
     b.extend_from_slice(&ts_ms.to_le_bytes());
     b.extend_from_slice(blake3::hash(phase_json.as_bytes()).as_bytes()); // [u8; 32]
     put(&mut b, subject.as_bytes());
+    b
+}
+
+/// Canonical signed bytes for a heartbeat beacon statement:
+///
+/// ```text
+/// DOMAIN_BEACON ‖ epoch[8le] ‖ prev_reject_root[32]
+/// ```
+///
+/// A seed signs one per epoch (see [`crate::beacon`]) so partitioned/eclipsed
+/// nodes can detect the ABSENCE of fresh beacons and fail closed (freeze
+/// promotion). `prev_reject_root` is a lightweight blake3 rolling stand-in for a
+/// full Merkle root of recently operator-rejected mem-hashes — it is *bound into*
+/// the signature so a beacon can't be replayed with a swapped reject summary.
+pub fn canonical_beacon(epoch: u64, prev_reject_root: &[u8; 32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(DOMAIN_BEACON.len() + 8 + 32);
+    b.extend_from_slice(DOMAIN_BEACON);
+    b.extend_from_slice(&epoch.to_le_bytes());
+    b.extend_from_slice(prev_reject_root);
     b
 }
 
