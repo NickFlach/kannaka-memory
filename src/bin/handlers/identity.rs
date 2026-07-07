@@ -13,11 +13,15 @@
 use std::io::Write;
 use std::process;
 
+use kannaka_memory::config::KannakaConfig;
 use kannaka_memory::identity::{
     self, AuthClient, IdentityError, IdentityStore, UserInfo,
 };
+use kannaka_memory::provenance::{node_signing_key, verifying_key_bytes};
+use kannaka_memory::reputation::{RepStore, SeedStatus};
 
-const USAGE: &str = "Usage: kannaka identity <register|login|whoami|logout> [--email ADDR]";
+const USAGE: &str = "Usage: kannaka identity \
+    <register|login|whoami|logout|keygen|pubkey|enroll-seed|vouch|revoke> [args]";
 
 pub(crate) fn handle_identity(args: &[String]) {
     let sub = match args.get(1) {
@@ -29,10 +33,17 @@ pub(crate) fn handle_identity(args: &[String]) {
     };
 
     match sub {
+        // SpaceChild SSO session.
         "register" => handle_register(args),
         "login" => handle_login(args),
         "whoami" => handle_whoami(),
         "logout" => handle_logout(),
+        // inc-1 cryptographic swarm identity + corroboration trust root.
+        "keygen" => handle_keygen(),
+        "pubkey" => handle_pubkey(),
+        "enroll-seed" => handle_enroll_seed(args),
+        "vouch" => handle_vouch(args),
+        "revoke" => handle_revoke(args),
         _ => {
             eprintln!("{USAGE}");
             process::exit(1);
@@ -161,8 +172,220 @@ fn handle_logout() {
 }
 
 // ---------------------------------------------------------------------------
+// inc-1 corroboration trust model — node key + seed/vouch/revoke
+// ---------------------------------------------------------------------------
+//
+// These verbs manage the node's CRYPTOGRAPHIC swarm identity (ed25519 node key)
+// and the operator trust root (pinned seeds + vouch lineage). They are
+// independent of the SpaceChild SSO session above. They change NO automatic
+// runtime behaviour: the corroboration gate stays dormant until an operator
+// pins a seed AND sets `swarm_trust.corroboration_gate_enabled`.
+//
+// config-vs-store split (judgment call):
+//   • seeds live in CONFIG (`swarm_trust.seed_pubkeys`) — operator-pinned,
+//     persisted to config.toml, the root `RepStore::seeds_from_cfg` reads.
+//   • vouch edges / poison live in the STORE (reputation.{log,snapshot.gz}) —
+//     derived trust state the DAG walks to a seed_root.
+
+/// `kannaka identity keygen` — ensure `<data_dir>/node_key.ed25519` exists and
+/// print this node's base64 verifying pubkey. Idempotent: a re-run prints the
+/// same key. The pubkey goes to STDOUT (scriptable); the note to stderr, so
+/// `keygen` and `pubkey` produce byte-identical stdout.
+fn handle_keygen() {
+    let (pk_b64, path) = ensure_node_pubkey();
+    println!("{pk_b64}");
+    eprintln!("  \u{2713} node key ensured at {}", path.display());
+    eprintln!(
+        "  This base64 pubkey is this node's swarm identity — share it to be \
+         enrolled as a seed or vouched into the web of trust."
+    );
+}
+
+/// `kannaka identity pubkey` — print this node's base64 verifying pubkey. Like
+/// keygen it ensures the key exists first (no additional side effect), but is
+/// framed as a plain read (stdout only).
+fn handle_pubkey() {
+    let (pk_b64, _path) = ensure_node_pubkey();
+    println!("{pk_b64}");
+}
+
+/// Ensure the node key exists; return `(base64_pubkey, key_path)`.
+fn ensure_node_pubkey() -> (String, std::path::PathBuf) {
+    let dir = KannakaConfig::data_dir();
+    let seed = match node_signing_key(&dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  identity: could not load/create node key: {e}");
+            process::exit(1);
+        }
+    };
+    let pk = verifying_key_bytes(&seed);
+    (crate::b64_encode_std(&pk), dir.join("node_key.ed25519"))
+}
+
+/// Add a base64 seed pubkey to `cfg.swarm_trust.seed_pubkeys`, deduping by the
+/// decoded 32-byte key (so re-enrolling the same key, even with different
+/// padding/whitespace, is a no-op). Returns `(new_seed_count, added)` or an
+/// error if the key is malformed. Pure — mutates only the passed cfg — so it
+/// is unit-testable without touching disk.
+pub(crate) fn enroll_seed(cfg: &mut KannakaConfig, b64: &str) -> Result<(usize, bool), String> {
+    let pk = crate::b64_decode_32(b64)?;
+    let canon = crate::b64_encode_std(&pk);
+    let already = cfg
+        .swarm_trust
+        .seed_pubkeys
+        .iter()
+        .any(|s| crate::b64_decode_32(s).map(|d| d == pk).unwrap_or(false));
+    if !already {
+        cfg.swarm_trust.seed_pubkeys.push(canon);
+    }
+    Ok((cfg.swarm_trust.seed_pubkeys.len(), !already))
+}
+
+/// `kannaka identity enroll-seed <b64-pubkey>` — operator: pin a base64 pubkey
+/// as a trust-root seed. Validates 32-byte decode, dedups, persists to config.
+fn handle_enroll_seed(args: &[String]) {
+    let usage = "Usage: kannaka identity enroll-seed <base64-pubkey>";
+    let b64 = require_arg(args, 2, usage);
+    // load_unmodified so persisting the seed set doesn't bake unrelated
+    // env-only values (KANNAKA_AGENT_ID, KANNAKA_NATS_URL, …) into the file.
+    let mut cfg = KannakaConfig::load_unmodified();
+    match enroll_seed(&mut cfg, &b64) {
+        Ok((count, added)) => {
+            if !added {
+                println!("  seed already enrolled — {count} seed(s) pinned");
+                return;
+            }
+            if let Err(e) = cfg.save() {
+                eprintln!("  enroll-seed: failed to save config: {e}");
+                process::exit(1);
+            }
+            println!("  \u{2713} enrolled seed — {count} seed(s) now pinned");
+            println!(
+                "  Seeds are the trust root: every promotion lineage must resolve to a \
+                 pinned seed. The gate stays dormant until swarm_trust.corroboration_gate_enabled."
+            );
+        }
+        Err(e) => {
+            eprintln!("  enroll-seed: malformed pubkey — {e}");
+            process::exit(1);
+        }
+    }
+}
+
+/// `kannaka identity vouch <b64-pubkey>` — if THIS node is itself a pinned
+/// seed, record a vouch edge `this_node -> target` in the reputation DAG
+/// (persisted), building `seed_root` lineage for a non-seed peer. Non-seeds
+/// are refused.
+fn handle_vouch(args: &[String]) {
+    let usage = "Usage: kannaka identity vouch <base64-pubkey>";
+    let target_b64 = require_arg(args, 2, usage);
+    let target = match crate::b64_decode_32(&target_b64) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("  vouch: malformed pubkey — {e}");
+            process::exit(1);
+        }
+    };
+    let dir = KannakaConfig::data_dir();
+    let cfg = KannakaConfig::load();
+    let me = match node_signing_key(&dir) {
+        Ok(seed) => verifying_key_bytes(&seed),
+        Err(e) => {
+            eprintln!("  vouch: node key error: {e}");
+            process::exit(1);
+        }
+    };
+    let mut store = RepStore::load(&dir, &cfg.swarm_trust);
+    if store.seed_status(&me) != SeedStatus::Seed {
+        eprintln!("  vouch refused: only pinned seeds may vouch, and this node is not a seed.");
+        eprintln!("  this node's pubkey: {}", crate::b64_encode_std(&me));
+        eprintln!(
+            "  an operator can pin it with: kannaka identity enroll-seed {}",
+            crate::b64_encode_std(&me)
+        );
+        process::exit(1);
+    }
+    if me == target {
+        println!("  a seed already roots to itself — nothing to vouch.");
+        return;
+    }
+    store.record_vouch(me, target);
+    let root = store
+        .seed_root_of(&target)
+        .map(|r| crate::b64_encode_std(&r))
+        .unwrap_or_else(|| "-".to_string());
+    println!("  \u{2713} vouched {} -> {}", crate::b64_encode_std(&me), target_b64);
+    println!("  target seed_root now: {root}");
+}
+
+/// `kannaka identity revoke <b64-pubkey>` — operator: remove the key from the
+/// pinned seed set (if present) and record a revocation in the store, flooring
+/// its reputation to 0. The store's only rep-lowering lever is the operator
+/// poison (`P_POISON`), so this applies it until rep hits 0 (rep ∈ [0,1] and
+/// P_POISON = 0.5 ⇒ at most 2 events for a former non-seed).
+fn handle_revoke(args: &[String]) {
+    let usage = "Usage: kannaka identity revoke <base64-pubkey>";
+    let b64 = require_arg(args, 2, usage);
+    let pk = match crate::b64_decode_32(&b64) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("  revoke: malformed pubkey — {e}");
+            process::exit(1);
+        }
+    };
+
+    // 1. Config: drop it from the pinned seed set (dedup-safe by decoded bytes).
+    let mut cfg = KannakaConfig::load_unmodified();
+    let before = cfg.swarm_trust.seed_pubkeys.len();
+    cfg.swarm_trust
+        .seed_pubkeys
+        .retain(|s| crate::b64_decode_32(s).map(|d| d != pk).unwrap_or(true));
+    let removed_seed = cfg.swarm_trust.seed_pubkeys.len() != before;
+    if removed_seed {
+        if let Err(e) = cfg.save() {
+            eprintln!("  revoke: failed to save config: {e}");
+            process::exit(1);
+        }
+    }
+
+    // 2. Store: record the revocation (operator poison) and floor rep to 0.
+    //    Load the store with the POST-removal seed set so a former seed is now
+    //    a plain handle whose record rep can actually be driven down.
+    let dir = KannakaConfig::data_dir();
+    let mut store = RepStore::load(&dir, &cfg.swarm_trust);
+    let mut events = 0;
+    while store.rep(&pk) > 0.0 && events < 8 {
+        store.record_poison(pk, &cfg.swarm_trust);
+        events += 1;
+    }
+
+    if removed_seed {
+        println!(
+            "  \u{2713} revoked — unpinned from seeds ({} remain), rep floored to 0 ({events} poison event(s))",
+            cfg.swarm_trust.seed_pubkeys.len()
+        );
+    } else {
+        println!(
+            "  \u{2713} revoked — was not a pinned seed; rep floored to 0 ({events} poison event(s))"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// A required positional at `idx` (rejects a missing value or a `--flag`).
+fn require_arg(args: &[String], idx: usize, usage: &str) -> String {
+    match args.get(idx) {
+        Some(s) if !s.is_empty() && !s.starts_with("--") => s.clone(),
+        _ => {
+            eprintln!("{usage}");
+            process::exit(1);
+        }
+    }
+}
 
 /// id/email/expiry only — tokens never reach stdout.
 fn print_whoami(user: &UserInfo, access_token: &str) {
@@ -239,4 +462,74 @@ fn read_password(email: &str) -> String {
         process::exit(1);
     }
     password
+}
+
+// ---------------------------------------------------------------------------
+// Tests — inc-1 corroboration trust model verbs
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // keygen is idempotent: node_signing_key generates once then reloads the
+    // SAME key, so the printed base64 pubkey is stable across re-runs.
+    #[test]
+    fn keygen_pubkey_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let k1 = node_signing_key(dir.path()).unwrap();
+        let k2 = node_signing_key(dir.path()).unwrap();
+        assert_eq!(
+            crate::b64_encode_std(&verifying_key_bytes(&k1)),
+            crate::b64_encode_std(&verifying_key_bytes(&k2)),
+            "re-run must print the same pubkey"
+        );
+    }
+
+    // enroll-seed adds to the config seed set and dedups a repeat by decoded key.
+    #[test]
+    fn enroll_seed_adds_then_dedups() {
+        let mut cfg = KannakaConfig::default();
+        assert!(cfg.swarm_trust.seed_pubkeys.is_empty());
+        let pk_b64 = crate::b64_encode_std(&[7u8; 32]);
+
+        let (count1, added1) = enroll_seed(&mut cfg, &pk_b64).unwrap();
+        assert_eq!(count1, 1);
+        assert!(added1, "first enroll adds");
+
+        let (count2, added2) = enroll_seed(&mut cfg, &pk_b64).unwrap();
+        assert_eq!(count2, 1, "same key must not grow the set");
+        assert!(!added2, "repeat is a dedup no-op");
+    }
+
+    // enroll-seed rejects a malformed key (wrong length + invalid chars) and
+    // leaves the config untouched.
+    #[test]
+    fn enroll_seed_rejects_bad_key() {
+        let mut cfg = KannakaConfig::default();
+        // 16 bytes decodes fine as base64 but is the wrong length for a key.
+        assert!(enroll_seed(&mut cfg, &crate::b64_encode_std(&[1u8; 16])).is_err());
+        // Non-alphabet characters.
+        assert!(enroll_seed(&mut cfg, "!!! not base64 !!!").is_err());
+        assert!(
+            cfg.swarm_trust.seed_pubkeys.is_empty(),
+            "bad keys leave config untouched"
+        );
+    }
+
+    // A node that is NOT a pinned seed may not vouch — the refusal predicate
+    // handle_vouch checks (seed_status != Seed) holds for a fresh node with an
+    // empty seed set.
+    #[test]
+    fn non_seed_may_not_vouch() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = KannakaConfig::default(); // no seeds pinned
+        let store = RepStore::load(dir.path(), &cfg.swarm_trust);
+        let me = verifying_key_bytes(&node_signing_key(dir.path()).unwrap());
+        assert_ne!(
+            store.seed_status(&me),
+            SeedStatus::Seed,
+            "fresh node with no pinned seed is not a seed ⇒ vouch refused"
+        );
+    }
 }

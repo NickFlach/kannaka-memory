@@ -65,6 +65,14 @@ use handlers_services::{handle_constellation, handle_market, handle_radio};
 mod handlers_identity;
 use handlers_identity::handle_identity;
 
+// inc-1 corroboration trust model — operator inspection of the reputation
+// ledger (`kannaka reputation show|list|hard-reject`). The seed/vouch/revoke
+// *write* verbs live under `kannaka identity` (handlers_identity) since they
+// manage the node's cryptographic swarm identity + trust root.
+#[path = "handlers/reputation.rs"]
+mod handlers_reputation;
+use handlers_reputation::handle_reputation;
+
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
@@ -583,6 +591,64 @@ pub(crate) fn parse_flag_value<T: std::str::FromStr>(
     }
 }
 
+/// Standard-alphabet base64 (padded) encode. The crate deliberately carries
+/// no `base64` dependency; this mirrors the codec in `provenance.rs` /
+/// `nats.rs` so a CLI-printed pubkey round-trips with the on-wire encoding
+/// (`ProvenanceSig`). Shared by the `identity` and `reputation` handlers.
+pub(crate) fn b64_encode_std(data: &[u8]) -> String {
+    const A: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
+        out.push(A[((n >> 18) & 63) as usize] as char);
+        out.push(A[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { A[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Decode standard-alphabet base64 into exactly 32 bytes — an ed25519
+/// verifying key or a blake3 mem-hash. Errors on any non-alphabet character or
+/// a wrong decoded length so the operator gets a clear message instead of a
+/// silent truncation. Same alphabet as [`b64_encode_std`], so keys round-trip
+/// with the provenance wire codec and `config.seed_pubkeys`.
+pub(crate) fn b64_decode_32(s: &str) -> Result<[u8; 32], String> {
+    let mut out: Vec<u8> = Vec::with_capacity(33);
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in s.trim().as_bytes() {
+        if b == b'=' || b == b'\n' || b == b'\r' || b == b' ' {
+            continue;
+        }
+        let val: u32 = match b {
+            b'A'..=b'Z' => u32::from(b - b'A'),
+            b'a'..=b'z' => u32::from(b - b'a') + 26,
+            b'0'..=b'9' => u32::from(b - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(format!("invalid base64 character '{}'", b as char)),
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    if out.len() != 32 {
+        return Err(format!("expected 32 bytes, decoded {}", out.len()));
+    }
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    Ok(a)
+}
+
 /// True when KANNAKA_READONLY requests no-persist mode. Mirrors
 /// `HrmStore::env_readonly` (any non-empty value other than "0"/"false").
 pub(crate) fn readonly_env_active() -> bool {
@@ -742,8 +808,10 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "ask" | "chat" | "agent" | "voice"
         // swarm / nats
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
-        // identity (SpaceChild SSO)
+        // identity (SpaceChild SSO + inc-1 crypto identity / trust root)
         | "identity"
+        // inc-1 corroboration trust model — reputation-ledger inspection
+        | "reputation"
         // constellation services
         | "radio" | "market" | "constellation"
         // ops / data movement
@@ -1194,10 +1262,18 @@ fn main() {
             handle_config(&cfg, &args[command_start..]);
             return;
         }
-        // SpaceChild SSO identity — pure HTTP + identity.json, never
-        // touches the HRM (keep it out of the 21 MB load below).
+        // SpaceChild SSO identity + inc-1 crypto identity/seed/vouch/revoke —
+        // pure config + node_key + reputation store, never touches the HRM
+        // (keep it out of the 21 MB load below).
         "identity" => {
             handle_identity(&args[command_start..]);
+            return;
+        }
+        // inc-1 corroboration trust model: operator inspection of the
+        // reputation ledger (config seeds + <data_dir>/reputation.{log,snapshot.gz}).
+        // No HRM needed — mirrors the identity fast path.
+        "reputation" => {
+            handle_reputation(&args[command_start..]);
             return;
         }
         // ADR-0037 belief: `on`/`off` only persist config (no HRM needed) and

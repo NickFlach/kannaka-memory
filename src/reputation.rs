@@ -482,6 +482,27 @@ impl RepStore {
         &self.dag
     }
 
+    /// Read-only: the reputation record for `pk`, if one exists. Exposes the
+    /// bookkeeping counters (`promoted`, `poison`, `armed`, `seed_root`) to the
+    /// operator inspection CLI (`kannaka reputation show`). Pure — no state
+    /// change and no effect on the (dormant) promotion gate.
+    pub fn record(&self, pk: &PubKey) -> Option<&RepRecord> {
+        self.reps.get(pk)
+    }
+
+    /// Read-only: iterate the operator-pinned seed pubkeys (CLI listing). A
+    /// seed need not carry a [`RepRecord`], so enumerate this alongside
+    /// [`records`](RepStore::records) to get every *known* pubkey.
+    pub fn seeds(&self) -> impl Iterator<Item = &PubKey> {
+        self.seeds.iter()
+    }
+
+    /// Read-only: iterate every reputation record (CLI listing). Does not
+    /// include seeds that have no record — union with [`seeds`](RepStore::seeds).
+    pub fn records(&self) -> impl Iterator<Item = &RepRecord> {
+        self.reps.values()
+    }
+
     // --- decision -------------------------------------------------------
 
     /// Decide the fate of a candidate memory (inc-1 §2.2). Pure w.r.t. store
