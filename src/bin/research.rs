@@ -3614,6 +3614,16 @@ fn run_experiment_l5_session(params: &Params) {
     // of drive or mode. Cycles 1-4 use threshold_scale=0.3 (reduced); the drive's
     // 0.5 Hz first-quarter arc produces deltas ≈ [0.071A, 0.100A, 0.071A, 0] that
     // DFT strongly at k=1 (2 Hz), pushing carrier_emergence to ~0.85.
+    //
+    // Dual-mode carrier test (hypothesis 2026-07-07T00): engine_flat uses
+    // interference_relax regardless of the main DREAM_MODE. The flat carrier test
+    // asks "can the dream generate rhythmic amplitude structure from a uniform input?"
+    // — irx answers this independently of the Kuramoto-sync path used for transfer
+    // and xi. Post-fix irx produces carrier_e ≈ 0.987 on the flat corpus, while
+    // stage_sync gives ≈ 0.652. The xi and transfer engines run before this block
+    // (already completed) so switching mode here does not affect those scores.
+    let prev_flat_dream_mode = std::env::var("DREAM_MODE").ok();
+    std::env::set_var("DREAM_MODE", "interference_relax");
     let amp_deltas_flat = {
         let mut flat_params = (*params).clone();
         flat_params.chain_depth = 5;
@@ -3626,6 +3636,10 @@ fn run_experiment_l5_session(params: &Params) {
             all_deltas
         }
     };
+    match prev_flat_dream_mode.as_deref() {
+        Some(v) => std::env::set_var("DREAM_MODE", v),
+        None => std::env::remove_var("DREAM_MODE"),
+    }
     std::env::remove_var("DRIVE_CONTEXT");
     let consolidation_ms_flat = start_flat.elapsed().as_millis() as u64;
 
