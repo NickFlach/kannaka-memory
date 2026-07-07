@@ -682,6 +682,34 @@ mod tests {
 
     const NON_SEED: [u8; 32] = [200u8; 32];
 
+    // --- (a0) seeds pinned but gate OFF is still dormant --------------------
+    // Guards the AND in `gate_active` (enabled && !seeds.empty). This is the
+    // rollout state — an operator has pinned seeds but not yet flipped the gate
+    // on — and it MUST stay exact inc-0 behavior. A `&&`->`||` mutant would make
+    // this active, reject the unsigned memory, and fail the Live assertion.
+    #[test]
+    fn seeds_pinned_gate_off_is_dormant() {
+        let seed = [7u8; 32];
+        let cfg = test_cfg(vec![b64(&seed)], false); // seeds present, gate OFF
+        assert!(!gate_active(&cfg), "seeds pinned + gate off => NOT active");
+        let mut rep = RepStore::in_memory(&cfg.swarm_trust);
+        let mut staging = QuarantineStaging::in_memory();
+        let (dec, clean) = admit(
+            "rollout-state content",
+            5.0, 100.0, 9e9, true, // absurd + wire immune flag set
+            SUBJECT_MEMORY_NEW,
+            Uuid::new_v4(),
+            None, // unsigned — dormant accepts it (inc-0 preserved)
+            &mut staging,
+            &mut rep,
+            &cfg,
+            1_000_000,
+        );
+        assert_eq!(dec, AdmitDecision::Live, "seeds pinned + gate off => dormant Live");
+        assert!(clean.amplitude <= MAX_WIRE_AMPLITUDE, "amplitude still clamped");
+        assert!(!clean.hallucinated, "hallucinated still forced to local default");
+    }
+
     // --- (a) dormant passthrough sanitizes ---------------------------------
     #[test]
     fn dormant_passthrough_sanitizes() {

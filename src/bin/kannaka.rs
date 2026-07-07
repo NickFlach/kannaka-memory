@@ -4370,7 +4370,21 @@ fn main() {
                         kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
                     let mut staging =
                         kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
-                    let gate_on = kannaka_memory::gate_active(&cfg);
+                    // SECURITY (inc-1b): admit() treats "gate enabled but no live
+                    // seeds" as DORMANT (returns Live + sanitized). gate_on MUST
+                    // agree — otherwise an enabled gate with an unresolved / typo'd
+                    // seed would skip BOTH the inc-0 allowlist and admit's gate,
+                    // importing unsigned wire memory: fail-open below the inc-0
+                    // baseline. Align the predicate and warn on the misconfig.
+                    let gate_on = kannaka_memory::gate_active(&cfg)
+                        && rep_store.live_seed_count() > 0;
+                    if kannaka_memory::gate_active(&cfg) && rep_store.live_seed_count() == 0 {
+                        eprintln!(
+                            "[sync] WARNING: corroboration_gate_enabled=true but 0 live seeds \
+                             resolved from seed_pubkeys — running DORMANT (inc-0 allowlist) to \
+                             avoid fail-open. Pin seeds with `kannaka identity enroll-seed`."
+                        );
+                    }
 
                     loop {
                         let msg = match sub.next_event() {

@@ -1150,25 +1150,42 @@ mod tests {
         assert_eq!(d, Promotion::Quarantine, "poisoned store quarantines all");
     }
 
-    // A broken hash chain (tampered line) is also fail-closed.
+    // A broken hash chain (tampered line) is fail-closed — via the hash-chain
+    // COMPARE, not the parse-error path. The tamper must stay length-preserving
+    // ([u8;32] still deserializes) so it actually reaches the compare.
     #[test]
     fn fail_closed_on_broken_chain() {
         let c = cfg();
         let dir = tempfile::tempdir().unwrap();
-        // Write one valid op, then tamper the chain field.
         {
             let mut store = RepStore::new_at(&c, dir.path().to_path_buf());
             store.record_vouch(pk(1), pk(2));
         }
         let log_path = dir.path().join("reputation.log");
         let text = std::fs::read_to_string(&log_path).unwrap();
-        // Flip the chain: replace the recorded 32-byte array's first element.
-        let tampered = text.replacen("\"chain\":[", "\"chain\":[255,", 1);
-        // Drop one element so length stays 32 (remove a trailing ",0").
-        let tampered = tampered.replacen(",0]}", "]}", 1);
-        std::fs::write(&log_path, tampered).unwrap();
+
+        // Positive control: the UNtampered log must load clean. This proves the
+        // assertion below can only trip on the tamper, not on a load-path bug.
+        assert!(
+            !RepStore::load(dir.path(), &c).refuses_promotion(),
+            "untampered log must load clean"
+        );
+
+        // Length-preserving tamper: flip one byte of the 32-element `chain`
+        // array in place. The line still deserializes into [u8;32], so load
+        // reaches the hash-chain compare — where the flipped byte != the
+        // recomputed hash byte ⇒ poisoned.
+        let mut line: serde_json::Value =
+            serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        let first = line["chain"][0].as_u64().unwrap();
+        line["chain"][0] = serde_json::json!((first ^ 0xFF) & 0xFF);
+        std::fs::write(&log_path, serde_json::to_string(&line).unwrap() + "\n").unwrap();
+
         let store = RepStore::load(dir.path(), &c);
-        assert!(store.refuses_promotion(), "tampered chain ⇒ fail-closed");
+        assert!(
+            store.refuses_promotion(),
+            "tampered chain ⇒ fail-closed via hash-chain compare"
+        );
     }
 
     // A clean append-only log round-trips through load and preserves rep.
