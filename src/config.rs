@@ -216,6 +216,55 @@ pub struct SwarmTrustConfig {
     pub metrics_trusted_only: bool,
     #[serde(default = "default_wire_trust_cap")]
     pub wire_trust_cap: f32,
+    /// SECURITY (inc-1): trust threshold θ. A verified-pubkey trust score
+    /// `>= trust_threshold` is Live-eligible; anything below lands in
+    /// Quarantine. Consumed by the enrollment/reputation layer (lands after
+    /// a design review) — inert until that path is wired.
+    /// env: `KANNAKA_TRUST_THRESHOLD`.
+    #[serde(default = "default_trust_threshold")]
+    pub trust_threshold: f32,
+    /// SECURITY (inc-1): agent-id prefixes/exact-names reserved for
+    /// operator enrollment only. First-sight/self-serve enrollment for a
+    /// matching id is an alarm, never an auto-pin. Consumed by the
+    /// enrollment layer later — inert until wired.
+    #[serde(default = "default_reserved_prefixes")]
+    pub reserved_prefixes: Vec<String>,
+    /// SECURITY (inc-1b): operator-pinned SEED pubkeys, base64 (standard
+    /// alphabet) of the 32-byte ed25519 verifying key. **DEFAULT EMPTY** — with
+    /// no seeds the corroboration gate is dormant and falls back to the inc-0
+    /// read-side behaviour. Consumed by `reputation::RepStore`; the root of
+    /// every trust lineage. env: `KANNAKA_SEED_PUBKEYS` (comma-separated,
+    /// REPLACES the list).
+    #[serde(default)]
+    pub seed_pubkeys: Vec<String>,
+    /// SECURITY (inc-1b): master switch for the corroboration promotion gate.
+    /// **DEFAULT false** — the gate stays dormant (inc-0 fallback) until an
+    /// operator pins seeds and flips this on. env: `KANNAKA_CORROBORATION_GATE`.
+    #[serde(default)]
+    pub corroboration_gate_enabled: bool,
+    /// SECURITY (inc-1b): corroboration epoch length in ms — the freshness
+    /// window an M-bound corroboration is counted within. Default 60_000.
+    /// env: `KANNAKA_EPOCH_LENGTH_MS`.
+    #[serde(default = "default_epoch_length_ms")]
+    pub epoch_length_ms: i64,
+    /// SECURITY (inc-1b): how many epochs a node may miss fresh seed beacons
+    /// before it fails CLOSED and freezes promotion (anti-eclipse). Default 3.
+    /// env: `KANNAKA_BEACON_GRACE_EPOCHS`.
+    #[serde(default = "default_beacon_grace_epochs")]
+    pub beacon_grace_epochs: u32,
+    /// SECURITY (inc-1b): lower hysteresis threshold θ_lo for the continuous
+    /// corroboration weight `w(rep)` — `w = 0` below this. Default 0.4.
+    /// env: `KANNAKA_THETA_LO`.
+    #[serde(default = "default_theta_lo")]
+    pub theta_lo: f32,
+    /// SECURITY (inc-1b): upper hysteresis threshold θ_hi — `w` reaches 1.0 and
+    /// a handle *arms* at/above this. Default 0.7. env: `KANNAKA_THETA_HI`.
+    #[serde(default = "default_theta_hi")]
+    pub theta_hi: f32,
+    /// SECURITY (inc-1b): per-promotion rep accrual coefficient α (also the
+    /// per-epoch accrual cap). Default 0.05. env: `KANNAKA_ACCRUAL_ALPHA`.
+    #[serde(default = "default_accrual_alpha")]
+    pub accrual_alpha: f32,
 }
 
 impl Default for SwarmTrustConfig {
@@ -224,6 +273,15 @@ impl Default for SwarmTrustConfig {
             trusted_agents: default_trusted_agents(),
             metrics_trusted_only: true,
             wire_trust_cap: default_wire_trust_cap(),
+            trust_threshold: default_trust_threshold(),
+            reserved_prefixes: default_reserved_prefixes(),
+            seed_pubkeys: Vec::new(),
+            corroboration_gate_enabled: false,
+            epoch_length_ms: default_epoch_length_ms(),
+            beacon_grace_epochs: default_beacon_grace_epochs(),
+            theta_lo: default_theta_lo(),
+            theta_hi: default_theta_hi(),
+            accrual_alpha: default_accrual_alpha(),
         }
     }
 }
@@ -246,6 +304,24 @@ fn default_trusted_agents() -> Vec<String> {
 fn default_wire_trust_cap() -> f32 {
     0.5
 }
+
+fn default_trust_threshold() -> f32 {
+    0.6
+}
+
+fn default_reserved_prefixes() -> Vec<String> {
+    ["kannaka-*", "qos-*", "0xSCADA-*", "Kannaka", "Flaukowski"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+// inc-1b corroboration-trust defaults (see `reputation.rs`).
+fn default_epoch_length_ms() -> i64 { 60_000 }
+fn default_beacon_grace_epochs() -> u32 { 3 }
+fn default_theta_lo() -> f32 { 0.4 }
+fn default_theta_hi() -> f32 { 0.7 }
+fn default_accrual_alpha() -> f32 { 0.05 }
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -507,6 +583,56 @@ impl KannakaConfig {
             let v = v.trim().to_ascii_lowercase();
             self.swarm_trust.metrics_trusted_only =
                 !matches!(v.as_str(), "0" | "false" | "no" | "off");
+        }
+        // SECURITY (inc-1): trust threshold θ override. Inert until the
+        // enrollment/reputation layer consumes it; wired here for parity
+        // with the other swarm-trust env escape hatches.
+        if let Ok(v) = std::env::var("KANNAKA_TRUST_THRESHOLD") {
+            if let Ok(t) = v.trim().parse::<f32>() {
+                self.swarm_trust.trust_threshold = t;
+            }
+        }
+        // SECURITY (inc-1b): corroboration-gate overrides. KANNAKA_SEED_PUBKEYS
+        // is a comma-separated list of base64 seed pubkeys that REPLACES the
+        // pinned set (empty entries dropped). The gate stays dormant until at
+        // least one seed exists AND KANNAKA_CORROBORATION_GATE is truthy.
+        if let Ok(v) = std::env::var("KANNAKA_SEED_PUBKEYS") {
+            self.swarm_trust.seed_pubkeys = v
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if let Ok(v) = std::env::var("KANNAKA_CORROBORATION_GATE") {
+            let v = v.trim().to_ascii_lowercase();
+            self.swarm_trust.corroboration_gate_enabled =
+                matches!(v.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(v) = std::env::var("KANNAKA_EPOCH_LENGTH_MS") {
+            if let Ok(n) = v.trim().parse::<i64>() {
+                self.swarm_trust.epoch_length_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_BEACON_GRACE_EPOCHS") {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                self.swarm_trust.beacon_grace_epochs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_THETA_LO") {
+            if let Ok(t) = v.trim().parse::<f32>() {
+                self.swarm_trust.theta_lo = t;
+            }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_THETA_HI") {
+            if let Ok(t) = v.trim().parse::<f32>() {
+                self.swarm_trust.theta_hi = t;
+            }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_ACCRUAL_ALPHA") {
+            if let Ok(t) = v.trim().parse::<f32>() {
+                self.swarm_trust.accrual_alpha = t;
+            }
         }
     }
 

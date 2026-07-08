@@ -19,7 +19,15 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 bincode = "1"
 ndarray = { version = "0.15", optional = true }
-blake3 = { version = "1.5", optional = true }
+# blake3 is UNCONDITIONAL (was `optional`, gated under the `hrm` feature):
+# content hashing runs on the non-hrm-gated provenance path (canonical_mem /
+# canonical_phase bind blake3(content)). Keep it always available.
+blake3 = "1.5"
+# ed25519 provenance substrate (inc-1a): sign/verify swarm memory + phase
+# provenance, node key at rest. std for Error impls, rand_core for keygen,
+# zeroize to scrub the signing key on drop.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core", "zeroize"] }
+rand_core = "0.6"
 rayon = "1"
 clap = { version = "4.0", features = ["derive"] }
 # `clap_complete` generates bash / zsh / fish / PowerShell / elvish
@@ -86,7 +94,7 @@ audio = []
 video = ["image"]
 glyph = []
 collective = []  # rayon is now unconditional
-hrm = ["ndarray", "blake3"]
+hrm = ["ndarray"]  # blake3 promoted to an unconditional dependency (inc-1a)
 # tui feature removed in v0.5.13 — see NickFlach/kannaka-tui
 # sqlite-migrate feature removed
 

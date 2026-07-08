@@ -65,6 +65,14 @@ use handlers_services::{handle_constellation, handle_market, handle_radio};
 mod handlers_identity;
 use handlers_identity::handle_identity;
 
+// inc-1 corroboration trust model — operator inspection of the reputation
+// ledger (`kannaka reputation show|list|hard-reject`). The seed/vouch/revoke
+// *write* verbs live under `kannaka identity` (handlers_identity) since they
+// manage the node's cryptographic swarm identity + trust root.
+#[path = "handlers/reputation.rs"]
+mod handlers_reputation;
+use handlers_reputation::handle_reputation;
+
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
@@ -583,6 +591,64 @@ pub(crate) fn parse_flag_value<T: std::str::FromStr>(
     }
 }
 
+/// Standard-alphabet base64 (padded) encode. The crate deliberately carries
+/// no `base64` dependency; this mirrors the codec in `provenance.rs` /
+/// `nats.rs` so a CLI-printed pubkey round-trips with the on-wire encoding
+/// (`ProvenanceSig`). Shared by the `identity` and `reputation` handlers.
+pub(crate) fn b64_encode_std(data: &[u8]) -> String {
+    const A: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
+        out.push(A[((n >> 18) & 63) as usize] as char);
+        out.push(A[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { A[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Decode standard-alphabet base64 into exactly 32 bytes — an ed25519
+/// verifying key or a blake3 mem-hash. Errors on any non-alphabet character or
+/// a wrong decoded length so the operator gets a clear message instead of a
+/// silent truncation. Same alphabet as [`b64_encode_std`], so keys round-trip
+/// with the provenance wire codec and `config.seed_pubkeys`.
+pub(crate) fn b64_decode_32(s: &str) -> Result<[u8; 32], String> {
+    let mut out: Vec<u8> = Vec::with_capacity(33);
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in s.trim().as_bytes() {
+        if b == b'=' || b == b'\n' || b == b'\r' || b == b' ' {
+            continue;
+        }
+        let val: u32 = match b {
+            b'A'..=b'Z' => u32::from(b - b'A'),
+            b'a'..=b'z' => u32::from(b - b'a') + 26,
+            b'0'..=b'9' => u32::from(b - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(format!("invalid base64 character '{}'", b as char)),
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    if out.len() != 32 {
+        return Err(format!("expected 32 bytes, decoded {}", out.len()));
+    }
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    Ok(a)
+}
+
 /// True when KANNAKA_READONLY requests no-persist mode. Mirrors
 /// `HrmStore::env_readonly` (any non-empty value other than "0"/"false").
 pub(crate) fn readonly_env_active() -> bool {
@@ -742,8 +808,10 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "ask" | "chat" | "agent" | "voice"
         // swarm / nats
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
-        // identity (SpaceChild SSO)
+        // identity (SpaceChild SSO + inc-1 crypto identity / trust root)
         | "identity"
+        // inc-1 corroboration trust model — reputation-ledger inspection
+        | "reputation"
         // constellation services
         | "radio" | "market" | "constellation"
         // ops / data movement
@@ -1194,10 +1262,18 @@ fn main() {
             handle_config(&cfg, &args[command_start..]);
             return;
         }
-        // SpaceChild SSO identity — pure HTTP + identity.json, never
-        // touches the HRM (keep it out of the 21 MB load below).
+        // SpaceChild SSO identity + inc-1 crypto identity/seed/vouch/revoke —
+        // pure config + node_key + reputation store, never touches the HRM
+        // (keep it out of the 21 MB load below).
         "identity" => {
             handle_identity(&args[command_start..]);
+            return;
+        }
+        // inc-1 corroboration trust model: operator inspection of the
+        // reputation ledger (config seeds + <data_dir>/reputation.{log,snapshot.gz}).
+        // No HRM needed — mirrors the identity fast path.
+        "reputation" => {
+            handle_reputation(&args[command_start..]);
             return;
         }
         // ADR-0037 belief: `on`/`off` only persist config (no HRM needed) and
@@ -1458,11 +1534,33 @@ fn main() {
                                 .try_cached_consciousness_metrics()
                                 .map(|m| m.num_clusters)
                                 .unwrap_or(0);
+                            // inc-1b: ALWAYS sign our own emits with the node key
+                            // (additive; lets peers running the corroboration gate
+                            // verify + accrue). Best-effort — a key error just omits
+                            // the signature (dormant peers ignore it anyway).
+                            let prov_sig = kannaka_memory::provenance::node_signing_key(&data_dir())
+                                .ok()
+                                .map(|seed| {
+                                    let nonce = *uuid::Uuid::new_v4().as_bytes();
+                                    let ts = kannaka_memory::provenance::now_ms();
+                                    kannaka_memory::sign_mem(
+                                        &seed,
+                                        kannaka_memory::SIGN_AGENT_ID,
+                                        mem.id,
+                                        &nonce,
+                                        ts,
+                                        &mem.content,
+                                        kannaka_memory::SUBJECT_MEMORY_NEW,
+                                        kannaka_memory::provenance::amp_to_q16(mem.amplitude),
+                                        kannaka_memory::PROV_TIER,
+                                    )
+                                });
                             if let Err(e) = transport.publish_memory_new_with_counts(
                                 mem,
                                 agent_id,
                                 total_mems,
                                 cluster_count,
+                                prov_sig.as_ref(),
                             ) {
                                 eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
                             } else {
@@ -4250,8 +4348,6 @@ fn main() {
                         );
                     }
 
-                    let _ = sub.set_timeout(None);
-
                     let mut queen = kannaka_memory::QueenSync::new(
                         kannaka_memory::QueenConfig::default(),
                         &agent_id,
@@ -4264,7 +4360,111 @@ fn main() {
                     // the lifetime of the listener.
                     let trust = cfg.swarm_trust.clone();
 
+                    // inc-1b: the corroboration admit() chokepoint state. DORMANT
+                    // unless corroboration_gate_enabled AND seeds are pinned, in
+                    // which case the memory.new import gate below routes through
+                    // admit(). Loaded once — reused across the listen loop.
+                    let mut rep_store =
+                        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+                    let mut staging =
+                        kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+                    // SECURITY (inc-1b): admit() treats "gate enabled but no live
+                    // seeds" as DORMANT (returns Live + sanitized). gate_on MUST
+                    // agree — otherwise an enabled gate with an unresolved / typo'd
+                    // seed would skip BOTH the inc-0 allowlist and admit's gate,
+                    // importing unsigned wire memory: fail-open below the inc-0
+                    // baseline. Align the predicate and warn on the misconfig.
+                    let gate_on = kannaka_memory::gate_active(&cfg)
+                        && rep_store.live_seed_count() > 0;
+                    if kannaka_memory::gate_active(&cfg) && rep_store.live_seed_count() == 0 {
+                        eprintln!(
+                            "[sync] WARNING: corroboration_gate_enabled=true but 0 live seeds \
+                             resolved from seed_pubkeys — running DORMANT (inc-0 allowlist) to \
+                             avoid fail-open. Pin seeds with `kannaka identity enroll-seed`."
+                        );
+                    }
+
+                    // PART A anti-eclipse (heartbeat beacons over NATS). Resolve the
+                    // pinned seed set ONCE (config is loaded once for the listener's
+                    // life). ingest_beacon accepts only seed beacons; when dormant the
+                    // set is empty ⇒ every beacon is a NotSeed no-op (no behavior
+                    // change). This is the SAME `staging` admit() reads, so an ingested
+                    // fresh beacon un-freezes Live promotion.
+                    let seed_set: std::collections::HashSet<[u8; 32]> =
+                        rep_store.seeds().copied().collect();
+                    // A node whose OWN key is a pinned seed emits heartbeats. Only when
+                    // the gate is actually armed (gate_on) do we touch the node key, so
+                    // dormant nodes keep EXACT inc-0 behavior (no key load, no emit).
+                    let beacon_emit: Option<[u8; 32]> = if gate_on {
+                        match kannaka_memory::node_signing_key(&data_dir()) {
+                            Ok(seed) => {
+                                let me = kannaka_memory::verifying_key_bytes(&seed);
+                                if seed_set.contains(&me) {
+                                    eprintln!(
+                                        "[beacon] this node is a seed — emitting heartbeats \u{2264}1/epoch on {}",
+                                        kannaka_memory::BEACON_SUBJECT
+                                    );
+                                    Some(seed)
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[beacon] node key error — not emitting: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let mut last_beacon_epoch: Option<u64> = None;
+
+                    // A seed wakes on a per-epoch tick so it can emit even when the
+                    // swarm is quiet; a non-seed keeps the prior indefinite block (no
+                    // busy-loop, exact prior behavior).
+                    if beacon_emit.is_some() {
+                        let tick = std::time::Duration::from_millis(
+                            cfg.swarm_trust.epoch_length_ms.clamp(1_000, 60_000) as u64,
+                        );
+                        let _ = sub.set_timeout(Some(tick));
+                    } else {
+                        let _ = sub.set_timeout(None);
+                    }
+
                     loop {
+                        // PART A anti-eclipse EMIT (seed-only, \u{2264}1 per epoch). A node
+                        // that is itself a pinned seed publishes a signed heartbeat so an
+                        // ARMED gate anywhere on the swarm sees a fresh beacon and
+                        // un-freezes Live promotion. Non-seeds never emit.
+                        // TODO(ceremony): this listener owns emit + ingest for now. Which
+                        // production service is the canonical emitter (this listener vs
+                        // `serve` vs a dedicated beacon cron) is a seed-ceremony topology
+                        // decision — do NOT rewire serve/worker in this pass.
+                        if let Some(seed) = beacon_emit.as_ref() {
+                            let now = kannaka_memory::provenance::now_ms();
+                            let epoch = kannaka_memory::epoch_now(&cfg, now);
+                            if last_beacon_epoch != Some(epoch) {
+                                let beacon = kannaka_memory::Beacon::sign(
+                                    seed,
+                                    epoch,
+                                    kannaka_memory::EMPTY_REJECT_ROOT,
+                                );
+                                match transport.publish_beacon(&beacon) {
+                                    Ok(()) => {
+                                        last_beacon_epoch = Some(epoch);
+                                        // Keep THIS node's own gate fresh regardless of
+                                        // whether the broadcast echoes back to us.
+                                        let _ = staging.ingest_beacon(&beacon, &seed_set, epoch);
+                                        let _ = staging.save();
+                                        eprintln!("[beacon] published heartbeat for epoch {epoch}");
+                                    }
+                                    Err(e) => eprintln!(
+                                        "[beacon] publish failed for epoch {epoch}: {e}"
+                                    ),
+                                }
+                            }
+                        }
+
                         let msg = match sub.next_event() {
                             kannaka_memory::nats::SubEvent::Msg(m) => m,
                             kannaka_memory::nats::SubEvent::Timeout => continue,
@@ -4322,7 +4522,7 @@ fn main() {
                                         match serde_json::from_value::<kannaka_memory::HyperMemory>(
                                             mem_json.clone(),
                                         ) {
-                                            Ok(mem) => {
+                                            Ok(mut mem) => {
                                                 let mem_id = mem.id;
                                                 // Check if memory already exists
                                                 match sys.engine.store.get(&mem_id) {
@@ -4330,18 +4530,67 @@ fn main() {
                                                         eprintln!("[sync] Memory {} already exists, skipping", mem_id);
                                                     }
                                                     _ => {
-                                                        // SECURITY (increment-0 interim; increment-1 replaces this allowlist gate with signature+trust verification)
-                                                        if kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only) {
-                                                            match sys.engine.store.insert(mem) {
-                                                                Ok(_) => {
-                                                                    println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
-                                                                }
-                                                                Err(e) => {
-                                                                    eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
+                                                        // inc-1b: route the wire import through the corroboration
+                                                        // admit() chokepoint. DORMANT ⇒ admit returns Live and we
+                                                        // keep the inc-0 allowlist gate below unchanged; only the
+                                                        // sanitized fields (amplitude/phase/frequency clamp +
+                                                        // hallucinated forced to local default) are newly applied.
+                                                        // ACTIVE ⇒ admit's decision governs (Live/Quarantine/Drop).
+                                                        let prov_sig: Option<kannaka_memory::ProvenanceSig> = json
+                                                            .get("provenance_sig")
+                                                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                                                        let now = kannaka_memory::provenance::now_ms();
+                                                        let (decision, clean, pending) = kannaka_memory::admit(
+                                                            &mem.content,
+                                                            mem.amplitude,
+                                                            mem.phase,
+                                                            mem.frequency,
+                                                            mem.hallucinated,
+                                                            kannaka_memory::SUBJECT_MEMORY_NEW,
+                                                            mem_id,
+                                                            prov_sig.as_ref(),
+                                                            &mut staging,
+                                                            &mut rep_store,
+                                                            &cfg,
+                                                            now,
+                                                        );
+                                                        // Apply sanitized fields regardless of gate state.
+                                                        clean.apply(&mut mem);
+                                                        use kannaka_memory::AdmitDecision::*;
+                                                        match decision {
+                                                            Live => {
+                                                                // Dormant: preserve the inc-0 allowlist gate. Active:
+                                                                // corroboration already authorized the import.
+                                                                let admit_import = if gate_on {
+                                                                    true
+                                                                } else {
+                                                                    kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only)
+                                                                };
+                                                                if admit_import {
+                                                                    match sys.engine.store.insert(mem) {
+                                                                        Ok(_) => {
+                                                                            // #8: commit the pending promotion ONLY after the
+                                                                            // medium insert succeeds, so the DAG ledger and the
+                                                                            // live medium commit together (no-op when dormant).
+                                                                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, &cfg);
+                                                                            println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            // #8: insert failed — DROP the pending (do not commit)
+                                                                            // so the content re-decides on retry, no ledger/medium divergence.
+                                                                            eprintln!("[sync] Failed to import memory {} from {}: {}", mem_id, kannaka_memory::sanitize_display(source_agent), e);
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    eprintln!("[sync] skip untrusted source {} (increment-0 gate)", kannaka_memory::sanitize_display(source_agent));
                                                                 }
                                                             }
-                                                        } else {
-                                                            eprintln!("[sync] skip untrusted source {} (increment-0 gate)", kannaka_memory::sanitize_display(source_agent));
+                                                            Quarantine | ProbationLive => {
+                                                                eprintln!("[sync] quarantined memory {} from {} (awaiting corroboration)", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                            }
+                                                            Drop => {
+                                                                eprintln!("[sync] dropped memory {} from {} (invalid signature / echo)", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -4365,6 +4614,39 @@ fn main() {
                                     // source just needs sanitizing before it reaches the terminal.
                                     println!("[dream] {} completed dream: {} cycles, {} strengthened, {} pruned",
                                         kannaka_memory::sanitize_display(source_agent), cycles, strengthened, pruned);
+                                }
+                            }
+                        } else if msg.subject == kannaka_memory::BEACON_SUBJECT
+                            && auto_sync
+                            && !seed_set.is_empty()
+                        {
+                            // PART A anti-eclipse RECEIVE: verify + ingest a seed
+                            // heartbeat into the SAME `staging` admit() reads. Once a
+                            // fresh seed beacon lands, admit()'s freshness check passes
+                            // and Live promotion un-freezes. ingest_beacon rejects
+                            // non-seed / future / replayed epochs. Fully dormant (no
+                            // seeds pinned) ⇒ seed_set empty ⇒ this arm is skipped and
+                            // beacons are ignored silently (no behavior change, no noise).
+                            if let Some(beacon) = msg
+                                .as_json()
+                                .and_then(|v| serde_json::from_value::<kannaka_memory::Beacon>(v).ok())
+                            {
+                                let now = kannaka_memory::provenance::now_ms();
+                                let now_epoch = kannaka_memory::epoch_now(&cfg, now);
+                                match staging.ingest_beacon(&beacon, &seed_set, now_epoch) {
+                                    Ok(pk) => {
+                                        let _ = staging.save();
+                                        let pk_b64 = b64_encode_std(&pk);
+                                        eprintln!(
+                                            "[beacon] fresh seed beacon epoch {} from {}",
+                                            beacon.epoch,
+                                            &pk_b64[..pk_b64.len().min(12)]
+                                        );
+                                    }
+                                    // Our own broadcast echo / a replay re-ingests as
+                                    // Stale — expected, kept quiet.
+                                    Err(kannaka_memory::BeaconReject::Stale) => {}
+                                    Err(e) => eprintln!("[beacon] rejected: {e}"),
                                 }
                             }
                         }

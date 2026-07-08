@@ -386,9 +386,12 @@ pub(crate) fn handle_swarm_exemplars(
             // Order by mean_amplitude desc — strongest exemplars first.
             clusters.sort_by(|a, b| b.mean_amplitude.partial_cmp(&a.mean_amplitude)
                 .unwrap_or(std::cmp::Ordering::Equal));
+            // inc-1b: ALWAYS sign exemplar emits with the node key so peers running
+            // the corroboration gate can verify + accrue. Best-effort load.
+            let node_seed = kannaka_memory::provenance::node_signing_key(&data_dir()).ok();
             let mut published = 0;
             for c in clusters.iter().take(top_k) {
-                let payload = serde_json::json!({
+                let mut payload = serde_json::json!({
                     "agent_id": agent_id,
                     "cluster_id": c.cluster_id,
                     "size": c.size,
@@ -404,6 +407,33 @@ pub(crate) fn handle_swarm_exemplars(
                     "xi_diversity": c.xi_diversity,
                     "created_at": chrono::Utc::now().to_rfc3339(),
                 });
+                // Sign over (exemplar_id, content, amplitude) — the fields the
+                // absorbing node's admit() reconstructs. Only when both id+content
+                // are present and parseable.
+                if let (Some(seed), Some(content), Some(eid)) =
+                    (&node_seed, c.exemplar_content.as_deref(), c.exemplar_id.as_deref())
+                {
+                    if let Ok(mem_id) = uuid::Uuid::parse_str(eid) {
+                        let nonce = *uuid::Uuid::new_v4().as_bytes();
+                        let ts = kannaka_memory::provenance::now_ms();
+                        let sig = kannaka_memory::sign_mem(
+                            seed,
+                            kannaka_memory::SIGN_AGENT_ID,
+                            mem_id,
+                            &nonce,
+                            ts,
+                            content,
+                            kannaka_memory::SUBJECT_EXEMPLAR,
+                            kannaka_memory::provenance::amp_to_q16(c.mean_amplitude),
+                            kannaka_memory::PROV_TIER,
+                        );
+                        if let (Some(obj), Ok(v)) =
+                            (payload.as_object_mut(), serde_json::to_value(&sig))
+                        {
+                            obj.insert("provenance_sig".to_string(), v);
+                        }
+                    }
+                }
                 match transport.publish_exemplar(&agent_id, c.cluster_id, &payload) {
                     Ok(()) => published += 1,
                     Err(e) => eprintln!("[exemplars] cluster {} publish failed: {e}", c.cluster_id),
@@ -629,6 +659,12 @@ pub(crate) fn handle_swarm_absorb(
         bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
+    // enabled AND seeds are pinned (then it governs each absorb below).
+    let mut rep_store =
+        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+
     for e in ordered.iter().take(top_k) {
         let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
         if source == my_id {
@@ -667,11 +703,44 @@ pub(crate) fn handle_swarm_absorb(
         eprintln!("      \"{}\"", &content.chars().take(120).collect::<String>());
 
         if !dry_run {
-            // Tag with provenance so we can identify swarm-origin memories later.
-            let category = format!("swarm:{}", source);
-            match sys.remember_with_category(content, &category, amp.min(0.95)) {
-                Ok(id) => { eprintln!("      remembered as {}", id); absorbed += 1; }
-                Err(e) => { eprintln!("      remember failed: {e}"); }
+            // inc-1b: route through the corroboration admit() chokepoint. DORMANT
+            // ⇒ admit returns Live (current ungated behaviour) with a sanitized
+            // amplitude; ACTIVE ⇒ the decision governs.
+            let memory_id = e.get("exemplar_id").and_then(|v| v.as_str())
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .unwrap_or_else(uuid::Uuid::new_v4);
+            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e.get("provenance_sig")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let now = kannaka_memory::provenance::now_ms();
+            let (decision, clean, pending) = kannaka_memory::admit(
+                content, amp as f32, wire_phase, wire_freq, false,
+                kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
+                &mut staging, &mut rep_store, cfg, now,
+            );
+            use kannaka_memory::AdmitDecision::*;
+            match decision {
+                Live => {
+                    // Tag with provenance so we can identify swarm-origin memories later.
+                    let category = format!("swarm:{}", source);
+                    match sys.remember_with_category(content, &category, clean.amplitude as f64) {
+                        Ok(id) => {
+                            // #8: commit the pending promotion ONLY after the medium
+                            // write succeeds (no-op when dormant / non-Live).
+                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
+                            eprintln!("      remembered as {}", id); absorbed += 1;
+                        }
+                        // #8: write failed — drop the pending, do not commit.
+                        Err(e) => { eprintln!("      remember failed: {e}"); }
+                    }
+                }
+                Quarantine | ProbationLive => {
+                    eprintln!("      quarantined (awaiting corroboration)");
+                }
+                Drop => {
+                    eprintln!("      dropped (invalid signature / echo)");
+                }
             }
         } else {
             absorbed += 1;
@@ -852,6 +921,12 @@ pub(crate) fn handle_swarm_autoabsorb(
     let mut skipped_resonant = 0usize;
     let mut skipped_low = 0usize;
 
+    // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
+    // enabled AND seeds are pinned (then it governs each absorb below).
+    let mut rep_store =
+        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+
     for e in ordered.iter() {
         let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
         if source == *my_id { skipped_self += 1; continue; }
@@ -881,14 +956,45 @@ pub(crate) fn handle_swarm_autoabsorb(
         eprintln!("[autoabsorb] absorb from {} c{} amp={:.3} resonance={:.3}", source, cluster_id, amp, top_strength);
 
         if !dry_run {
-            let category = format!("swarm:{}", source);
-            match sys.remember_with_category(content, &category, amp.min(0.95)) {
-                Ok(id) => {
-                    eprintln!("[autoabsorb]   remembered {}", id);
-                    state.record_absorb(&today_key, &source);
-                    absorbed += 1;
+            // inc-1b: route through the corroboration admit() chokepoint. DORMANT
+            // ⇒ admit returns Live (current ungated behaviour) with a sanitized
+            // amplitude; ACTIVE ⇒ the decision governs.
+            let memory_id = e.get("exemplar_id").and_then(|v| v.as_str())
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .unwrap_or_else(uuid::Uuid::new_v4);
+            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e.get("provenance_sig")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let now = kannaka_memory::provenance::now_ms();
+            let (decision, clean, pending) = kannaka_memory::admit(
+                content, amp as f32, wire_phase, wire_freq, false,
+                kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
+                &mut staging, &mut rep_store, cfg, now,
+            );
+            use kannaka_memory::AdmitDecision::*;
+            match decision {
+                Live => {
+                    let category = format!("swarm:{}", source);
+                    match sys.remember_with_category(content, &category, clean.amplitude as f64) {
+                        Ok(id) => {
+                            // #8: commit the pending promotion ONLY after the medium
+                            // write succeeds (no-op when dormant / non-Live).
+                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
+                            eprintln!("[autoabsorb]   remembered {}", id);
+                            state.record_absorb(&today_key, &source);
+                            absorbed += 1;
+                        }
+                        // #8: write failed — drop the pending, do not commit.
+                        Err(e) => eprintln!("[autoabsorb]   remember failed: {e}"),
+                    }
                 }
-                Err(e) => eprintln!("[autoabsorb]   remember failed: {e}"),
+                Quarantine | ProbationLive => {
+                    eprintln!("[autoabsorb]   quarantined (awaiting corroboration)");
+                }
+                Drop => {
+                    eprintln!("[autoabsorb]   dropped (invalid signature / echo)");
+                }
             }
         } else {
             absorbed += 1;

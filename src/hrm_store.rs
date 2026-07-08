@@ -1877,14 +1877,36 @@ impl HrmStore {
 }
 
 impl MediumBackend for HrmStore {
-    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
+    fn insert(&mut self, mut memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
-        
+
         // Check for duplicates
         if self.memory_cache.contains_key(&id) {
             return Err(StoreError::DuplicateId(id));
         }
-        
+
+        // SECURITY (inc-1b): wire immune/amplitude fields are never trusted. The
+        // authoritative wire-boundary defense is `absorb_gate::admit` (it forces
+        // `hallucinated` to the local default and clamps amplitude ≤0.95 BEFORE
+        // this is reached). This clamp is defense-in-depth: any path — wire or
+        // local — that reaches the medium is bounded to finite, sane numeric
+        // ranges so a pathological `amplitude`/`frequency`/`phase` can't wrap the
+        // wave math or corrupt the store. `hallucinated` is intentionally NOT
+        // forced here — legitimate dream hallucinations insert with it set true.
+        memory.amplitude = if memory.amplitude.is_finite() {
+            memory.amplitude.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        memory.frequency = if memory.frequency.is_finite() {
+            memory.frequency.clamp(0.0, 1_000_000.0)
+        } else {
+            0.1
+        };
+        if !memory.phase.is_finite() {
+            memory.phase = 0.0;
+        }
+
         // Add to medium using the vector directly to preserve the memory's UUID
         let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
             .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;

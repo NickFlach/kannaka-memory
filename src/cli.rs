@@ -376,7 +376,40 @@ EXAMPLE:
         // against spacechild-auth, tokens stored in <data_dir>/identity.json.
         .subcommand(
             Command::new("identity")
-                .about("SpaceChild SSO identity: register, login, whoami, logout (KANNAKA_AUTH_URL to override endpoint)")
+                .about("Agent identity: register/login/whoami/logout (SpaceChild SSO) + keygen/pubkey/enroll-seed/vouch/revoke (inc-1 crypto identity + corroboration trust root)")
+                .long_about(
+                    "kannaka identity — two identity layers for a swarm agent.\n\n\
+                     SpaceChild SSO session (KANNAKA_AUTH_URL to override endpoint):\n  \
+                     register | login | whoami | logout\n\n\
+                     inc-1 cryptographic swarm identity + corroboration trust root:\n  \
+                     keygen                  ensure <data_dir>/node_key.ed25519, print base64 pubkey (idempotent)\n  \
+                     pubkey                  print this node's base64 verifying pubkey\n  \
+                     enroll-seed <b64-pk>    operator: pin a base64 pubkey as a trust-root seed (config)\n  \
+                     vouch <b64-pk>          seeds only: record a vouch edge this_node -> target (store)\n  \
+                     revoke <b64-pk>         operator: unpin a seed + floor its reputation to 0\n\n\
+                     Seeds + the corroboration gate stay DORMANT until an operator pins a\n\
+                     seed AND sets swarm_trust.corroboration_gate_enabled — these verbs change\n\
+                     no automatic runtime behaviour on their own.",
+                )
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
+        // ── Reputation ledger (inc-1 corroboration trust model) ────────
+        // Operator inspection of the pubkey-keyed reputation store + the
+        // single-operator hard-reject lever. Read-only except hard-reject.
+        .subcommand(
+            Command::new("reputation")
+                .about("Inspect the inc-1 corroboration trust ledger: show, list, hard-reject")
+                .long_about(
+                    "kannaka reputation — inspect the pubkey-keyed corroboration trust ledger\n\
+                     (config seeds + <data_dir>/reputation.{log,snapshot.gz}).\n\n\
+                     SUBCOMMANDS:\n  \
+                     show <b64-pubkey> [--json]    rep, seed_status, seed_root, promoted/poison counts\n  \
+                     list [--json]                 table of known pubkeys → rep + status\n  \
+                     hard-reject <b64-mem-hash> --origin <b64-pubkey>\n                                   \
+                     operator: dock the origin's rep (P_POISON) for a rejected memory\n\n\
+                     The gate stays dormant until seeds are pinned AND\n\
+                     swarm_trust.corroboration_gate_enabled is set; inspection changes nothing.",
+                )
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
         // ── Constellation services (HTTP) ──────────────────────────────
