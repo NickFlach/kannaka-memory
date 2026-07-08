@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [0.10.7] — 2026-07-07
+
+### Added — increment-1 corroboration trust model (DORMANT by default)
+
+The behaviour-based absorb-side trust model lands as a single write-side
+chokepoint, `absorb_gate::admit()`, that every wire→store absorb path routes
+through (ADR-0039, PRs #509–#513). Trust becomes cryptographic and
+corroboration-counted rather than name-based: **identity says who, corroboration
+proves what.**
+
+- **inc-1a ed25519 provenance substrate** — sign/verify over a memory's
+  canonical bytes with a replay LRU; the signature binds a fixed signed
+  agent-id (the pubkey is the identity; the forgeable wire agent-id is not
+  bound). Every node always-signs its own `memory.new`/exemplar emits.
+- **inc-1b corroboration reputation engine** — a pubkey-keyed trust store rooted
+  at operator-pinned seeds. A "corroboration" is another distinct trusted key
+  independently signing-and-remembering the same content
+  (`blake3(normalize(content))`); `RepStore::decide()` promotes to `Live` on
+  enough distinct fresh lineages, else holds in **Quarantine** (never drops).
+- **Heartbeat beacons (anti-eclipse)** — an armed gate additionally requires a
+  fresh seed beacon to promote; stale/absent beacons past
+  `beacon_grace_epochs` (default 3) freeze promotion to Quarantine, never Drop.
+- **Operator CLI** — `kannaka identity` (keygen/pubkey/enroll-seed/vouch/revoke)
+  and `kannaka reputation` (show/list/hard-reject) inspect and manage the
+  ledger.
+- **Unconditional sanitization** runs even while dormant: `admit()` clamps
+  `amplitude`/`phase`/`frequency` and forces `hallucinated` to the local
+  default, never the wire value.
+
+**DORMANT BY DEFAULT:** with `corroboration_gate_enabled=false` and no
+`seed_pubkeys` (both defaults), `admit()` returns `Live` with sanitized fields —
+byte-for-byte inc-0 behaviour. Activation is a deliberate operator seed ceremony,
+not this release. New `SwarmTrustConfig` tunables: `KANNAKA_TRUST_THRESHOLD`,
+`KANNAKA_THETA_LO` (0.4), `KANNAKA_THETA_HI` (0.7), `KANNAKA_ACCRUAL_ALPHA`
+(0.05), `KANNAKA_EPOCH_LENGTH_MS` (60000), `KANNAKA_BEACON_GRACE_EPOCHS` (3),
+`KANNAKA_SEED_PUBKEYS`, `KANNAKA_CORROBORATION_GATE`.
+
+## [0.10.6] — 2026-07-07
+
+### Added — increment-0 read-side injection gate (the swarm stays open)
+
+Defensive read-side trust filter for the open NATS swarm (PR #507), shipped in
+response to the 2026-07-06 anonymous injection where one socket spoofed 48
+`agent_id`s on `KANNAKA.events.>`. Anonymous publish stays allowed; the read
+side stops trusting attacker-controlled wire fields:
+
+- **`trusted_agents`** allowlist (exact or `prefix*`, e.g. `qos-*`). When
+  `metrics_trusted_only` is set (default), only allowlisted phases (plus this
+  node's own) feed swarm metrics and drive the pairwise Kuramoto step.
+- Every kept phase's wire `trust_score` is clamped to `wire_trust_cap`, so a
+  message cannot assert its own trust.
+- Env: `KANNAKA_TRUSTED_AGENTS` (comma-separated, REPLACES the list),
+  `KANNAKA_METRICS_TRUSTED_ONLY=0` (escape hatch).
+
+### Fixed — NATS config drift reconcile
+
+Reconciled the committed NATS config with the deployed anonymous-publish ACL and
+added a drift check (PR #508), so the shipped defaults match what the swarm
+server actually enforces.
+
 ## [0.10.5] — 2026-07-05
 
 ### Added — network + quiet on the lab_qos_boot MCP tool
