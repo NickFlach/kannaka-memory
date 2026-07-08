@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [0.10.8] — 2026-07-08
+
+### Added — guided seed-ceremony helpers for the corroboration gate
+
+`kannaka swarm activate-gate` and `kannaka swarm beacon --loop` (PR #514) turn
+the inc-1b corroboration-gate seed ceremony into ~2 commands per node, with
+safety rails. `activate-gate` is a per-node guided flip: it ensures the node's
+key, prints its pubkey (to pin on the other seeds), collects the seed set, runs
+a preflight checklist, and is a DRY RUN by default — `--yes` writes (pins seeds
++ enables `corroboration_gate_enabled`), and `--force` only bypasses the
+`>=2`-seed refusal (a single-seed root can never promote past Quarantine).
+`beacon --loop` runs the per-seed heartbeat emitter (one beacon per epoch) an
+armed gate needs to promote (anti-eclipse fail-closed). See ADR-0039 and
+`ops/services/kannaka-beacon.service`. Both remain inert until an operator runs
+the ceremony; the gate stays dormant by default.
+
+### Fixed — NATS subscription liveness + resumable MSG payload reads
+
+Two liveness defects in the NATS transport (PR #515, `Fixes #499, #500`), both
+load-bearing for the dormant corroboration gate (a subscriber that hangs deaf or
+dies mid-frame stops seeing seed beacons, which fail-closed freezes promotion):
+
+- **#500 — subscriptions had no liveness.** A subscription only answered server
+  PINGs, so a silent connection death (NAT/conntrack drop, firewall, peer
+  power-off with no FIN/RST) hung the listener/worker deaf forever while looking
+  alive. Subscriptions now track time-since-last-frame, proactively PING after
+  60s of silence, and report `Closed` after 150s so the caller reconnects/exits.
+  `set_timeout(None)`/large values are clamped to a 30s poll cap so an otherwise
+  blocking recv still wakes to run the check.
+- **#499 — `swarm serve` died on one WAN retransmission.** A read timeout during
+  a MSG payload was fatal; `serve`'s 250ms socket timeout turned any multi-KB
+  reply straddling a lost-segment RTO into a process death. The payload + CRLF
+  now read resumably (the byte count is known) up to a 30s frame budget.
+
+### Fixed — `recall` clap variadic-positional debug-assert
+
+`recall` declared two variadic positionals, which trips a clap debug-assert when
+generating shell completions (PR #514).
+
+### Docs
+
+- ADR-0039 documents the corroboration trust model, and the CHANGELOG entries
+  for v0.10.6/v0.10.7 were backfilled (PR #516).
+
 ## [0.10.7] — 2026-07-07
 
 ### Added — increment-1 corroboration trust model (DORMANT by default)
