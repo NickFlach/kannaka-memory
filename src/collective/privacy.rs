@@ -463,7 +463,18 @@ pub fn seal_with_commitments(
     difficulty: u32,
     agent_id: &str,
 ) -> SealResult {
-    let glyph = seal(memory, difficulty, agent_id);
+    seal_with_commitments_salt(memory, difficulty, agent_id, random_bytes_32())
+}
+
+/// Like [`seal_with_commitments`] but with a caller-supplied salt (test seam;
+/// see [`seal_with_salt`]).
+pub(crate) fn seal_with_commitments_salt(
+    memory: &HyperMemory,
+    difficulty: u32,
+    agent_id: &str,
+    salt: [u8; 32],
+) -> SealResult {
+    let glyph = seal_with_salt(memory, difficulty, agent_id, salt);
 
     // Generate Pedersen commitments for wave properties
     let vec_hash = hash_vector(&memory.vector);
@@ -493,9 +504,20 @@ pub fn seal(
     difficulty: u32,
     agent_id: &str,
 ) -> PrivacyGlyph {
-    // Generate salt
-    let salt = random_bytes_32();
+    seal_with_salt(memory, difficulty, agent_id, random_bytes_32())
+}
 
+/// Like [`seal`] but with a caller-supplied salt. Production always seals with
+/// a fresh random salt (via [`seal`]); this seam exists so tests can pin the
+/// salt and get a fully deterministic glyph_hash (and therefore a deterministic
+/// hashcash reveal search in [`create_hint`]) — see the flake note in the
+/// revelation tests. Not a public API.
+pub(crate) fn seal_with_salt(
+    memory: &HyperMemory,
+    difficulty: u32,
+    agent_id: &str,
+    salt: [u8; 32],
+) -> PrivacyGlyph {
     // Serialize the memory payload
     let payload = serialize_payload(memory);
 
