@@ -202,7 +202,11 @@ EXAMPLES:
                     .help("Timeout for --collective (default 8)"))
                 .arg(Arg::new("envelope").long("envelope").action(ArgAction::SetTrue)
                     .help("Wrap output in the standard JSON envelope (ADR-0029 Phase 4b)"))
-                .arg(Arg::new("__raw").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..))
+                // FIX: `query` is already a variadic (num_args(1..)) positional; a
+                // second `__raw` trailing positional made TWO variadic positionals,
+                // which clap debug-asserts on during `kannaka completions <shell>`
+                // (debug builds). The recall handler re-parses raw args itself, so
+                // `query` alone (shown in --help) is sufficient — no __raw needed.
                 .after_help(r#"EXAMPLES:
   kannaka recall "spiral waves" --top-k 8
   kannaka recall "shared beliefs" --collective --timeout 12   # swarm-wide via the substrate"#),
