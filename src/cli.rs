@@ -349,6 +349,22 @@ EXAMPLE:
         .subcommand(
             Command::new("swarm")
                 .about("Multi-agent swarm operations over NATS")
+                .long_about(
+                    "kannaka swarm — multi-agent operations over NATS.\n\n\
+                     Common sub-verbs:\n  \
+                     join | status | sync | listen | serve | tail | publish | leave\n  \
+                     exemplars | cores | peers | absorb | autoabsorb | enqueue | worker\n  \
+                     brief | health | gaps | plan | loop\n\n\
+                     Corroboration-gate seed ceremony (inc-1b):\n  \
+                     activate-gate [--seed <b64>]... [--yes] [--force]\n      \
+                     guided per-node gate flip — DRY-RUN by default; --yes arms the gate\n      \
+                     (pins the seed set + enables corroboration_gate_enabled); --force only\n      \
+                     bypasses the >=2-seed refusal (still needs --yes to write).\n  \
+                     beacon [--loop] [--interval-secs N]\n      \
+                     emit a signed seed heartbeat once, or --loop one-per-epoch under\n      \
+                     systemd/cron on a seed (refuses on a non-seed). An armed gate needs a\n      \
+                     FRESH seed beacon to promote (anti-eclipse fail-closed).",
+                )
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
         .subcommand(
