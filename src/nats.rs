@@ -3262,14 +3262,33 @@ mod tests {
         (client, server)
     }
 
+    /// Poll `read_frame` past benign timeouts. A single call can legitimately
+    /// see `TimedOut` before the writer thread is scheduled — especially when
+    /// the whole suite runs in parallel and starves it — so loop until a real
+    /// outcome (Frame or Closed) lands, bounded by a generous wall-clock budget
+    /// that only trips on a true hang.
+    fn read_frame_until(reader: &mut BufReader<TcpStream>, budget: Duration) -> ReadOutcome {
+        let deadline = Instant::now() + budget;
+        loop {
+            match read_frame(reader).expect("read_frame returned a protocol error") {
+                ReadOutcome::TimedOut => {
+                    if Instant::now() >= deadline {
+                        panic!("no frame within {budget:?}");
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
     #[test]
     fn read_frame_reads_whole_msg() {
         let (client, mut server) = loopback_pair();
-        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         server.write_all(b"MSG sub.a 1 5\r\nhello\r\n").unwrap();
         server.flush().unwrap();
         let mut reader = BufReader::new(client);
-        match read_frame(&mut reader).expect("frame") {
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
             ReadOutcome::Frame(Frame::Msg { subject, payload, .. }) => {
                 assert_eq!(subject, "sub.a");
                 assert_eq!(payload, b"hello");
@@ -3294,8 +3313,10 @@ mod tests {
             // keep the socket open until the reader is done
             std::thread::sleep(Duration::from_millis(100));
         });
+        // read_frame_until rides out the header-not-written-yet timeout; the
+        // mid-PAYLOAD stall is ridden out INSIDE read_frame itself (the #499 fix).
         let mut reader = BufReader::new(client);
-        match read_frame(&mut reader).expect("frame should survive the stall") {
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
             ReadOutcome::Frame(Frame::Msg { payload, .. }) => assert_eq!(payload, b"hello"),
             _ => panic!("expected a MSG frame after the stall"),
         }
@@ -3305,20 +3326,20 @@ mod tests {
     #[test]
     fn read_frame_reports_closed_on_eof() {
         let (client, server) = loopback_pair();
-        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         drop(server); // peer closes cleanly
         let mut reader = BufReader::new(client);
-        match read_frame(&mut reader).expect("frame") {
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
             ReadOutcome::Closed => {}
             _ => panic!("expected Closed on EOF"),
         }
     }
 
     #[test]
-    fn subscription_declares_silent_socket_dead_and_pings() {
-        // #500: an OPEN but silent socket (no frames, no server PING) is
-        // declared Closed after the liveness timeout, and the client emits its
-        // own PING probe first (it never used to initiate one).
+    fn subscription_self_initiates_ping_when_idle() {
+        // #500: the client PROACTIVELY sends its own PING after `ping_idle` of
+        // silence (it never used to initiate one). A large liveness_timeout
+        // keeps this test purely about the ping — it cannot race a death.
         let (client, mut server) = loopback_pair();
         client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
         let mut sub = NatsSubscription {
@@ -3326,11 +3347,44 @@ mod tests {
             sid: "42".to_string(),
             last_frame: Instant::now(),
             probe_sent: false,
-            ping_idle: Duration::from_millis(40),
-            liveness_timeout: Duration::from_millis(240),
+            ping_idle: Duration::from_millis(30),
+            liveness_timeout: Duration::from_secs(30), // far away — no death here
         };
+        // Poll well past ping_idle. Each next_event blocks ~20ms, so ~40 polls
+        // is ~0.8s of wall time — comfortably past 30ms even under load — and
+        // the 30s deadline means no Closed can occur.
+        for _ in 0..40 {
+            match sub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => panic!("must not die with a 30s liveness timeout"),
+                SubEvent::Msg(_) => panic!("no message was ever sent"),
+            }
+        }
+        server.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut buf = [0u8; 64];
+        let n = server.read(&mut buf).unwrap_or(0);
+        let got = String::from_utf8_lossy(&buf[..n]);
+        assert!(got.contains("PING"), "client should self-initiate a PING, got {got:?}");
+    }
+
+    #[test]
+    fn subscription_declares_silent_socket_dead() {
+        // #500: an OPEN but silent socket (no frames, no server PING) is
+        // eventually declared Closed so the caller reconnects/exits instead of
+        // hanging deaf. Generous poll budget so a loaded runner can't false-fail.
+        let (client, _server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut sub = NatsSubscription {
+            reader: BufReader::new(client),
+            sid: "43".to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: Duration::from_millis(40),
+            liveness_timeout: Duration::from_millis(200),
+        };
+        let start = Instant::now();
         let mut saw_closed = false;
-        for _ in 0..200 {
+        while start.elapsed() < Duration::from_secs(15) {
             match sub.next_event() {
                 SubEvent::Timeout => {}
                 SubEvent::Closed => {
@@ -3341,28 +3395,22 @@ mod tests {
             }
         }
         assert!(saw_closed, "a silent socket must eventually be declared Closed");
-
-        // The client should have written a PING probe to the peer.
-        server.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
-        let mut buf = [0u8; 64];
-        let n = server.read(&mut buf).unwrap_or(0);
-        let got = String::from_utf8_lossy(&buf[..n]);
-        assert!(got.contains("PING"), "client should self-initiate a PING, got {:?}", got);
     }
 
     #[test]
     fn subscription_stays_alive_while_frames_flow() {
-        // A message arriving before the deadline resets liveness — the
-        // subscription yields it and does NOT report Closed.
+        // A message arriving keeps liveness fresh — the subscription yields it
+        // and does NOT report Closed. A large liveness_timeout guarantees a
+        // starved writer thread cannot trip a false death.
         let (client, mut server) = loopback_pair();
         client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
         let mut sub = NatsSubscription {
             reader: BufReader::new(client),
-            sid: "43".to_string(),
+            sid: "44".to_string(),
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: Duration::from_millis(40),
-            liveness_timeout: Duration::from_millis(240),
+            liveness_timeout: Duration::from_secs(30), // cannot race the writer
         };
         let writer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(80));
@@ -3370,8 +3418,9 @@ mod tests {
             server.flush().unwrap();
             std::thread::sleep(Duration::from_millis(50));
         });
+        let start = Instant::now();
         let mut got_msg = false;
-        for _ in 0..200 {
+        while start.elapsed() < Duration::from_secs(10) {
             match sub.next_event() {
                 SubEvent::Timeout => {}
                 SubEvent::Msg(m) => {
