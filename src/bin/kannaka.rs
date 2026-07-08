@@ -73,6 +73,15 @@ use handlers_identity::handle_identity;
 mod handlers_reputation;
 use handlers_reputation::handle_reputation;
 
+// inc-1b seed-ceremony activation helper — `kannaka swarm activate-gate` (the
+// guided, dry-run-by-default corroboration-gate flip) and `kannaka swarm
+// beacon [--loop]` (the per-seed heartbeat emitter). Composes the identity
+// key + enroll_seed + publish_beacon primitives; the ONLY state change is what
+// `activate-gate --yes` deliberately writes.
+#[path = "handlers/gate.rs"]
+mod handlers_gate;
+use handlers_gate::{handle_swarm_activate_gate, handle_swarm_beacon};
+
 #[path = "handlers/ops.rs"]
 mod handlers_ops;
 use handlers_ops::{
@@ -1205,6 +1214,25 @@ fn main() {
         let cfg = KannakaConfig::load();
         handle_swarm_tail(&cfg, &args[command_start..]);
         return;
+    }
+
+    // Seed-ceremony activation helper: `swarm activate-gate` and `swarm beacon`
+    // touch only config + NATS (node key, seed set, signed heartbeat). Like
+    // `swarm tail` they DON'T need the HRM, so short-circuit before the costly
+    // init_with_hrm — and, crucially, `beacon --loop` runs for hours under
+    // systemd and must NOT hold the HRM write lock while it does.
+    if args.len() >= command_start + 2 && args[command_start] == "swarm" {
+        match args[command_start + 1].as_str() {
+            "activate-gate" => {
+                handle_swarm_activate_gate(&args[command_start..]);
+                return;
+            }
+            "beacon" => {
+                handle_swarm_beacon(&args[command_start..]);
+                return;
+            }
+            _ => {}
+        }
     }
 
     // Load config once: env vars > config.toml > built-in defaults.
@@ -3542,7 +3570,7 @@ fn main() {
         #[cfg(feature = "nats")]
         "swarm" => {
             if args.len() < command_start + 2 {
-                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan|loop>");
+                eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker|brief|health|gaps|plan|loop|activate-gate|beacon>");
                 process::exit(1);
             }
 
@@ -4922,9 +4950,14 @@ fn main() {
                 "tail" => {
                     handle_swarm_tail(&cfg, &args[command_start..]);
                 }
+                // `activate-gate` and `beacon` are handled by the pre-HRM
+                // short-circuit above (they don't need the memory system); listed
+                // here for discoverability if that guard is ever bypassed.
+                "activate-gate" => handle_swarm_activate_gate(&args[command_start..]),
+                "beacon" => handle_swarm_beacon(&args[command_start..]),
                 other => {
                     eprintln!("Unknown swarm command: {other}");
-                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker>");
+                    eprintln!("Usage: kannaka swarm <join|status|sync|queen|hives|publish|leave|listen|serve|tail|exemplars|cores|peers|absorb|autoabsorb|enqueue|worker|activate-gate|beacon>");
                     process::exit(1);
                 }
             }

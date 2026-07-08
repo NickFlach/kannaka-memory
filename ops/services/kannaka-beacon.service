@@ -1,0 +1,58 @@
+# /etc/systemd/system/kannaka-beacon.service
+#
+# Per-SEED heartbeat beacon emitter for the inc-1b corroboration gate.
+# Runs `kannaka swarm beacon --loop`: a foreground loop that publishes ONE
+# signed heartbeat beacon per corroboration epoch to KANNAKA.events.beacon.
+#
+# WHY: once the gate is ARMED (see `kannaka swarm activate-gate --yes`), a Live
+# promotion additionally requires a FRESH seed beacon. If the seed set goes
+# quiet (eclipse / partition) promotion FREEZES to Quarantine — content is never
+# dropped, it just waits for beacons to resume (anti-eclipse fail-closed). So
+# every pinned SEED node should run this unit. Non-seeds refuse to loop.
+#
+# Install this ONLY on nodes whose pubkey is in swarm_trust.seed_pubkeys.
+# Enable with:  systemctl enable --now kannaka-beacon.service
+#
+# Uses the installed binary at ~/.local/bin/kannaka. On a build node where the
+# binary lives in the cargo target dir, point ExecStart there instead.
+[Unit]
+Description=Kannaka Seed Beacon — one signed heartbeat per epoch (anti-eclipse)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=%h
+# NATS auth (kannaka_internal) — needed to publish KANNAKA.events.beacon.
+EnvironmentFile=-%h/.kannaka-nats.env
+# The beacon emitter is a publisher only; it never writes the HRM. Keep it
+# read-only so it can never contend for the single-writer lock.
+Environment=KANNAKA_READONLY=1
+# One beacon per epoch by default (epoch = swarm_trust.epoch_length_ms, 60s).
+# For a fixed cadence instead, append: --interval-secs 60
+ExecStart=%h/.local/bin/kannaka swarm beacon --loop
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
+# ---------------------------------------------------------------------------
+# Alternative: a systemd .timer + one-shot service (no --loop). Pair a
+# Type=oneshot `kannaka swarm beacon` unit with:
+#
+#   [Timer]
+#   OnBootSec=30s
+#   OnUnitActiveSec=60s     # == swarm_trust.epoch_length_ms
+#   [Install]
+#   WantedBy=timers.target
+#
+# Or a plain crontab line on a seed (one beacon per minute):
+#
+#   * * * * * KANNAKA_READONLY=1 %h/.local/bin/kannaka swarm beacon >/dev/null 2>&1
+#
+# The --loop service above is preferred: it schedules to the epoch boundary and
+# survives with Restart=always.
