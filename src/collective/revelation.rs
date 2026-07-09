@@ -312,7 +312,7 @@ pub fn group_effective_difficulty(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collective::privacy::seal_with_commitments;
+    use crate::collective::privacy::seal_with_commitments_salt;
     use crate::memory::HyperMemory;
     use chrono::Duration;
 
@@ -322,8 +322,23 @@ mod tests {
 
     fn setup_store_with_glyph(difficulty: u32) -> (GlyphStore, String) {
         let mut store = GlyphStore::new();
-        let mem = test_memory("classified data");
-        let result = seal_with_commitments(&mem, difficulty, "alice");
+        let mut mem = test_memory("classified data");
+        // Pin the memory identity + timestamp and seal with a FIXED salt so the
+        // whole glyph (its glyph_hash is sha256 of salt/id/timestamp-derived
+        // ciphertext) is deterministic. Why this matters: the reveal path
+        // `create_hint` searches only `4 * 2^new_difficulty` nonces (1024 at
+        // difficulty 8) for a hash with >= new_difficulty leading zero bits.
+        // Over a RANDOM salt it finds none — and returns None — with probability
+        // (1 - 2^-8)^1024 ≈ e^-4 ≈ 1.8%, a real ~1.8%-per-run flake in
+        // `test_execute_revelation_publishes_hint`. Pinning the inputs removes
+        // the randomness at the source; the fixed values below are verified to
+        // yield a solvable difficulty-8 reveal. Do NOT "fix" a future flake by
+        // widening create_hint's production search bound — that would weaken the
+        // real proof-of-work; keep the determinism here in the test instead.
+        mem.id = uuid::Uuid::from_u128(0x5EED_0000_0000_0000_0000_0000_0000_0001);
+        mem.created_at =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let result = seal_with_commitments_salt(&mem, difficulty, "alice", [0x5a; 32]);
         let hash = result.glyph.glyph_hash.clone();
         store.insert(result);
         (store, hash)
