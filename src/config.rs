@@ -176,10 +176,16 @@ pub struct CouplingConfig {
 /// Quantum-Wave T1.3 (#473): which entropy source seeds dreams / Ξ. env
 /// `KANNAKA_ENTROPY_SOURCE` OVERRIDES this; `apply_entropy_env_from_config`
 /// bridges config→env at startup only when the env var is unset. **Default
-/// `prng`** — the reservoir source is opt-in until T1.5 dogfood passes.
+/// `reservoir`** as of the T1.5 flip (#475) — Nick approved it on 5 clean
+/// dogfood days. Flipping the SOURCE alone changes nothing observable: the
+/// separate `dream_perturbation` consumption gate stays **default false**, so
+/// no dream draws from the reservoir (and no `kannaka-quantum` CLI dependency
+/// is introduced) until a deployment explicitly opts in. When it IS on, the
+/// reservoir fails LOUDLY on an empty/missing CLI — never a silent PRNG
+/// fallback. Set `source = "prng"` to opt back out.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntropyConfig {
-    /// `"prng"` (default) or `"reservoir"`.
+    /// `"reservoir"` (default, T1.5) or `"prng"`.
     #[serde(default = "default_entropy_source")]
     pub source: String,
     /// T1.4: whether dreams/Ξ actually CONSUME entropy from `source` (and record
@@ -196,7 +202,10 @@ impl Default for EntropyConfig {
 }
 
 fn default_entropy_source() -> String {
-    "prng".to_string()
+    // T1.5 flip (#475): reservoir is now the default source. The
+    // dream_perturbation gate (default false) still governs whether anything
+    // is actually drawn, so this default is inert until a deployment opts in.
+    "reservoir".to_string()
 }
 
 /// SECURITY (increment-0): read-side trust gate for the OPEN NATS swarm.
@@ -3994,6 +4003,41 @@ mod config_field_tests {
         let cfg = KannakaConfig::default();
         assert!(!cfg.belief.enabled, "belief must default OFF (byte-identical field)");
         assert_eq!(cfg.belief.max_n, 6000);
+    }
+
+    // Quantum-Wave T1.5 flip (#475): the entropy SOURCE default is now
+    // `reservoir` (was `prng`). The CONSUMPTION gate is independent and stays
+    // OFF, so the flip draws nothing / adds no CLI dependency on its own.
+    #[test]
+    fn entropy_source_defaults_to_reservoir() {
+        let cfg = KannakaConfig::default();
+        assert_eq!(
+            cfg.entropy.source, "reservoir",
+            "T1.5 flip: entropy source defaults to reservoir"
+        );
+        assert_eq!(EntropyConfig::default().source, "reservoir");
+    }
+
+    #[test]
+    fn dream_perturbation_still_defaults_false() {
+        // The T1.5 flip touches only the SOURCE. The consumption gate must stay
+        // default-OFF so no deployment starts drawing (or grows a kannaka-quantum
+        // dependency) from the flip alone.
+        let cfg = KannakaConfig::default();
+        assert!(
+            !cfg.entropy.dream_perturbation,
+            "dream_perturbation must remain default false after the T1.5 flip"
+        );
+    }
+
+    #[test]
+    fn entropy_source_prng_opt_out_roundtrips() {
+        // A deployment can still pin the PRNG explicitly.
+        let mut cfg = KannakaConfig::default();
+        cfg.entropy.source = "prng".to_string();
+        let toml = toml::to_string(&cfg).expect("serialize config");
+        let back: KannakaConfig = toml::from_str(&toml).expect("deserialize config");
+        assert_eq!(back.entropy.source, "prng");
     }
 
     #[test]
