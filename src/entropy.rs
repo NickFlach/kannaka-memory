@@ -272,9 +272,18 @@ fn bits_to_bytes(bitstr: &str, n_bits: usize) -> Vec<u8> {
 // Selection / factory
 // ---------------------------------------------------------------------------
 
-/// Which entropy source the engine uses. **Default `Prng`** — zero behavior
-/// change and no Python/CLI dependency until a deployment opts in (after T1.5
-/// dogfood).
+/// Which entropy source the engine uses. **Default `Reservoir`** as of the T1.5
+/// flip (#475): a fresh config's `[entropy].source` is `reservoir` and
+/// `apply_entropy_env_from_config` bridges it into `KANNAKA_ENTROPY_SOURCE`
+/// before any dream runs, so the engine selects [`ReservoirSource`]. This is
+/// inert on its own — the independent `dream_perturbation` gate
+/// ([`dream_entropy_enabled`], default OFF) governs whether a dream actually
+/// DRAWS, so the flip introduces no Python/CLI dependency and no behavior change
+/// until a deployment opts consumption in; when it does, a draw fails LOUDLY on
+/// an empty/missing reservoir rather than silently falling back to the PRNG.
+/// [`from_env`](EntropySelection::from_env) still falls back to `Prng` only in a
+/// bare context where NEITHER config nor env set a source (library/tests) — a
+/// zero-dependency safety net, not the deployment default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntropySelection {
     Prng,
@@ -283,8 +292,12 @@ pub enum EntropySelection {
 
 impl EntropySelection {
     /// Resolve from `KANNAKA_ENTROPY_SOURCE` (config bridges into this env, env
-    /// wins — mirrors the belief/cluster/coupling config bridges). Anything other
-    /// than an explicit reservoir selection is `Prng`.
+    /// wins — mirrors the belief/cluster/coupling config bridges). An explicit
+    /// `prng`/`software` opts back out to the PRNG; anything else (including the
+    /// bridged-in `reservoir` default) selects `Reservoir`. The bare fallback
+    /// when the var is UNSET is `Prng` — see the note on [`EntropySelection`]:
+    /// real deployments never hit it because the config bridge sets the var
+    /// (`reservoir` by default) at startup.
     pub fn from_env() -> Self {
         match std::env::var("KANNAKA_ENTROPY_SOURCE")
             .unwrap_or_default()
@@ -332,7 +345,11 @@ pub fn seed_from_bytes(bytes: &[u8]) -> u64 {
     seed
 }
 
-/// The configured entropy source. Defaults to [`PrngSource`].
+/// The configured entropy source. In a real deployment this is
+/// [`ReservoirSource`] (the T1.5 default, bridged config→env before startup);
+/// in a bare no-config/no-env context it falls back to [`PrngSource`]. Only
+/// invoked from the `dream_perturbation`-gated dream path, so with the gate off
+/// (default) it is never built.
 pub fn default_source() -> Box<dyn EntropySource> {
     EntropySelection::from_env().build()
 }
@@ -439,10 +456,12 @@ mod tests {
     }
 
     #[test]
-    fn selection_defaults_to_prng() {
-        // Unset / unknown → Prng (the from_env default). We don't mutate the
-        // process env here (parallel-test safety); just assert the mapping via a
-        // direct match on the documented tokens.
+    fn selection_builds_expected_sources() {
+        // Each variant builds the source it names. We don't mutate the process
+        // env here (parallel-test safety); the DEPLOYMENT default (reservoir,
+        // T1.5 #475) is asserted on the config in config.rs. from_env's bare
+        // fallback (no config, no env) remains Prng — a zero-dependency safety
+        // net, not the deployment default.
         assert_eq!(EntropySelection::Prng.build().kind(), "prng");
         assert_eq!(EntropySelection::Reservoir.build().kind(), "reservoir");
     }

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.10.9] — 2026-07-08
+
+### Changed — entropy source defaults to `reservoir` (Quantum-Wave T1.5 flip, #475)
+
+The default `[entropy].source` flips from `prng` to `reservoir` after 5 clean
+days of the T1.5 reservoir dogfood. What this does and does NOT change:
+
+- **Source only.** The independent T1.4 consumption gate
+  (`[entropy].dream_perturbation` / `KANNAKA_DREAM_ENTROPY`) stays **default
+  false**, so no deployment starts drawing from the reservoir — or grows a
+  `kannaka-quantum` CLI dependency — from this flip alone. Selecting the source
+  is inert until consumption is explicitly opted in.
+- **Fails loud, never silent PRNG.** When a deployment does turn consumption on,
+  a reservoir draw fails loudly on an empty or missing CLI
+  (`CliUnavailable`/`ReservoirEmpty`) rather than silently falling back to the
+  PRNG — every stamped provenance chain stays TRUE.
+- **Opt back out** any time with `[entropy].source = "prng"` (or
+  `KANNAKA_ENTROPY_SOURCE=prng`).
+
+### Fixed — deterministic revelation proof-of-work test (#517)
+
+`test_execute_revelation_publishes_hint` was a ~1.8%-per-run flake (bounded PoW
+search over a random salt); the test glyph is now sealed with a fixed salt so
+the reveal search is deterministic. Production `seal` behaviour is unchanged.
+
 ## [0.10.8] — 2026-07-08
 
 ### Added — guided seed-ceremony helpers for the corroboration gate
