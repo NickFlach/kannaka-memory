@@ -3363,7 +3363,8 @@ fn run_l5_dream_chain(
                     None => continue,
                 };
                 let raw = (phase0 - gravity_query_phase).abs();
-                let dphi = raw.min(two_pi - raw); // 0..pi
+                let raw_norm = raw % two_pi; // normalize to [0, 2π) before circular distance
+                let dphi = raw_norm.min(two_pi - raw_norm); // 0..pi
                 // align: 1.0 at the attractor phase, 0.0 anti-phase, 0.5 a quarter turn.
                 let align = 1.0 - dphi / std::f32::consts::PI;
                 // neighbors (align>0.5) grow, phase-distant (align<0.5) shrink.
