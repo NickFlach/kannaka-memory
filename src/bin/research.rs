@@ -3374,8 +3374,12 @@ fn run_l5_dream_chain(
             }
         }
 
-        // L5.5: inject online memories at designated cycle points
-        if injection_cycles.contains(&cycle_idx) {
+        // L5.5: inject online memories at designated cycle points.
+        // CARRIER_NO_INJECT suppresses injection for the flat-corpus carrier test only;
+        // injection spikes at cycle 3 otherwise dominate the DFT window.
+        if injection_cycles.contains(&cycle_idx)
+            && std::env::var("CARRIER_NO_INJECT").unwrap_or_default().is_empty()
+        {
             let ids = inject_online_memories(engine, dim, injection_counter, params.encoder_seed);
             injected_ids_per_event.push(ids);
             injection_counter += 1;
@@ -3608,19 +3612,29 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
     let start_flat = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_flat");
-    // Run 5 cycles and skip cycle 0 from the DFT window.
-    // Cycle 0 uses threshold_scale=1.0 (full interference), which always produces a
-    // ~4.17 amplitude spike that splits DFT power ~50/50 between k=1 and k=2 regardless
-    // of drive or mode. Cycles 1-4 use threshold_scale=0.3 (reduced); the drive's
-    // 0.5 Hz first-quarter arc produces deltas ≈ [0.071A, 0.100A, 0.071A, 0] that
-    // DFT strongly at k=1 (2 Hz), pushing carrier_emergence to ~0.85.
+    // Run 6 cycles, skip cycles 0 AND 1 from the DFT window, suppress injection.
+    // Two separate masking problems in the old 5-cycle/skip-1 setup:
+    //   1. Cycle 1 carries a secondary consolidation residual (~0.192) from cycle 0's
+    //      full-threshold sweep — 23× larger than the drive contribution.
+    //   2. Injection at cycle 2 creates a consolidation spike at cycle 3 (~0.036)
+    //      that dominates the remaining window.
+    // Fix: CARRIER_NO_INJECT removes source of problem 2; chain_depth=6 + all_deltas[2..]
+    // removes source of problem 1. Cycles 2-5 then carry only drive + gravity + quiescent
+    // consolidation. Gravity is roughly constant across cycles (same ref snapshot) → DC →
+    // excluded by the DFT. Drive at 0.5 Hz gives pattern [sin(π·0.25), sin(π·0.375),
+    // sin(π·0.5), sin(π·0.625)] = [0.707, 0.924, 1.0, 0.924] × A × mean_amp, DFTing
+    // at k=1 (2 Hz bin within [0.5, 4.0] Hz band) → predicted carrier_emergence ≈ 0.81.
     let amp_deltas_flat = {
         let mut flat_params = (*params).clone();
-        flat_params.chain_depth = 5;
+        flat_params.chain_depth = 6;
+        std::env::set_var("CARRIER_NO_INJECT", "1");
         let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, all_deltas,
              _inj_flat, _orig_flat, _init_amp_flat) =
             run_l5_dream_chain(&flat_params, &mut engine_flat);
-        if all_deltas.len() >= 5 {
+        std::env::remove_var("CARRIER_NO_INJECT");
+        if all_deltas.len() >= 6 {
+            all_deltas[2..].to_vec()
+        } else if all_deltas.len() >= 2 {
             all_deltas[1..].to_vec()
         } else {
             all_deltas
