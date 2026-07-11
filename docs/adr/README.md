@@ -82,3 +82,4 @@ unused.
 | [0037](ADR-0037-spiral-dynamics-and-the-bridge-operator.md) | Spiral Dynamics and the π/φ Bridge Operator (Ξ) for L6 | Proposed | 2026-06-20 |
 | [0038](ADR-0038-consolidation-solver-interface.md) | Consolidation as QUBO: a Solver Interface for the Dream Phase | Accepted | 2026-07-01 |
 | [0039](ADR-0039-corroboration-trust-model.md) | The Corroboration Trust Model — identity says who, corroboration proves what | Accepted | 2026-07-07 |
+| [0040](ADR-0040-cerebellar-novelty-detection.md) | Cerebellar Novelty Detection — surprise as a dual-timescale differentiator on recall familiarity | Accepted | 2026-07-11 |

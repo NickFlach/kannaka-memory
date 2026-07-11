@@ -67,6 +67,10 @@ pub mod recall_bench;
 pub mod entropy;
 pub mod qubo;
 
+/// Cerebellar novelty detection — a dependency-free dual-timescale differentiator
+/// (surprise = learned-baseline − fast familiarity). See `novelty.rs`.
+pub mod novelty;
+
 pub mod config;
 
 // ADR-0029 Phase 1+2: clap-based CLI dispatch + plugin discovery.
