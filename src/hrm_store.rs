@@ -1203,12 +1203,24 @@ impl HrmStore {
         // ShortTerm decay/evict projection (M3). Reactivation is not persisted
         // until ADR-0036 Phase 1, so "evict" uses the session-local
         // retrieval_count == 0 — a conservative undercount until then.
+        //
+        // Exclude merge PARTICIPANTS from the evict count. Grouping admits members
+        // purely on cosine+phase (amplitude never gates it), so a decayed ShortTerm
+        // near-duplicate can be BOTH merged AND evict-eligible. apply_consolidation
+        // removes it via the merge and skips ALL merge members (merged_ids) in its
+        // evict pass; if the plan also counts it as an evict it double-subtracts,
+        // over-stating loss and breaking the dryrun_apply_parity invariant.
+        let merged_indices: std::collections::HashSet<usize> =
+            grouping.admitted.iter().flatten().copied().collect();
         let mut st_total = 0usize;
         let mut st_evict = 0usize;
-        for (_, m) in &entries {
+        for (i, (_, m)) in entries.iter().enumerate() {
             if m.tier == Tier::ShortTerm {
                 st_total += 1;
-                if m.amplitude < opts.shortterm_evict && m.retrieval_count == 0 {
+                if m.amplitude < opts.shortterm_evict
+                    && m.retrieval_count == 0
+                    && !merged_indices.contains(&i)
+                {
                     st_evict += 1;
                 }
             }
@@ -3335,6 +3347,44 @@ mod tests {
         assert_eq!(
             phases[1], phase_after_first,
             "phase must not random-walk on repeat entropy passes"
+        );
+    }
+
+    // hunt regression: a ShortTerm near-duplicate pair that is BOTH merge-eligible
+    // (near-identical) AND evict-eligible (amplitude 0.05 < 0.15, retr 0). The plan
+    // must not double-count them — apply absorbs one via the merge and skips ALL
+    // merge members in its evict pass, so plan/apply projections must still match.
+    #[test]
+    fn dryrun_apply_parity_merge_evict_overlap() {
+        let build = || {
+            let mut store = HrmStore::new(
+                make_test_pipeline(),
+                NamedTempFile::new().unwrap().path().to_path_buf(),
+            );
+            let base = vec![0.5f32; WAVEFRONT_DIM];
+            let mut a = base.clone();
+            a[0] += 0.001;
+            insert_ctl(&mut store, a, "dupA", 0.05, 0.0, Tier::ShortTerm, 0);
+            let mut b = base.clone();
+            b[1] += 0.001;
+            insert_ctl(&mut store, b, "dupB", 0.05, 0.0, Tier::ShortTerm, 0);
+            let mut u = vec![0.0f32; WAVEFRONT_DIM];
+            u[200] = 1.0;
+            insert_ctl(&mut store, u, "solo", 1.0, 0.0, Tier::LongTerm, 0);
+            store
+        };
+
+        let plan = build().plan_consolidation(&ConsolidateOpts {
+            mode: ConsolidateMode::DryRun,
+            ..Default::default()
+        });
+        let mut apply_store = build();
+        let applied = apply_store.apply_consolidation(&apply_opts());
+
+        assert_eq!(plan.would_evict, applied.would_evict, "evict parity (merge/evict overlap)");
+        assert_eq!(
+            plan.projected_memories, applied.projected_memories,
+            "projected-count parity (merge/evict overlap)"
         );
     }
 
