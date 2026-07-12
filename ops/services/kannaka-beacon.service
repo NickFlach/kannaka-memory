@@ -13,6 +13,10 @@
 # Install this ONLY on nodes whose pubkey is in swarm_trust.seed_pubkeys.
 # Enable with:  systemctl enable --now kannaka-beacon.service
 #
+# Windows seed: use ops/windows/install-beacon-task.ps1 instead — a plain
+# cmd/console Scheduled Task flashes a console window every epoch; that installer
+# runs the same --loop emitter hidden via wscript.
+#
 # Uses the installed binary at ~/.local/bin/kannaka. On a build node where the
 # binary lives in the cargo target dir, point ExecStart there instead.
 [Unit]

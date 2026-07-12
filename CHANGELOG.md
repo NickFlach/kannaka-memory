@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added — Windows seed-beacon installer (hidden, no console flash)
+
+`ops/windows/install-beacon-task.ps1` + `ops/windows/kannaka-beacon-hidden.vbs`
+are the Windows equivalent of `ops/services/kannaka-beacon.service`: they run the
+per-seed `kannaka swarm beacon --loop` heartbeat as a hidden, auto-starting
+Scheduled Task. A naive `cmd`/console-action task flashes a console window every
+epoch in the interactive session — and the task "Hidden" flag does **not**
+suppress it (it only hides the task from the Task Scheduler UI). The installer
+instead points the action at `wscript.exe` running a launcher that starts the
+console binary with window style 0 (hidden): zero UI, no stored password, network
+preserved (the "run whether user is logged on or not" path would need a password,
+or fall back to S4U with no network — which breaks NATS publishing). The task
+starts at logon, restarts on failure, and **runs on battery** — a laptop seed
+that stopped beaconing on battery would freeze swarm promotions (anti-eclipse
+fail-closed). Seed-only; `--loop` refuses on a non-seed. See ADR-0039.
+
 ## [0.10.9] — 2026-07-08
 
 ### Changed — entropy source defaults to `reservoir` (Quantum-Wave T1.5 flip, #475)
