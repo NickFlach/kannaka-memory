@@ -118,16 +118,10 @@ impl IdentityStore {
         }
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize identity: {e}"))?;
-        std::fs::write(path, text)
+        // Owner-only (0600) from creation — no world-readable window for the SSO
+        // access/refresh tokens (was std::fs::write + discarded post-hoc chmod).
+        crate::provenance::write_owner_only(path, text.as_bytes())
             .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
-
-        // chmod 600 on Unix (token protection)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            let _ = std::fs::set_permissions(path, perms);
-        }
 
         Ok(())
     }

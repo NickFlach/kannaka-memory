@@ -555,9 +555,9 @@ pub fn node_signing_key(data_dir: &Path) -> Result<[u8; 32], String> {
         .map_err(|e| format!("failed to create {}: {e}", data_dir.display()))?;
     let mut seed = [0u8; 32];
     fill_os_random(&mut seed);
-    std::fs::write(&path, seed)
+    write_owner_only(&path, &seed)
         .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    restrict_key_permissions(&path);
+    restrict_key_permissions(&path); // Windows ACL (+ redundant Unix re-tighten)
     Ok(seed)
 }
 
@@ -621,6 +621,34 @@ pub fn verify_snapshot(pubkey: &[u8; 32], snapshot_bytes: &[u8], sig: &[u8; 64])
 fn fill_os_random(buf: &mut [u8]) {
     use rand::RngCore;
     rand::rngs::OsRng.fill_bytes(buf);
+}
+
+/// Write `bytes` to `path` as an owner-only (0600) file on Unix, created that way
+/// FROM THE START so a secret is never world-readable — closing the create→chmod
+/// TOCTOU window that `std::fs::write` (0644 under umask 022) + a post-hoc
+/// `chmod 0600` leaves open, and avoiding a permanently-exposed file when a
+/// discarded post-hoc chmod silently fails. Also re-tightens a file that already
+/// existed from an older 0644 write. On non-Unix, falls back to `std::fs::write`
+/// (Windows secret ACLs are applied separately, e.g. via `restrict_key_permissions`).
+pub(crate) fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
 }
 
 /// Restrict a key file to the current user. Unix: `chmod 0600`. Windows:
@@ -770,6 +798,20 @@ mod tests {
 
     fn fixed_id() -> Uuid {
         Uuid::from_bytes([9u8; 16])
+    }
+
+    // hunt: secret files (signing key, tokens, API key) must be created owner-only
+    // (0600) from the start, never a world-readable write-then-chmod. Unix-only.
+    #[cfg(unix)]
+    #[test]
+    fn write_owner_only_creates_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        write_owner_only(&path, b"top secret seed").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "secret must be created owner-only, got {mode:o}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"top secret seed");
     }
 
     // (a) sign -> verify round-trip returns the signer pubkey.
