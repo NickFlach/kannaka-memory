@@ -546,17 +546,17 @@ impl ParadoxResolver {
             
             match resolution {
                 Resolution::Consensus(state) => {
-                    self.apply_consensus_state(engine, &paradox, &state, &snapshot);
+                    self.apply_consensus_state(engine, &paradox, &state, snapshot);
                     report.consensus_count += 1;
                     entropy_output += 0.0; // Perfect consensus preserves all information
                 }
                 Resolution::Projection { amplitude, phase, information_preserved, .. } => {
-                    self.apply_projection(engine, &paradox, amplitude, phase, &snapshot);
+                    self.apply_projection(engine, &paradox, amplitude, phase, snapshot);
                     report.projected_count += 1;
                     entropy_output += paradox.information_tension * (1.0 - information_preserved);
                 }
                 Resolution::Irreducible { states, tension_links } => {
-                    self.apply_irreducible(engine, &paradox, &states, &tension_links, &snapshot);
+                    self.apply_irreducible(engine, &paradox, &states, &tension_links, snapshot);
                     report.irreducible_count += 1;
                     entropy_output += paradox.information_tension; // All entropy preserved
                 }

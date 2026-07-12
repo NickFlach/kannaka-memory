@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Top-level Kannaka configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KannakaConfig {
     #[serde(default = "AgentConfig::default")]
     pub agent: AgentConfig,
@@ -454,25 +454,6 @@ impl Default for BeliefConfig {
     }
 }
 
-impl Default for KannakaConfig {
-    fn default() -> Self {
-        Self {
-            agent: AgentConfig::default(),
-            llm: LlmConfig::default(),
-            swarm: SwarmConfig::default(),
-            ghostsignals: GhostSignalsConfig::default(),
-            constellation: ConstellationConfig::default(),
-            hrm: HrmConfig::default(),
-            updates: UpdatesConfig::default(),
-            triage: TriageConfig::default(),
-            belief: BeliefConfig::default(),
-            cluster: ClusterConfig::default(),
-            coupling: CouplingConfig::default(),
-            entropy: EntropyConfig::default(),
-            swarm_trust: SwarmTrustConfig::default(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Core API
@@ -2259,14 +2240,14 @@ fn offer_kannaktopus_install() {
         .arg("--version")
         .output()
         .ok()
-        .and_then(|o| {
+        .map(|o| {
             let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
             let major: u32 = v.trim_start_matches('v')
                 .split('.')
                 .next()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
-            Some(major >= 18)
+            major >= 18
         })
         .unwrap_or(false);
 

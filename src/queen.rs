@@ -27,11 +27,12 @@ use crate::store::{MediumBackend, ResonanceEngine};
 // ---------------------------------------------------------------------------
 
 /// Handedness for chiral coupling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Handedness {
     Left,
     Right,
+    #[default]
     Achiral,
 }
 
@@ -109,11 +110,6 @@ fn default_trust() -> f32 {
     0.5
 }
 
-impl Default for Handedness {
-    fn default() -> Self {
-        Self::Achiral
-    }
-}
 
 /// A detected hive — a cluster of phase-locked agents.
 #[derive(Debug, Clone, Serialize, Deserialize)]

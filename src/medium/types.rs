@@ -70,21 +70,17 @@ pub enum MediumError {
 ///
 /// Used by the Neural Consciousness System (NCS) to route, filter, and
 /// weight cross-modal interference in the holographic medium.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Modality {
     Audio,
     Visual,
     Semantic,
     Network,
     Mixed,
+    #[default]
     Unknown,
 }
 
-impl Default for Modality {
-    fn default() -> Self {
-        Modality::Unknown
-    }
-}
 
 /// Retention tier of a wavefront (ADR-0031 memory triage).
 ///
@@ -92,9 +88,10 @@ impl Default for Modality {
 /// format change is non-destructive — nothing becomes eviction-eligible on
 /// upgrade. `ShortTerm` is eviction-eligible by `kannaka triage`; `Pinned` is
 /// never evicted and never demoted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Tier {
     ShortTerm,
+    #[default]
     LongTerm,
     Pinned,
 }
@@ -242,11 +239,6 @@ pub struct ConsolidateReport {
     pub absorb_before_cap: usize,
 }
 
-impl Default for Tier {
-    fn default() -> Self {
-        Tier::LongTerm
-    }
-}
 
 impl std::fmt::Display for Tier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
