@@ -413,7 +413,7 @@ impl GlyphEncoder {
             // Compute cross product between lines
             for &p1 in current_fano_line {
                 for &p2 in &[a, b] {
-                    if p1 != p2 && p1 >= 1 && p1 <= 7 && p2 >= 1 && p2 <= 7 {
+                    if p1 != p2 && (1..=7).contains(&p1) && (1..=7).contains(&p2) {
                         let (cross_result, sign) = cross_product(p1, p2);
                         if cross_result != 0 && cross_result <= 7 {
                             // Add connection fold

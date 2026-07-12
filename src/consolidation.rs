@@ -673,16 +673,16 @@ impl ConsolidationEngine {
         let mems_with_cats: Vec<(crate::memory::HyperMemory, String)> = working_set
             .iter()
             .filter_map(|id| {
-                engine.store.get(id).ok().flatten().cloned().and_then(|mem| {
+                engine.store.get(id).ok().flatten().cloned().map(|mem| {
                     // Determine category from frequency range
                     let category = match mem.frequency {
-                        f if f >= 1.8 && f <= 2.4 => "experience",
-                        f if f >= 1.3 && f < 1.8 => "emotion", 
-                        f if f >= 1.0 && f < 1.3 => "social",
-                        f if f >= 0.8 && f < 1.0 => "skill",
+                        f if (1.8..=2.4).contains(&f) => "experience",
+                        f if (1.3..1.8).contains(&f) => "emotion", 
+                        f if (1.0..1.3).contains(&f) => "social",
+                        f if (0.8..1.0).contains(&f) => "skill",
                         _ => "knowledge",
                     }.to_string();
-                    Some((mem, category))
+                    (mem, category)
                 })
             })
             .collect();
@@ -794,10 +794,10 @@ impl ConsolidationEngine {
                 let phases: Vec<f32> = all_updated_mems.iter().map(|(_, m)| m.phase).collect();
                 let cats: Vec<String> = all_updated_mems.iter().map(|(_, m)| {
                     match m.frequency {
-                        f if f >= 1.8 && f <= 2.4 => "experience",
-                        f if f >= 1.3 && f < 1.8 => "emotion", 
-                        f if f >= 1.0 && f < 1.3 => "social",
-                        f if f >= 0.8 && f < 1.0 => "skill",
+                        f if (1.8..=2.4).contains(&f) => "experience",
+                        f if (1.3..1.8).contains(&f) => "emotion", 
+                        f if (1.0..1.3).contains(&f) => "social",
+                        f if (0.8..1.0).contains(&f) => "skill",
                         _ => "knowledge",
                     }.to_string()
                 }).collect();
@@ -1835,7 +1835,7 @@ impl ConsolidationEngine {
                         
                         // Target moderate similarity: related but not identical
                         // Upper bound raised to 0.75 to include bridge memories (0.68-0.71)
-                        if similarity >= 0.3 && similarity <= 0.75 {
+                        if (0.3..=0.75).contains(&similarity) {
                             // Check if already linked
                             let already_linked = mem_a.connections.iter().any(|l| l.target_id == id_b) ||
                                                 mem_b.connections.iter().any(|l| l.target_id == id_a);

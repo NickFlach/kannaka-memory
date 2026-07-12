@@ -1831,8 +1831,11 @@ impl HrmStore {
         if let Some(ref mut chiral) = self.chiral {
             // Compute SGA classification
             let content_hash = {
-                let content = chiral.right.id_to_index.get(id)
-                    .and_then(|&idx| Some(chiral.right.metadata[idx].content.clone()))
+                let content = chiral
+                    .right
+                    .id_to_index
+                    .get(id)
+                    .map(|&idx| chiral.right.metadata[idx].content.clone())
                     .unwrap_or_default();
                 let mut h: u64 = 0xcbf29ce484222325;
                 for b in content.bytes() {
@@ -2036,7 +2039,7 @@ impl MediumBackend for HrmStore {
     }
 
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError> {
-        if let Some(_) = self.memory_cache.remove(id) {
+        if self.memory_cache.remove(id).is_some() {
             // Remove from flat medium (best-effort).
             if let Err(e) = self.medium.remove_wavefront(id) {
                 // Log error but don't fail - cache was already updated

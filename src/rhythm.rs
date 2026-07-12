@@ -163,7 +163,7 @@ impl RhythmEngine {
 
         // Night hours (23:00–08:00 UTC): double damping
         let hour = now.hour();
-        if hour >= 23 || hour < 8 {
+        if !(8..23).contains(&hour) {
             eta *= 2.0;
         }
 

@@ -365,7 +365,7 @@ fn chromagram_mean(samples: &[f32]) -> Vec<f32> {
 
         for (i, c) in buf[1..n / 2].iter().enumerate() {
             let freq = (i + 1) as f32 * SAMPLE_RATE as f32 / n as f32;
-            if freq < 20.0 || freq > 5000.0 {
+            if !(20.0..=5000.0).contains(&freq) {
                 continue;
             }
             let midi = 12.0 * (freq / 440.0).log2() + 69.0;

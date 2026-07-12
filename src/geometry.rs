@@ -52,7 +52,7 @@ impl CliffordElement {
 
     /// Create a basis vector eᵢ
     pub fn basis_vector(i: u8) -> Self {
-        if i < 1 || i > 7 {
+        if !(1..=7).contains(&i) {
             panic!("Basis vector index must be 1..7, got {}", i);
         }
         let mut grades = BTreeMap::new();
@@ -781,7 +781,7 @@ impl CrossProductTable {
 
     /// Get cross product result
     pub fn get(&self, i: u8, j: u8) -> (u8, i8) {
-        if i < 1 || i > 7 || j < 1 || j > 7 {
+        if !(1..=7).contains(&i) || !(1..=7).contains(&j) {
             panic!("Basis vector indices must be 1..7");
         }
         
