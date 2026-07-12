@@ -283,7 +283,12 @@ fn apply_entropy_perturbation(
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::entropy::seed_from_bytes(bytes));
     let mut count = 0;
     for (i, m) in metadata.iter_mut().enumerate() {
-        if m.hallucinated {
+        // Only perturb+stamp hallucinations NOT already stamped. Without the
+        // provenance.is_none() gate this re-jitters every persisted hallucination
+        // on EVERY dream (an unbounded ±0.05 rad phase random-walk that drifts
+        // settled wavefronts' recall) and re-draws paid entropy each steady-state
+        // dream — the phantom-spend #521 exists to prevent. One draw, one stamp.
+        if m.hallucinated && m.provenance.is_none() {
             let jitter = (rng.gen::<f32>() - 0.5) * 0.1; // ±0.05 rad, entropy-seeded
             if let Some(p) = phases.get_mut(i) {
                 *p += jitter;
@@ -1066,9 +1071,15 @@ impl HrmStore {
     /// "touched set" of a dream: `apply_entropy_perturbation` perturbs and stamps
     /// exactly these, so a draw is only warranted when the count is > 0.
     fn dream_entropy_touched_count(&self) -> usize {
+        // Only UN-stamped hallucinations are a real touch target (see
+        // apply_entropy_perturbation): a hallucination stamped by an earlier dream
+        // must not trigger another paid draw. Match the perturbation's gate exactly.
+        let untouched = |m: &crate::medium::types::WavefrontMeta| {
+            m.hallucinated && m.provenance.is_none()
+        };
         match self.chiral {
-            Some(ref c) => c.right.metadata.iter().filter(|m| m.hallucinated).count(),
-            None => self.medium.store.metadata.iter().filter(|m| m.hallucinated).count(),
+            Some(ref c) => c.right.metadata.iter().filter(|m| untouched(m)).count(),
+            None => self.medium.store.metadata.iter().filter(|m| untouched(m)).count(),
         }
     }
 
@@ -3309,6 +3320,34 @@ mod tests {
         // Sanity: the 4 dups collapse to one carrier and the cold ShortTerm evicts.
         assert_eq!(plan.would_absorb, 3);
         assert_eq!(plan.would_evict, 1);
+    }
+
+    // hunt regression: dream-entropy perturbation must touch each hallucination
+    // ONCE. Re-touching a stamped hallucination every dream would re-draw paid
+    // entropy and random-walk its phase (unbounded ±0.05 rad drift).
+    #[test]
+    fn entropy_perturbation_stamps_each_hallucination_once() {
+        use crate::medium::types::WavefrontMeta;
+        let mut meta = vec![
+            WavefrontMeta::new(uuid::Uuid::new_v4(), "real".into()),
+            WavefrontMeta::new(uuid::Uuid::new_v4(), "hallu".into()),
+        ];
+        meta[1].hallucinated = true;
+        let mut phases = vec![0.0f32, 1.0f32];
+        let bytes = [7u8; 32];
+        let prov = crate::entropy::Provenance::default();
+
+        let n1 = apply_entropy_perturbation(&mut meta, &mut phases, &bytes, &prov);
+        assert_eq!(n1, 1, "the un-stamped hallucination is perturbed once");
+        assert!(meta[1].provenance.is_some(), "hallucination is stamped");
+        let phase_after_first = phases[1];
+
+        let n2 = apply_entropy_perturbation(&mut meta, &mut phases, &bytes, &prov);
+        assert_eq!(n2, 0, "an already-stamped hallucination is NOT re-drawn/re-perturbed");
+        assert_eq!(
+            phases[1], phase_after_first,
+            "phase must not random-walk on repeat entropy passes"
+        );
     }
 
     // hunt regression: a ShortTerm near-duplicate pair that is BOTH merge-eligible

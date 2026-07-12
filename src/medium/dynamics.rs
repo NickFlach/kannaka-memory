@@ -318,8 +318,13 @@ impl Medium {
                 break;
             }
 
-            // Store energy state for convergence detection
-            let prev_energy: Vec<f32> = self.store.energy.to_vec();
+            // Store energy state for convergence detection. Slice to the ACTIVE
+            // count, not the full tensor capacity — else prev_energy.len() is the
+            // amortized capacity and the `current_count == prev_energy.len()`
+            // convergence guard below is false whenever capacity>len (the normal
+            // case, and always after a prune), so the early-stop never fires and
+            // `converged` is silently always false (mirrors Hemisphere::dream).
+            let prev_energy: Vec<f32> = self.store.energy.slice(s![..self.store.len]).to_vec();
 
             // 1. Compute coherence matrix H·H^T and eigenstructure
             let coherence = self.coherence_matrix();
