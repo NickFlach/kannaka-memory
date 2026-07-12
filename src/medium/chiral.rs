@@ -527,10 +527,33 @@ impl ChiralMedium {
     /// is not re-applied — the refreshed left is a clean fold of the corrected
     /// right. Returns the count of right-hemisphere wavefronts re-encoded; the
     /// caller must rebuild derived caches and invalidate cluster sidecars.
-    pub fn re_encode_all(&mut self, pipeline: &EncodingPipeline) -> Result<usize, MediumError> {
+    pub fn re_encode_all(
+        &mut self,
+        pipeline: &EncodingPipeline,
+        dry_run: bool,
+    ) -> Result<usize, MediumError> {
         let mut updated = 0usize;
         for i in 0..self.right.count() {
+            // Only re-encode genuine TEXT wavefronts. SKIP:
+            //  - dream HALLUCINATIONS (metadata.hallucinated): their vectors are
+            //    synthetic cross-cluster superpositions, NOT encoder output —
+            //    re-encoding their "HALLUCINATION: ..." debug label pollutes recall.
+            //  - non-text MODALITIES (audio/visual/network/mixed): re-encoding their
+            //    content string as text corrupts the perceptual embedding.
+            // NOTE Modality::Unknown covers BOTH pre-ADR-0042 text memories AND raw
+            // substrate anchors (insert_raw_wavefront), which are indistinguishable
+            // for existing data — this tool is for TEXT HRMs; do NOT run it on a
+            // substrate HRM (the binary warns loudly).
+            let hallucinated = self.right.metadata[i].hallucinated;
+            let modality = self.right.metadata[i].modality;
+            if hallucinated || !matches!(modality, Modality::Semantic | Modality::Unknown) {
+                continue;
+            }
             let content = self.right.metadata[i].content.clone();
+            if dry_run {
+                updated += 1;
+                continue;
+            }
             let new_vec = pipeline.encode_text(&content).map_err(|e| {
                 MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -1427,7 +1450,7 @@ mod tests {
         cm.right.wavefronts.row_mut(idx).assign(&ndarray::Array1::from(vec![-0.9f32; cols]));
         let cos_bad = crate::wave::cosine_similarity(&cm.right.wavefronts.row(idx).to_vec(), &want);
 
-        let n = cm.re_encode_all(&pipeline).unwrap();
+        let n = cm.re_encode_all(&pipeline, false).unwrap();
         assert!(n >= 1, "re-encoded at least the stored memory");
 
         let got = cm.right.wavefronts.row(idx).to_vec();
@@ -1438,6 +1461,52 @@ mod tests {
         );
         assert_eq!(cm.right.energy[idx], energy_before, "energy (wave-state) preserved");
         assert_eq!(cm.right.metadata[idx].content, content, "content preserved");
+    }
+
+    // #532 review: re_encode_all must NOT clobber dream-hallucinated wavefronts
+    // (their vectors are synthetic superpositions, not text encodings). A
+    // hallucinated wavefront's vector must survive re_encode_all untouched.
+    #[test]
+    fn re_encode_all_skips_hallucinated() {
+        let pipeline = test_pipeline();
+        let text = "a genuine text memory";
+
+        // Reference: the correct stored (reduced-dims) encoding of the text.
+        let mut ref_cm = ChiralMedium::new();
+        let rid = ref_cm.store(text, 0.8, &pipeline).unwrap();
+        let want = ref_cm
+            .right
+            .wavefronts
+            .row(*ref_cm.right.id_to_index.get(&rid).unwrap())
+            .to_vec();
+
+        let mut cm = ChiralMedium::new();
+        let text_id = cm.store(text, 0.8, &pipeline).unwrap();
+        let hall_id = cm
+            .store("HALLUCINATION: superposition of patterns 1-2", 0.6, &pipeline)
+            .unwrap();
+        let cols = cm.right.wavefronts.ncols();
+
+        // Corrupt BOTH (as #106 would), and mark the second a dream hallucination
+        // with a distinctive synthetic vector (NOT the text encoding of its label).
+        let tidx = *cm.right.id_to_index.get(&text_id).unwrap();
+        cm.right.wavefronts.row_mut(tidx).assign(&ndarray::Array1::from(vec![-0.9f32; cols]));
+        let hidx = *cm.right.id_to_index.get(&hall_id).unwrap();
+        cm.right.metadata[hidx].hallucinated = true;
+        let synthetic = vec![0.42f32; cols];
+        cm.right.wavefronts.row_mut(hidx).assign(&ndarray::Array1::from(synthetic.clone()));
+
+        let n = cm.re_encode_all(&pipeline, false).unwrap();
+        assert_eq!(n, 1, "only the genuine text wavefront is re-encoded, not the hallucination");
+
+        // Hallucination byte-preserved; text fixed to the correct encoding.
+        assert_eq!(
+            cm.right.wavefronts.row(hidx).to_vec(),
+            synthetic,
+            "#532: hallucinated wavefront must NOT be re-encoded"
+        );
+        let cos = crate::wave::cosine_similarity(&cm.right.wavefronts.row(tidx).to_vec(), &want);
+        assert!(cos > 0.999, "the genuine text wavefront IS re-encoded (cos={cos})");
     }
 
     #[test]

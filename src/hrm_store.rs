@@ -1711,8 +1711,10 @@ impl HrmStore {
         let updated = {
             let pipeline = &self.pipeline;
             let chiral = self.chiral.as_mut().unwrap();
+            // dry_run makes re_encode_all COUNT eligible wavefronts without mutating
+            // the in-memory hemispheres, so a dry run leaves the store untouched.
             chiral
-                .re_encode_all(pipeline)
+                .re_encode_all(pipeline, dry_run)
                 .map_err(|e| StoreError::Other(format!("re-encode failed: {}", e)))?
         };
         if dry_run {
