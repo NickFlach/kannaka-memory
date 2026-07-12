@@ -140,6 +140,38 @@ pub struct ChiralMedium {
     pub right_to_left: std::collections::HashMap<Uuid, Uuid>,
 }
 
+/// Chiral-router mode (env `KANNAKA_CHIRAL_ROUTER`). `off` (default) is today's
+/// behavior — the ingest echoes every gated item to left (near-mirror). `novelty`
+/// is the differentiation experiment: novel items stay RIGHT-only, and only the
+/// routinized minority (familiarity crossing, per the cerebellar novelty
+/// detector) is projected to LEFT — so left becomes a crystallized minority, not
+/// a mirror. Isolated behind an env flag so the A/B needs no rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChiralRouter {
+    Off,
+    Novelty,
+}
+
+pub(crate) fn chiral_router_mode() -> ChiralRouter {
+    match std::env::var("KANNAKA_CHIRAL_ROUTER") {
+        Ok(v) if v.eq_ignore_ascii_case("novelty") => ChiralRouter::Novelty,
+        _ => ChiralRouter::Off,
+    }
+}
+
+/// Routinization familiarity threshold for `KANNAKA_CHIRAL_ROUTER=novelty`
+/// (sweepable via `KANNAKA_CHIRAL_ROUTINIZE_THETA`, default 0.8). An ingest whose
+/// content already resonates in RIGHT at/above this — i.e. a REPEAT — is
+/// routinized to LEFT; a novel item (below it) stays right-only. Absolute
+/// familiarity, not the relative-surprise novelty detector: at ingest the stream
+/// is mostly novel so a learned-baseline surprise signal can't separate repeats.
+pub(crate) fn chiral_routinize_theta() -> f32 {
+    std::env::var("KANNAKA_CHIRAL_ROUTINIZE_THETA")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.8)
+}
+
 impl ChiralMedium {
     /// Create a new empty chiral medium.
     pub fn new() -> Self {
@@ -294,6 +326,28 @@ impl ChiralMedium {
         //    Use the first line through this memory's Fano point
         let fold_line = self.fano.lines_through_point(fano_point)[0] as usize;
 
+        // Chiral router (KANNAKA_CHIRAL_ROUTER=novelty, exp 1): decide whether this
+        // ingest should echo to LEFT. In `off` mode every gated item echoes (today's
+        // near-mirror). In `novelty` mode a NOVEL item stays RIGHT-only, and only a
+        // ROUTINIZED item — familiarity crossing, per the cerebellar novelty detector
+        // fed by how strongly the incoming content already resonates in RIGHT — is
+        // projected to left, so left crystallizes the routinized minority, not a mirror.
+        let is_routine = match chiral_router_mode() {
+            ChiralRouter::Off => true,
+            ChiralRouter::Novelty => {
+                // Absolute familiarity: how strongly does the incoming content
+                // already resonate in RIGHT? A REPEAT resonates high; a novel item
+                // low. Only a repeat (>= theta) is routinized to left.
+                let familiarity = self
+                    .right
+                    .resonate(vector, 1)
+                    .first()
+                    .map(|r| r.resonance_strength)
+                    .unwrap_or(0.0);
+                familiarity >= chiral_routinize_theta()
+            }
+        };
+
         // 3. Optic chiasm: input enters RIGHT hemisphere first
         let right_id = self.right.add_wavefront(vector, content.clone(), importance)?;
 
@@ -309,9 +363,10 @@ impl ChiralMedium {
         let scale = ChiralScale::perception(importance);
         self.scales.insert(right_id, scale);
 
-        // 6. Echo to LEFT hemisphere via callosum (if budget allows)
-        //    Uses the geometrically correct fold line for this memory's Fano group
-        if self.callosum.passes_gate(importance) && self.callosum.has_budget() {
+        // 6. Echo to LEFT hemisphere via callosum (if budget allows AND — in
+        //    novelty-router mode — the item is routinized, not novel).
+        //    Uses the geometrically correct fold line for this memory's Fano group.
+        if is_routine && self.callosum.passes_gate(importance) && self.callosum.has_budget() {
             let folded = self.fano.fold(
                 vector,
                 self.right.dims,
@@ -1579,6 +1634,160 @@ mod tests {
             circ(pb, pf) > circ(pb, pn),
             "unrelated content should be further in phase than a near-duplicate"
         );
+    }
+
+    // Chiral-router exp 1 (KANNAKA_CHIRAL_ROUTER=novelty): a NOVEL first sighting
+    // stays RIGHT-only; a REPEAT (resonates in right >= theta) routinizes to LEFT.
+    // In `off` (default) every gated item echoes (near-mirror). #[ignore] because
+    // it sets a process-global env var (the codebase convention for env tests).
+    #[test]
+    #[ignore = "experiment: KANNAKA_CHIRAL_ROUTER routing; run with --ignored --nocapture"]
+    fn chiral_router_novelty_routes_repeat_to_left() {
+        let pipeline = test_pipeline();
+        let item = "a distinctive analytical proposition about routinization";
+
+        // OFF (default): both the first sighting AND the repeat echo to left.
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        let mut off = ChiralMedium::new();
+        off.store(item, 0.8, &pipeline).unwrap();
+        off.store(item, 0.8, &pipeline).unwrap();
+        let off_left = off.left.count();
+
+        // NOVELTY: the novel first sighting is right-only; the repeat routinizes.
+        std::env::set_var("KANNAKA_CHIRAL_ROUTER", "novelty");
+        std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", "0.1");
+        let mut nov = ChiralMedium::new();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_novel = nov.left.count();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_repeat = nov.left.count();
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+
+        assert!(off_left >= 1, "off mode: gated items echo to left (near-mirror), got {off_left}");
+        assert_eq!(after_novel, 0, "novelty mode: a novel first sighting stays RIGHT-only");
+        assert!(
+            after_repeat > after_novel,
+            "novelty mode: the repeat routinizes to LEFT ({after_novel} -> {after_repeat})"
+        );
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_CHIRAL_ROUTER"]
+    fn experiment_chiral_routinization_differentiation() {
+        // EXP-1 (hemisphere differentiation, from the approved research workflow).
+        // Does novelty-gated routinization turn the LEFT hemisphere from a near-
+        // mirror into a crystallized MINORITY — raising hemispheric divergence Δ
+        // (ADR-0024 CS-4) into a mid-band without collapsing callosal efficiency κ
+        // (CS-5) — and which way does core recall move?
+        //
+        // Corpus: CORE items stored R=3× (routinized through repetition),
+        // interleaved with one-off NOVEL noise (interference). In `off` the
+        // callosum budget is spent indiscriminately (near-mirror, low Δ); in
+        // `novelty` only the routinized core crosses to left (small left, higher
+        // Δ). resonance_strength = sim·energy·phase (core.rs:381) is NOT a clean
+        // cosine, so absolute θ is encoder-scale-sensitive — we SWEEP θ to read
+        // separability rather than assume it, and average over seeds (multi-run).
+        const NCORE: usize = 10;
+        const NNOISE: usize = 40;
+        const ROUNDS: usize = 3;
+        let seeded = |seed: u64| -> EncodingPipeline {
+            let encoder = Box::new(SimpleHashEncoder::new(384, seed));
+            let codebook = Codebook::new(384, WAVEFRONT_DIM, seed);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let core: Vec<String> =
+            (0..NCORE).map(|i| format!("stable core anchor proposition {i}")).collect();
+        let noise: Vec<String> =
+            (0..NNOISE).map(|i| format!("ephemeral one-off novel filler {i}")).collect();
+
+        // Averaged over seeds: [left, right, core_in_left, noise_in_left, Δ, κ, p@1].
+        // Δ-cosine turned out saturated by the Fano fold (see report), so the REAL
+        // differentiation signal is the CONTENT composition of left: does it hold
+        // the core (differentiated) or a full folded copy of everything (mirror)?
+        let run = |router: &str, theta: f32, seeds: &[u64]| -> [f32; 7] {
+            let mut acc = [0.0f32; 7];
+            for &seed in seeds {
+                std::env::set_var("KANNAKA_CHIRAL_ROUTER", router);
+                std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", format!("{theta}"));
+                let pipeline = seeded(seed);
+                let mut cm = ChiralMedium::new();
+                let per = NNOISE / ROUNDS;
+                for round in 0..ROUNDS {
+                    for c in core.iter() {
+                        cm.store(c, 0.9, &pipeline).unwrap();
+                    }
+                    let lo = round * per;
+                    let hi = if round == ROUNDS - 1 { NNOISE } else { lo + per };
+                    for n in noise[lo..hi].iter() {
+                        cm.store(n, 0.5, &pipeline).unwrap();
+                    }
+                }
+                // Content differentiation: what does LEFT actually hold?
+                let core_left = (0..cm.left.count())
+                    .filter(|&i| cm.left.metadata[i].content.starts_with("stable core"))
+                    .count();
+                let noise_left = cm.left.count() - core_left;
+                let (mut hits, mut tot) = (0usize, 0usize);
+                for c in core.iter() {
+                    let res = cm.recall(c, 1, &pipeline).unwrap();
+                    tot += 1;
+                    if res.first().map(|r| r.content == *c).unwrap_or(false) {
+                        hits += 1;
+                    }
+                }
+                let cs = cm.consciousness_summary();
+                acc[0] += cs.left_count as f32;
+                acc[1] += cs.right_count as f32;
+                acc[2] += core_left as f32;
+                acc[3] += noise_left as f32;
+                acc[4] += cs.hemispheric_divergence;
+                acc[5] += cs.callosal_efficiency;
+                acc[6] += hits as f32 / tot.max(1) as f32;
+            }
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+            let n = seeds.len() as f32;
+            for v in acc.iter_mut() {
+                *v /= n;
+            }
+            acc
+        };
+
+        // Separability probe: against a POPULATED right, can an absolute familiarity
+        // threshold tell a REPEAT (exact prior) from a truly NOVEL item apart? If
+        // the two resonance scales overlap, no fixed θ can route cleanly.
+        {
+            let pipeline = seeded(0);
+            let mut cm = ChiralMedium::new();
+            for c in core.iter() {
+                cm.store(c, 0.9, &pipeline).unwrap();
+            }
+            for nz in noise.iter() {
+                cm.store(nz, 0.5, &pipeline).unwrap();
+            }
+            let repeat = pipeline.encode_text(&core[0]).unwrap();
+            let fresh = pipeline.encode_text("utterly unseen never-stored phrase").unwrap();
+            let rr = cm.right.resonate(&repeat, 1);
+            let rr = rr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            let fr = cm.right.resonate(&fresh, 1);
+            let fr = fr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            eprintln!("[exp1] separability: repeat_resonance={rr:.3}  novel_resonance={fr:.3}");
+        }
+
+        let seeds: Vec<u64> = (0..4).collect();
+        eprintln!("[exp1] corpus: {NCORE} core x{ROUNDS} + {NNOISE} noise; seeds={}", seeds.len());
+        eprintln!("[exp1] {:>16} | left right  coreL noiseL    Δ      κ    p@1", "config");
+        let print = |label: String, a: [f32; 7]| {
+            eprintln!(
+                "[exp1] {label:>16} | {:4.1} {:5.1}  {:5.1} {:6.1}  {:.3}  {:.3}  {:.3}",
+                a[0], a[1], a[2], a[3], a[4], a[5], a[6]
+            );
+        };
+        print("off (mirror)".to_string(), run("off", 0.0, &seeds));
+        for theta in [0.3f32, 0.5, 0.7, 0.9] {
+            print(format!("novelty th={theta}"), run("novelty", theta, &seeds));
+        }
     }
 
     #[test]
