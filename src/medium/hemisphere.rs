@@ -165,6 +165,22 @@ impl Hemisphere {
         Ok(id)
     }
 
+    /// Replace the vector at `index` IN PLACE, adapting it to this hemisphere's
+    /// `dims` exactly as `add_wavefront` does (truncate/zero-pad), without touching
+    /// energy/phase/frequency/metadata/id. Used by the re-encode migration (#107)
+    /// to refresh wavefronts written by a broken encoder. No-op if out of range.
+    pub(crate) fn set_wavefront_vector(&mut self, index: usize, vector: &[f32]) {
+        if index >= self.len {
+            return;
+        }
+        let adapted = Self::adapt_vector(vector, self.dims);
+        for (i, &val) in adapted.iter().enumerate() {
+            if i < self.dims {
+                self.wavefronts[[index, i]] = val;
+            }
+        }
+    }
+
     /// Remove a wavefront from this hemisphere using swap-remove (O(1) tensor op).
     pub fn remove_wavefront(&mut self, id: &Uuid) -> bool {
         let index = match self.id_to_index.get(id) {

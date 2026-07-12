@@ -113,6 +113,10 @@ name = "kannaka-recompute-geometry"
 path = "src/bin/recompute_geometry.rs"
 
 [[bin]]
+name = "kannaka-recompute-encoding"
+path = "src/bin/recompute_encoding.rs"
+
+[[bin]]
 name = "dump_xi_pairs"
 path = "src/bin/dump_xi_pairs.rs"
 

@@ -173,7 +173,11 @@ pub fn build_consciousness_payload(
     })
 }
 
-fn make_pipeline() -> EncodingPipeline {
+/// Construct the production encoding pipeline (Ollama all-minilm with a
+/// deterministic hash fallback). Public so one-shot data tools — e.g. the #107
+/// re-encode migration binary — refresh wavefronts with the SAME pipeline the
+/// running system uses, not a test stand-in.
+pub fn make_pipeline() -> EncodingPipeline {
     let ollama = OllamaEncoder::default_local(); // all-minilm, 384-dim
     let hash_fallback = SimpleHashEncoder::new(CODEBOOK_INPUT_DIM, CODEBOOK_SEED);
     let composite = CompositeEncoder::new(Box::new(ollama), Box::new(hash_fallback));
