@@ -572,18 +572,27 @@ impl HrmStore {
     /// method writes those changes back to the authoritative tensor storage.
     fn sync_cache_to_medium(&mut self) {
         // #496: in chiral mode the RIGHT hemisphere is authoritative — it is what
-        // `save_medium` persists and what `rebuild_cache` reloads. Writing dream
-        // mutations (energy strengthening, phase syncs) to the flat `self.medium`
-        // here silently discarded them: the flat medium is never saved in chiral
-        // mode, so the particle dream's constructive work reverted on every reload
-        // while its prunes (applied to chiral.right) stuck — the exact asymmetry
-        // #496 describes. Write mutations to chiral.right so both halves persist.
+        // `save_medium` persists and what `rebuild_cache` reloads. The particle
+        // dream strengthens ENERGY on the cached copy via get_mut; pre-fix that
+        // was written to the flat `self.medium` (never saved in chiral mode) and
+        // reverted on every reload, while the dream's prunes (applied to
+        // chiral.right) stuck — the asymmetry #496 describes.
+        //
+        // ONLY energy is synced here (not frequency/phase). frequency and phase
+        // are set once by Hemisphere::add_wavefront (freq=1.0, a born phase) and
+        // are only ever mutated on chiral.right DIRECTLY (kuramoto/callosal/dream,
+        // each of which rebuilds the cache) — the cache is a reflection, never an
+        // authoritative source, for those two. Writing them back from the cache
+        // would clobber the authoritative values with a stale default whenever a
+        // wavefront was added via insert_raw_wavefront (whose cache record keeps
+        // WaveParams::default freq=0.1/phase=0.0) — corrupting the 96 substrate
+        // anchors on their first flush. Pre-PR the flat-medium sync never reached
+        // disk in chiral mode, so energy-only here is the exact scope #496 needs
+        // and matches pre-PR behavior for freq/phase.
         if let Some(ref mut chiral) = self.chiral {
             for (id, mem) in &self.memory_cache {
                 if let Some(&index) = chiral.right.id_to_index.get(id) {
                     chiral.right.energy[index] = mem.amplitude;
-                    chiral.right.frequency[index] = mem.frequency;
-                    chiral.right.phase[index] = mem.phase;
                 }
             }
         } else {
@@ -2447,6 +2456,41 @@ mod tests {
         assert!(
             (amp - 0.95).abs() < 1e-4,
             "#496: chiral dream-strengthened energy must persist across reload, got {amp}"
+        );
+    }
+
+    // #530 review regression: the chiral sync must persist ONLY energy, not
+    // frequency/phase. insert_raw_wavefront sets chiral.right.frequency=1.0 (via
+    // add_wavefront) but its cache record keeps WaveParams::default (0.1), so a
+    // freq-syncing flush would clobber the authoritative 1.0 -> 0.1 on disk. The
+    // strengthened energy must still persist.
+    #[test]
+    fn chiral_sync_preserves_raw_insert_frequency() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let id = {
+            let mut store = HrmStore::new(make_test_pipeline(), path.clone());
+            store.upgrade_to_chiral();
+            let id = store
+                .insert_raw_wavefront(vec![0.3f32; WAVEFRONT_DIM], "anchor".into(), 0.8)
+                .unwrap();
+            let cm = store.chiral_medium().unwrap();
+            let idx = *cm.right.id_to_index.get(&id).unwrap();
+            assert_eq!(cm.right.frequency[idx], 1.0, "precondition: add_wavefront set freq 1.0");
+            // Strengthen energy (the #496 path), then flush.
+            store.get_mut(&id).unwrap().unwrap().amplitude = 0.95;
+            store.flush().unwrap();
+            id
+        };
+
+        let store = HrmStore::load(make_test_pipeline(), path).unwrap();
+        let amp = store.get(&id).unwrap().expect("survives reload").amplitude;
+        assert!((amp - 0.95).abs() < 1e-4, "#496: strengthened energy persists, got {amp}");
+        let cm = store.chiral_medium().unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        assert_eq!(
+            cm.right.frequency[idx], 1.0,
+            "#530: raw-insert frequency 1.0 must NOT be clobbered to the cache default 0.1"
         );
     }
 
