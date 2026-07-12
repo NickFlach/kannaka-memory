@@ -1072,9 +1072,15 @@ impl ConsolidationEngine {
                     if mem.hallucinated {
                         continue;
                     }
-                    // Signal protection: skip destructive dampening for established memories
-                    // (amplitude > 0.5) when protect_established is enabled. This prevents
-                    // multi-cycle dreams from killing signal memories on repeated passes.
+                    // ADR-0031: never dampen/ghost a PINNED memory. apply_consolidation
+                    // (hrm_store.rs) and stage_compact_ghosts both protect Pinned; without
+                    // the same guard here a Destructive pair silently dampens a pinned
+                    // memory to a zero-amplitude, unrecallable-and-unrevivable ghost —
+                    // violating "Pinned is never evicted and never demoted". (Only Pinned:
+                    // LongTerm dream-dampening is the intended wave self-organization.)
+                    if mem.tier == crate::medium::types::Tier::Pinned {
+                        continue;
+                    }
                     // Signal protection. ADR-0037: ALWAYS protect established
                     // memories (amplitude > 0.5) under the belief substrate — the
                     // phase-scattered field would otherwise dampen strong signal
@@ -1084,22 +1090,24 @@ impl ConsolidationEngine {
                     {
                         continue;
                     }
+                    // Capture liveness BEFORE dampening: only a LIVE->ghost transition may
+                    // stamp the recovery window + count as a prune. Re-stamping an existing
+                    // ghost (amplitude already 0) renews its window every dream and defeats
+                    // stage_compact_ghosts, so ghosts with a retained anti-phase neighbor
+                    // never age out (mirrors memory.rs record_retrieval's != 0.0 guard).
+                    let was_live = mem.amplitude != 0.0;
                     // Proportional dampening: stronger memories lose more absolute amplitude
                     // but the same fraction, matching exponential decay semantics.
                     mem.amplitude *= 1.0 - self.destructive_penalty * dt;
                     if mem.amplitude < self.prune_threshold {
                         mem.amplitude = 0.0; // soft-delete (ghost)
-                        // ADR-0037: stamp updated_at on ghosting so stage_compact_ghosts
-                        // honors the recovery window. Without this, an old field's
-                        // freshly-ghosted memories (updated_at defaulted to created_at,
-                        // > the 7-day horizon) were hard-deleted in the SAME cycle —
-                        // the 295→88 over-prune. Now a ghost stays recoverable.
-                        mem.updated_at = Some(chrono::Utc::now());
-                        // Count actual prune events (threshold crossings), not every
-                        // destructive-pair touch. Old code incremented unconditionally,
-                        // making `memories_pruned` insensitive to `prune_threshold` —
-                        // the OODA loop hit a wall on dream_efficiency because of this.
-                        count += 1;
+                        if was_live {
+                            // ADR-0037: stamp the recovery window on the live->ghost
+                            // transition so stage_compact_ghosts honors it; count only real
+                            // threshold-crossing prune events (not every destructive touch).
+                            mem.updated_at = Some(chrono::Utc::now());
+                            count += 1;
+                        }
                     }
                 }
             }
@@ -1113,6 +1121,7 @@ impl ConsolidationEngine {
                 if let Some(mem) = engine.store.get_mut(id).ok().flatten() {
                     if mem.amplitude > 0.0
                         && mem.amplitude < self.noise_floor
+                        && mem.tier != crate::medium::types::Tier::Pinned
                         && !mem.content.starts_with("__consolidation")
                     {
                         mem.amplitude = 0.0; // ghost
@@ -3017,15 +3026,22 @@ impl DreamState {
         let mut to_prune: Vec<uuid::Uuid> = Vec::new();
         for id in &all_ids {
             if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                // ADR-0031: never decay/ghost a Pinned memory ("never demoted").
+                if mem.tier == crate::medium::types::Tier::Pinned {
+                    continue;
+                }
+                // Only a LIVE->ghost transition may stamp the recovery window, count,
+                // and enqueue link cleanup. Re-stamping an already-ghost (amplitude 0)
+                // every lite dream renews its window and prevents it ever aging out via
+                // stage_compact_ghosts (mirrors memory.rs record_retrieval's != 0.0 guard).
+                let was_live = mem.amplitude != 0.0;
                 // Gentle amplitude decay (0.5% per cycle)
                 mem.amplitude *= 0.995;
-                if mem.amplitude < self.engine.prune_threshold {
+                if was_live && mem.amplitude < self.engine.prune_threshold {
                     mem.amplitude = 0.0;
-                    // ADR-0037: stamp updated_at on ghosting so the recovery
-                    // window holds — stage_prune and the noise-floor sweep both
-                    // stamp; without it a lite-ghosted old memory (updated_at
-                    // == created_at, past the 7-day horizon) is hard-deleted by
-                    // the very next deep dream's compact stage.
+                    // ADR-0037: stamp updated_at on ghosting so the recovery window holds
+                    // (else a lite-ghosted old memory past the 7-day horizon is hard-
+                    // deleted by the very next deep dream's compact stage).
                     mem.updated_at = Some(now);
                     to_prune.push(*id);
                     report.memories_pruned += 1;
@@ -3181,6 +3197,47 @@ mod tests {
         assert!(
             mem.updated_at.is_some(),
             "lite ghosting must stamp updated_at (recovery window)"
+        );
+    }
+
+    // hunt/ADR-0031: a Pinned memory is "never demoted" — the lite dream's decay
+    // must skip it entirely, even below the prune threshold.
+    #[test]
+    fn dream_lite_does_not_ghost_pinned() {
+        let mut engine = make_engine();
+        let state = DreamState::new(ConsolidationEngine::default(), 1);
+        let id = insert_with_phase_and_layer(&mut engine, "pinned trace", 0.0, 0);
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.01; // below prune threshold — WOULD ghost if not pinned
+            mem.tier = crate::medium::types::Tier::Pinned;
+        }
+        state.dream_lite(&mut engine);
+        let mem = engine.get_memory(&id).unwrap().unwrap();
+        assert_eq!(
+            mem.amplitude, 0.01,
+            "a Pinned memory must NOT be decayed or ghosted, got {}",
+            mem.amplitude
+        );
+    }
+
+    // hunt/ADR-0037: an EXISTING ghost's recovery window must not be renewed every
+    // lite dream — else a ghost never ages out via stage_compact_ghosts.
+    #[test]
+    fn dream_lite_does_not_renew_existing_ghost() {
+        let mut engine = make_engine();
+        let state = DreamState::new(ConsolidationEngine::default(), 1);
+        let id = insert_with_phase_and_layer(&mut engine, "old ghost", 0.0, 0);
+        let old_stamp = chrono::Utc::now() - chrono::Duration::days(10);
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.0; // already a ghost
+            mem.updated_at = Some(old_stamp);
+        }
+        state.dream_lite(&mut engine);
+        let mem = engine.get_memory(&id).unwrap().unwrap();
+        assert_eq!(
+            mem.updated_at,
+            Some(old_stamp),
+            "an existing ghost's recovery window must NOT be renewed by a lite dream"
         );
     }
 
