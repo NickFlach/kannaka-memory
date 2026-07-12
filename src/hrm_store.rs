@@ -1017,8 +1017,29 @@ impl HrmStore {
     /// (`None` ⇒ `prng://legacy`), never a false `prng://` claim about entropy
     /// that was not consumed. A draw failure (e.g. empty reservoir) logs loudly
     /// and leaves the cycle deterministic — never a silent fabricated stamp.
+    /// #521: the number of wavefronts a dream-entropy draw would actually jitter
+    /// and stamp — only those flagged `hallucinated`, in the authoritative medium
+    /// (`chiral.right` when present, else the flat store). This is the honest
+    /// "touched set" of a dream: `apply_entropy_perturbation` perturbs and stamps
+    /// exactly these, so a draw is only warranted when the count is > 0.
+    fn dream_entropy_touched_count(&self) -> usize {
+        match self.chiral {
+            Some(ref c) => c.right.metadata.iter().filter(|m| m.hallucinated).count(),
+            None => self.medium.store.metadata.iter().filter(|m| m.hallucinated).count(),
+        }
+    }
+
     fn apply_dream_entropy(&mut self) {
         if !crate::entropy::dream_entropy_enabled() {
+            return;
+        }
+        // #521: the entropy jitter only touches `hallucinated` wavefronts. If this
+        // dream produced none, drawing would spend reservoir bytes to perturb and
+        // stamp NOTHING — a phantom cost, and a dark Observatory panel. Check the
+        // touched set BEFORE drawing: an empty set records an honest absence (no
+        // draw, no spend, no provenance) rather than a false consumption.
+        let touched = self.dream_entropy_touched_count();
+        if touched == 0 {
             return;
         }
         let mut source = crate::entropy::default_source();
@@ -1031,13 +1052,33 @@ impl HrmStore {
                 return;
             }
         };
-        if let Some(ref mut chiral) = self.chiral {
-            if let Some(ph) = chiral.right.phase.as_slice_mut() {
-                apply_entropy_perturbation(&mut chiral.right.metadata, ph, &draw.bytes, &draw.provenance);
+        let stamped = if let Some(ref mut chiral) = self.chiral {
+            match chiral.right.phase.as_slice_mut() {
+                Some(ph) => apply_entropy_perturbation(
+                    &mut chiral.right.metadata,
+                    ph,
+                    &draw.bytes,
+                    &draw.provenance,
+                ),
+                None => 0,
             }
         } else if let Some(ph) = self.medium.store.phase.as_slice_mut() {
-            apply_entropy_perturbation(&mut self.medium.store.metadata, ph, &draw.bytes, &draw.provenance);
-        }
+            apply_entropy_perturbation(
+                &mut self.medium.store.metadata,
+                ph,
+                &draw.bytes,
+                &draw.provenance,
+            )
+        } else {
+            0
+        };
+        // #521 (option A surfacing): the per-wavefront provenance stamps ARE the
+        // dream-level view the Observatory panel aggregates. Log the count so a
+        // consumed draw is visibly tied to real targets (never a phantom spend).
+        eprintln!(
+            "[entropy] dream stamped {stamped}/{touched} wavefront(s) with {} provenance",
+            draw.provenance.source
+        );
     }
 
     /// Wave-native dream using Medium's eigenstructure annealing.
@@ -3094,5 +3135,41 @@ mod tests {
         let (mut mc, mut pc) = (mk(), vec![0.5f32, 0.5]);
         apply_entropy_perturbation(&mut mc, &mut pc, &[42u8; 10], &prov);
         assert_ne!(pa[0], pc[0], "different entropy ⇒ different dream perturbation");
+    }
+
+    // #521: the dream-entropy draw is gated on a non-empty touched set. A dream
+    // with no hallucinated wavefronts has a zero touched count, so `apply_dream_
+    // entropy` returns before drawing — an inert dream spends no reservoir bytes
+    // and records an honest absence, instead of stamping nothing at real cost.
+    #[test]
+    fn dream_entropy_touched_count_gates_the_draw() {
+        use crate::medium::types::WavefrontMeta;
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+
+        // Nothing hallucinated ⇒ zero touched set ⇒ no draw is warranted.
+        assert_eq!(
+            store.dream_entropy_touched_count(),
+            0,
+            "no hallucinations ⇒ nothing to perturb ⇒ the dream must not draw"
+        );
+
+        // Add one hallucination + one ordinary wavefront to whichever medium the
+        // gate reads; only the hallucination is a real stamp target.
+        let push = |metas: &mut Vec<WavefrontMeta>| {
+            let mut h = WavefrontMeta::new(Uuid::new_v4(), "hallu".into());
+            h.hallucinated = true;
+            metas.push(h);
+            metas.push(WavefrontMeta::new(Uuid::new_v4(), "ordinary".into()));
+        };
+        match store.chiral {
+            Some(ref mut c) => push(&mut c.right.metadata),
+            None => push(&mut store.medium.store.metadata),
+        }
+        assert_eq!(
+            store.dream_entropy_touched_count(),
+            1,
+            "only the hallucinated wavefront counts toward the touched set"
+        );
     }
 }
