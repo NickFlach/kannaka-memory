@@ -1673,6 +1673,124 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_CHIRAL_ROUTER"]
+    fn experiment_chiral_routinization_differentiation() {
+        // EXP-1 (hemisphere differentiation, from the approved research workflow).
+        // Does novelty-gated routinization turn the LEFT hemisphere from a near-
+        // mirror into a crystallized MINORITY — raising hemispheric divergence Δ
+        // (ADR-0024 CS-4) into a mid-band without collapsing callosal efficiency κ
+        // (CS-5) — and which way does core recall move?
+        //
+        // Corpus: CORE items stored R=3× (routinized through repetition),
+        // interleaved with one-off NOVEL noise (interference). In `off` the
+        // callosum budget is spent indiscriminately (near-mirror, low Δ); in
+        // `novelty` only the routinized core crosses to left (small left, higher
+        // Δ). resonance_strength = sim·energy·phase (core.rs:381) is NOT a clean
+        // cosine, so absolute θ is encoder-scale-sensitive — we SWEEP θ to read
+        // separability rather than assume it, and average over seeds (multi-run).
+        const NCORE: usize = 10;
+        const NNOISE: usize = 40;
+        const ROUNDS: usize = 3;
+        let seeded = |seed: u64| -> EncodingPipeline {
+            let encoder = Box::new(SimpleHashEncoder::new(384, seed));
+            let codebook = Codebook::new(384, WAVEFRONT_DIM, seed);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let core: Vec<String> =
+            (0..NCORE).map(|i| format!("stable core anchor proposition {i}")).collect();
+        let noise: Vec<String> =
+            (0..NNOISE).map(|i| format!("ephemeral one-off novel filler {i}")).collect();
+
+        // Averaged over seeds: [left, right, core_in_left, noise_in_left, Δ, κ, p@1].
+        // Δ-cosine turned out saturated by the Fano fold (see report), so the REAL
+        // differentiation signal is the CONTENT composition of left: does it hold
+        // the core (differentiated) or a full folded copy of everything (mirror)?
+        let run = |router: &str, theta: f32, seeds: &[u64]| -> [f32; 7] {
+            let mut acc = [0.0f32; 7];
+            for &seed in seeds {
+                std::env::set_var("KANNAKA_CHIRAL_ROUTER", router);
+                std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", format!("{theta}"));
+                let pipeline = seeded(seed);
+                let mut cm = ChiralMedium::new();
+                let per = NNOISE / ROUNDS;
+                for round in 0..ROUNDS {
+                    for c in core.iter() {
+                        cm.store(c, 0.9, &pipeline).unwrap();
+                    }
+                    let lo = round * per;
+                    let hi = if round == ROUNDS - 1 { NNOISE } else { lo + per };
+                    for n in noise[lo..hi].iter() {
+                        cm.store(n, 0.5, &pipeline).unwrap();
+                    }
+                }
+                // Content differentiation: what does LEFT actually hold?
+                let core_left = (0..cm.left.count())
+                    .filter(|&i| cm.left.metadata[i].content.starts_with("stable core"))
+                    .count();
+                let noise_left = cm.left.count() - core_left;
+                let (mut hits, mut tot) = (0usize, 0usize);
+                for c in core.iter() {
+                    let res = cm.recall(c, 1, &pipeline).unwrap();
+                    tot += 1;
+                    if res.first().map(|r| r.content == *c).unwrap_or(false) {
+                        hits += 1;
+                    }
+                }
+                let cs = cm.consciousness_summary();
+                acc[0] += cs.left_count as f32;
+                acc[1] += cs.right_count as f32;
+                acc[2] += core_left as f32;
+                acc[3] += noise_left as f32;
+                acc[4] += cs.hemispheric_divergence;
+                acc[5] += cs.callosal_efficiency;
+                acc[6] += hits as f32 / tot.max(1) as f32;
+            }
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+            let n = seeds.len() as f32;
+            for v in acc.iter_mut() {
+                *v /= n;
+            }
+            acc
+        };
+
+        // Separability probe: against a POPULATED right, can an absolute familiarity
+        // threshold tell a REPEAT (exact prior) from a truly NOVEL item apart? If
+        // the two resonance scales overlap, no fixed θ can route cleanly.
+        {
+            let pipeline = seeded(0);
+            let mut cm = ChiralMedium::new();
+            for c in core.iter() {
+                cm.store(c, 0.9, &pipeline).unwrap();
+            }
+            for nz in noise.iter() {
+                cm.store(nz, 0.5, &pipeline).unwrap();
+            }
+            let repeat = pipeline.encode_text(&core[0]).unwrap();
+            let fresh = pipeline.encode_text("utterly unseen never-stored phrase").unwrap();
+            let rr = cm.right.resonate(&repeat, 1);
+            let rr = rr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            let fr = cm.right.resonate(&fresh, 1);
+            let fr = fr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            eprintln!("[exp1] separability: repeat_resonance={rr:.3}  novel_resonance={fr:.3}");
+        }
+
+        let seeds: Vec<u64> = (0..4).collect();
+        eprintln!("[exp1] corpus: {NCORE} core x{ROUNDS} + {NNOISE} noise; seeds={}", seeds.len());
+        eprintln!("[exp1] {:>16} | left right  coreL noiseL    Δ      κ    p@1", "config");
+        let print = |label: String, a: [f32; 7]| {
+            eprintln!(
+                "[exp1] {label:>16} | {:4.1} {:5.1}  {:5.1} {:6.1}  {:.3}  {:.3}  {:.3}",
+                a[0], a[1], a[2], a[3], a[4], a[5], a[6]
+            );
+        };
+        print("off (mirror)".to_string(), run("off", 0.0, &seeds));
+        for theta in [0.3f32, 0.5, 0.7, 0.9] {
+            print(format!("novelty th={theta}"), run("novelty", theta, &seeds));
+        }
+    }
+
+    #[test]
     #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_BELIEF_PHASE"]
     fn experiment_belief_phase_real_field() {
         // Born-phase on a REAL encoded field: 16 memories across 4 topics
