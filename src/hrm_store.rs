@@ -443,9 +443,20 @@ impl HrmStore {
         // tier promotion. rebuild_cache runs after every dream/absorb, so without
         // this snapshot the count would reset to 0 on each rebuild. Preserve it
         // across the clear, exactly like connections above.
+        //
+        // #497: ALSO preserve the updated_at of a GHOST — a memory with
+        // retrieval_count 0 but a real ADR-0037 ghosting stamp (updated_at !=
+        // created_at). rebuild reconstructs from the medium's WavefrontMeta (which
+        // has no updated_at) and defaults it to created_at; if we don't restore the
+        // stamp, the next deep dream's stage_compact_ghosts sees the ghost past the
+        // 7-day horizon and hard-deletes it with zero recovery window — re-opening
+        // the 295→88 over-prune loss the stamp exists to prevent.
         let saved_reactivation: std::collections::HashMap<uuid::Uuid, (u32, Option<DateTime<Utc>>)> =
             self.memory_cache.iter()
-                .filter(|(_, m)| m.retrieval_count > 0)
+                .filter(|(_, m)| {
+                    m.retrieval_count > 0
+                        || (m.updated_at.is_some() && m.updated_at != Some(m.created_at))
+                })
                 .map(|(id, m)| (*id, (m.retrieval_count, m.updated_at)))
                 .collect();
 
@@ -685,7 +696,13 @@ impl HrmStore {
                 .unwrap_or_default();
 
         for (id, m) in &self.memory_cache {
-            if m.retrieval_count == 0 {
+            // #497: persist a GHOST's updated_at too — a memory with retrieval_count
+            // 0 but a real ADR-0037 ghosting stamp (updated_at != created_at) — so
+            // the stamp survives a restart and stage_compact_ghosts doesn't
+            // hard-delete the ghost past the horizon. Skip only truly-untouched
+            // memories (no recalls AND no real update).
+            let real_update = m.updated_at.is_some() && m.updated_at != Some(m.created_at);
+            if m.retrieval_count == 0 && !real_update {
                 continue;
             }
             let entry = merged.entry(id.to_string()).or_insert((0, None));
@@ -2318,6 +2335,38 @@ mod tests {
         assert!(
             hits2.iter().all(|(id, _)| *id != idb),
             "an id absent from the live cache must not appear (dead ids must not eat the k-budget)"
+        );
+    }
+
+    // #497: rebuild_cache reconstructs memories from the medium (which has no
+    // updated_at), so a GHOST — retrieval_count 0 but a real ADR-0037 ghosting
+    // stamp — used to have its stamp reset to created_at and get hard-deleted past
+    // the 7-day horizon. rebuild must now PRESERVE the ghost's stamp.
+    #[test]
+    fn rebuild_preserves_ghost_updated_at() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        let id = store
+            .insert(HyperMemory::new(vec![0.3f32; WAVEFRONT_DIM], "ghost".into()))
+            .unwrap();
+
+        // Ghost it: a distinct recent stamp, and NO recalls — the exact shape that
+        // used to lose its stamp on rebuild.
+        let ghost_time = Utc::now() - chrono::Duration::days(1);
+        {
+            let m = store.get_mut(&id).unwrap().unwrap();
+            m.updated_at = Some(ghost_time);
+            assert_eq!(m.retrieval_count, 0, "precondition: a ghost has no recalls");
+            assert_ne!(m.updated_at, Some(m.created_at), "precondition: stamp != created_at");
+        }
+
+        store.rebuild_cache().unwrap();
+
+        let m = store.get(&id).unwrap().expect("memory survives rebuild");
+        assert_eq!(
+            m.updated_at,
+            Some(ghost_time),
+            "#497: rebuild must preserve a ghost's ADR-0037 stamp, not reset it to created_at"
         );
     }
 
