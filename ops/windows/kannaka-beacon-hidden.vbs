@@ -39,5 +39,9 @@ sh.Environment("PROCESS")("KANNAKA_READONLY") = "1"
 ' append: --interval-secs 60
 cmd = """" & exePath & """ swarm beacon --loop"
 
-' style 0 = hidden window, False = fire-and-forget (do not block the host).
-sh.Run cmd, 0, False
+' style 0 = hidden window. WAIT (True) keeps wscript alive for the daemon's whole
+' lifetime, so Task Scheduler tracks the task as Running -- that is what makes
+' MultipleInstances=IgnoreNew block a second daemon on the next logon, and lets
+' restart-on-failure fire if the --loop process ever exits. (For a one-shot
+' `swarm beacon` you would use False instead; --loop must WAIT.)
+sh.Run cmd, 0, True
