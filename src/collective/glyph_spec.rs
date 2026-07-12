@@ -370,13 +370,24 @@ pub fn encode_wire(glyph: &Glyph) -> Vec<u8> {
     buf
 }
 
+/// Read the next `n` bytes at `*pos`, advancing `pos`.
+///
+/// Returns `GlyphError::TooShort` (never panics) when the frame is truncated,
+/// guarding against overflow of `pos + n`.
+fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], GlyphError> {
+    let end = pos.checked_add(n).ok_or(GlyphError::TooShort)?;
+    let slice = bytes.get(*pos..end).ok_or(GlyphError::TooShort)?;
+    *pos = end;
+    Ok(slice)
+}
+
 /// Decode a Glyph from wire format bytes.
 #[allow(unused_assignments)]
 pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
     let mut pos = 0;
 
     // Magic
-    if bytes.len() < 7 {
+    if bytes.len() < 4 {
         return Err(GlyphError::TooShort);
     }
     if &bytes[0..4] != GLYPH_MAGIC {
@@ -384,49 +395,40 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
     }
     pos = 4;
 
-    let spec_version = bytes[pos];
-    pos += 1;
+    let spec_version = take(bytes, &mut pos, 1)?[0];
 
-    let flags = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]);
-    pos += 2;
+    let flags = u16::from_le_bytes(take(bytes, &mut pos, 2)?.try_into().unwrap());
 
     // glyph_id
     let mut glyph_id = [0u8; 32];
-    glyph_id.copy_from_slice(&bytes[pos..pos + 32]);
-    pos += 32;
+    glyph_id.copy_from_slice(take(bytes, &mut pos, 32)?);
 
     // Fano
     let mut fano = [0.0f64; 7];
     for f in &mut fano {
-        *f = f64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-        pos += 8;
+        *f = f64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
     }
 
     // SGA class
+    let sga = take(bytes, &mut pos, 3)?;
     let sga_class = SgaClass {
-        quadrant: bytes[pos],
-        modality: bytes[pos + 1],
-        context: bytes[pos + 2],
+        quadrant: sga[0],
+        modality: sga[1],
+        context: sga[2],
     };
-    pos += 3;
 
-    let sga_centroid = (bytes[pos], bytes[pos + 1], bytes[pos + 2]);
-    pos += 3;
+    let centroid = take(bytes, &mut pos, 3)?;
+    let sga_centroid = (centroid[0], centroid[1], centroid[2]);
 
     // Wave
-    let amplitude = f64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-    pos += 8;
-    let frequency = f64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-    pos += 8;
-    let phase = f64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-    pos += 8;
+    let amplitude = f64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
+    let frequency = f64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
+    let phase = f64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
 
     // Bloom
-    let difficulty = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| GlyphError::TooShort)?);
-    pos += 4;
+    let difficulty = u32::from_le_bytes(take(bytes, &mut pos, 4)?.try_into().unwrap());
     let mut salt = [0u8; 32];
-    salt.copy_from_slice(&bytes[pos..pos + 32]);
-    pos += 32;
+    salt.copy_from_slice(take(bytes, &mut pos, 32)?);
     let bloom = BloomParameters { difficulty, salt };
 
     // Source
@@ -442,19 +444,20 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
     pos = new_pos;
 
     // Timestamp
-    let ts_millis = i64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-    pos += 8;
+    let ts_millis = i64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
     let created_at = DateTime::from_timestamp_millis(ts_millis)
         .unwrap_or_else(Utc::now);
 
     // Parents
-    let parent_count = u16::from_le_bytes(bytes[pos..pos + 2].try_into().map_err(|_| GlyphError::TooShort)?) as usize;
-    pos += 2;
+    let parent_count = u16::from_le_bytes(take(bytes, &mut pos, 2)?.try_into().unwrap()) as usize;
+    // Guard the whole run up front (parent_count is a u16, so *32 cannot overflow usize).
+    if pos + parent_count * 32 > bytes.len() {
+        return Err(GlyphError::TooShort);
+    }
     let mut parents = Vec::with_capacity(parent_count);
     for _ in 0..parent_count {
         let mut p = [0u8; 32];
-        p.copy_from_slice(&bytes[pos..pos + 32]);
-        pos += 32;
+        p.copy_from_slice(take(bytes, &mut pos, 32)?);
         parents.push(p);
     }
 
@@ -463,11 +466,9 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
         let (ciphertext, new_pos) = read_length_prefixed_bytes(bytes, pos)?;
         pos = new_pos;
         let mut nonce = [0u8; 24];
-        nonce.copy_from_slice(&bytes[pos..pos + 24]);
-        pos += 24;
+        nonce.copy_from_slice(take(bytes, &mut pos, 24)?);
         let mut tag = [0u8; 16];
-        tag.copy_from_slice(&bytes[pos..pos + 16]);
-        pos += 16;
+        tag.copy_from_slice(take(bytes, &mut pos, 16)?);
         Some(EncryptedCapsule { ciphertext, nonce, tag })
     } else {
         None
@@ -484,8 +485,7 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
 
     // Optional virtue
     let virtue_eta = if flags & FLAG_HAS_VIRTUE != 0 {
-        let eta = f64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
-        pos += 8;
+        let eta = f64::from_le_bytes(take(bytes, &mut pos, 8)?.try_into().unwrap());
         Some(eta)
     } else {
         None
@@ -493,12 +493,12 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
 
     // Optional gates
     let gates = if flags & FLAG_HAS_GATES != 0 {
+        let g_bytes = take(bytes, &mut pos, 3)?;
         let g: [Option<bool>; 3] = [
-            match bytes[pos] { 0 => None, 1 => Some(true), _ => Some(false) },
-            match bytes[pos + 1] { 0 => None, 1 => Some(true), _ => Some(false) },
-            match bytes[pos + 2] { 0 => None, 1 => Some(true), _ => Some(false) },
+            match g_bytes[0] { 0 => None, 1 => Some(true), _ => Some(false) },
+            match g_bytes[1] { 0 => None, 1 => Some(true), _ => Some(false) },
+            match g_bytes[2] { 0 => None, 1 => Some(true), _ => Some(false) },
         ];
-        let _ = pos + 3; // advance past gates (suppress unused assign)
         Some(g)
     } else {
         None
@@ -1468,6 +1468,34 @@ mod tests {
     #[test]
     fn test_too_short_rejected() {
         assert!(decode_wire(&[0, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn decode_wire_rejects_truncation_at_every_length() {
+        // A fully-populated glyph exercises every fixed-field read path in
+        // decode_wire: glyph_id, fano, sga, wave, bloom, timestamp, the
+        // parent loop, and the optional virtue/gates sections. Truncating the
+        // encoded frame at EVERY prefix length must return Err (never panic on
+        // an out-of-bounds slice).
+        let mut glyph = make_test_glyph("carol", GlyphSource::Dream {
+            parent_modalities: vec!["memory".to_string()],
+            carnot_efficiency: 0.5,
+        });
+        glyph.parents = vec![[7u8; 32], [9u8; 32]];
+        glyph.virtue_eta = Some(0.33);
+        glyph.gates = Some([Some(true), None, Some(false)]);
+
+        let wire = encode_wire(&glyph);
+        assert!(decode_wire(&wire).is_ok(), "full frame should decode");
+
+        // Every strict prefix is missing at least the last byte of some field
+        // and must be rejected cleanly rather than panicking.
+        for len in 0..wire.len() {
+            assert!(
+                decode_wire(&wire[..len]).is_err(),
+                "truncated frame of {len} bytes must be rejected, not decoded",
+            );
+        }
     }
 
     #[test]
