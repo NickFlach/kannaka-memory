@@ -236,11 +236,11 @@ impl Medium {
 
                 {
                     let mut temp_file =
-                        File::create(&temp_path).map_err(|e| MediumError::Io(e))?;
+                        File::create(&temp_path).map_err(MediumError::Io)?;
                     temp_file
                         .write_all(&output.stdout)
-                        .map_err(|e| MediumError::Io(e))?;
-                    temp_file.flush().map_err(|e| MediumError::Io(e))?;
+                        .map_err(MediumError::Io)?;
+                    temp_file.flush().map_err(MediumError::Io)?;
                 }
 
                 let result = Medium::load(&temp_path);

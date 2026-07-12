@@ -442,7 +442,7 @@ impl KannakaMemorySystem {
 
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<RecallResult>, SystemError> {
         let results = self.engine.store.resonate_query(query, top_k)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
 
         let mut out = Vec::new();
@@ -539,7 +539,7 @@ impl KannakaMemorySystem {
             .map(|t| t.to_string())
             .collect();
         let memories = self.engine.store.all_memories()
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
         let mut scored: Vec<SearchResult> = Vec::new();
         for m in memories {
@@ -617,7 +617,7 @@ impl KannakaMemorySystem {
         top_k: usize,
     ) -> Result<Vec<RecallResult>, SystemError> {
         let results = self.engine.store.resonate_query_with_beam(beam, query, top_k)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
 
         let mut out = Vec::with_capacity(results.len());
@@ -869,7 +869,7 @@ impl KannakaMemorySystem {
         // Phase 1: Wave-native dream (eigenstructure annealing on holographic medium)
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
         let wave_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
             wave_report.cycles_completed, wave_report.wavefronts_dissolved,
@@ -1064,7 +1064,7 @@ impl KannakaMemorySystem {
         let before = self.bridge.assess(&self.engine);
 
         let report = self.engine.store.dream_native(1, Some(0.5), 0.0)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         let after = self.bridge.assess(&self.engine);
         self.mark_dreamed();
@@ -1316,7 +1316,7 @@ impl KannakaMemorySystem {
 
         // Absorb through the HRM-native path (low importance for hallucinations)
         let id = self.engine.store.absorb(content, 0.3, Some(&category))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         // Collect valid parent IDs before taking mutable borrow
         let found_parents: Vec<String> = parent_ids.iter()
@@ -1502,7 +1502,7 @@ impl KannakaMemorySystem {
 
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.6, Some("experience"))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         if self.auto_save {
             self.save()?;
@@ -1547,7 +1547,7 @@ impl KannakaMemorySystem {
         
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.7, Some("experience"))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         
         if self.auto_save {
             self.save()?;

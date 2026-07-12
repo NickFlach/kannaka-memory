@@ -445,7 +445,7 @@ pub fn decode_wire(bytes: &[u8]) -> Result<Glyph, GlyphError> {
     let ts_millis = i64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| GlyphError::TooShort)?);
     pos += 8;
     let created_at = DateTime::from_timestamp_millis(ts_millis)
-        .unwrap_or_else(|| Utc::now());
+        .unwrap_or_else(Utc::now);
 
     // Parents
     let parent_count = u16::from_le_bytes(bytes[pos..pos + 2].try_into().map_err(|_| GlyphError::TooShort)?) as usize;
