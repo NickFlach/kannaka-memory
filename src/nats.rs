@@ -400,6 +400,24 @@ const MAX_MSG_PAYLOAD: usize = 8 * 1024 * 1024;
 /// 16 KiB is not NATS protocol traffic.
 const MAX_CONTROL_LINE: u64 = 16 * 1024;
 
+/// Read one control line into `out`, BOUNDED to `MAX_CONTROL_LINE` bytes. A peer
+/// (or MITM) that never sends `\n` — a desynced/garbage/hostile server — would
+/// otherwise grow `out` without bound and OOM us. `take` caps the pull; a line
+/// that hits the cap without a newline is a protocol desync. Returns bytes read.
+fn read_control_line<R: BufRead>(reader: &mut R, out: &mut String) -> Result<usize, NatsError> {
+    let n = {
+        let mut limited = (&mut *reader).take(MAX_CONTROL_LINE);
+        limited.read_line(out)?
+    };
+    if n as u64 >= MAX_CONTROL_LINE && !out.ends_with('\n') {
+        return Err(NatsError::Protocol(format!(
+            "control line exceeds {} bytes without newline — protocol desync",
+            MAX_CONTROL_LINE
+        )));
+    }
+    Ok(n)
+}
+
 /// How long the payload (+trailing CRLF) of a single MSG frame may take to
 /// arrive once its header line has been read. The byte count is KNOWN at this
 /// point, so a read timeout mid-payload is a transient stall — a lost TCP
@@ -691,9 +709,10 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // so no pre-read bytes are ever discarded by an into_inner()/drop.
     let mut reader = BufReader::new(stream);
 
-    // Read the INFO line.
+    // Read the INFO line (bounded — a hostile/MITM server could otherwise stream
+    // an unbounded INFO during the pre-auth handshake and OOM the client).
     let mut info_line = String::new();
-    reader.read_line(&mut info_line)?;
+    read_control_line(&mut reader, &mut info_line)?;
     if !info_line.starts_with("INFO ") {
         return Err(NatsError::Protocol(format!(
             "expected INFO, got: {}",
@@ -2722,6 +2741,27 @@ impl NatsSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // hunt: the handshake INFO read (and any control line) must be BOUNDED — a
+    // hostile/MITM server streaming an unbounded line would otherwise OOM us.
+    #[test]
+    fn read_control_line_rejects_overlong_line() {
+        use std::io::Cursor;
+        // A line longer than the cap with no newline is a protocol desync, not
+        // an unbounded read (a bare read_line would have swallowed the whole thing).
+        let overlong = vec![b'x'; MAX_CONTROL_LINE as usize + 100];
+        let mut cur = Cursor::new(overlong);
+        let mut out = String::new();
+        assert!(
+            matches!(read_control_line(&mut cur, &mut out), Err(NatsError::Protocol(_))),
+            "an over-long control line must be rejected as a protocol desync"
+        );
+        // A normal line is accepted and returned intact.
+        let mut ok = Cursor::new(b"INFO {\"server_id\":\"x\"}\r\n".to_vec());
+        let mut line = String::new();
+        let n = read_control_line(&mut ok, &mut line).unwrap();
+        assert!(n > 0 && line.starts_with("INFO "), "a normal INFO line reads fine");
+    }
 
     #[test]
     fn parse_nats_url_default_port() {
