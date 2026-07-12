@@ -117,6 +117,42 @@ fn cluster_decone_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Cluster-seed ordering convention (#333). FRAGILE — churned by three research
+/// cycles (global sort → revert `98e8ce5` → selective `b9c921f`); breaking it
+/// silently corrupts EITHER transfer OR xi, so it is factored out here and pinned
+/// by `adversarials_sort_last_under_xi_engines`.
+///
+/// - `true` — TRANSFER engines (`engine_a`, `engine_b_primed`, `engine_b_naive`,
+///   `engine_flat`): sort memories by content string so every transfer pass seeds
+///   its BFS clusters from the SAME topology (the topology `engine_a` builds is
+///   what `engine_b_primed` inherits and extends), recovering the T13 transfer
+///   benefit. Adversarials are absent on these passes.
+/// - `false` — xi/carrier engines (`engine_clean`, `engine_adv`) and any other or
+///   unset context: PRESERVE `all_memories()` UUID order, which places T15
+///   adversarials (`adv_l5_*`, UUID ≈ u128::MAX) LAST. `engine_adv` must NOT
+///   content-sort (that pulls `adv_l5_*` ahead of the corpus alphabetically and
+///   interleaves adversarials), and `engine_clean` must match `engine_adv`'s order
+///   so the xi comparison sees a consistent topology.
+fn content_sort_applies(drive_ctx: &str) -> bool {
+    matches!(
+        drive_ctx,
+        "engine_a" | "engine_b_primed" | "engine_b_naive" | "engine_flat"
+    )
+}
+
+/// Apply the [`content_sort_applies`] cluster-seed ordering to `mems` for the given
+/// `DRIVE_CONTEXT`. Transfer engines get a content-string sort; every other context
+/// preserves the incoming (`all_memories()` UUID) order so adversarials stay last.
+fn seed_order<'a>(mems: Vec<&'a HyperMemory>, drive_ctx: &str) -> Vec<&'a HyperMemory> {
+    if content_sort_applies(drive_ctx) {
+        let mut sorted = mems;
+        sorted.sort_by(|a, b| a.content.cmp(&b.content));
+        sorted
+    } else {
+        mems
+    }
+}
+
 /// Mean-center `vecs` and project out their top-`k` principal components, returning
 /// the residual vectors (same order). The PCs are estimated from a bounded, evenly
 /// spaced sample (≤ `SAMPLE` rows) via power iteration on the sample Gram, so the
@@ -648,23 +684,11 @@ impl KuramotoSync {
             }
         }
 
-        // Apply content-string sort only for the transfer-eval engines. UUID order
-        // (from all_memories()) places T15 adversarials last (UUID ≈ u128::MAX),
-        // which is critical for xi: engine_adv must NOT sort by content (adversarials
-        // "adv_l5_..." sort before corpus alphabetically) and engine_clean must use
-        // the same ordering as engine_adv (consistent topology → good xi comparison).
-        // For transfer engines (engine_a, engine_b_primed, engine_b_naive, engine_flat),
-        // adversarials are absent; content sort provides the same BFS cluster seeding
-        // across all transfer passes — the same topology engine_a builds is what
-        // engine_b_primed inherits and extends, recovering the T13 transfer benefit.
+        // Cluster-seed ordering (#333): transfer engines content-sort; xi/carrier
+        // engines preserve UUID order so adversarials stay last. The convention and
+        // its rationale live on `content_sort_applies` — DO NOT inline a sort here.
         let drive_ctx = std::env::var("DRIVE_CONTEXT").unwrap_or_default();
-        let all = if matches!(drive_ctx.as_str(), "engine_a" | "engine_b_primed" | "engine_b_naive" | "engine_flat") {
-            let mut sorted = all;
-            sorted.sort_by(|a, b| a.content.cmp(&b.content));
-            sorted
-        } else {
-            all
-        };
+        let all = seed_order(all, &drive_ctx);
 
         // Build adjacency list from similarity graph.
         //
@@ -1024,6 +1048,44 @@ mod tests {
         for c in &clusters {
             assert!(c.order_parameter > 0.7, "cluster should be synchronized, r={}", c.order_parameter);
         }
+    }
+
+    // #333: pin the fragile cluster-seed ordering convention. Under xi-eval engines
+    // (engine_clean / engine_adv / unset) the all_memories() UUID order — which puts
+    // adversarials (adv_l5_*) last — MUST be preserved; under transfer engines the
+    // content sort applies (and would pull adv_l5_* to the front, which is exactly
+    // why the xi engines must not sort).
+    #[test]
+    fn adversarials_sort_last_under_xi_engines() {
+        // Incoming order mimics all_memories(): corpus (non-alphabetical), then
+        // adversarials last (as their ~u128::MAX UUIDs place them).
+        let contents = ["banana", "apple", "cherry", "adv_l5_0", "adv_l5_1"];
+        let mems: Vec<HyperMemory> = contents
+            .iter()
+            .map(|c| HyperMemory::new(vec![0.1f32; 4], c.to_string()))
+            .collect();
+        let refs: Vec<&HyperMemory> = mems.iter().collect();
+
+        // xi/carrier engines + unset: order preserved → adversarials remain last.
+        for ctx in ["engine_adv", "engine_clean", ""] {
+            assert!(!content_sort_applies(ctx), "xi engine '{ctx}' must not content-sort");
+            let ordered = seed_order(refs.clone(), ctx);
+            let tail: Vec<&str> =
+                ordered.iter().rev().take(2).map(|m| m.content.as_str()).collect();
+            assert!(
+                tail.iter().all(|c| c.starts_with("adv_l5_")),
+                "xi engine '{ctx}': adversarials must stay last, tail={tail:?}"
+            );
+        }
+
+        // Anti-vacuous: a transfer engine content-sorts, pulling adv_l5_* to the
+        // FRONT ("adv_" < "apple") — proving the xi engines' no-sort is load-bearing.
+        assert!(content_sort_applies("engine_a"), "transfer engine must content-sort");
+        let sorted = seed_order(refs.clone(), "engine_a");
+        assert!(
+            sorted[0].content.starts_with("adv_l5_"),
+            "content sort pulls adversarials to the front (why xi engines must not sort)"
+        );
     }
 
     #[test]
