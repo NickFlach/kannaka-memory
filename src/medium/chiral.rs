@@ -187,11 +187,29 @@ pub enum ChiralRecall {
 }
 
 pub(crate) fn chiral_recall_mode() -> ChiralRecall {
-    match std::env::var("KANNAKA_CHIRAL_RECALL") {
+    let mode = match std::env::var("KANNAKA_CHIRAL_RECALL") {
         Ok(v) if v.eq_ignore_ascii_case("weighted") => ChiralRecall::Weighted,
         Ok(v) if v.eq_ignore_ascii_case("beeman") => ChiralRecall::Beeman,
         _ => ChiralRecall::Off,
+    };
+    // One-time LOUD warning when a non-default mode is active. These are
+    // EXPERIMENTAL read-side modes: `beeman` is measured-CATASTROPHIC (exp-2: core
+    // p@1 0.65 -> 0.075) because left stores Fano-folded vectors and recall queries
+    // raw — it stays a footgun until the query-fold (exp-2b / #70) makes left-match
+    // resonance meaningful. Without this, an operator who set KANNAKA_CHIRAL_RECALL
+    // via a stale shell/systemd env would get silent recall collapse.
+    if mode != ChiralRecall::Off {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "[kannaka] WARNING: KANNAKA_CHIRAL_RECALL={:?} is an EXPERIMENTAL read-side \
+                 recall mode; beeman is measured-catastrophic (exp-2) pending exp-2b. Unset \
+                 KANNAKA_CHIRAL_RECALL to restore default recall.",
+                mode
+            );
+        });
     }
+    mode
 }
 
 /// Left-match resonance multiplier for `KANNAKA_CHIRAL_RECALL=weighted`
