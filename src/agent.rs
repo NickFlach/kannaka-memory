@@ -957,7 +957,7 @@ pub fn ask_with_opts(
     // O(N²·dim) passes), so keep the seams instrumented.
     let timing = std::env::var("KANNAKA_TIME").map(|v| v == "1").unwrap_or(false);
     let mut t = std::time::Instant::now();
-    let mut lap = move |label: &str, t: &mut std::time::Instant| {
+    let lap = move |label: &str, t: &mut std::time::Instant| {
         if timing {
             eprintln!("[time] {label}: {:.2}s", t.elapsed().as_secs_f64());
         }
