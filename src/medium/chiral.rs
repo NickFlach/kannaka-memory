@@ -516,6 +516,56 @@ impl ChiralMedium {
         results
     }
 
+    /// Re-encode every stored memory's content through `pipeline`, replacing the
+    /// wavefront vectors IN PLACE while preserving all wave-state (energy, phase,
+    /// frequency) and metadata (#107). This fixes an HRM whose vectors were written
+    /// by a broken encoder (#106) without disturbing dream energies, ghost stamps,
+    /// or ids. The RIGHT hemisphere (authoritative) is re-encoded from its stored
+    /// content; each paired LEFT wavefront is re-derived as the Fano fold of the
+    /// corrected right vector on the SAME line it was stored on (read from the left
+    /// slot's `fano_group`), so left stays geometrically consistent. Callosal noise
+    /// is not re-applied — the refreshed left is a clean fold of the corrected
+    /// right. Returns the count of right-hemisphere wavefronts re-encoded; the
+    /// caller must rebuild derived caches and invalidate cluster sidecars.
+    pub fn re_encode_all(&mut self, pipeline: &EncodingPipeline) -> Result<usize, MediumError> {
+        let mut updated = 0usize;
+        for i in 0..self.right.count() {
+            let content = self.right.metadata[i].content.clone();
+            let new_vec = pipeline.encode_text(&content).map_err(|e| {
+                MediumError::Serialization(bincode::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("encoding failed: {}", e),
+                )))
+            })?;
+            // Replace the right wavefront in place (adapts to dims like
+            // add_wavefront; energy/phase/frequency/metadata untouched).
+            self.right.set_wavefront_vector(i, &new_vec);
+            updated += 1;
+
+            // Re-derive the paired LEFT wavefront (if any) as a clean fold of the
+            // corrected right vector, on the fold line recorded for that left slot.
+            let right_id = self.right.metadata[i].id;
+            if let Some(&left_id) = self.right_to_left.get(&right_id) {
+                if let Some(&left_idx) = self.left.id_to_index.get(&left_id) {
+                    let fano_point = self.left.metadata[left_idx]
+                        .fano_group
+                        .or(self.right.metadata[i].fano_group)
+                        .unwrap_or(0);
+                    if let Some(&line) = self.fano.lines_through_point(fano_point).first() {
+                        let folded = self.fano.fold(
+                            &new_vec,
+                            self.right.dims,
+                            self.left.dims,
+                            line as usize,
+                        );
+                        self.left.set_wavefront_vector(left_idx, &folded);
+                    }
+                }
+            }
+        }
+        Ok(updated)
+    }
+
     /// Dream: mode-specific hemispheric refinement (ADR-0024 CS-7).
     ///
     /// Deep dreams refine the holistic hemisphere (right):
@@ -1349,6 +1399,45 @@ mod tests {
 
         // Should have a scale entry
         assert!(cm.scales.contains_key(&id));
+    }
+
+    // #107: re_encode_all rewrites the RIGHT wavefront to the fresh encoding of its
+    // stored content (fixing the #106 bad-subspace vectors) while preserving energy
+    // and metadata; the paired LEFT is re-folded without panic.
+    #[test]
+    fn re_encode_all_refreshes_right_preserving_state() {
+        let pipeline = test_pipeline();
+        let content = "a memory about resonance and standing waves";
+
+        // Reference: what a fresh store of this content yields in the right slot
+        // (same reduced dims as the wavefronts we'll compare against).
+        let mut ref_cm = ChiralMedium::new();
+        let ref_id = ref_cm.store(content, 0.8, &pipeline).unwrap();
+        let ref_idx = *ref_cm.right.id_to_index.get(&ref_id).unwrap();
+        let want = ref_cm.right.wavefronts.row(ref_idx).to_vec();
+
+        let mut cm = ChiralMedium::new();
+        let id = cm.store(content, 0.8, &pipeline).unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let energy_before = cm.right.energy[idx];
+
+        // Simulate a broken-encoder vector: overwrite the right wavefront with the
+        // all-negative-corner junk #106 produced, keeping content + energy intact.
+        let cols = cm.right.wavefronts.ncols();
+        cm.right.wavefronts.row_mut(idx).assign(&ndarray::Array1::from(vec![-0.9f32; cols]));
+        let cos_bad = crate::wave::cosine_similarity(&cm.right.wavefronts.row(idx).to_vec(), &want);
+
+        let n = cm.re_encode_all(&pipeline).unwrap();
+        assert!(n >= 1, "re-encoded at least the stored memory");
+
+        let got = cm.right.wavefronts.row(idx).to_vec();
+        let cos_fixed = crate::wave::cosine_similarity(&got, &want);
+        assert!(
+            cos_fixed > 0.999,
+            "right wavefront re-encoded to the fresh vector (cos {cos_bad:.3} -> {cos_fixed:.3})"
+        );
+        assert_eq!(cm.right.energy[idx], energy_before, "energy (wave-state) preserved");
+        assert_eq!(cm.right.metadata[idx].content, content, "content preserved");
     }
 
     #[test]

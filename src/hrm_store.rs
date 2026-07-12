@@ -1693,6 +1693,41 @@ impl HrmStore {
         }
     }
 
+    /// Re-encode every memory's content through the current pipeline, fixing
+    /// wavefronts written by the broken #106 encoder (#107). Chiral-only for now
+    /// (production HRMs are v2 chiral). Returns `(scanned, updated)`. With
+    /// `dry_run`, computes the counts and touches nothing on disk. On a real run
+    /// it re-encodes in place — preserving wave-state, ghost stamps, and ids via
+    /// `ChiralMedium::re_encode_all` — then rebuilds the cache, invalidates the now
+    /// stale `.clusters.json` sidecar, and persists. Snapshot the HRM first
+    /// (the deployment gate #107 specifies) and verify recall before adopting.
+    pub fn recompute_encoding(&mut self, dry_run: bool) -> Result<(usize, usize), StoreError> {
+        let scanned = self.count();
+        if self.chiral.is_none() {
+            return Err(StoreError::Other(
+                "recompute_encoding supports chiral (v2) HRMs only; this store is flat".to_string(),
+            ));
+        }
+        let updated = {
+            let pipeline = &self.pipeline;
+            let chiral = self.chiral.as_mut().unwrap();
+            chiral
+                .re_encode_all(pipeline)
+                .map_err(|e| StoreError::Other(format!("re-encode failed: {}", e)))?
+        };
+        if dry_run {
+            return Ok((scanned, updated));
+        }
+        self.rebuild_cache()?;
+        self.mark_dirty();
+        self.save_medium()?;
+        // The cluster sidecar was computed from the OLD vectors — drop it so
+        // bridge::assess recomputes clusters against the corrected embeddings.
+        let clusters = self.hrm_path.with_extension("clusters.json");
+        let _ = std::fs::remove_file(&clusters);
+        Ok((scanned, updated))
+    }
+
     /// Get chiral consciousness summary (bilateral metrics).
     pub fn chiral_consciousness(&self) -> Option<ChiralConsciousness> {
         self.chiral.as_ref().map(|c| c.consciousness_summary())
@@ -2368,6 +2403,43 @@ mod tests {
             Some(ghost_time),
             "#497: rebuild must preserve a ghost's ADR-0037 stamp, not reset it to created_at"
         );
+    }
+
+    // #107: recompute_encoding re-encodes chiral wavefronts in place. dry-run
+    // reports the counts without writing; a real run rewrites the corrupted right
+    // vector to match a fresh encoding of the same content.
+    #[test]
+    fn recompute_encoding_chiral_fixes_vectors() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        store.upgrade_to_chiral();
+        let content = "resonance and standing waves";
+        // Seed with broken-encoder junk (the all-negative corner #106 produced).
+        let bad = vec![-0.9f32; WAVEFRONT_DIM];
+        let id = store.insert_raw_wavefront(bad, content.into(), 0.7).unwrap();
+
+        // What a correct encoding of this content lands as in a fresh right slot.
+        let want = {
+            let tmp2 = NamedTempFile::new().unwrap();
+            let mut refs = HrmStore::new(make_test_pipeline(), tmp2.path().to_path_buf());
+            refs.upgrade_to_chiral();
+            let good = make_test_pipeline().encode_text(content).unwrap();
+            let rid = refs.insert_raw_wavefront(good, content.into(), 0.7).unwrap();
+            let cm = refs.chiral_medium().unwrap();
+            let ridx = *cm.right.id_to_index.get(&rid).unwrap();
+            cm.right.wavefronts.row(ridx).to_vec()
+        };
+
+        // dry-run: counts only, nothing written.
+        assert_eq!(store.recompute_encoding(true).unwrap(), (1, 1));
+
+        // real run fixes the corrupted vector.
+        assert_eq!(store.recompute_encoding(false).unwrap(), (1, 1));
+        let cm = store.chiral_medium().unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let got = cm.right.wavefronts.row(idx).to_vec();
+        let cos = crate::wave::cosine_similarity(&got, &want);
+        assert!(cos > 0.999, "recompute_encoding fixed the right vector (cos={cos})");
     }
 
     #[test]
