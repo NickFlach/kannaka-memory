@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::memory::HyperMemory;
+use crate::spiral::norm; // #503: normalize stored phases into [0, TAU) at write time
 use crate::store::ResonanceEngine;
 use crate::wave::{cosine_similarity, normalize};
 
@@ -368,7 +369,7 @@ impl KuramotoSync {
 
             // Euler integration
             for i in 0..n {
-                memories[i].phase += dphi[i] * self.dt;
+                memories[i].phase = norm(memories[i].phase + dphi[i] * self.dt);
             }
 
             // Check convergence
@@ -498,7 +499,7 @@ impl KuramotoSync {
             }
 
             for i in 0..n {
-                memories[i].phase += dphi[i] * self.dt;
+                memories[i].phase = norm(memories[i].phase + dphi[i] * self.dt);
             }
 
             let current_order = {
@@ -880,6 +881,61 @@ mod tests {
         let r = sync.order_parameter(&refs);
         println!("Identical-phase order parameter: {}", r);
         assert!((r - 1.0).abs() < 1e-5, "identical phases should give r≈1.0, got {}", r);
+    }
+
+    // #503: sync_cluster must NORMALIZE the phase it writes back into [0, TAU),
+    // so stored phases never drift unbounded (f32 precision loss + silently-wrong
+    // future non-circular reads). Fed a heavily drifted fixture (±50, 137 rad),
+    // every stored phase must come out in range. Anti-vacuous: reverting the
+    // `spiral::norm` at the write site leaves the phases near their drifted input
+    // and reddens this test.
+    #[test]
+    fn sync_cluster_normalizes_drifted_phases() {
+        use std::f32::consts::TAU;
+        let sync = KuramotoSync::default();
+        let v = similar_vec(100);
+        let mut m1 = make_memory_with_phase(v.clone(), "a", 50.0);
+        let mut m2 = make_memory_with_phase(v.clone(), "b", -50.0);
+        let mut m3 = make_memory_with_phase(v.clone(), "c", 137.0);
+        let mut mems: Vec<&mut HyperMemory> = vec![&mut m1, &mut m2, &mut m3];
+        let _ = sync.sync_cluster(&mut mems);
+        for m in &mems {
+            assert!(
+                (0.0..TAU).contains(&m.phase),
+                "sync_cluster must normalize the stored phase into [0, TAU), got {}",
+                m.phase
+            );
+        }
+    }
+
+    // #503: write-time normalization is behaviour-PRESERVING because the read
+    // side is 2π-periodic. A drifted fixture (+9 full turns) and its normalized
+    // twin must yield the same order parameter — proving normalizing at write
+    // time cannot change recall/consolidation behaviour.
+    #[test]
+    fn normalization_preserves_order_parameter() {
+        use std::f32::consts::TAU;
+        let sync = KuramotoSync::default();
+        let v = similar_vec(100);
+        let base = [0.3f32, 1.1, 2.7];
+        let drifted: Vec<HyperMemory> = base
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| make_memory_with_phase(v.clone(), &format!("d{i}"), p + TAU * 9.0))
+            .collect();
+        let normalized: Vec<HyperMemory> = base
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| make_memory_with_phase(v.clone(), &format!("n{i}"), p))
+            .collect();
+        let rd = sync.order_parameter(&drifted.iter().collect::<Vec<_>>());
+        let rn = sync.order_parameter(&normalized.iter().collect::<Vec<_>>());
+        assert!(
+            (rd - rn).abs() < 1e-4,
+            "order parameter must match for drifted vs normalized phases (2π-periodic): {} vs {}",
+            rd,
+            rn
+        );
     }
 
     #[test]
