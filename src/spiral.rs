@@ -46,6 +46,17 @@ pub(crate) fn wrap(d: f32) -> f32 {
     (d + PI).rem_euclid(TAU) - PI
 }
 
+/// Normalize a STORED (absolute) phase into `[0, TAU)`. Distinct from [`wrap`],
+/// which folds a phase *difference* into `[−π, π)`: `norm` is applied at every
+/// phase-*write* site so a stored phase never drifts unbounded (#503). Uses
+/// `rem_euclid`, which stays exact for large drifted inputs where an
+/// `sin`/`atan2` round-trip would lose f32 precision. The dynamics are 2π-
+/// periodic, so normalizing at write time is behaviour-preserving.
+#[inline]
+pub(crate) fn norm(p: f32) -> f32 {
+    p.rem_euclid(TAU)
+}
+
 /// Circulation around a closed loop, in units of 2π. ≈±1 ⇒ an enclosed defect.
 fn loop_winding(thetas: &[f32]) -> f32 {
     let n = thetas.len();
@@ -280,6 +291,20 @@ mod tests {
             // Half-open: lower-inclusive, upper-exclusive.
             assert!(w >= -PI - 1e-6 && w < PI + 1e-6);
         }
+    }
+
+    // #503: `norm` folds any stored phase into [0, TAU) and is an identity on
+    // values already in range and equal (mod TAU) for drifted inputs.
+    #[test]
+    fn norm_stays_in_range_and_is_periodic() {
+        for &p in &[0.0f32, 0.3, 6.2, -0.1, -50.0, 50.0, 137.0, TAU, -TAU] {
+            let n = norm(p);
+            assert!((0.0..TAU).contains(&n), "norm({p}) = {n} not in [0, TAU)");
+            // Same residue class as the raw phase (2π-periodic).
+            assert!((wrap(n - p)).abs() < 1e-3, "norm({p})={n} changed the residue class");
+        }
+        // Identity on an already-normalized value.
+        assert!((norm(1.234) - 1.234).abs() < 1e-6);
     }
 
     #[test]

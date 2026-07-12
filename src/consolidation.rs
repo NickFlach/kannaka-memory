@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::fano_related;
 use crate::kuramoto::KuramotoSync;
+use crate::spiral::norm; // #503: normalize stored phases into [0, TAU) at write time
 use crate::xi_operator::{xi_repulsive_force, compute_xi_signature};
 // SkipLink removed - associations now emergent from ChiralMedium interference
 use crate::store::{ResonanceEngine, MediumBackend};
@@ -743,7 +744,7 @@ impl ConsolidationEngine {
                     
                     // Kuramoto dynamics: ??? = ?? + (K/N)Ssin(?? - ??)
                     let dphi = cat_mems[i].frequency + (within_category_coupling / n) * phase_sum;
-                    cat_mems[i].phase += dphi * dt;
+                    cat_mems[i].phase = norm(cat_mems[i].phase + dphi * dt);
                 }
             }
             
@@ -754,7 +755,8 @@ impl ConsolidationEngine {
             if final_order > 0.92 {
                 // Too synchronized - add noise to break lockstep
                 for mem in &mut cat_mems {
-                    mem.phase += (mem.id.as_u128() as f32 % 100.0) * 0.001;  // Tiny deterministic noise
+                    // Tiny deterministic noise
+                    mem.phase = norm(mem.phase + (mem.id.as_u128() as f32 % 100.0) * 0.001);
                 }
             } else if final_order < 0.40 {
                 // Too chaotic - nudge toward mean phase. Step along the WRAPPED
@@ -765,7 +767,7 @@ impl ConsolidationEngine {
                 // it meant to gently align.
                 let mean_phase = self.compute_mean_phase(&cat_mems);
                 for mem in &mut cat_mems {
-                    mem.phase += 0.1 * wrapped_phase_delta(mean_phase, mem.phase);
+                    mem.phase = norm(mem.phase + 0.1 * wrapped_phase_delta(mean_phase, mem.phase));
                 }
             }
             
@@ -820,7 +822,7 @@ impl ConsolidationEngine {
                 // Apply cross-category updates � use the same index as all_updated_mems, not working_set
                 for (i, (mem_id, _)) in all_updated_mems.iter().enumerate() {
                     if let Ok(Some(mem)) = engine.store.get_mut(mem_id) {
-                        mem.phase += phase_updates[i];
+                        mem.phase = norm(mem.phase + phase_updates[i]);
                     }
                 }
             }
@@ -1029,7 +1031,7 @@ impl ConsolidationEngine {
 
             // Apply phase separation
             if let Ok(Some(mem_a)) = engine.store.get_mut(&id_a) {
-                mem_a.phase += phase_correction;
+                mem_a.phase = norm(mem_a.phase + phase_correction);
             }
             if let Ok(Some(mem_b)) = engine.store.get_mut(&id_b) {
                 mem_b.phase -= phase_correction;
@@ -2756,7 +2758,7 @@ impl ConsolidationEngine {
                     // a linear blend against the (−π, π] atan2 mean kicks
                     // drift-accumulated phases by 5% of their unbounded drift
                     // instead of 5% of the real angular gap.
-                    mem.phase += 0.05 * wrapped_phase_delta(mean_phase, mem.phase);
+                    mem.phase = norm(mem.phase + 0.05 * wrapped_phase_delta(mean_phase, mem.phase));
                     // Small amplitude boost for correctly-classified memories
                     // (#368: clamp like every other strengthen site — this path
                     // was missed by the #360 ceiling fix).
@@ -2795,7 +2797,7 @@ impl ConsolidationEngine {
                             report.cross_modality_confusions += 1;
                             // Push phases apart slightly
                             if let Ok(Some(mem)) = engine.store.get_mut(&id_a) {
-                                mem.phase += 0.05;
+                                mem.phase = norm(mem.phase + 0.05);
                             }
                             if let Ok(Some(mem)) = engine.store.get_mut(&id_b) {
                                 mem.phase -= 0.05;
