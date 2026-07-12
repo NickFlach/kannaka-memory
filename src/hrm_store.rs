@@ -1948,22 +1948,22 @@ impl MediumBackend for HrmStore {
     }
 
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
-        // Use the medium's resonance-based search
-        let mut scores = Vec::new();
-        
-        for (i, meta) in self.medium.store.metadata.iter().enumerate() {
-            let wavefront = self.medium.store.wavefronts.row(i);
-            let similarity: f32 = wavefront.iter()
-                .zip(query.iter())
-                .map(|(a, b)| a * b)
-                .sum();
-            
-            scores.push((meta.id, similarity));
-        }
-        
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // #498: score over the LIVE `memory_cache` (the authoritative set `get`
+        // reads), NOT the flat `medium.store` view. The flat view retains dropped
+        // hallucinations / stale energies after a chiral rebuild (only
+        // `sync_medium_from_chiral` refreshes it), so scoring it let dead ids rank
+        // in and silently consume the top_k budget (callers then skip them via
+        // `get().ok().flatten()`, shrinking the real neighbour set). Use NORMALIZED
+        // cosine similarity — like `TestMedium::search` — so a similarity threshold
+        // in `stage_detect` / `stage_wire_topk` means the same thing on both
+        // backends instead of scaling with raw hypervector norm.
+        let mut scores: Vec<(Uuid, f32)> = self
+            .memory_cache
+            .values()
+            .map(|m| (m.id, crate::wave::cosine_similarity(query, &m.vector)))
+            .collect();
+        scores.sort_by(|a, b| b.1.total_cmp(&a.1));
         scores.truncate(top_k);
-        
         Ok(scores)
     }
 
@@ -2242,6 +2242,42 @@ mod tests {
         let deleted = store.delete(&id).unwrap();
         assert!(deleted);
         assert_eq!(store.count(), 0);
+    }
+
+    // #498: search scores the LIVE cache with NORMALIZED cosine, not raw dot
+    // products over the (possibly stale) flat medium view.
+    #[test]
+    fn search_normalizes_and_excludes_non_live_ids() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        // Non-unit vectors so cosine (≈1.0 self-match) is distinguishable from a
+        // raw dot product (which would scale with the vector norm, ≈0.25·DIM).
+        let va = vec![0.5f32; WAVEFRONT_DIM];
+        let mut vb = vec![0.0f32; WAVEFRONT_DIM];
+        for x in vb.iter_mut().take(WAVEFRONT_DIM / 2) {
+            *x = 1.0;
+        }
+        let ida = store.insert(HyperMemory::new(va.clone(), "alpha".into())).unwrap();
+        let idb = store.insert(HyperMemory::new(vb.clone(), "beta".into())).unwrap();
+
+        // Normalized: querying with alpha's own vector self-matches at ~1.0.
+        let hits = store.search(&va, 5).unwrap();
+        let top = hits.first().expect("a hit");
+        assert_eq!(top.0, ida, "alpha ranks first for its own vector");
+        assert!(
+            (top.1 - 1.0).abs() < 1e-3,
+            "cosine self-match must be ~1.0 (a raw dot would be ~0.25·DIM), got {}",
+            top.1
+        );
+
+        // Dead-id exclusion: simulate the post-chiral-rebuild staleness where an
+        // id lingers in the flat medium view but is dropped from the live cache.
+        store.memory_cache.remove(&idb);
+        let hits2 = store.search(&vb, 5).unwrap();
+        assert!(
+            hits2.iter().all(|(id, _)| *id != idb),
+            "an id absent from the live cache must not appear (dead ids must not eat the k-budget)"
+        );
     }
 
     #[test]
