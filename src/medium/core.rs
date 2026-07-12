@@ -364,6 +364,20 @@ impl Medium {
         let query_line: Option<u8> = None;
         let mut line_cache: std::collections::HashMap<usize, u8> = std::collections::HashMap::new();
 
+        // Query born phase for phase-DIFFERENCE resonance. Recall must compare the
+        // query's phase to each stored phase — using the stored phase ABSOLUTELY
+        // (`store.phase[i].cos()`) negates any memory whose born phase lands in
+        // (π/2, 3π/2), so under the belief substrate an exact match (phase π,
+        // cos=-1) scored -1 and sorted LAST — inverting recall. Every other phase
+        // interaction (apply_interference, dynamics) uses the difference, and
+        // content_born_phase is documented "recall-safe" precisely on that basis.
+        // Inert in the default text path (both phases 0 ⇒ cos(0)=1).
+        let query_phase = if crate::medium::chiral::belief_phase_enabled() {
+            crate::medium::chiral::content_born_phase(&query_vector)
+        } else {
+            0.0
+        };
+
         for &i in cand_slice {
             if i >= safe_count { continue; } // guard against stale beam indices / section desync
             let wavefront = self.store.wavefronts.row(i);
@@ -377,7 +391,8 @@ impl Medium {
 
             // Modulate by wave dynamics (energy, phase, temporal decay)
             let effective_strength = effective_strengths[i];
-            let phase_modulation = self.store.phase[i].cos(); // Phase affects resonance
+            // Phase DIFFERENCE (constructive interference), not absolute phase.
+            let phase_modulation = (self.store.phase[i] - query_phase).cos();
             let mut resonance_strength = similarity * effective_strength * phase_modulation;
 
             #[cfg(feature = "glyph")]
@@ -414,7 +429,7 @@ impl Medium {
                 let boosted_sim = xi_diversity_boost(r.similarity, &query_xi, &wf_xi);
                 r.similarity = boosted_sim;
                 let mut rs = boosted_sim * r.effective_strength
-                    * self.store.phase[i].cos();
+                    * (self.store.phase[i] - query_phase).cos();
                 // Re-apply glyph-gravity after the xi re-rank so it survives
                 // into the final ordering (line cached from stage 1).
                 #[cfg(feature = "glyph")]

@@ -22,7 +22,18 @@ impl Medium {
     /// #362.)
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), MediumError> {
         let path_ref = path.as_ref();
-        let tmp_path = path_ref.with_extension("hrm.tmp");
+        // Per-writer-private temp file (pid + nanos), mirroring the chiral save
+        // path. A FIXED shared `.hrm.tmp` let two concurrent writers truncate each
+        // other mid-stream; blake3 was then hashed over the interleaved bytes and
+        // the rename landed a checksum-VALID-but-corrupt .hrm (Oracle 2026-05-26).
+        // The chiral path + the reactivation atomic_write were hardened; this flat
+        // path (fresh-bootstrap first save + v1-fallback stores) was missed.
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{}.{}", pid, nanos));
         let file = File::create(&tmp_path)?;
         let mut writer = BufWriter::new(file);
 

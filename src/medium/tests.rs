@@ -13,6 +13,50 @@ fn make_test_pipeline() -> EncodingPipeline {
     EncodingPipeline::new(Box::new(encoder), codebook)
 }
 
+// hunt: recall must score by the phase DIFFERENCE (query vs stored), not the
+// absolute stored phase. Under the belief substrate an exact-content match's born
+// phase can land in (π/2, 3π/2), so cos(absolute) < 0 negated its resonance and
+// buried the exact match. #[ignore] because it sets process-global
+// KANNAKA_BELIEF_PHASE (run with --ignored --nocapture).
+#[test]
+#[ignore = "sets KANNAKA_BELIEF_PHASE (process-global)"]
+fn recall_ranks_exact_match_first_under_belief() {
+    std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+    let pipeline = make_test_pipeline();
+
+    // Pick content whose born phase has cos < 0 — exactly the case the absolute-
+    // phase bug buries (a same-content match got resonance sim*energy*cos<0, so it
+    // sorted BELOW an unrelated positive-phase memory). This makes the test
+    // anti-vacuous: it reddens on the absolute-phase code and passes on the fix.
+    let candidates = [
+        "alpha target trace", "beta memory node", "gamma concept anchor",
+        "delta recall probe", "epsilon signal marker", "zeta phase test",
+    ];
+    let target_content = candidates
+        .iter()
+        .copied()
+        .find(|c| {
+            let v = pipeline.encode_text(c).unwrap();
+            crate::medium::chiral::content_born_phase(&v).cos() < 0.0
+        })
+        .expect("some candidate has a cos<0 born phase under the default encoder");
+
+    let mut medium = Medium::new();
+    let target = pipeline.encode_text(target_content).unwrap();
+    medium.add_wavefront(&target, target_content.to_string(), 1.0).unwrap();
+    let other = pipeline.encode_text("an utterly different subject").unwrap();
+    medium.add_wavefront(&other, "an utterly different subject".to_string(), 1.0).unwrap();
+
+    let results = medium.recall(target_content, 1, &pipeline).unwrap();
+    std::env::remove_var("KANNAKA_BELIEF_PHASE");
+
+    assert_eq!(
+        results.first().map(|r| r.content.as_str()),
+        Some(target_content),
+        "exact match must rank first under belief (phase DIFFERENCE, not absolute phase)"
+    );
+}
+
 #[test]
 fn new_medium_is_empty() {
     let medium = Medium::new();
