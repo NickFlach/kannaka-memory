@@ -571,11 +571,28 @@ impl HrmStore {
     /// wave parameters (amplitude, phase, frequency) on the cached copy. This
     /// method writes those changes back to the authoritative tensor storage.
     fn sync_cache_to_medium(&mut self) {
-        for (id, mem) in &self.memory_cache {
-            if let Some(index) = self.medium.get_wavefront_index(id) {
-                self.medium.store.energy[index] = mem.amplitude;
-                self.medium.store.frequency[index] = mem.frequency;
-                self.medium.store.phase[index] = mem.phase;
+        // #496: in chiral mode the RIGHT hemisphere is authoritative — it is what
+        // `save_medium` persists and what `rebuild_cache` reloads. Writing dream
+        // mutations (energy strengthening, phase syncs) to the flat `self.medium`
+        // here silently discarded them: the flat medium is never saved in chiral
+        // mode, so the particle dream's constructive work reverted on every reload
+        // while its prunes (applied to chiral.right) stuck — the exact asymmetry
+        // #496 describes. Write mutations to chiral.right so both halves persist.
+        if let Some(ref mut chiral) = self.chiral {
+            for (id, mem) in &self.memory_cache {
+                if let Some(&index) = chiral.right.id_to_index.get(id) {
+                    chiral.right.energy[index] = mem.amplitude;
+                    chiral.right.frequency[index] = mem.frequency;
+                    chiral.right.phase[index] = mem.phase;
+                }
+            }
+        } else {
+            for (id, mem) in &self.memory_cache {
+                if let Some(index) = self.medium.get_wavefront_index(id) {
+                    self.medium.store.energy[index] = mem.amplitude;
+                    self.medium.store.frequency[index] = mem.frequency;
+                    self.medium.store.phase[index] = mem.phase;
+                }
             }
         }
     }
@@ -2393,6 +2410,44 @@ mod tests {
             let memories = store.all_memories().unwrap();
             assert_eq!(memories[0].content, "persistent content");
         }
+    }
+
+    // #496: in chiral mode the RIGHT hemisphere is the authoritative store that
+    // chiral.save() persists and rebuild_cache reloads. sync_cache_to_medium used
+    // to write dream mutations (energy strengthening) to the FLAT medium, which is
+    // never saved in chiral mode — so the particle dream's constructive work
+    // silently reverted on every reload while its prunes (applied to chiral.right)
+    // stuck. sync must write to chiral.right so strengthening persists too.
+    #[test]
+    fn chiral_dream_strengthening_persists_across_reload() {
+        let pipeline1 = make_test_pipeline();
+        let pipeline2 = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let id = {
+            let mut store = HrmStore::new(pipeline1, path.clone());
+            store.upgrade_to_chiral();
+            // Seed a wavefront into the right hemisphere at a known low energy.
+            let id = store
+                .insert_raw_wavefront(vec![0.3f32; WAVEFRONT_DIM], "dreamed".into(), 0.40)
+                .unwrap();
+            // A deep dream strengthens it (raises amplitude) by mutating the cache
+            // via get_mut — exactly the path sync_cache_to_medium must persist.
+            store.get_mut(&id).unwrap().unwrap().amplitude = 0.95;
+            store.flush().unwrap();
+            id
+        };
+
+        // Reload from disk: rebuild_cache reads chiral.right. If the mutation only
+        // reached the (unsaved) flat medium, the reloaded energy is the original
+        // 0.40 and this assertion fails — the #496 revert.
+        let store = HrmStore::load(pipeline2, path).unwrap();
+        let amp = store.get(&id).unwrap().expect("wavefront survives reload").amplitude;
+        assert!(
+            (amp - 0.95).abs() < 1e-4,
+            "#496: chiral dream-strengthened energy must persist across reload, got {amp}"
+        );
     }
 
     #[test]
