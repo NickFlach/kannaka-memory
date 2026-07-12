@@ -140,6 +140,38 @@ pub struct ChiralMedium {
     pub right_to_left: std::collections::HashMap<Uuid, Uuid>,
 }
 
+/// Chiral-router mode (env `KANNAKA_CHIRAL_ROUTER`). `off` (default) is today's
+/// behavior — the ingest echoes every gated item to left (near-mirror). `novelty`
+/// is the differentiation experiment: novel items stay RIGHT-only, and only the
+/// routinized minority (familiarity crossing, per the cerebellar novelty
+/// detector) is projected to LEFT — so left becomes a crystallized minority, not
+/// a mirror. Isolated behind an env flag so the A/B needs no rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChiralRouter {
+    Off,
+    Novelty,
+}
+
+pub(crate) fn chiral_router_mode() -> ChiralRouter {
+    match std::env::var("KANNAKA_CHIRAL_ROUTER") {
+        Ok(v) if v.eq_ignore_ascii_case("novelty") => ChiralRouter::Novelty,
+        _ => ChiralRouter::Off,
+    }
+}
+
+/// Routinization familiarity threshold for `KANNAKA_CHIRAL_ROUTER=novelty`
+/// (sweepable via `KANNAKA_CHIRAL_ROUTINIZE_THETA`, default 0.8). An ingest whose
+/// content already resonates in RIGHT at/above this — i.e. a REPEAT — is
+/// routinized to LEFT; a novel item (below it) stays right-only. Absolute
+/// familiarity, not the relative-surprise novelty detector: at ingest the stream
+/// is mostly novel so a learned-baseline surprise signal can't separate repeats.
+pub(crate) fn chiral_routinize_theta() -> f32 {
+    std::env::var("KANNAKA_CHIRAL_ROUTINIZE_THETA")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.8)
+}
+
 impl ChiralMedium {
     /// Create a new empty chiral medium.
     pub fn new() -> Self {
@@ -294,6 +326,28 @@ impl ChiralMedium {
         //    Use the first line through this memory's Fano point
         let fold_line = self.fano.lines_through_point(fano_point)[0] as usize;
 
+        // Chiral router (KANNAKA_CHIRAL_ROUTER=novelty, exp 1): decide whether this
+        // ingest should echo to LEFT. In `off` mode every gated item echoes (today's
+        // near-mirror). In `novelty` mode a NOVEL item stays RIGHT-only, and only a
+        // ROUTINIZED item — familiarity crossing, per the cerebellar novelty detector
+        // fed by how strongly the incoming content already resonates in RIGHT — is
+        // projected to left, so left crystallizes the routinized minority, not a mirror.
+        let is_routine = match chiral_router_mode() {
+            ChiralRouter::Off => true,
+            ChiralRouter::Novelty => {
+                // Absolute familiarity: how strongly does the incoming content
+                // already resonate in RIGHT? A REPEAT resonates high; a novel item
+                // low. Only a repeat (>= theta) is routinized to left.
+                let familiarity = self
+                    .right
+                    .resonate(vector, 1)
+                    .first()
+                    .map(|r| r.resonance_strength)
+                    .unwrap_or(0.0);
+                familiarity >= chiral_routinize_theta()
+            }
+        };
+
         // 3. Optic chiasm: input enters RIGHT hemisphere first
         let right_id = self.right.add_wavefront(vector, content.clone(), importance)?;
 
@@ -309,9 +363,10 @@ impl ChiralMedium {
         let scale = ChiralScale::perception(importance);
         self.scales.insert(right_id, scale);
 
-        // 6. Echo to LEFT hemisphere via callosum (if budget allows)
-        //    Uses the geometrically correct fold line for this memory's Fano group
-        if self.callosum.passes_gate(importance) && self.callosum.has_budget() {
+        // 6. Echo to LEFT hemisphere via callosum (if budget allows AND — in
+        //    novelty-router mode — the item is routinized, not novel).
+        //    Uses the geometrically correct fold line for this memory's Fano group.
+        if is_routine && self.callosum.passes_gate(importance) && self.callosum.has_budget() {
             let folded = self.fano.fold(
                 vector,
                 self.right.dims,
@@ -1578,6 +1633,42 @@ mod tests {
         assert!(
             circ(pb, pf) > circ(pb, pn),
             "unrelated content should be further in phase than a near-duplicate"
+        );
+    }
+
+    // Chiral-router exp 1 (KANNAKA_CHIRAL_ROUTER=novelty): a NOVEL first sighting
+    // stays RIGHT-only; a REPEAT (resonates in right >= theta) routinizes to LEFT.
+    // In `off` (default) every gated item echoes (near-mirror). #[ignore] because
+    // it sets a process-global env var (the codebase convention for env tests).
+    #[test]
+    #[ignore = "experiment: KANNAKA_CHIRAL_ROUTER routing; run with --ignored --nocapture"]
+    fn chiral_router_novelty_routes_repeat_to_left() {
+        let pipeline = test_pipeline();
+        let item = "a distinctive analytical proposition about routinization";
+
+        // OFF (default): both the first sighting AND the repeat echo to left.
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        let mut off = ChiralMedium::new();
+        off.store(item, 0.8, &pipeline).unwrap();
+        off.store(item, 0.8, &pipeline).unwrap();
+        let off_left = off.left.count();
+
+        // NOVELTY: the novel first sighting is right-only; the repeat routinizes.
+        std::env::set_var("KANNAKA_CHIRAL_ROUTER", "novelty");
+        std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", "0.1");
+        let mut nov = ChiralMedium::new();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_novel = nov.left.count();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_repeat = nov.left.count();
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+
+        assert!(off_left >= 1, "off mode: gated items echo to left (near-mirror), got {off_left}");
+        assert_eq!(after_novel, 0, "novelty mode: a novel first sighting stays RIGHT-only");
+        assert!(
+            after_repeat > after_novel,
+            "novelty mode: the repeat routinizes to LEFT ({after_novel} -> {after_repeat})"
         );
     }
 
