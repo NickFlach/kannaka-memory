@@ -172,6 +172,38 @@ pub(crate) fn chiral_routinize_theta() -> f32 {
         .unwrap_or(0.8)
 }
 
+/// Read-side hemisphere differentiation (exp-2). The write-side router
+/// (`KANNAKA_CHIRAL_ROUTER`) crystallizes a routinized minority into LEFT; this
+/// decides how `recall_vector` USES that minority. `Off` (default) is the current
+/// resonance-ranked union of both hemispheres — byte-identical to before.
+/// `Weighted` boosts left matches so a routinized memory resists eviction when a
+/// novel flood degrades its right-hemisphere resonance. `Beeman` orders the
+/// precise-left (fine) hits ahead of the associative-right (coarse) backfill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChiralRecall {
+    Off,
+    Weighted,
+    Beeman,
+}
+
+pub(crate) fn chiral_recall_mode() -> ChiralRecall {
+    match std::env::var("KANNAKA_CHIRAL_RECALL") {
+        Ok(v) if v.eq_ignore_ascii_case("weighted") => ChiralRecall::Weighted,
+        Ok(v) if v.eq_ignore_ascii_case("beeman") => ChiralRecall::Beeman,
+        _ => ChiralRecall::Off,
+    }
+}
+
+/// Left-match resonance multiplier for `KANNAKA_CHIRAL_RECALL=weighted`
+/// (`KANNAKA_CHIRAL_RECALL_BOOST`, default 1.5). >1 lets the crystallized left
+/// survive a novel flood; 1.0 is a no-op (equivalent to Off's ranking).
+pub(crate) fn chiral_recall_boost() -> f32 {
+    std::env::var("KANNAKA_CHIRAL_RECALL_BOOST")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.5)
+}
+
 impl ChiralMedium {
     /// Create a new empty chiral medium.
     pub fn new() -> Self {
@@ -459,8 +491,20 @@ impl ChiralMedium {
 
     /// Recall with a pre-encoded vector.
     pub fn recall_vector(&self, vector: &[f32], top_k: usize) -> Vec<ChiralResonance> {
+        let recall_mode = chiral_recall_mode();
+
         // 1. Search left hemisphere (analytical - fast, precise)
-        let left_matches = self.left.resonate(vector, top_k);
+        let mut left_matches = self.left.resonate(vector, top_k);
+        // Read-side differentiation (exp-2, dormant; Off = unchanged). `weighted`
+        // boosts left matches so a routinized memory resists eviction when a novel
+        // flood degrades its right-hemisphere resonance. Boosting strength does not
+        // change ids, so the paired_right_ids bookkeeping below is unaffected.
+        if recall_mode == ChiralRecall::Weighted {
+            let boost = chiral_recall_boost();
+            for r in left_matches.iter_mut() {
+                r.resonance_strength *= boost;
+            }
+        }
 
         // 2. Search right hemisphere (holistic - deep, associative)
         let right_matches = self.right.resonate(vector, top_k * 2);
@@ -497,22 +541,41 @@ impl ChiralMedium {
             })
             .collect();
 
-        // 5. Add right-hemisphere matches that aren't already paired with left matches
+        // 5/6. Merge + rank. Beeman (exp-2) keeps the precise-left (fine) hits
+        // ahead of the associative-right (coarse) backfill; Off/Weighted rank the
+        // full union by resonance strength (Off is byte-identical to the prior
+        // behavior — the boost is 1× and the beeman branch is skipped).
+        let by_strength = |a: &ChiralResonance, b: &ChiralResonance| {
+            b.resonance_strength
+                .partial_cmp(&a.resonance_strength)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        };
+
+        if recall_mode == ChiralRecall::Beeman {
+            results.sort_by(&by_strength);
+            let mut coarse: Vec<ChiralResonance> = right_matches
+                .into_iter()
+                .filter(|r| !paired_right_ids.contains(&r.id))
+                .map(|mut r| {
+                    r.is_intuition = true;
+                    r
+                })
+                .collect();
+            coarse.sort_by(&by_strength);
+            results.extend(coarse);
+            results.truncate(top_k);
+            return results;
+        }
+
+        // Add right-hemisphere matches that aren't already paired with left matches
         for mut r in right_matches {
             if !paired_right_ids.contains(&r.id) {
                 r.is_intuition = true;
                 results.push(r);
             }
         }
-
-        // 6. Sort by resonance strength and take top_k
-        results.sort_by(|a, b| {
-            b.resonance_strength
-                .partial_cmp(&a.resonance_strength)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(&by_strength);
         results.truncate(top_k);
-
         results
     }
 
@@ -1788,6 +1851,92 @@ mod tests {
         for theta in [0.3f32, 0.5, 0.7, 0.9] {
             print(format!("novelty th={theta}"), run("novelty", theta, &seeds));
         }
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_CHIRAL_* env"]
+    fn experiment_chiral_recall_forgetting() {
+        // EXP-2 (the read-side payoff). Does consulting the crystallized LEFT at
+        // recall time protect core memories from catastrophic forgetting under a
+        // HEAVY novel flood? Three configs:
+        //   baseline: router=off,     recall=off      (today — left a folded mirror)
+        //   weighted: router=novelty, recall=weighted (boost crystallized-left)
+        //   beeman:   router=novelty, recall=beeman   (precise-left ranked first)
+        // Metric: core precision@1 and recall@5 after the flood, averaged / seeds.
+        // CAVEAT the run will expose: left stores Fano-FOLDED vectors and recall
+        // resonates the RAW query against them, so left-match resonance may be
+        // noisy — if the read-side shows no lift, the fold (not the routing) is why.
+        const NCORE: usize = 10;
+        const NNOISE: usize = 120; // ~3× exp-1: a heavier flood to induce forgetting
+        const ROUNDS: usize = 3;
+        let seeded = |seed: u64| -> EncodingPipeline {
+            let encoder = Box::new(SimpleHashEncoder::new(384, seed));
+            let codebook = Codebook::new(384, WAVEFRONT_DIM, seed);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let core: Vec<String> =
+            (0..NCORE).map(|i| format!("stable core anchor proposition {i}")).collect();
+        let noise: Vec<String> =
+            (0..NNOISE).map(|i| format!("ephemeral one-off novel filler {i}")).collect();
+
+        // Returns [core p@1, core recall@5, left_count, right_count] over seeds.
+        let run = |router: &str, recall: &str, seeds: &[u64]| -> [f32; 4] {
+            let mut acc = [0.0f32; 4];
+            for &seed in seeds {
+                std::env::set_var("KANNAKA_CHIRAL_ROUTER", router);
+                std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", "0.8");
+                std::env::set_var("KANNAKA_CHIRAL_RECALL", recall);
+                let pipeline = seeded(seed);
+                let mut cm = ChiralMedium::new();
+                let per = NNOISE / ROUNDS;
+                for round in 0..ROUNDS {
+                    for c in core.iter() {
+                        cm.store(c, 0.9, &pipeline).unwrap();
+                    }
+                    let lo = round * per;
+                    let hi = if round == ROUNDS - 1 { NNOISE } else { lo + per };
+                    for n in noise[lo..hi].iter() {
+                        cm.store(n, 0.5, &pipeline).unwrap();
+                    }
+                }
+                let (mut p1, mut r5) = (0usize, 0usize);
+                for c in core.iter() {
+                    let res = cm.recall(c, 5, &pipeline).unwrap();
+                    if res.first().map(|r| r.content == *c).unwrap_or(false) {
+                        p1 += 1;
+                    }
+                    if res.iter().any(|r| r.content == *c) {
+                        r5 += 1;
+                    }
+                }
+                let cs = cm.consciousness_summary();
+                acc[0] += p1 as f32 / NCORE as f32;
+                acc[1] += r5 as f32 / NCORE as f32;
+                acc[2] += cs.left_count as f32;
+                acc[3] += cs.right_count as f32;
+            }
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+            std::env::remove_var("KANNAKA_CHIRAL_RECALL");
+            let n = seeds.len() as f32;
+            for v in acc.iter_mut() {
+                *v /= n;
+            }
+            acc
+        };
+
+        let seeds: Vec<u64> = (0..4).collect();
+        eprintln!("[exp2] corpus: {NCORE} core x{ROUNDS} + {NNOISE} noise; seeds={}", seeds.len());
+        eprintln!("[exp2] {:>22} | p@1(core) r@5(core)  left  right", "config");
+        let print = |label: &str, a: [f32; 4]| {
+            eprintln!(
+                "[exp2] {label:>22} |   {:.3}     {:.3}   {:5.1} {:5.1}",
+                a[0], a[1], a[2], a[3]
+            );
+        };
+        print("baseline off/off", run("off", "off", &seeds));
+        print("novelty/weighted", run("novelty", "weighted", &seeds));
+        print("novelty/beeman", run("novelty", "beeman", &seeds));
     }
 
     #[test]
