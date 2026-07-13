@@ -5,17 +5,27 @@
 
 .DESCRIPTION
   `Unregister-ScheduledTask` alone is NOT a complete uninstall: the launcher
-  starts the `swarm beacon --loop` daemon, and depending on how it was launched
-  that process can outlive the task, and the copied kannaka-beacon-hidden.vbs is
-  left behind. This script does all three, precisely:
+  starts the `swarm beacon --loop` daemon, and the copied kannaka-beacon-hidden.vbs
+  is left behind. This script does all three:
 
     1. Stop + unregister the task.
-    2. Kill exactly THIS launcher's process tree (the wscript running this
-       task's own .vbs, plus its beacon child) - matched by the launcher path so
-       a second, unrelated beacon on the machine is never touched.
+    2. Kill the beacon daemon by its OWN command line.
     3. Remove the copied launcher.
 
-  Safe to run when the task is already gone (idempotent).
+  WHY (2) matches the daemon and not the launcher process tree: wscript launches
+  kannaka via WshShell.Run, which is NOT a job-object child of the task. When
+  Task Scheduler stops the task it terminates the wscript host, but the kannaka
+  daemon is reparented and survives (orphaned). Keying the kill off the wscript
+  parent therefore misses the very process we need to stop, so we match the
+  daemon's own command line (`kannaka.exe ... swarm beacon --loop`) instead. We
+  filter Name='kannaka.exe' so an unrelated shell whose command line merely
+  contains the pattern never self-matches, and scope to THIS task's exe path
+  (read from the task action before removal) so a beacon launched from a
+  different kannaka.exe is not collateral-killed.
+
+  Safe to run when the task is already gone (idempotent). If the task is already
+  removed, the exe path is unknown, so every `swarm beacon --loop` daemon is
+  stopped (a full teardown of the beacon on this host).
 
 .PARAMETER TaskName
   Scheduled Task name to remove. Default: KannakaSeedBeacon
@@ -36,9 +46,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $vbs = Join-Path $InstallDir 'kannaka-beacon-hidden.vbs'
 
-# 1. Stop + unregister the task. Stopping first asks Task Scheduler to end the
-#    task's process tree; the precise kill below is a fallback for any survivor.
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+# 1. Capture the exe path from the task action (2nd quoted token of
+#    'wscript.exe "<vbs>" "<exe>"') BEFORE removal, to scope the kill precisely.
+#    Then stop + unregister.
+$exePath = $null
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($task) {
+    $arg = ($task.Actions | Select-Object -First 1).Arguments
+    $quoted = [regex]::Matches([string]$arg, '"([^"]*)"')
+    if ($quoted.Count -ge 2) { $exePath = $quoted[1].Groups[1].Value }
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -47,19 +63,16 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Host "no task '$TaskName' (already removed)"
 }
 
-# 2. Kill exactly this launcher's tree: the wscript.exe running THIS .vbs and its
-#    children. Matching on the launcher path (not a blanket 'swarm beacon --loop'
-#    sweep) means another beacon on the same host is never collateral-killed.
-$all    = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
-$hosts  = @($all | Where-Object { $_.Name -eq 'wscript.exe' -and $_.CommandLine -and $_.CommandLine.Contains($vbs) })
+# 2. Kill the beacon daemon by its own command line (survives orphaning). Scope to
+#    the task's exe path when known; otherwise stop every beacon daemon.
 $killed = 0
-foreach ($h in $hosts) {
-    foreach ($kid in @($all | Where-Object { $_.ParentProcessId -eq $h.ProcessId })) {
-        try { Stop-Process -Id $kid.ProcessId -Force -ErrorAction Stop; $killed++ } catch {}
-    }
-    try { Stop-Process -Id $h.ProcessId -Force -ErrorAction Stop; $killed++ } catch {}
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -eq 'kannaka.exe' -and $_.CommandLine -match 'swarm beacon --loop' -and
+    ($null -eq $exePath -or ($_.CommandLine -and $_.CommandLine.Contains($exePath)))
+} | ForEach-Object {
+    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $killed++ } catch {}
 }
-Write-Host "stopped $killed leftover launcher process(es)"
+Write-Host "stopped $killed beacon daemon(s)"
 
 # 3. Remove the copied launcher.
 if (Test-Path $vbs) {
