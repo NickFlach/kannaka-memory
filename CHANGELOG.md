@@ -18,6 +18,12 @@ starts at logon, restarts on failure, and **runs on battery** — a laptop seed
 that stopped beaconing on battery would freeze swarm promotions (anti-eclipse
 fail-closed). Seed-only; `--loop` refuses on a non-seed. See ADR-0039.
 
+`ops/windows/uninstall-beacon-task.ps1` is the matching teardown: a bare
+`Unregister-ScheduledTask` leaves the running `--loop` daemon and the copied
+launcher behind, so the uninstaller stops the task, kills exactly this launcher's
+process tree (matched by launcher path, so a second beacon on the host is never
+touched), and removes the copied `.vbs`.
+
 ## [0.10.9] — 2026-07-08
 
 ### Changed — entropy source defaults to `reservoir` (Quantum-Wave T1.5 flip, #475)

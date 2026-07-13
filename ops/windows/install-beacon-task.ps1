@@ -101,4 +101,4 @@ Start-ScheduledTask -TaskName $TaskName
 Write-Host "started '$TaskName'."
 Write-Host ""
 Write-Host "Verify : kannaka swarm tail   (look for KANNAKA.events.beacon)"
-Write-Host "Remove : Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
+Write-Host "Remove : ops\windows\uninstall-beacon-task.ps1  (task + daemon + launcher)"
