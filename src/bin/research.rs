@@ -3627,14 +3627,6 @@ fn run_experiment_l5_session(params: &Params) {
     let amp_deltas_flat = {
         let mut flat_params = (*params).clone();
         flat_params.chain_depth = 6;
-        // CARRIER_KURAMOTO_COUPLING: decouple the flat-corpus carrier test from the
-        // transfer-corpus K. K=1.5 achieves carrier_emergence=1.0 while K=2.0 is
-        // optimal for transfer. Since engine_flat is independent of engine_a/b, this
-        // reveals whether the single-K constraint is the L5 fitness floor bottleneck.
-        flat_params.kuramoto_coupling = std::env::var("CARRIER_KURAMOTO_COUPLING")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(flat_params.kuramoto_coupling);
         std::env::set_var("CARRIER_NO_INJECT", "1");
         let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, all_deltas,
              _inj_flat, _orig_flat, _init_amp_flat) =
