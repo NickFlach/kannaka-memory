@@ -1,6 +1,6 @@
 # ADR-0041 — Resonance Futures: identity, settlement authority, and the path from play-credits to a real prediction market
 
-- Status: Proposed (2026-07-14) — needs Nick's review; adversarial design review recommended before Phase 1 implementation
+- Status: Proposed (2026-07-14) — needs Nick's review. Adversarial design review COMPLETE (2026-07-14, 4-lens panel, 38 findings / 12 blockers). Reconciliation + forced changes recorded in the "Adversarial design review" section at the end; **Phase 0 is NOT yet complete** (two confirmed blockers remain — see below).
 - Date: 2026-07-14
 - Repos: `kannaka-observatory` (registry + dashboard), `kannaka-radio` (GhostSignals hub / LMSR engine), `Agent-Kax` (identity + credit ledger + floor ledger), OpenBotCity (origination surface, partner API)
 - Related: radio ADR-0012 lineage (constellation prediction markets / GhostSignals hub), ADR-0039 (corroboration trust model — the pattern for multi-party settlement authority), KAX Floor Ledger (Agent-Kax PR #48), prediction registry + auto-settlement (kannaka-observatory commits 87cb10d, fe498ee)
@@ -212,3 +212,198 @@ costs). Therefore:
   genesis; replaying the log reproduces balances exactly).
 - Phase 3 gate: a written legal opinion exists before any real-money flag exists in
   config — enforced socially, recorded in this ADR's status line when it happens.
+
+## Adversarial design review (2026-07-14)
+
+A four-lens panel (identity/capability, ledger integrity & crash-consistency,
+oracle/market economics, cross-service ops) attacked this design against the real
+code before Phase 1. 38 findings (12 blocker, 22 major, 4 minor) + 8 confirmed-correct
+guardrails. Reconciled verdicts below; the panel's raw output is archived in the
+session transcript. The review **changed the plan** — Phase 0 is reopened, identity
+fixes are promoted, ledger immutability is required, and corroboration moves ahead of
+real-credit stakes.
+
+### Refuted (with reason)
+
+- **"The Phase-0 oracle-token gate does not exist in routes.js / GSHUB_ORACLE_TOKEN is
+  never checked" (3 findings, filed as blockers).** Refuted against the *deployed*
+  reality: `POST /api/markets/:id/resolve` and labs-tier creation return **403** to an
+  unauthenticated caller in production (verified live), and the gate is present in
+  `routes.js` on `master` (merged PR #93). The panel read a *stale local checkout*
+  (origin/master had not been pulled after the merge). **But two real hazards survive
+  the refutation** and are kept as blockers: (a) there is no automated regression test
+  locking the gate — the ADR's own verification criterion ("a bare curl resolve must
+  401/403") is not yet a CI check; (b) the gate is *incomplete* — see the TTL bypass
+  blocker below.
+
+### Confirmed blockers — Phase 0 (must fix before calling Phase 0 done)
+
+- **TTL auto-resolver bypasses the oracle gate on labs markets.**
+  `ghostsignals-hub.js::_resolveExpiredMarketsInner` selects *every* `resolved=0 AND
+  expires_at < now` market with **no tag filter** and resolves each by max traded price
+  (`method:'ttl'`). The Phase-0 gate only covers the HTTP resolve handler, so a labs
+  market still auto-resolves by (sybil-pumpable) price at its TTL if the oracle's
+  resolve has not landed — directly contradicting "resolve = oracle only". This is a
+  **live exposure**: Prediction No 2's paired market `m_4584162dfc2d` has TTL near its
+  2026-07-26 settle date. *Fix:* persist a `resolution_authority` at creation; the TTL
+  loop excludes `oracle`-authoritative markets — they resolve only via an oracle-token
+  call, and if the oracle misses the deadline the market is voided/refunded, never
+  price-resolved.
+- **Concurrent `resolveMarket` double-pays.** `resolveMarket` reads `market.resolved`
+  from an awaited `getMarket()` *before* its transaction, then `UPDATE markets SET
+  resolved=1 ... WHERE id=?` with **no `WHERE resolved=0` and no `changes()` check**. The
+  oracle HTTP resolve racing the 10s TTL sweep (the in-memory `_resolving` guard only
+  covers the sweep against itself) makes both paths read `resolved=0` in the async gap
+  and pay every winning position twice — credits minted from nothing. *Fix:* `UPDATE ...
+  WHERE id=? AND resolved=0`, read `changes()`, pay out only if this call flipped the
+  flag; else roll back as "already resolved".
+- **`placeTrade` check-then-act drives capital negative.** Reads `trader.capital`,
+  checks `cost > capital` in JS, then unconditional `UPDATE traders SET capital =
+  capital - ?`. Two concurrent trades both pass the check and both debit → negative
+  balance / spend-what-you-don't-have. *Fix:* `UPDATE ... SET capital = capital - ? WHERE
+  id=? AND capital >= ?`; verify `changes()==1` else roll back.
+- **`predictions.json` non-atomic write + reset-to-`[]` erases the registry.**
+  `persist()` is a single `fs.writeFileSync` of the whole array (no temp+rename, no
+  fsync); a crash mid-write truncates the file, and `ensureLoaded()`'s bare
+  `catch { predictions = []; }` then silently resets — the next write persists `[]`
+  over the only copy. Because floor push + hub resolve happen *before* this fragile
+  local write, a crash can leave credits paid and a floor row written with zero local
+  record. *Fix:* serialize to `.tmp`, fsync, atomic rename, fsync dir; on parse failure
+  rename to `.corrupt` and **fail closed** (never overwrite with `[]`); keep a rolling
+  `.bak`.
+- **Self-fulfilling measurement.** `runMeasurement` settles TRUE the instant any
+  non-excluded bot claims a plot; a Yes-holder simply registers a fresh OBC bot (not on
+  `excludeClaimants` — the proposer cannot enumerate future traders), claims a plot, and
+  the next sweep pays them. `excludeClaimants` as a blocklist is the wrong mechanism.
+  *Fix:* disqualify plots claimed after market creation and any claimant holding a
+  position in the paired market; gate causable world-state conditions behind ADR-0039
+  corroboration before any stake rides on them. (At play stakes this is a curiosity; on
+  real money it is theft — this is why corroboration moves ahead of real-credit stakes.)
+
+### Confirmed blockers — Phase 1 / 3 (design changes folded in)
+
+- **Trader identity is an unverified free string** (`registerTrader`/`placeTrade` take
+  `trader_id` from the body; each new id self-grants capital=100). Sybil-mint and
+  grief-drain today; theft when credits carry value. *Fix (Phase 1):* derive
+  `trader_id` from the verified JWT `sub`, never the body; capital becomes a
+  ledger-derived balance (initial grant is a signed posting), not a per-id grant.
+- **OBC agent-control challenge is spoofable.** Granting `agent` capability on a
+  *harvested* row, or trusting a `dm.received` webhook's self-claimed sender bot_id, or
+  a replayable/non-bound nonce, or treating the shared OBC JWT file as an identity
+  proof — each lets an attacker claim another bot. *Fix:* verify the OBC partner webhook
+  signature and use OBC's asserted sender (not payload-claimed); or verify a presented
+  OBC JWT against OBC's key; single-use short-TTL bot_id-bound nonces; capability only
+  on a persisted completed-challenge record.
+- **Local JWT verification: alg-confusion / kid / revocation.** Pin an alg allowlist
+  (reject `alg=none` and HMAC-against-the-public-key); require exp/iat/nbf with skew
+  bounds; publish JWKS with `kid`, select by kid, overlapping rotation windows,
+  **fail-closed** if the key endpoint is unreachable; add short TTL + a revoked-jti/kid
+  list so a leaked token (especially oracle) can be killed before exp.
+- **Real-money = single co-located oracle+custody (Phase 3).** One box holds the
+  settlement token *and* could trigger custody release, with corroboration deferred.
+  *Fix (hard Phase-3 preconditions):* N-of-M ADR-0039 corroboration before any
+  settlement that releases funds; custody keys physically separated from the settlement
+  oracle (different box, HSM/multisig); a continuous on-chain/off-chain reconciler that
+  **halts** settlement on divergence.
+
+### Confirmed major (folded into the phase they bite)
+
+- **Floor ledger is upsert-mutable** (`onConflictDoUpdate` on `dealUuid` rewrites every
+  column; `credits` is a float). A token holder — or the observatory's own crash-replay
+  — can silently rewrite a "witnessed" settlement, and any Phase-2 hash chain over this
+  table is invalidated by an in-place update. *Fix:* `onConflictDoNothing` +
+  return-existing (immutable); corrections are new superseding rows; revoke UPDATE/DELETE
+  on the table at the DB grant; integer minor units now, not float. **This reverses the
+  earlier "the dealUuid re-push is fine" habit** used during the 07-14 recovery.
+- **`settlePrediction` has no re-check after its awaits** → an auto-sweep clobbers a
+  human's manual correction (and vice versa). *Fix:* set `status='settled'`
+  synchronously before any await; re-check `if (status==='settled') return` — first
+  settlement wins.
+- **LMSR mints unbacked credits** (winners paid $1/share from nothing; no funded
+  market-maker account), so the Phase-2 double-entry ledger cannot balance when these
+  flows port onto it. *Fix:* model the AMM as a real account, escrow the bounded subsidy
+  `b*ln(n)` at creation, pay winners from it; one canonical float→integer rounding rule
+  with residual to the house account; assert conservation at commit.
+- **Single-writer is assumed, not enforced** (no lockfile) → two observatory processes
+  clobber each other's registry. *Fix:* exclusive lockfile at startup, or move the
+  registry into the same DB as the rest of the pipeline.
+- **Cross-service settlement is fire-and-forget** (floor push then hub resolve, both
+  "never throws") → the two can permanently disagree, and the TTL loop then resolves the
+  market to the opposite side. *Fix:* a durable outbox in the observatory — per-target
+  delivery rows written inside the same persist, retried idempotently until confirmed;
+  gate "settled" display on both targets confirmed or raise an inconsistency alarm.
+- **Partial/paginated OBC read settles FALSE at deadline** (a 200 with a truncated
+  `plots` array yields count=0, which is not a throw). *Fix:* follow pagination to
+  exhaustion, treat any partial/ambiguous read as a measurement failure (stay open),
+  require a confirming re-read before settling FALSE.
+- **Sybil-manufactured price is cited as legitimizing signal** — this ADR itself cited
+  "traders priced Yes at 0.82" as evidence of a real market; that number is trivially
+  forgeable by one actor with N free registrations. *Fix:* never present raw
+  open-registration play price as authoritative; weight by verified-identity
+  participation; label play prices unaudited everywhere; per-principal position caps.
+- **No trading halt before a deterministic settlement** → guaranteed front-running once
+  the measurement is observably true. *Fix:* a `settling`/frozen lifecycle state; snapshot
+  price at freeze, resolve at the snapshot.
+- **KAX-IdP outage becomes a settlement outage; the auth flag-day can lock out the live
+  oracle** (Prediction No 2 is running). *Fix:* cache/pin JWKS with long TTL so the oracle
+  verifies offline and settlement never blocks on KAX reachability; migrate with the
+  hub/floor accepting BOTH the legacy static token AND KAX-signed JWTs during a window,
+  client creds first, then retire the static path; add a non-silent settlement-failure
+  alert.
+- **`settleEarlyOnTrue` assumes monotonicity but OBC claims are reversible** — a
+  transient claim locks a permanent wrong settlement with no rollback. *Fix:* restrict
+  early settle to verifiably-permanent facts, or require the condition to hold across K
+  consecutive sweeps; keep every settlement reversible within the dispute window before
+  floor/hub pushes are final.
+
+### Confirmed minor
+
+- Prediction `number` derived from `array.length` collides after a reset — use a
+  persisted monotonic counter.
+- Refundable-stake anti-spam is a manual-review DoS if "unmeasurable" refunds — forfeit
+  the stake on any curation rejection; auto-reject non-self-validating specs before a
+  human looks.
+- Dispute window has no stake and undefined payout-freeze semantics — require a
+  dispute stake, cap open disputes per principal, escrow with a hard time cap.
+- Hub "already resolved" is treated as failure on retry — treat it as success when the
+  existing outcome matches intent.
+
+### Confirmed-correct — load-bearing, do not regress
+
+- Asymmetric-signed JWTs verified **locally** (no per-request introspection) is the
+  right architecture for the constellation — the fixes harden alg/kid/revocation, they
+  do not argue for introspection.
+- The **measurability gate** (no proposal opens without a machine spec or a named
+  procedure+deadline) is correct and must not be weakened.
+- `_resolveExpiredMarkets` **re-entrancy guard** (`_resolving`) is load-bearing against
+  the sweep double-paying itself — keep it (it is simply not sufficient against the
+  sweep-vs-HTTP race; that needs the DB-level single-flip fix).
+- The `#43` **ISO-format expiry comparison** fix must not regress or expired markets
+  silently strand.
+- `placeTrade`'s single **BEGIN/COMMIT transaction** (q update + debit + trade + position
+  in one atomic unit) is correct — preserve it when adding the guarded debit + auth.
+- `requireAuth.ts` **re-reads the user row and checks `disabledAt` on every call**
+  (never trusts the session blob) — keep this for the new principals.
+- **`dealUuid` as the idempotency key** is the right concept — keep the key, just make
+  the row immutable instead of upsert-mutable.
+- **settle/resolve = oracle-service-only** is correct — the finding is only that it must
+  be enforced per-endpoint with a *distinct* credential (a proposer/user/agent token
+  must 403 at the settle handler), not that the rule is wrong.
+
+### Resulting plan changes
+
+1. **Phase 0 is reopened.** It is not complete until: the TTL loop excludes
+   oracle-authoritative markets, `resolveMarket` and `placeTrade` are made atomic/
+   guarded, the registry write is atomic + fail-closed, and a **capless-caller-denied
+   regression test** exists in CI. The self-fulfilling-measurement class is documented
+   as a settlement-safety rule (no auto-settle of participant-causable conditions).
+2. **Corroboration (ADR-0039) moves from Phase 3 to a precondition of Phase 2** — no
+   real-credit stake precedes N-measurer agree-to-settle.
+3. **Ledger immutability is a Phase-2 hard requirement** — separate append-only,
+   INSERT-only, integer, hash-chained table with a DB-enforced no-UPDATE/DELETE grant;
+   `floor_ledger` becomes a display projection. The AMM is a funded ledger account.
+4. **Identity binds authority to a verified principal end-to-end** — trader id from JWT
+   sub, agent capability only on a verified-challenge record, alg/kid/revocation
+   hardening, distinct oracle credential.
+5. Real money keeps its legal gate **and** now additionally gates on corroboration +
+   separated custody + a reconciler.
