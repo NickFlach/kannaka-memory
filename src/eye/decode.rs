@@ -73,10 +73,10 @@ fn probe_video(path: &Path) -> Result<(u32, u32, f32, f32), EyeError> {
         ])
         .arg(path)
         .output()
-        .map_err(|e| EyeError::Decode(format!("ffprobe failed: {}", e)))?;
+        .map_err(|e| EyeError::Decode(format!("ffprobe failed: {e}")))?;
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| EyeError::Decode(format!("ffprobe JSON parse error: {}", e)))?;
+        .map_err(|e| EyeError::Decode(format!("ffprobe JSON parse error: {e}")))?;
 
     // Find video stream
     let streams = json["streams"].as_array()
@@ -123,7 +123,7 @@ pub fn decode_video(path: &Path, target_fps: f32, target_width: u32) -> Result<V
     let output = Command::new("ffmpeg")
         .args([
             "-i", &path.to_string_lossy(),
-            "-vf", &format!("fps={},scale={}:{}", target_fps, target_width, target_height),
+            "-vf", &format!("fps={target_fps},scale={target_width}:{target_height}"),
             "-pix_fmt", "rgb24",
             "-f", "rawvideo",
             "-v", "quiet",
@@ -132,7 +132,7 @@ pub fn decode_video(path: &Path, target_fps: f32, target_width: u32) -> Result<V
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| EyeError::Decode(format!("ffmpeg failed: {}", e)))?;
+        .map_err(|e| EyeError::Decode(format!("ffmpeg failed: {e}")))?;
 
     if output.stdout.is_empty() {
         return Err(EyeError::EmptyVideo);
