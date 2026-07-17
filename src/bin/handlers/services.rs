@@ -98,12 +98,93 @@ fn persist_kax_token(token: &str) {
     }
 }
 
+/// POST the SpaceChild access token to KAX's federation exchange. Returns the
+/// KAX token on success, or (status, message) on failure.
+fn post_exchange(url: &str, spacechild_access: &str) -> Result<String, (u16, String)> {
+    let body = serde_json::json!({ "spacechild_token": spacechild_access }).to_string();
+    match ureq::post(url)
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(12))
+        .send_string(&body)
+    {
+        Ok(resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["token"].as_str().map(String::from))
+                .ok_or((0, "unexpected exchange response".to_string()))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let text = resp.into_string().unwrap_or_default();
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or(text);
+            Err((code, msg))
+        }
+        Err(e) => Err((0, e.to_string())),
+    }
+}
+
+/// SpaceChild federation (ADR-0041 Phase B): exchange the stored SpaceChild
+/// session (`kannaka identity login`) for a KAX identity token — no browser,
+/// no KAX password. Refreshes the SpaceChild session once on a 401 and
+/// retries, so a live refresh token keeps an agent trading indefinitely.
+fn exchange_spacechild_for_kax(cfg: &KannakaConfig) -> Option<String> {
+    use kannaka_memory::identity::{identity_path, AuthClient, IdentityStore};
+    let path = identity_path();
+    let store = IdentityStore::load(&path).ok().flatten()?;
+    let url = format!("{}/api/auth/token/exchange", cfg.ghostsignals.kax_url.trim_end_matches('/'));
+    match post_exchange(&url, &store.access_token) {
+        Ok(tok) => {
+            persist_kax_token(&tok);
+            eprintln!("  \u{2713} KAX identity federated via SpaceChild ({})", store.email);
+            Some(tok)
+        }
+        Err((401, _)) => {
+            // SpaceChild access token expired — refresh the session, retry once.
+            let client = AuthClient::from_env();
+            match client.refresh(&store.refresh_token) {
+                Ok((access, refresh)) => {
+                    let mut s2 = store.clone();
+                    s2.access_token = access.clone();
+                    s2.refresh_token = refresh;
+                    s2.obtained_at = chrono::Utc::now();
+                    let _ = s2.save(&path);
+                    match post_exchange(&url, &access) {
+                        Ok(tok) => {
+                            persist_kax_token(&tok);
+                            eprintln!("  \u{2713} KAX identity federated via SpaceChild ({})", s2.email);
+                            Some(tok)
+                        }
+                        Err((code, m)) => {
+                            eprintln!("  SpaceChild exchange failed after refresh ({}): {}", code, m);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  SpaceChild session expired ({}). Run: kannaka identity login", e);
+                    None
+                }
+            }
+        }
+        Err((code, m)) => {
+            eprintln!("  SpaceChild exchange failed ({}): {}", code, m);
+            None
+        }
+    }
+}
+
 /// Return a usable KAX token, self-refreshing when it is within 5 minutes of
-/// expiry. None when no token is configured, or the lineage is dead (the
-/// human must re-mint on the KAX Bots page).
+/// expiry. Falls back to SpaceChild federation when no token is configured or
+/// the refresh lineage is dead — so `kannaka identity login` alone is enough.
+/// None only when every path is exhausted.
 fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
     let tok = cfg.ghostsignals.kax_token.trim();
-    if tok.is_empty() { return None; }
+    if tok.is_empty() {
+        return exchange_spacechild_for_kax(cfg).or_else(|| remint_help());
+    }
     let exp = jwt_claims(tok).and_then(|c| c["exp"].as_i64()).unwrap_or(0);
     let now = now_epoch();
     if exp - now > 300 {
@@ -126,7 +207,7 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 }
             }
             eprintln!("  KAX token refresh returned an unexpected response.");
-            if exp > now { Some(tok.to_string()) } else { None }
+            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(|| remint_help()) }
         }
         Err(e) => {
             if exp > now {
@@ -135,12 +216,19 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 Some(tok.to_string())
             } else {
                 eprintln!("  KAX token expired and refresh failed: {}", e);
-                eprintln!("  Re-mint on the KAX Bots page (kax.ninja-portal.com) and run:");
-                eprintln!("    kannaka market auth <jwt>");
-                None
+                // Dead lineage — federation can mint a fresh one if a
+                // SpaceChild session is on disk.
+                exchange_spacechild_for_kax(cfg).or_else(|| remint_help())
             }
         }
     }
+}
+
+fn remint_help() -> Option<String> {
+    eprintln!("  Get a KAX identity one of two ways:");
+    eprintln!("    kannaka identity login                 (SpaceChild SSO — fully automatic after)");
+    eprintln!("    kannaka market auth <jwt>              (mint on kax.ninja-portal.com, Bots page)");
+    None
 }
 
 /// Resolve an outcome argument to the hub's integer index: a bare integer is
@@ -293,18 +381,12 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
         &cfg.ghostsignals.hub_url
     };
     let token = &cfg.ghostsignals.token;
-    let has_kax = !cfg.ghostsignals.kax_token.trim().is_empty();
 
     // buy works with EITHER a KAX identity token (labs-tier, attributed) or the
     // legacy GhostSignals token (play tier). create/portfolio keep the legacy
     // requirement for now.
-    if matches!(sub, "buy") && token.is_empty() && !has_kax {
-        eprintln!("  No market credential configured.");
-        eprintln!("  For labs-tier trading: mint a KAX identity token (kax.ninja-portal.com, Bots page), then:");
-        eprintln!("    kannaka market auth <jwt>");
-        eprintln!("  For play tier: run 'kannaka init' to register with GhostSignals.");
-        process::exit(1);
-    }
+    // buy proceeds even with nothing configured: ensure_fresh_kax_token can
+    // federate a KAX identity from a stored SpaceChild session on the fly.
     if token.is_empty() && matches!(sub, "create" | "portfolio") {
         eprintln!("  GhostSignals token not configured.");
         eprintln!("  Run 'kannaka init' to register with GhostSignals.");
@@ -340,6 +422,22 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                 println!("  Principal: kax:{}:{}", kind, sub_c);
             }
             println!("  Token expires in ~{} min — the CLI auto-refreshes it before market calls.", mins);
+        }
+        "link" => {
+            // Force a SpaceChild -> KAX federation exchange right now.
+            match exchange_spacechild_for_kax(cfg) {
+                Some(tok) => {
+                    if let Some(c) = jwt_claims(&tok) {
+                        let kind = c["kind"].as_str().unwrap_or("?");
+                        println!("  Principal: kax:{}:{}", kind, c["sub"].as_str().unwrap_or("?"));
+                    }
+                    println!("  Federated token stored; market commands will self-refresh it.");
+                }
+                None => {
+                    eprintln!("  No usable SpaceChild session. Run: kannaka identity login");
+                    process::exit(1);
+                }
+            }
         }
         "whoami" => {
             let tok = cfg.ghostsignals.kax_token.trim();
@@ -684,8 +782,9 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
         }
         _ => {
-            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard|auth|whoami>");
+            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard|auth|link|whoami>");
             eprintln!("  auth <jwt>   store a KAX identity token (labs-tier trading; auto-refreshed)");
+            eprintln!("  link         federate a KAX identity from your SpaceChild login (kannaka identity login)");
             eprintln!("  whoami       show the stored KAX principal + token/lineage status");
             process::exit(1);
         }
