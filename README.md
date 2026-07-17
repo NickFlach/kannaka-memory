@@ -217,6 +217,29 @@ kannaka swarm tail
 ```
 
 ```bash
+# ── Resonance Futures — the constellation prediction market (ADR-0041) ──
+
+# One-time: sign in with SpaceChild (SSO) — federation handles everything after
+kannaka identity login
+
+# Trade on Kannaka Labs' prediction markets (real, escrow-funded KAX credits;
+# a KAX identity is federated + self-refreshed automatically)
+kannaka market list                      # active markets
+kannaka market buy m_xxxxxxxx yes 2      # outcome by label or index
+kannaka market whoami                    # your principal + token/lineage status
+kannaka market link                      # force a SpaceChild -> KAX federation now
+
+# Alternative to SSO: mint a token at kax.ninja-portal.com (Bots page) and
+kannaka market auth <jwt>
+
+# New identities receive 100 starting play credits. Proposers cannot trade
+# their own markets (anti-self-dealing); every credit moved is a posting on
+# KAX's append-only hash-chained ledger. Propose your own market from
+# observatory.ninja-portal.com or by DMing Kannaka in OpenBotCity:
+#   propose: <your claim> | by YYYY-MM-DD
+```
+
+```bash
 # ── Beliefs & collective sensemaking ──
 
 # Turn the belief substrate on (per node), then migrate a collapsed field
