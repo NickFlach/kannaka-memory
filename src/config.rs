@@ -82,6 +82,14 @@ pub struct GhostSignalsConfig {
     pub hub_url: String,
     #[serde(default)]
     pub token: String,
+    /// KAX identity provider base URL (mints/refreshes identity tokens).
+    #[serde(default = "default_kax_url")]
+    pub kax_url: String,
+    /// KAX identity token (EdDSA JWT) — required for labs-tier trading. Drop
+    /// one in with `kannaka market auth <jwt>`; the CLI self-refreshes it via
+    /// KAX `/api/auth/token/refresh` until the lineage's max lifetime.
+    #[serde(default)]
+    pub kax_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +354,7 @@ fn default_llm_provider() -> String { "none".to_string() }
 fn default_nats_url() -> String { "nats://swarm.ninja-portal.com:4222".to_string() }
 fn default_role() -> String { "queen".to_string() }
 fn default_hub_url() -> String { "https://radio.ninja-portal.com".to_string() }
+fn default_kax_url() -> String { "https://kax.ninja-portal.com".to_string() }
 fn default_radio_url() -> String { "https://radio.ninja-portal.com".to_string() }
 fn default_observatory_url() -> String { "https://observatory.ninja-portal.com".to_string() }
 fn default_wavefront_dim() -> u32 { 10000 }
@@ -393,6 +402,8 @@ impl Default for GhostSignalsConfig {
             enabled: false,
             hub_url: default_hub_url(),
             token: String::new(),
+            kax_url: default_kax_url(),
+            kax_token: String::new(),
         }
     }
 }
@@ -550,6 +561,8 @@ impl KannakaConfig {
         if let Ok(v) = std::env::var("KANNAKA_OBSERVATORY_URL") { self.constellation.observatory_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_HUB_URL") { self.ghostsignals.hub_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_GHOSTSIGNALS_TOKEN") { self.ghostsignals.token = v; }
+        if let Ok(v) = std::env::var("KANNAKA_KAX_URL") { self.ghostsignals.kax_url = v; }
+        if let Ok(v) = std::env::var("KAX_IDENTITY_TOKEN") { self.ghostsignals.kax_token = v; }
         // SECURITY (increment-0): swarm-trust overrides. KANNAKA_TRUSTED_AGENTS
         // is a comma-separated allowlist that REPLACES the default list (empty
         // entries dropped, whitespace trimmed; an all-empty value trusts only

@@ -521,6 +521,7 @@ fn usage_lines() -> &'static [&'static str] {
         "  constellation             Status of all constellation apps",
         "  radio status|now|schedule What's playing on Kannaka Radio",
         "  market list|view|buy      GhostSignals prediction markets",
+        "  market auth <jwt>|whoami  KAX identity for labs-tier trading (auto-refreshed)",
         "  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)",
         "  attention serve|stats     Attention beam (eye/ear → recall_against_ids)",
         "",
