@@ -35,7 +35,8 @@ pub(crate) fn handle_swarm_serve(
     args: &[String],
 ) {
     use std::time::Duration;
-    const USAGE: &str = "Usage: kannaka swarm serve [--threshold 0.4] [--nats-url URL] [--agent-id ID]";
+    const USAGE: &str =
+        "Usage: kannaka swarm serve [--threshold 0.4] [--nats-url URL] [--agent-id ID]";
     // Single-writer policy: the serve daemon is a long-running READER. It
     // observes/recalls (which mutate the medium in RAM) but must never
     // flush over the sole writer's .hrm. Enforce read-only here instead of
@@ -61,25 +62,40 @@ pub(crate) fn handle_swarm_serve(
                 threshold = parse_flag_value(args, i, "--threshold", USAGE);
                 i += 2;
             }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
             "--agent-id" => {
                 agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string());
                 i += 2;
             }
-            other => { warn_unknown_flag("swarm serve", other); i += 1; }
+            other => {
+                warn_unknown_flag("swarm serve", other);
+                i += 1;
+            }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+        Err(e) => {
+            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+            process::exit(1);
+        }
     };
     let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
     let directed = format!("KANNAKA.ask.{}", agent_id);
 
     eprintln!("[swarm serve] agent_id={agent_id}");
-    eprintln!("[swarm serve] subscribing to {} and KANNAKA.ask.broadcast", directed);
-    eprintln!("[swarm serve] broadcast resonance threshold: {:.2}", threshold);
+    eprintln!(
+        "[swarm serve] subscribing to {} and KANNAKA.ask.broadcast",
+        directed
+    );
+    eprintln!(
+        "[swarm serve] broadcast resonance threshold: {:.2}",
+        threshold
+    );
     eprintln!("[swarm serve] press Ctrl+C to stop");
 
     // Single subscription per subject; in v1 we run them sequentially via
@@ -87,7 +103,10 @@ pub(crate) fn handle_swarm_serve(
     // Future: dedicated reader thread + channel per subject.
     let mut directed_sub = match transport.subscribe(&directed) {
         Ok(s) => s,
-        Err(e) => { eprintln!("subscribe directed: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("subscribe directed: {e}");
+            process::exit(1);
+        }
     };
     // Short read timeout so the loop multiplexes all subjects responsively.
     // (Was 5s — with directed+broadcast+recall round-robined, a 5s timeout meant
@@ -128,8 +147,13 @@ pub(crate) fn handle_swarm_serve(
         .as_ref()
         .and_then(|t| t.subscribe(&recall_subject).ok());
     match recall_sub.as_mut() {
-        Some(s) => { let _ = s.set_timeout(Some(Duration::from_millis(250))); eprintln!("[swarm serve] serving recall on {recall_subject}"); }
-        None => eprintln!("[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"),
+        Some(s) => {
+            let _ = s.set_timeout(Some(Duration::from_millis(250)));
+            eprintln!("[swarm serve] serving recall on {recall_subject}");
+        }
+        None => eprintln!(
+            "[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"
+        ),
     }
 
     // ADR-0036 Phase 1: this daemon is read-only and never saves the .hrm, but
@@ -138,24 +162,90 @@ pub(crate) fn handle_swarm_serve(
     // replay signal is lost. Flush at most once a minute.
     let mut last_reactivation_flush = std::time::Instant::now();
 
+    // Freshness (#563): this daemon serves a warm in-memory copy of the HRM
+    // loaded at boot. The single writer (and the nightly dream) rewrite the
+    // file on disk, so the served mind drifts stale until a restart. Watch the
+    // file's mtime and restart-to-reload when it changes — crash-only reload
+    // reuses the proven boot path with ZERO transient double-memory on the
+    // small hub (an in-place reload would briefly hold two full HRMs). The
+    // settle window avoids reloading mid-write. Replaces the hourly cron
+    // restart, whose only surviving job (post-#500 liveness) was freshness.
+    let hrm_path = data_dir().join("kannaka.hrm");
+    let hrm_loaded_mtime = std::fs::metadata(&hrm_path).and_then(|m| m.modified()).ok();
+    let mut hrm_pending: Option<(std::time::SystemTime, std::time::Instant)> = None;
+    let mut last_freshness_check = std::time::Instant::now();
+    const FRESHNESS_CHECK_SECS: u64 = 60;
+    const FRESHNESS_SETTLE: Duration = Duration::from_secs(20);
+
+    // systemd watchdog (#563): belt to the liveness braces. If this loop
+    // itself wedges (a pathological recall, a stuck syscall), WATCHDOG=1
+    // stops flowing and systemd kills + restarts us (WatchdogSec in the
+    // unit). READY=1 is sent once for Type=notify compatibility. No-op when
+    // NOTIFY_SOCKET is unset (dev shells, Windows).
+    sd_notify("READY=1");
+    let mut last_watchdog = std::time::Instant::now();
+
     loop {
+        // Watchdog heartbeat at most every 10s — one datagram, no allocation.
+        if last_watchdog.elapsed().as_secs() >= 10 {
+            sd_notify("WATCHDOG=1");
+            last_watchdog = std::time::Instant::now();
+        }
+
+        // Freshness: cheap stat once a minute.
+        if last_freshness_check.elapsed().as_secs() >= FRESHNESS_CHECK_SECS {
+            last_freshness_check = std::time::Instant::now();
+            if let (Some(loaded), Ok(meta)) = (hrm_loaded_mtime, std::fs::metadata(&hrm_path)) {
+                if let Ok(current) = meta.modified() {
+                    let (next_pending, reload) = freshness_decision(
+                        loaded,
+                        current,
+                        hrm_pending,
+                        std::time::Instant::now(),
+                        FRESHNESS_SETTLE,
+                    );
+                    hrm_pending = next_pending;
+                    if reload {
+                        eprintln!(
+                            "[swarm serve] HRM changed on disk and settled — restarting to serve the fresh mind (#563)"
+                        );
+                        sd_notify("STOPPING=1");
+                        process::exit(1); // Restart=always brings us back on the new file
+                    }
+                }
+            }
+        }
         // Round-robin: try directed first, then broadcast. Timeout means
         // "nothing right now — poll the next subject"; Closed means the
         // socket is dead and the loop must NOT spin on it (pre-fix this
         // burned 100% CPU forever after a NATS restart).
         match directed_sub.next_event() {
             SubEvent::Msg(msg) => {
-                _handle_serve_msg(sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold, &agent_id, &nats_url);
+                _handle_serve_msg(
+                    sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold, &agent_id,
+                    &nats_url,
+                );
             }
             SubEvent::Timeout => {}
             SubEvent::Closed => {
-                eprintln!("[swarm serve] directed subscription ({directed}) closed — exiting for restart");
+                eprintln!(
+                    "[swarm serve] directed subscription ({directed}) closed — exiting for restart"
+                );
                 process::exit(1);
             }
         }
         match bcast_sub.next_event() {
             SubEvent::Msg(msg) => {
-                _handle_serve_msg(sys, cfg, &bcast_transport, &msg, /*is_broadcast*/ true, threshold, &agent_id, &nats_url);
+                _handle_serve_msg(
+                    sys,
+                    cfg,
+                    &bcast_transport,
+                    &msg,
+                    /*is_broadcast*/ true,
+                    threshold,
+                    &agent_id,
+                    &nats_url,
+                );
             }
             SubEvent::Timeout => {}
             SubEvent::Closed => {
@@ -176,38 +266,62 @@ pub(crate) fn handle_swarm_serve(
                 }
                 SubEvent::Msg(msg) => {
                     let reply_to = msg.reply_to.clone();
-                    let req: serde_json::Value = serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
-                    let query = req.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let req: serde_json::Value =
+                        serde_json::from_slice(&msg.payload).unwrap_or(serde_json::Value::Null);
+                    let query = req
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     // Clamp peer-supplied top_k: it comes straight off the NATS
                     // wire and drives recall + result-Vec allocation + per-result
                     // store.get + JSON serialization. An unbounded value (e.g.
                     // {"top_k": 4_000_000_000}) is an OOM/DoS vector on the
                     // 1-core/6GB hub. The sibling `cores` handler caps peer input
                     // the same way (truncate(1024)).
-                    let top_k = req.get("top_k").and_then(|v| v.as_u64()).unwrap_or(8).min(100) as usize;
+                    let top_k = req
+                        .get("top_k")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(8)
+                        .min(100) as usize;
                     if let (false, Some(reply)) = (query.is_empty(), reply_to) {
                         let beam = kannaka_memory::agent::attention_beam_for_prompt(
-                            sys, &query, kannaka_memory::agent::DEFAULT_ATTENTION_BEAM);
+                            sys,
+                            &query,
+                            kannaka_memory::agent::DEFAULT_ATTENTION_BEAM,
+                        );
                         let recall = if beam.is_empty() {
-                            sys.recall(&query, top_k)            // cold/small HRM fallback
+                            sys.recall(&query, top_k) // cold/small HRM fallback
                         } else {
                             sys.recall_with_beam(&beam, &query, top_k)
                         };
-                        let results: Vec<serde_json::Value> = recall.map(|rs| rs.iter().map(|r| {
-                            // Include the memory's wave phase so swarm-side
-                            // sensemaking (contradiction detection) can use the
-                            // wave-native stance signal across peers (ADR-0035).
-                            let phase = sys.engine.store.get(&r.id).ok().flatten()
-                                .map(|m| m.phase).unwrap_or(0.0);
-                            serde_json::json!({
-                                "id": r.id.to_string(),
-                                "content": r.content,
-                                "similarity": r.similarity,
-                                "strength": r.strength,
-                                "age_hours": r.age_hours,
-                                "phase": phase,
+                        let results: Vec<serde_json::Value> = recall
+                            .map(|rs| {
+                                rs.iter()
+                                    .map(|r| {
+                                        // Include the memory's wave phase so swarm-side
+                                        // sensemaking (contradiction detection) can use the
+                                        // wave-native stance signal across peers (ADR-0035).
+                                        let phase = sys
+                                            .engine
+                                            .store
+                                            .get(&r.id)
+                                            .ok()
+                                            .flatten()
+                                            .map(|m| m.phase)
+                                            .unwrap_or(0.0);
+                                        serde_json::json!({
+                                            "id": r.id.to_string(),
+                                            "content": r.content,
+                                            "similarity": r.similarity,
+                                            "strength": r.strength,
+                                            "age_hours": r.age_hours,
+                                            "phase": phase,
+                                        })
+                                    })
+                                    .collect()
                             })
-                        }).collect()).unwrap_or_default();
+                            .unwrap_or_default();
                         if let Some(ref rt) = recall_transport {
                             let payload = serde_json::json!({ "from": agent_id, "query": query, "results": results });
                             let _ = rt.reply(&reply, payload.to_string().as_bytes());
@@ -242,7 +356,16 @@ fn _serve_directed_only(
     loop {
         match sub.next_event() {
             SubEvent::Msg(msg) => {
-                _handle_serve_msg(sys, cfg, transport, &msg, false, 0.0, serve_agent_id, nats_url);
+                _handle_serve_msg(
+                    sys,
+                    cfg,
+                    transport,
+                    &msg,
+                    false,
+                    0.0,
+                    serve_agent_id,
+                    nats_url,
+                );
             }
             SubEvent::Timeout => {}
             SubEvent::Closed => {
@@ -268,7 +391,10 @@ fn _handle_serve_msg(
     let reply_to = match &msg.reply_to {
         Some(r) => r.clone(),
         None => {
-            eprintln!("[swarm serve] msg without reply-to on {} — ignoring", msg.subject);
+            eprintln!(
+                "[swarm serve] msg without reply-to on {} — ignoring",
+                msg.subject
+            );
             return;
         }
     };
@@ -276,7 +402,8 @@ fn _handle_serve_msg(
     let req: serde_json::Value = match serde_json::from_slice(&msg.payload) {
         Ok(v) => v,
         Err(e) => {
-            let err = serde_json::json!({ "from": serve_agent_id, "error": format!("bad json: {e}") });
+            let err =
+                serde_json::json!({ "from": serve_agent_id, "error": format!("bad json: {e}") });
             let _ = transport.reply(&reply_to, err.to_string().as_bytes());
             return;
         }
@@ -300,7 +427,9 @@ fn _handle_serve_msg(
             eprintln!("[swarm serve] broadcast from {from}: top resonance {top:.3} < threshold {threshold:.2} — staying quiet");
             return;
         }
-        eprintln!("[swarm serve] broadcast from {from}: top resonance {top:.3} ≥ threshold — answering");
+        eprintln!(
+            "[swarm serve] broadcast from {from}: top resonance {top:.3} ≥ threshold — answering"
+        );
     } else {
         eprintln!("[swarm serve] directed from {from}");
     }
@@ -337,7 +466,11 @@ fn _handle_serve_msg(
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_serve(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
+pub(crate) fn handle_swarm_serve(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
     eprintln!("swarm serve requires the 'nats' feature");
     process::exit(1);
 }
@@ -361,18 +494,36 @@ pub(crate) fn handle_swarm_exemplars(
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
-            "--top-k" => { top_k = parse_flag_value(args, i, "--top-k", USAGE); i += 2; }
-            "--agent-id" => { agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string()); i += 2; }
-            "--from" => { from = Some(flag_value(args, i, "--from", USAGE).to_string()); i += 2; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("exemplars", other); i += 1; }
+            "--top-k" => {
+                top_k = parse_flag_value(args, i, "--top-k", USAGE);
+                i += 2;
+            }
+            "--agent-id" => {
+                agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string());
+                i += 2;
+            }
+            "--from" => {
+                from = Some(flag_value(args, i, "--from", USAGE).to_string());
+                i += 2;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("exemplars", other);
+                i += 1;
+            }
         }
     }
     let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
 
     match sub {
@@ -384,8 +535,11 @@ pub(crate) fn handle_swarm_exemplars(
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();
             // Order by mean_amplitude desc — strongest exemplars first.
-            clusters.sort_by(|a, b| b.mean_amplitude.partial_cmp(&a.mean_amplitude)
-                .unwrap_or(std::cmp::Ordering::Equal));
+            clusters.sort_by(|a, b| {
+                b.mean_amplitude
+                    .partial_cmp(&a.mean_amplitude)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             // inc-1b: ALWAYS sign exemplar emits with the node key so peers running
             // the corroboration gate can verify + accrue. Best-effort load.
             let node_seed = kannaka_memory::provenance::node_signing_key(&data_dir()).ok();
@@ -410,9 +564,11 @@ pub(crate) fn handle_swarm_exemplars(
                 // Sign over (exemplar_id, content, amplitude) — the fields the
                 // absorbing node's admit() reconstructs. Only when both id+content
                 // are present and parseable.
-                if let (Some(seed), Some(content), Some(eid)) =
-                    (&node_seed, c.exemplar_content.as_deref(), c.exemplar_id.as_deref())
-                {
+                if let (Some(seed), Some(content), Some(eid)) = (
+                    &node_seed,
+                    c.exemplar_content.as_deref(),
+                    c.exemplar_id.as_deref(),
+                ) {
                     if let Ok(mem_id) = uuid::Uuid::parse_str(eid) {
                         let nonce = *uuid::Uuid::new_v4().as_bytes();
                         let ts = kannaka_memory::provenance::now_ms();
@@ -439,30 +595,51 @@ pub(crate) fn handle_swarm_exemplars(
                     Err(e) => eprintln!("[exemplars] cluster {} publish failed: {e}", c.cluster_id),
                 }
             }
-            println!("Published {} exemplars from {} (top-{} by amplitude)", published, agent_id, top_k);
+            println!(
+                "Published {} exemplars from {} (top-{} by amplitude)",
+                published, agent_id, top_k
+            );
         }
         "list" => {
             let exemplars = match transport.get_exemplars(from.as_deref()) {
                 Ok(e) => e,
-                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("nats: {e}");
+                    process::exit(1);
+                }
             };
             let limit = if top_k == 0 { exemplars.len() } else { top_k };
             for (i, e) in exemplars.iter().take(limit).enumerate() {
                 let agent = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
                 let cid = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("(no content)");
+                let content = e
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no content)");
                 // SECURITY (increment-0): agent_id + content are attacker-
                 // controllable wire strings — sanitize before printing (strip
                 // ANSI/control bytes) and flag sources not on the trusted
                 // allowlist as observe-only. Never print wire content raw.
                 let agent_s = kannaka_memory::sanitize_display(agent);
                 let trusted = agent == agent_id
-                    || kannaka_memory::agent_matches_allowlist(agent, &cfg.swarm_trust.trusted_agents);
+                    || kannaka_memory::agent_matches_allowlist(
+                        agent,
+                        &cfg.swarm_trust.trusted_agents,
+                    );
                 let mark = if trusted { "" } else { " (unverified)" };
-                let preview: String =
-                    kannaka_memory::sanitize_display(content).chars().take(120).collect();
-                println!("[{:3}] {}{} c{:<3} amp={:.3}", i + 1, agent_s, mark, cid, amp);
+                let preview: String = kannaka_memory::sanitize_display(content)
+                    .chars()
+                    .take(120)
+                    .collect();
+                println!(
+                    "[{:3}] {}{} c{:<3} amp={:.3}",
+                    i + 1,
+                    agent_s,
+                    mark,
+                    cid,
+                    amp
+                );
                 println!("       {}", preview);
             }
             println!();
@@ -477,8 +654,13 @@ pub(crate) fn handle_swarm_exemplars(
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_exemplars(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm exemplars requires the 'nats' feature"); process::exit(1);
+pub(crate) fn handle_swarm_exemplars(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
+    eprintln!("swarm exemplars requires the 'nats' feature");
+    process::exit(1);
 }
 
 /// ADR-0037 Track-D: `kannaka swarm cores <publish|list|shared>` — share belief
@@ -499,18 +681,36 @@ pub(crate) fn handle_swarm_cores(
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
-            "--agent-id" => { agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string()); i += 2; }
-            "--from" => { from = Some(flag_value(args, i, "--from", USAGE).to_string()); i += 2; }
-            "--min-cos" => { min_cos = parse_flag_value(args, i, "--min-cos", USAGE); i += 2; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("cores", other); i += 1; }
+            "--agent-id" => {
+                agent_id_override = Some(flag_value(args, i, "--agent-id", USAGE).to_string());
+                i += 2;
+            }
+            "--from" => {
+                from = Some(flag_value(args, i, "--from", USAGE).to_string());
+                i += 2;
+            }
+            "--min-cos" => {
+                min_cos = parse_flag_value(args, i, "--min-cos", USAGE);
+                i += 2;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("cores", other);
+                i += 1;
+            }
         }
     }
     let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
 
     // This node's belief cores (the L6 snapshot used everywhere in Track-D).
@@ -532,14 +732,24 @@ pub(crate) fn handle_swarm_cores(
                 "created_at": chrono::Utc::now().to_rfc3339(),
             });
             match transport.publish_cores(&agent_id, &payload) {
-                Ok(()) => println!("published {} belief cores from {}", own_cores.len(), agent_id),
-                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                Ok(()) => println!(
+                    "published {} belief cores from {}",
+                    own_cores.len(),
+                    agent_id
+                ),
+                Err(e) => {
+                    eprintln!("nats: {e}");
+                    process::exit(1);
+                }
             }
         }
         "list" => {
             let peers = match transport.get_peer_cores(from.as_deref()) {
                 Ok(p) => p,
-                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("nats: {e}");
+                    process::exit(1);
+                }
             };
             for p in &peers {
                 let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -561,13 +771,21 @@ pub(crate) fn handle_swarm_cores(
             // belief cores are mirrored by each peer (same-charge fingerprint match).
             let peers = match transport.get_peer_cores(from.as_deref()) {
                 Ok(p) => p,
-                Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("nats: {e}");
+                    process::exit(1);
+                }
             };
-            println!("own cores: {} (agent {agent_id}, min_cos={min_cos:.2})", own_cores.len());
+            println!(
+                "own cores: {} (agent {agent_id}, min_cos={min_cos:.2})",
+                own_cores.len()
+            );
             let (mut total, mut counted) = (0usize, 0usize);
             for p in &peers {
                 let aid = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
-                if aid == agent_id { continue; }
+                if aid == agent_id {
+                    continue;
+                }
                 let mut peer_cores: Vec<kannaka_memory::l6::CoreObs> = p
                     .get("cores")
                     .and_then(|c| serde_json::from_value(c.clone()).ok())
@@ -576,15 +794,28 @@ pub(crate) fn handle_swarm_cores(
                 // snapshot (honest publishers emit ≤8 cores; 1024 is a generous cap).
                 peer_cores.truncate(1024);
                 let shared = kannaka_memory::l6::shared_cores(&own_cores, &peer_cores, min_cos);
-                let rate = if own_cores.is_empty() { 0.0 } else { shared as f32 / own_cores.len() as f32 };
-                println!("  {aid:<24} shared={shared:<4}/{:<4} peer  (agreement {:.0}%)", peer_cores.len(), rate * 100.0);
+                let rate = if own_cores.is_empty() {
+                    0.0
+                } else {
+                    shared as f32 / own_cores.len() as f32
+                };
+                println!(
+                    "  {aid:<24} shared={shared:<4}/{:<4} peer  (agreement {:.0}%)",
+                    peer_cores.len(),
+                    rate * 100.0
+                );
                 total += shared;
                 counted += 1;
             }
             if counted > 0 {
-                println!("mean shared across {counted} peer(s): {:.1}", total as f32 / counted as f32);
+                println!(
+                    "mean shared across {counted} peer(s): {:.1}",
+                    total as f32 / counted as f32
+                );
             } else {
-                println!("no peers have published cores yet (run `kannaka swarm cores publish` on them)");
+                println!(
+                    "no peers have published cores yet (run `kannaka swarm cores publish` on them)"
+                );
             }
         }
         other => {
@@ -596,8 +827,13 @@ pub(crate) fn handle_swarm_cores(
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_cores(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm cores requires the 'nats' feature"); process::exit(1);
+pub(crate) fn handle_swarm_cores(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
+    eprintln!("swarm cores requires the 'nats' feature");
+    process::exit(1);
 }
 
 #[cfg(feature = "nats")]
@@ -615,12 +851,30 @@ pub(crate) fn handle_swarm_absorb(
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--from" => { from = Some(flag_value(args, i, "--from", USAGE).to_string()); i += 2; }
-            "--top-k" => { top_k = parse_flag_value(args, i, "--top-k", USAGE); i += 2; }
-            "--threshold" => { threshold = parse_flag_value(args, i, "--threshold", USAGE); i += 2; }
-            "--dry-run" => { dry_run = true; i += 1; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("swarm absorb", other); i += 1; }
+            "--from" => {
+                from = Some(flag_value(args, i, "--from", USAGE).to_string());
+                i += 2;
+            }
+            "--top-k" => {
+                top_k = parse_flag_value(args, i, "--top-k", USAGE);
+                i += 2;
+            }
+            "--threshold" => {
+                threshold = parse_flag_value(args, i, "--threshold", USAGE);
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("swarm absorb", other);
+                i += 1;
+            }
         }
     }
     if !dry_run {
@@ -630,21 +884,34 @@ pub(crate) fn handle_swarm_absorb(
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
 
     let exemplars = match transport.get_exemplars(from.as_deref()) {
         Ok(e) => e,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
     if exemplars.is_empty() {
-        eprintln!("No exemplars found in stream{}.",
-            from.as_ref().map(|f| format!(" (from {})", f)).unwrap_or_default());
+        eprintln!(
+            "No exemplars found in stream{}.",
+            from.as_ref()
+                .map(|f| format!(" (from {})", f))
+                .unwrap_or_default()
+        );
         eprintln!("Hint: a peer must run 'kannaka swarm exemplars publish' first.");
         return;
     }
-    eprintln!("Found {} exemplars; evaluating against local medium (threshold {:.2})...",
-        exemplars.len(), threshold);
+    eprintln!(
+        "Found {} exemplars; evaluating against local medium (threshold {:.2})...",
+        exemplars.len(),
+        threshold
+    );
 
     let mut absorbed = 0usize;
     let mut skipped_threshold = 0usize;
@@ -661,8 +928,7 @@ pub(crate) fn handle_swarm_absorb(
 
     // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
     // enabled AND seeds are pinned (then it governs each absorb below).
-    let mut rep_store =
-        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+    let mut rep_store = kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
     let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
 
     for e in ordered.iter().take(top_k) {
@@ -672,7 +938,9 @@ pub(crate) fn handle_swarm_absorb(
             continue;
         }
         let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
 
         // Resonance against the local medium — compute by recall-and-check
         // the top result's strength.
@@ -683,8 +951,10 @@ pub(crate) fn handle_swarm_absorb(
         if top_strength >= threshold {
             // Already in our medium with high resonance — skip duplicates.
             // (The match suggests we've heard this before.)
-            eprintln!("  ✓ already resonant: {} c{} strength={:.3} — skip",
-                source, cluster_id, top_strength);
+            eprintln!(
+                "  ✓ already resonant: {} c{} strength={:.3} — skip",
+                source, cluster_id, top_strength
+            );
             continue;
         }
 
@@ -698,26 +968,43 @@ pub(crate) fn handle_swarm_absorb(
             continue;
         }
 
-        eprintln!("  + new wavefront: {} c{} amp={:.3} resonance={:.3}",
-            source, cluster_id, amp, top_strength);
-        eprintln!("      \"{}\"", &content.chars().take(120).collect::<String>());
+        eprintln!(
+            "  + new wavefront: {} c{} amp={:.3} resonance={:.3}",
+            source, cluster_id, amp, top_strength
+        );
+        eprintln!(
+            "      \"{}\"",
+            &content.chars().take(120).collect::<String>()
+        );
 
         if !dry_run {
             // inc-1b: route through the corroboration admit() chokepoint. DORMANT
             // ⇒ admit returns Live (current ungated behaviour) with a sanitized
             // amplitude; ACTIVE ⇒ the decision governs.
-            let memory_id = e.get("exemplar_id").and_then(|v| v.as_str())
+            let memory_id = e
+                .get("exemplar_id")
+                .and_then(|v| v.as_str())
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
                 .unwrap_or_else(uuid::Uuid::new_v4);
-            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e.get("provenance_sig")
+            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e
+                .get("provenance_sig")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
             let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
             let now = kannaka_memory::provenance::now_ms();
             let (decision, clean, pending) = kannaka_memory::admit(
-                content, amp as f32, wire_phase, wire_freq, false,
-                kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
-                &mut staging, &mut rep_store, cfg, now,
+                content,
+                amp as f32,
+                wire_phase,
+                wire_freq,
+                false,
+                kannaka_memory::SUBJECT_EXEMPLAR,
+                memory_id,
+                prov_sig.as_ref(),
+                &mut staging,
+                &mut rep_store,
+                cfg,
+                now,
             );
             use kannaka_memory::AdmitDecision::*;
             match decision {
@@ -728,11 +1015,19 @@ pub(crate) fn handle_swarm_absorb(
                         Ok(id) => {
                             // #8: commit the pending promotion ONLY after the medium
                             // write succeeds (no-op when dormant / non-Live).
-                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
-                            eprintln!("      remembered as {}", id); absorbed += 1;
+                            kannaka_memory::commit_promotion(
+                                pending,
+                                &mut rep_store,
+                                &mut staging,
+                                cfg,
+                            );
+                            eprintln!("      remembered as {}", id);
+                            absorbed += 1;
                         }
                         // #8: write failed — drop the pending, do not commit.
-                        Err(e) => { eprintln!("      remember failed: {e}"); }
+                        Err(e) => {
+                            eprintln!("      remember failed: {e}");
+                        }
                     }
                 }
                 Quarantine | ProbationLive => {
@@ -748,15 +1043,23 @@ pub(crate) fn handle_swarm_absorb(
     }
 
     println!();
-    println!("Absorb complete{}:", if dry_run { " (DRY RUN)" } else { "" });
+    println!(
+        "Absorb complete{}:",
+        if dry_run { " (DRY RUN)" } else { "" }
+    );
     println!("  absorbed:    {}", absorbed);
     println!("  skipped (threshold/length): {}", skipped_threshold);
     println!("  skipped (self-origin):      {}", skipped_self);
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_absorb(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm absorb requires the 'nats' feature"); process::exit(1);
+pub(crate) fn handle_swarm_absorb(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
+    eprintln!("swarm absorb requires the 'nats' feature");
+    process::exit(1);
 }
 
 #[cfg(feature = "nats")]
@@ -767,22 +1070,40 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--json" => { as_json = true; i += 1; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("swarm peers", other); i += 1; }
+            "--json" => {
+                as_json = true;
+                i += 1;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("swarm peers", other);
+                i += 1;
+            }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
     let peers = match transport.get_presence() {
         Ok(p) => p,
-        Err(e) => { eprintln!("get_presence: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("get_presence: {e}");
+            process::exit(1);
+        }
     };
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&peers).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&peers).unwrap_or_default()
+        );
         return;
     }
     if peers.is_empty() {
@@ -791,17 +1112,33 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
         return;
     }
     println!();
-    println!("{:<24} {:<8} {:<8} {}", "AGENT", "MEMS", "VERSION", "CAPABILITIES");
+    println!(
+        "{:<24} {:<8} {:<8} {}",
+        "AGENT", "MEMS", "VERSION", "CAPABILITIES"
+    );
     println!("{}", "─".repeat(78));
     for p in &peers {
         let agent_raw = p.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
         let display_raw = p.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
         let mem = p.get("memory_count").and_then(|v| v.as_u64()).unwrap_or(0);
-        let ver_raw = p.get("kannaka_version").and_then(|v| v.as_str()).unwrap_or("?");
+        let ver_raw = p
+            .get("kannaka_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         let caps_obj = p.get("capabilities").and_then(|v| v.as_object());
         let caps_raw = caps_obj
-            .map(|o| o.iter().filter_map(|(k, v)| if v.as_bool() == Some(true) { Some(k.as_str()) } else { None })
-                .collect::<Vec<_>>().join(","))
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| {
+                        if v.as_bool() == Some(true) {
+                            Some(k.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
             .unwrap_or_default();
         // SECURITY (increment-0): every field here is attacker-controllable
         // wire data on the open swarm — sanitize before printing (strip
@@ -836,7 +1173,8 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
 
 #[cfg(not(feature = "nats"))]
 pub(crate) fn handle_swarm_peers(_: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm peers requires the 'nats' feature"); process::exit(1);
+    eprintln!("swarm peers requires the 'nats' feature");
+    process::exit(1);
 }
 
 // ── ADR-0026 Phase 6: Auto-absorb (#76) ─────────────────────────────────────
@@ -859,12 +1197,30 @@ pub(crate) fn handle_swarm_autoabsorb(
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--threshold" => { threshold = parse_flag_value(args, i, "--threshold", USAGE); i += 2; }
-            "--per-source-daily-cap" => { per_source_daily_cap = parse_flag_value(args, i, "--per-source-daily-cap", USAGE); i += 2; }
-            "--max-phi-drop" => { max_phi_drop = parse_flag_value(args, i, "--max-phi-drop", USAGE); i += 2; }
-            "--dry-run" => { dry_run = true; i += 1; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("autoabsorb", other); i += 1; }
+            "--threshold" => {
+                threshold = parse_flag_value(args, i, "--threshold", USAGE);
+                i += 2;
+            }
+            "--per-source-daily-cap" => {
+                per_source_daily_cap = parse_flag_value(args, i, "--per-source-daily-cap", USAGE);
+                i += 2;
+            }
+            "--max-phi-drop" => {
+                max_phi_drop = parse_flag_value(args, i, "--max-phi-drop", USAGE);
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("autoabsorb", other);
+                i += 1;
+            }
         }
     }
     if !dry_run {
@@ -882,9 +1238,14 @@ pub(crate) fn handle_swarm_autoabsorb(
     if let Some(prev) = state.last_phi {
         let drop = prev - current_phi;
         if drop > max_phi_drop {
-            eprintln!("[autoabsorb] PAUSED: Phi dropped {:.3} → {:.3} (Δ={:.3} > {:.3})",
-                prev, current_phi, drop, max_phi_drop);
-            eprintln!("[autoabsorb] manual intervention required: review recent absorbs in {}", state_path.display());
+            eprintln!(
+                "[autoabsorb] PAUSED: Phi dropped {:.3} → {:.3} (Δ={:.3} > {:.3})",
+                prev, current_phi, drop, max_phi_drop
+            );
+            eprintln!(
+                "[autoabsorb] manual intervention required: review recent absorbs in {}",
+                state_path.display()
+            );
             return;
         }
     }
@@ -892,12 +1253,18 @@ pub(crate) fn handle_swarm_autoabsorb(
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[autoabsorb] nats: {e}"); return; }
+        Err(e) => {
+            eprintln!("[autoabsorb] nats: {e}");
+            return;
+        }
     };
 
     let exemplars = match transport.get_exemplars(None) {
         Ok(e) => e,
-        Err(e) => { eprintln!("[autoabsorb] get_exemplars: {e}"); return; }
+        Err(e) => {
+            eprintln!("[autoabsorb] get_exemplars: {e}");
+            return;
+        }
     };
     if exemplars.is_empty() {
         eprintln!("[autoabsorb] no exemplars in stream — nothing to do");
@@ -923,13 +1290,19 @@ pub(crate) fn handle_swarm_autoabsorb(
 
     // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
     // enabled AND seeds are pinned (then it governs each absorb below).
-    let mut rep_store =
-        kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
+    let mut rep_store = kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
     let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
 
     for e in ordered.iter() {
-        let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-        if source == *my_id { skipped_self += 1; continue; }
+        let source = e
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        if source == *my_id {
+            skipped_self += 1;
+            continue;
+        }
 
         // Per-source per-day cap.
         let used_today = state.absorbs_today(&today_key, &source);
@@ -939,9 +1312,15 @@ pub(crate) fn handle_swarm_autoabsorb(
         }
 
         let content = e.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        if content.is_empty() || content.len() < 30 { skipped_low += 1; continue; }
+        if content.is_empty() || content.len() < 30 {
+            skipped_low += 1;
+            continue;
+        }
         let amp = e.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        if amp < 0.3 { skipped_low += 1; continue; }
+        if amp < 0.3 {
+            skipped_low += 1;
+            continue;
+        }
 
         // Local resonance — only absorb if the medium DOESN'T already have
         // strong resonance (i.e. it's novel material).
@@ -953,24 +1332,39 @@ pub(crate) fn handle_swarm_autoabsorb(
         }
 
         let cluster_id = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
-        eprintln!("[autoabsorb] absorb from {} c{} amp={:.3} resonance={:.3}", source, cluster_id, amp, top_strength);
+        eprintln!(
+            "[autoabsorb] absorb from {} c{} amp={:.3} resonance={:.3}",
+            source, cluster_id, amp, top_strength
+        );
 
         if !dry_run {
             // inc-1b: route through the corroboration admit() chokepoint. DORMANT
             // ⇒ admit returns Live (current ungated behaviour) with a sanitized
             // amplitude; ACTIVE ⇒ the decision governs.
-            let memory_id = e.get("exemplar_id").and_then(|v| v.as_str())
+            let memory_id = e
+                .get("exemplar_id")
+                .and_then(|v| v.as_str())
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
                 .unwrap_or_else(uuid::Uuid::new_v4);
-            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e.get("provenance_sig")
+            let prov_sig: Option<kannaka_memory::ProvenanceSig> = e
+                .get("provenance_sig")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
             let wire_phase = e.get("phase").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let wire_freq = e.get("frequency").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
             let now = kannaka_memory::provenance::now_ms();
             let (decision, clean, pending) = kannaka_memory::admit(
-                content, amp as f32, wire_phase, wire_freq, false,
-                kannaka_memory::SUBJECT_EXEMPLAR, memory_id, prov_sig.as_ref(),
-                &mut staging, &mut rep_store, cfg, now,
+                content,
+                amp as f32,
+                wire_phase,
+                wire_freq,
+                false,
+                kannaka_memory::SUBJECT_EXEMPLAR,
+                memory_id,
+                prov_sig.as_ref(),
+                &mut staging,
+                &mut rep_store,
+                cfg,
+                now,
             );
             use kannaka_memory::AdmitDecision::*;
             match decision {
@@ -980,7 +1374,12 @@ pub(crate) fn handle_swarm_autoabsorb(
                         Ok(id) => {
                             // #8: commit the pending promotion ONLY after the medium
                             // write succeeds (no-op when dormant / non-Live).
-                            kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, cfg);
+                            kannaka_memory::commit_promotion(
+                                pending,
+                                &mut rep_store,
+                                &mut staging,
+                                cfg,
+                            );
                             eprintln!("[autoabsorb]   remembered {}", id);
                             state.record_absorb(&today_key, &source);
                             absorbed += 1;
@@ -1007,14 +1406,25 @@ pub(crate) fn handle_swarm_autoabsorb(
         eprintln!("[autoabsorb] state save failed: {e}");
     }
 
-    eprintln!("[autoabsorb] sweep complete{}: +{} absorbed (self={} capped={} resonant={} low={})",
+    eprintln!(
+        "[autoabsorb] sweep complete{}: +{} absorbed (self={} capped={} resonant={} low={})",
         if dry_run { " (DRY RUN)" } else { "" },
-        absorbed, skipped_self, skipped_capped, skipped_resonant, skipped_low);
+        absorbed,
+        skipped_self,
+        skipped_capped,
+        skipped_resonant,
+        skipped_low
+    );
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_autoabsorb(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm autoabsorb requires the 'nats' feature"); process::exit(1);
+pub(crate) fn handle_swarm_autoabsorb(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
+    eprintln!("swarm autoabsorb requires the 'nats' feature");
+    process::exit(1);
 }
 
 /// State persisted across autoabsorb sweeps. Tracks daily absorb counts per
@@ -1030,7 +1440,9 @@ struct AutoabsorbState {
 #[cfg(feature = "nats")]
 impl AutoabsorbState {
     fn load(path: &std::path::Path) -> Self {
-        if !path.exists() { return Self::default(); }
+        if !path.exists() {
+            return Self::default();
+        }
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => Self::default(),
@@ -1045,7 +1457,11 @@ impl AutoabsorbState {
         std::fs::write(path, bytes)
     }
     fn absorbs_today(&self, day: &str, source: &str) -> usize {
-        self.absorbs_per_day.get(day).and_then(|d| d.get(source)).copied().unwrap_or(0)
+        self.absorbs_per_day
+            .get(day)
+            .and_then(|d| d.get(source))
+            .copied()
+            .unwrap_or(0)
     }
     fn record_absorb(&mut self, day: &str, source: &str) {
         let day_map = self.absorbs_per_day.entry(day.to_string()).or_default();
@@ -1058,7 +1474,8 @@ impl AutoabsorbState {
             .map(|d| d - chrono::Duration::days(7))
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "1970-01-01".to_string());
-        self.absorbs_per_day.retain(|k, _| k.as_str() >= cutoff.as_str());
+        self.absorbs_per_day
+            .retain(|k, _| k.as_str() >= cutoff.as_str());
     }
 }
 
@@ -1079,11 +1496,15 @@ impl AutoabsorbState {
 #[cfg(feature = "nats")]
 pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
-    const USAGE: &str = "Usage: kannaka swarm enqueue <kind> \"payload\" [--timeout SECONDS] [--nats-url URL]";
+    const USAGE: &str =
+        "Usage: kannaka swarm enqueue <kind> \"payload\" [--timeout SECONDS] [--nats-url URL]";
     // Usage: kannaka swarm enqueue <kind> "payload text" [--timeout 600]
     let kind = match args.get(2) {
         Some(s) => s.clone(),
-        None => { eprintln!("{USAGE}"); process::exit(1); }
+        None => {
+            eprintln!("{USAGE}");
+            process::exit(1);
+        }
     };
     let mut timeout_secs: u64 = 600;
     let mut text_parts: Vec<String> = Vec::new();
@@ -1094,7 +1515,10 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
                 timeout_secs = parse_flag_value(args, i, "--timeout", USAGE);
                 i += 2;
             }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
             other if other.starts_with("--") => {
                 // Payload-collecting handler: a typo'd flag must not silently
                 // become part of the task text.
@@ -1102,18 +1526,25 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
                 eprintln!("{USAGE}");
                 process::exit(2);
             }
-            _ => { text_parts.push(args[i].clone()); i += 1; }
+            _ => {
+                text_parts.push(args[i].clone());
+                i += 1;
+            }
         }
     }
     let text = text_parts.join(" ").trim().to_string();
     if text.is_empty() {
-        eprintln!("{USAGE}"); process::exit(1);
+        eprintln!("{USAGE}");
+        process::exit(1);
     }
 
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("nats: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("nats: {e}");
+            process::exit(1);
+        }
     };
 
     let task_id = format!("t-{}", uuid::Uuid::new_v4().simple());
@@ -1124,24 +1555,35 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
     });
     let bytes = serde_json::to_vec(&payload).unwrap();
     let subject = format!("KANNAKA.work.{}", kind);
-    eprintln!("[enqueue] {} task {} (waiting up to {}s for a worker reply)", subject, task_id, timeout_secs);
+    eprintln!(
+        "[enqueue] {} task {} (waiting up to {}s for a worker reply)",
+        subject, task_id, timeout_secs
+    );
 
     match transport.request_one(&subject, &bytes, Duration::from_secs(timeout_secs)) {
         Ok(reply) => {
-            let parsed: serde_json::Value = serde_json::from_slice(&reply)
-                .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply).to_string()}));
+            let parsed: serde_json::Value = serde_json::from_slice(&reply).unwrap_or_else(
+                |_| serde_json::json!({"raw": String::from_utf8_lossy(&reply).to_string()}),
+            );
             let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
-            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("(no text)");
+            let text = parsed
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no text)");
             eprintln!("[enqueue] reply from {}", from);
             println!("{}", text);
         }
-        Err(e) => { eprintln!("enqueue: {e}"); process::exit(1); }
+        Err(e) => {
+            eprintln!("enqueue: {e}");
+            process::exit(1);
+        }
     }
 }
 
 #[cfg(not(feature = "nats"))]
 pub(crate) fn handle_swarm_enqueue(_: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm enqueue requires the 'nats' feature"); process::exit(1);
+    eprintln!("swarm enqueue requires the 'nats' feature");
+    process::exit(1);
 }
 
 #[cfg(feature = "nats")]
@@ -1160,18 +1602,30 @@ pub(crate) fn handle_swarm_worker(
         match args[i].as_str() {
             "--kinds" => {
                 let v = flag_value(args, i, "--kinds", USAGE);
-                kinds = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                kinds = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 i += 2;
             }
             "--queue-group" => {
                 queue_group = flag_value(args, i, "--queue-group", USAGE).to_string();
                 i += 2;
             }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("worker", other); i += 1; }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("worker", other);
+                i += 1;
+            }
         }
     }
-    if kinds.is_empty() { kinds.push("ask".to_string()); }
+    if kinds.is_empty() {
+        kinds.push("ask".to_string());
+    }
 
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
 
@@ -1181,13 +1635,19 @@ pub(crate) fn handle_swarm_worker(
         let kind = &kinds[0];
         let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
             Ok(t) => t,
-            Err(e) => { eprintln!("[worker] nats: {e}"); process::exit(1); }
+            Err(e) => {
+                eprintln!("[worker] nats: {e}");
+                process::exit(1);
+            }
         };
         let subject = format!("KANNAKA.work.{}", kind);
         let group = format!("{}_{}", queue_group, kind);
         let mut sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
             Ok(s) => s,
-            Err(e) => { eprintln!("[worker] subscribe: {e}"); process::exit(1); }
+            Err(e) => {
+                eprintln!("[worker] subscribe: {e}");
+                process::exit(1);
+            }
         };
         eprintln!("[worker] subscribed to {} (group {})", subject, group);
         loop {
@@ -1211,17 +1671,27 @@ pub(crate) fn handle_swarm_worker(
         // Pre-fix this re-subscribed every ~5s on the same connection,
         // leaking server-side subscriptions and discarding bytes buffered
         // in each dropped reader.
-        let mut subs: Vec<(String, kannaka_memory::nats::SwarmTransport, kannaka_memory::nats::NatsSubscription)> = Vec::new();
+        let mut subs: Vec<(
+            String,
+            kannaka_memory::nats::SwarmTransport,
+            kannaka_memory::nats::NatsSubscription,
+        )> = Vec::new();
         for kind in &kinds {
             let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                 Ok(t) => t,
-                Err(e) => { eprintln!("[worker] nats connect for kind {kind}: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("[worker] nats connect for kind {kind}: {e}");
+                    process::exit(1);
+                }
             };
             let subject = format!("KANNAKA.work.{}", kind);
             let group = format!("{}_{}", queue_group, kind);
             let sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
                 Ok(s) => s,
-                Err(e) => { eprintln!("[worker] subscribe {kind}: {e}"); process::exit(1); }
+                Err(e) => {
+                    eprintln!("[worker] subscribe {kind}: {e}");
+                    process::exit(1);
+                }
             };
             let _ = sub.set_timeout(Some(Duration::from_millis(500)));
             eprintln!("[worker] subscribed to {} (group {})", subject, group);
@@ -1255,7 +1725,10 @@ fn _process_work_msg(
 ) {
     let reply_to = match &msg.reply_to {
         Some(r) => r.clone(),
-        None => { eprintln!("[worker] task without reply-to on {} — drop", msg.subject); return; }
+        None => {
+            eprintln!("[worker] task without reply-to on {} — drop", msg.subject);
+            return;
+        }
     };
     let req: serde_json::Value = match serde_json::from_slice(&msg.payload) {
         Ok(v) => v,
@@ -1265,7 +1738,10 @@ fn _process_work_msg(
             return;
         }
     };
-    let task_id = req.get("task_id").and_then(|v| v.as_str()).unwrap_or("(none)");
+    let task_id = req
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(none)");
     let from = req.get("from").and_then(|v| v.as_str()).unwrap_or("?");
     let text = req.get("text").and_then(|v| v.as_str()).unwrap_or("");
     eprintln!("[worker] kind={kind} task={task_id} from={from}");
@@ -1276,12 +1752,18 @@ fn _process_work_msg(
                 serde_json::json!({"from": cfg.agent.id, "error": "empty text"})
             } else {
                 match kannaka_memory::agent::ask_notools_ex(sys, cfg, text, None) {
-                    Ok(r) => serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "text": r.text}),
-                    Err(e) => serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "error": format!("{e}")}),
+                    Ok(r) => {
+                        serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "text": r.text})
+                    }
+                    Err(e) => {
+                        serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "error": format!("{e}")})
+                    }
                 }
             }
         }
-        other => serde_json::json!({"from": cfg.agent.id, "error": format!("unknown kind: {other}")}),
+        other => {
+            serde_json::json!({"from": cfg.agent.id, "error": format!("unknown kind: {other}")})
+        }
     };
 
     // Reply on a fresh connection (the original may have idled past PING).
@@ -1298,8 +1780,13 @@ fn _process_work_msg(
 }
 
 #[cfg(not(feature = "nats"))]
-pub(crate) fn handle_swarm_worker(_: &mut kannaka_memory::openclaw::KannakaMemorySystem, _: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm worker requires the 'nats' feature"); process::exit(1);
+pub(crate) fn handle_swarm_worker(
+    _: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    _: &KannakaConfig,
+    _: &[String],
+) {
+    eprintln!("swarm worker requires the 'nats' feature");
+    process::exit(1);
 }
 
 /// `kannaka swarm tail` — subscribe to the constellation pulse and emit
@@ -1326,14 +1813,25 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--subject" => { subjects.push(flag_value(args, i, "--subject", USAGE).to_string()); i += 2; }
-            "--nats-url" => { let _ = flag_value(args, i, "--nats-url", USAGE); i += 2; }
-            other => { warn_unknown_flag("tail", other); i += 1; }
+            "--subject" => {
+                subjects.push(flag_value(args, i, "--subject", USAGE).to_string());
+                i += 2;
+            }
+            "--nats-url" => {
+                let _ = flag_value(args, i, "--nats-url", USAGE);
+                i += 2;
+            }
+            other => {
+                warn_unknown_flag("tail", other);
+                i += 1;
+            }
         }
     }
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     if subjects.is_empty() {
-        let has_creds = std::env::var("NATS_USER").map(|u| !u.is_empty()).unwrap_or(false)
+        let has_creds = std::env::var("NATS_USER")
+            .map(|u| !u.is_empty())
+            .unwrap_or(false)
             || nats_url.contains('@');
         let defaults: &[&str] = if has_creds {
             &["QUEEN.>", "KANNAKA.>", "RADIO.>", "KAX.>", "EYE.>"]
@@ -1355,7 +1853,10 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
         }
     }
 
-    eprintln!("[tail] connecting to {} — subjects: {:?}", nats_url, subjects);
+    eprintln!(
+        "[tail] connecting to {} — subjects: {:?}",
+        nats_url, subjects
+    );
 
     // One dedicated transport per subject — the transport documents a
     // one-subscription-per-connection model, so the cleanest way to
@@ -1369,7 +1870,12 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             let transport = match kannaka_memory::nats::SwarmTransport::connect(&url) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = writeln!(std::io::stderr(), "[tail] {} connect failed: {} (retry 5s)", subj, e);
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[tail] {} connect failed: {} (retry 5s)",
+                        subj,
+                        e
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     continue;
                 }
@@ -1377,7 +1883,12 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             let mut sub = match transport.subscribe(&subj) {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = writeln!(std::io::stderr(), "[tail] {} subscribe failed: {} (retry 5s)", subj, e);
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[tail] {} subscribe failed: {} (retry 5s)",
+                        subj,
+                        e
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     continue;
                 }
@@ -1396,8 +1907,11 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                         // non-JSON fallback are embedded as bare strings —
                         // sanitize those to strip ANSI/control sequences.
                         let payload_json: serde_json::Value = serde_json::from_str(payload_str)
-                            .unwrap_or_else(|_| serde_json::Value::String(
-                                kannaka_memory::sanitize_display(payload_str)));
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(kannaka_memory::sanitize_display(
+                                    payload_str,
+                                ))
+                            });
                         let line = serde_json::json!({
                             "ts": chrono::Utc::now().timestamp_millis(),
                             "subject": kannaka_memory::sanitize_display(&msg.subject),
@@ -1413,7 +1927,11 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                     SubEvent::Closed => break,
                 }
             }
-            let _ = writeln!(std::io::stderr(), "[tail] {} disconnected — reconnecting in 2s", subj);
+            let _ = writeln!(
+                std::io::stderr(),
+                "[tail] {} disconnected — reconnecting in 2s",
+                subj
+            );
             std::thread::sleep(std::time::Duration::from_secs(2));
         }));
     }
@@ -1427,5 +1945,104 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
 
 #[cfg(not(feature = "nats"))]
 pub(crate) fn handle_swarm_tail(_: &KannakaConfig, _: &[String]) {
-    eprintln!("swarm tail requires the 'nats' feature"); std::process::exit(1);
+    eprintln!("swarm tail requires the 'nats' feature");
+    std::process::exit(1);
+}
+
+// ── #563: swarm-serve hardness helpers ──────────────────────
+
+/// Pure freshness decision (unit-testable without a filesystem). Given the
+/// mtime the HRM had when this daemon loaded it, the mtime observed now, and
+/// the pending observation (a changed mtime we're waiting to settle), decide
+/// the next pending state and whether to restart-to-reload.
+///
+/// A change only triggers a reload after it has been observed unchanged for
+/// `settle` — so a writer mid-flush (or a multi-step dream write) never gets
+/// loaded half-finished. A change that keeps changing keeps re-arming.
+#[cfg(feature = "nats")]
+fn freshness_decision(
+    loaded: std::time::SystemTime,
+    current: std::time::SystemTime,
+    pending: Option<(std::time::SystemTime, std::time::Instant)>,
+    now: std::time::Instant,
+    settle: std::time::Duration,
+) -> (Option<(std::time::SystemTime, std::time::Instant)>, bool) {
+    if current == loaded {
+        // Back to the loaded state (or never changed) — disarm.
+        return (None, false);
+    }
+    match pending {
+        Some((seen, since)) if seen == current => {
+            if now.duration_since(since) >= settle {
+                (pending, true) // changed AND stable long enough — reload
+            } else {
+                (pending, false) // changed, still settling
+            }
+        }
+        // First sighting of this mtime (or it moved again mid-settle): re-arm.
+        _ => (Some((current, now)), false),
+    }
+}
+
+/// Minimal sd_notify(3) — one datagram to $NOTIFY_SOCKET. Zero dependencies
+/// (musl-static friendly); silently a no-op when the socket is unset (dev
+/// shells) or on non-unix targets.
+#[cfg(all(feature = "nats", unix))]
+fn sd_notify(state: &str) {
+    if let Ok(path) = std::env::var("NOTIFY_SOCKET") {
+        if path.is_empty() {
+            return;
+        }
+        // Abstract-namespace sockets ('@...') are not used by systemd for
+        // NOTIFY_SOCKET on our targets; treat path as filesystem.
+        if let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() {
+            let _ = sock.send_to(state.as_bytes(), &path);
+        }
+    }
+}
+
+#[cfg(all(feature = "nats", not(unix)))]
+fn sd_notify(_state: &str) {}
+
+#[cfg(all(test, feature = "nats"))]
+mod serve_hardness_tests {
+    use super::freshness_decision;
+    use std::time::{Duration, Instant, SystemTime};
+
+    #[test]
+    fn freshness_transitions() {
+        let settle = Duration::from_secs(20);
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + Duration::from_secs(100); // first rewrite
+        let t2 = t0 + Duration::from_secs(200); // second rewrite mid-settle
+        let now = Instant::now();
+
+        // Unchanged → disarmed, no reload.
+        assert_eq!(freshness_decision(t0, t0, None, now, settle), (None, false));
+
+        // First sighting of a change → arm, no reload yet.
+        let (p, reload) = freshness_decision(t0, t1, None, now, settle);
+        assert_eq!(p.map(|(m, _)| m), Some(t1));
+        assert!(!reload);
+
+        // Same change, settle not elapsed → hold.
+        let (p2, reload) = freshness_decision(t0, t1, p, now + Duration::from_secs(5), settle);
+        assert_eq!(p2.map(|(m, _)| m), Some(t1));
+        assert!(!reload);
+
+        // Same change, settle elapsed → reload.
+        let (_, reload) = freshness_decision(t0, t1, p, now + Duration::from_secs(25), settle);
+        assert!(reload);
+
+        // Change moved again mid-settle → re-arm on the new mtime, no reload.
+        let (p3, reload) = freshness_decision(t0, t2, p, now + Duration::from_secs(25), settle);
+        assert_eq!(p3.map(|(m, _)| m), Some(t2));
+        assert!(!reload);
+
+        // File restored to the loaded mtime (e.g. snapshot rollback) → disarm.
+        assert_eq!(
+            freshness_decision(t0, t0, p, now + Duration::from_secs(25), settle),
+            (None, false)
+        );
+    }
 }
