@@ -138,7 +138,59 @@ pub(crate) fn handle_swarm_serve(
     // replay signal is lost. Flush at most once a minute.
     let mut last_reactivation_flush = std::time::Instant::now();
 
+    // Freshness (#563): this daemon serves a warm in-memory copy of the HRM
+    // loaded at boot. The single writer (and the nightly dream) rewrite the
+    // file on disk, so the served mind drifts stale until a restart. Watch the
+    // file's mtime and restart-to-reload when it changes — crash-only reload
+    // reuses the proven boot path with ZERO transient double-memory on the
+    // small hub (an in-place reload would briefly hold two full HRMs). The
+    // settle window avoids reloading mid-write. Replaces the hourly cron
+    // restart, whose only surviving job (post-#500 liveness) was freshness.
+    let hrm_path = data_dir().join("kannaka.hrm");
+    let hrm_loaded_mtime = std::fs::metadata(&hrm_path).and_then(|m| m.modified()).ok();
+    let mut hrm_pending: Option<(std::time::SystemTime, std::time::Instant)> = None;
+    let mut last_freshness_check = std::time::Instant::now();
+    const FRESHNESS_CHECK_SECS: u64 = 60;
+    const FRESHNESS_SETTLE: Duration = Duration::from_secs(20);
+
+    // systemd watchdog (#563): belt to the liveness braces. If this loop
+    // itself wedges (a pathological recall, a stuck syscall), WATCHDOG=1
+    // stops flowing and systemd kills + restarts us (WatchdogSec in the
+    // unit). READY=1 is sent once for Type=notify compatibility. No-op when
+    // NOTIFY_SOCKET is unset (dev shells, Windows).
+    sd_notify("READY=1");
+    let mut last_watchdog = std::time::Instant::now();
+
     loop {
+        // Watchdog heartbeat at most every 10s — one datagram, no allocation.
+        if last_watchdog.elapsed().as_secs() >= 10 {
+            sd_notify("WATCHDOG=1");
+            last_watchdog = std::time::Instant::now();
+        }
+
+        // Freshness: cheap stat once a minute.
+        if last_freshness_check.elapsed().as_secs() >= FRESHNESS_CHECK_SECS {
+            last_freshness_check = std::time::Instant::now();
+            if let (Some(loaded), Ok(meta)) = (hrm_loaded_mtime, std::fs::metadata(&hrm_path)) {
+                if let Ok(current) = meta.modified() {
+                    let (next_pending, reload) = freshness_decision(
+                        loaded,
+                        current,
+                        hrm_pending,
+                        std::time::Instant::now(),
+                        FRESHNESS_SETTLE,
+                    );
+                    hrm_pending = next_pending;
+                    if reload {
+                        eprintln!(
+                            "[swarm serve] HRM changed on disk and settled — restarting to serve the fresh mind (#563)"
+                        );
+                        sd_notify("STOPPING=1");
+                        process::exit(1); // Restart=always brings us back on the new file
+                    }
+                }
+            }
+        }
         // Round-robin: try directed first, then broadcast. Timeout means
         // "nothing right now — poll the next subject"; Closed means the
         // socket is dead and the loop must NOT spin on it (pre-fix this
@@ -1428,4 +1480,102 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
 #[cfg(not(feature = "nats"))]
 pub(crate) fn handle_swarm_tail(_: &KannakaConfig, _: &[String]) {
     eprintln!("swarm tail requires the 'nats' feature"); std::process::exit(1);
+}
+
+// ── #563: swarm-serve hardness helpers ──────────────────────
+
+/// Pure freshness decision (unit-testable without a filesystem). Given the
+/// mtime the HRM had when this daemon loaded it, the mtime observed now, and
+/// the pending observation (a changed mtime we're waiting to settle), decide
+/// the next pending state and whether to restart-to-reload.
+///
+/// A change only triggers a reload after it has been observed unchanged for
+/// `settle` — so a writer mid-flush (or a multi-step dream write) never gets
+/// loaded half-finished. A change that keeps changing keeps re-arming.
+#[cfg(feature = "nats")]
+fn freshness_decision(
+    loaded: std::time::SystemTime,
+    current: std::time::SystemTime,
+    pending: Option<(std::time::SystemTime, std::time::Instant)>,
+    now: std::time::Instant,
+    settle: std::time::Duration,
+) -> (Option<(std::time::SystemTime, std::time::Instant)>, bool) {
+    if current == loaded {
+        // Back to the loaded state (or never changed) — disarm.
+        return (None, false);
+    }
+    match pending {
+        Some((seen, since)) if seen == current => {
+            if now.duration_since(since) >= settle {
+                (pending, true) // changed AND stable long enough — reload
+            } else {
+                (pending, false) // changed, still settling
+            }
+        }
+        // First sighting of this mtime (or it moved again mid-settle): re-arm.
+        _ => (Some((current, now)), false),
+    }
+}
+
+/// Minimal sd_notify(3) — one datagram to $NOTIFY_SOCKET. Zero dependencies
+/// (musl-static friendly); silently a no-op when the socket is unset (dev
+/// shells) or on non-unix targets.
+#[cfg(all(feature = "nats", unix))]
+fn sd_notify(state: &str) {
+    if let Ok(path) = std::env::var("NOTIFY_SOCKET") {
+        if path.is_empty() {
+            return;
+        }
+        // Abstract-namespace sockets ('@...') are not used by systemd for
+        // NOTIFY_SOCKET on our targets; treat path as filesystem.
+        if let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() {
+            let _ = sock.send_to(state.as_bytes(), &path);
+        }
+    }
+}
+
+#[cfg(all(feature = "nats", not(unix)))]
+fn sd_notify(_state: &str) {}
+
+#[cfg(all(test, feature = "nats"))]
+mod serve_hardness_tests {
+    use super::freshness_decision;
+    use std::time::{Duration, Instant, SystemTime};
+
+    #[test]
+    fn freshness_transitions() {
+        let settle = Duration::from_secs(20);
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + Duration::from_secs(100); // first rewrite
+        let t2 = t0 + Duration::from_secs(200); // second rewrite mid-settle
+        let now = Instant::now();
+
+        // Unchanged → disarmed, no reload.
+        assert_eq!(freshness_decision(t0, t0, None, now, settle), (None, false));
+
+        // First sighting of a change → arm, no reload yet.
+        let (p, reload) = freshness_decision(t0, t1, None, now, settle);
+        assert_eq!(p.map(|(m, _)| m), Some(t1));
+        assert!(!reload);
+
+        // Same change, settle not elapsed → hold.
+        let (p2, reload) = freshness_decision(t0, t1, p, now + Duration::from_secs(5), settle);
+        assert_eq!(p2.map(|(m, _)| m), Some(t1));
+        assert!(!reload);
+
+        // Same change, settle elapsed → reload.
+        let (_, reload) = freshness_decision(t0, t1, p, now + Duration::from_secs(25), settle);
+        assert!(reload);
+
+        // Change moved again mid-settle → re-arm on the new mtime, no reload.
+        let (p3, reload) = freshness_decision(t0, t2, p, now + Duration::from_secs(25), settle);
+        assert_eq!(p3.map(|(m, _)| m), Some(t2));
+        assert!(!reload);
+
+        // File restored to the loaded mtime (e.g. snapshot rollback) → disarm.
+        assert_eq!(
+            freshness_decision(t0, t0, p, now + Duration::from_secs(25), settle),
+            (None, false)
+        );
+    }
 }
