@@ -239,6 +239,31 @@ Phases 2–5 follow.
   oracle1, so surviving an oracle1 *box* outage end-to-end needs daemon+HRM
   replication to another node — a separate app-level project (not a NATS concern).
 
-- **Phases 4/5 pending.** Ph4 queue-group recall needs a `queue_subscribe` code
-  change (the responder currently uses a plain `subscribe`, so N responders would
-  duplicate-reply) plus the Ph3 hub link. Ph5 (JWT/nkeys, QuantumOS organs) unchanged.
+- **Phase 4 — REDUNDANT RECALL REFLEX LIVE + FAILOVER-VERIFIED (PR #573).** All
+  three `swarm serve` subscriptions (directed ask, `ask.broadcast`, recall) now
+  join per-identity queue group `serve_<agent_id>` (existing #74 plumbing —
+  three-line change). A second responder runs on **oracle3** (`/usr/local/bin`,
+  not `/home` — SELinux blocks systemd exec from home; scoped `serve` NATS
+  identity; `KANNAKA_READONLY=1`; local cluster node; HRM replica synced from O1
+  every 30 min with the native mtime-watch reload doing the rest). **Failover
+  proven:** with oracle1's responder stopped, a recall was answered by oracle3
+  through the Phase 3 cluster. Ops: `ops/serve-oracle3/`. Deferred from Ph4: the
+  NATS **Services API** promotion (discoverable health/stats) — needs `$SRV.*`
+  support in the hand-rolled transport; the redundancy half (queue groups) is
+  what Ph4 existed for and is done.
+
+- **Phase 2 roster KV done** (kv-bridge second loop: `QUEEN.phase.<id>` →
+  `roster/<id>`, 5m TTL expiring the departed — verified 4 live agents).
+  Remaining Ph2 (deferred): object-store snapshot migration + durable per-organ
+  replay consumers — both subsumed in priority by the KANNAKA_SNAPSHOTS stream
+  now being R3-replicated.
+
+- **Phase 1c + Phase 5 — deliberately staged, not shipped.** 1c (PUBLIC/INTERNAL
+  account split) now requires re-authoring `config/nats-accounts.conf` for
+  **cluster mode** (identical accounts on all 3 nodes + a third `$G`→account
+  stream migration + export/import synapse wiring) and shadow-validation against
+  a clustered shadow, not the single-node :4999 harness — a fresh session's work,
+  intentionally NOT attempted the same day as two stream-orphan/recovery events.
+  The injection surface is already closed (1a) and single-writer enforced (1b),
+  so 1c's marginal gain is namespace isolation, not urgent security. Ph5
+  (JWT/nkeys, QuantumOS organs) remains scale-gated per this ADR's own wording.
