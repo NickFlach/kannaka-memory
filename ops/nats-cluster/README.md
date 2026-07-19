@@ -1,11 +1,14 @@
 # ADR-0042 Phase 3 — Hub redundancy on the Oracle servers (runbook + blocker)
 
-> **STATUS (2026-07-19): the OCI port is open and a LEAF link is LIVE — see
-> `../nats-leaf/`.** Clustering was tried and abandoned because it orphans the
-> hub's JetStream streams (lesson #1 below, proven twice + rolled back). The leaf
-> is the JS-safe topology in production now. This doc remains the reference for
-> the *cluster* path, which is only worth doing as a **3-node** cluster (for JS R3
-> quorum) with an explicit `$G` stream migration — a future project.
+> **STATUS (2026-07-19): 3-NODE R3 CLUSTER IS LIVE + HA-VERIFIED.** oracle1
+> (`10.0.0.101`) + oracle2 (`10.0.0.112`) + oracle3 (`10.0.0.65`), cluster
+> `kannaka`, private-IP 6222 routes. All 14 streams are R3. Proven: stopping one
+> node keeps JetStream readable **and** writable on the 2/3 quorum; the node
+> rejoins and replicas catch up. Node configs: `oracle-cluster.conf.template`.
+> The interim leaf (`../nats-leaf/`) is superseded. **Migration procedure + the two
+> gotchas (JS orphaning on cluster-join; restore needs `kannaka_internal` not
+> `writer`) are in the ADR-0042 status log.** Remaining for full *constellation*
+> HA: daemon/HRM replication off oracle1 (an app-level project, not NATS).
 
 Goal: the NATS nervous system should survive one hub going down, so a partition
 or node outage doesn't make the constellation go limp. This directory is the

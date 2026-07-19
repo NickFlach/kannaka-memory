@@ -201,34 +201,43 @@ Phases 2–5 follow.
   Live on O1, seeded. Remaining Ph2: `roster` populator (needs subject→key parse),
   object-store snapshots migration, durable per-organ replay consumers.
 
-- **Phase 3 (redundancy) — LEAF LINK LIVE (O1⇄O2 over 6222).** Nick opened the OCI
-  ingress rule (`10.0.0.0/24` TCP 6222); the inter-box path went from i/o-timeout
-  → connection-refused → established. Then the cluster path was tried and
-  **abandoned for a leaf** after proving (twice, cleanly rolled back — prod stayed
-  alive, all 14 streams recovered from disk each time):
-  1. **Clustering a JS-enabled server orphans its standalone `$G` streams** — the
-     moment O1 gained a `cluster{}` block its JetStream flipped to cluster-meta
-     (RAFT) mode and the 14 streams went invisible (`stream ls`→0), even with the
-     route formed. They do **not** auto-migrate from standalone `$G` into the
-     clustered meta-group. On-disk data was never lost.
-  2. **A 2-node JS cluster loses quorum on any node loss** — JS-HA needs 3 nodes.
-  **Chosen topology: leaf node.** O1 runs `leafnodes { listen: 0.0.0.0:6222 }`
-  (a leaf LISTENER does **not** cluster JetStream — O1's JS stays standalone, `$G`
-  intact, verified: 14 streams survived the leaf-listener restart). O2 leafs UP
-  (`leafnodes { remotes }`, JS-disabled) and now participates in the hub subject
-  space — verified by receiving live `QUEEN.phase.*` across the link. O2's
-  `nats.service` is enabled (survives reboot); the leaf auto-reconnects.
-  Configs: `ops/nats-leaf/`. Reversible: `nats.conf.pre-leaf-*` on O1.
+- **Phase 3 (redundancy) — 3-NODE R3 JETSTREAM CLUSTER LIVE + HA-VERIFIED.** Nick
+  opened the OCI ingress (`10.0.0.0/24` TCP 6222) and provisioned a 3rd Oracle box
+  (`oracle3`, priv `10.0.0.65`, Oracle Linux 9 aarch64). Path: OCI-blocked →
+  briefly a JS-safe **leaf** (interim) → now a true **3-node cluster**
+  (oracle1/2/3, cluster `kannaka`, private-IP 6222 routes). All 14 streams are
+  **R3** — replicated across all three nodes, leaders distributed. **HA proven
+  live:** with oracle3 stopped, JetStream stayed fully available on the O1+O2
+  2/3 quorum — streams listable, QUEEN_PHASES re-elected its leader, and a KV
+  **write succeeded and read back**; oracle3 rejoined and replicas caught up to
+  `current`. Prod stayed alive throughout.
 
-  **What the leaf delivers:** O2 is a live second NATS server bridged to the bus —
-  a second entry point, a local reflex domain, and the foundation for O2-side
-  responders/daemons. **What it does NOT deliver:** external-client failover on O1
-  death (leaf is hub-and-spoke — O2's uplink dies with O1) or JetStream HA (JS
-  stays single-node on O1). **Full active-active HA needs a 3-node cluster** (a 3rd
-  always-on node for JS R3 quorum + a `nats stream backup`/`restore` migration of
-  the `$G` streams into clustered mode) **plus daemon+HRM replication to O2** (the
-  constellation's organs are all single-homed on O1 today). Both are bounded
-  follow-on projects, noted in `ops/nats-cluster/README.md`.
+  **The migration (the delicate part), recorded for posterity:**
+  1. Clustering a JS-enabled server flips its JS to cluster-meta (RAFT) mode and
+     **orphans standalone `$G` streams** — they do not auto-migrate. So: full
+     backup first (`nats stream backup` per stream + JS-dir copy), then on O1
+     `systemctl stop nats` → **move the JS store aside** for a clean clustered
+     start → install the cluster config → start (joins the 3-node meta-group,
+     empty JS) → **restore each stream** → `stream edit --replicas 3`.
+  2. **Restore identity gotcha:** `nats stream restore` publishes stream data on
+     `$JS.SNAPSHOT.RESTORE.>`, which `writer` (scoped to `$JS.API.>`) lacks →
+     "Permissions Violation" + a ghost stream (name reserved, not listable).
+     `kannaka_internal` (publish `>` minus a deny-list that excludes `$JS.SNAPSHOT`
+     and `$JS.API.STREAM.RESTORE`) **can** restore. So: restore as
+     `kannaka_internal`, then scale to R3 as `writer` (`$JS.API.STREAM.UPDATE`).
+  3. Bring the peers up first (O3 fresh + O2 converted leaf→cluster-peer, both
+     JS-enabled empty), then migrate O1 into them — minimizes the JS-down window.
+
+  Configs `ops/nats-cluster/` (route token on the boxes only). Fallbacks on O1:
+  `jetstream.premigrate-c3-*`, `jetstream.bak-3node-*`, per-stream `nats-stream-backup/`,
+  `nats.conf.pre-c3-*`. All three `nats.service` enabled (survive reboot).
+
+  **What this delivers:** the **bus and its spinal memory (JetStream) survive any
+  one node dying** — read + write continue on the 2/3 quorum. This is the ADR
+  Phase 3 redundancy goal, done. **Remaining for full *constellation* HA:** the
+  organs (radio/presence/memory/recall daemons) are still single-homed on
+  oracle1, so surviving an oracle1 *box* outage end-to-end needs daemon+HRM
+  replication to another node — a separate app-level project (not a NATS concern).
 
 - **Phases 4/5 pending.** Ph4 queue-group recall needs a `queue_subscribe` code
   change (the responder currently uses a plain `subscribe`, so N responders would
