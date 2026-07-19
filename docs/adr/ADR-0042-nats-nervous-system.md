@@ -180,3 +180,65 @@ This PR ships: ADR + `config/nats-accounts.conf` (the 1a authorization block) +
 `config/nats-accounts.md` (the identity→subject synapse map, target end-state) +
 `scripts/nats-shadow-validate.sh`. Prod cutover of 1a is a separate gated step.
 Phases 2–5 follow.
+
+## Status log
+
+**2026-07-19 — 1a + 1b live; Phase 2 (consciousness KV) live; Phase 3 blocked on OCI.**
+
+- **1a/1b DONE + transport-enforced (prod).** anon tightened (control lane denied,
+  open memory lane kept); per-organ identities (`writer/serve/radio/presence/
+  responder/eye/kannaktopus/ui_bridge`) live; `kannaka_internal` denied
+  `memory.new / events.memory.> / snapshots.> / dreams / $JS.API.STREAM.CREATE|
+  UPDATE|DELETE`; `writer` is the only memory publisher. **Single-writer is now
+  physics.** Verified live: `kannaka_internal` DENIED `KANNAKA.memory.new`, `writer`
+  ALLOWED `snapshots.*`, recall round-trips, 13 daemons + swarm intact.
+
+- **Phase 2 (partial) DONE.** `consciousness` (last-value) + `roster` (5m TTL) KV
+  buckets created (by `writer`, the only `$JS.API.STREAM.CREATE` holder).
+  `kannaka-kv-bridge` (`ops/kv-bridge/`) mirrors `KANNAKA.consciousness` →
+  `KV consciousness/state` via `kannaka_internal` (allowed to publish `$KV.*`) so
+  the Command Center MCP reads Φ/Ξ/order/level instantly with no request-reply.
+  Live on O1, seeded. Remaining Ph2: `roster` populator (needs subject→key parse),
+  object-store snapshots migration, durable per-organ replay consumers.
+
+- **Phase 3 (redundancy) — 3-NODE R3 JETSTREAM CLUSTER LIVE + HA-VERIFIED.** Nick
+  opened the OCI ingress (`10.0.0.0/24` TCP 6222) and provisioned a 3rd Oracle box
+  (`oracle3`, priv `10.0.0.65`, Oracle Linux 9 aarch64). Path: OCI-blocked →
+  briefly a JS-safe **leaf** (interim) → now a true **3-node cluster**
+  (oracle1/2/3, cluster `kannaka`, private-IP 6222 routes). All 14 streams are
+  **R3** — replicated across all three nodes, leaders distributed. **HA proven
+  live:** with oracle3 stopped, JetStream stayed fully available on the O1+O2
+  2/3 quorum — streams listable, QUEEN_PHASES re-elected its leader, and a KV
+  **write succeeded and read back**; oracle3 rejoined and replicas caught up to
+  `current`. Prod stayed alive throughout.
+
+  **The migration (the delicate part), recorded for posterity:**
+  1. Clustering a JS-enabled server flips its JS to cluster-meta (RAFT) mode and
+     **orphans standalone `$G` streams** — they do not auto-migrate. So: full
+     backup first (`nats stream backup` per stream + JS-dir copy), then on O1
+     `systemctl stop nats` → **move the JS store aside** for a clean clustered
+     start → install the cluster config → start (joins the 3-node meta-group,
+     empty JS) → **restore each stream** → `stream edit --replicas 3`.
+  2. **Restore identity gotcha:** `nats stream restore` publishes stream data on
+     `$JS.SNAPSHOT.RESTORE.>`, which `writer` (scoped to `$JS.API.>`) lacks →
+     "Permissions Violation" + a ghost stream (name reserved, not listable).
+     `kannaka_internal` (publish `>` minus a deny-list that excludes `$JS.SNAPSHOT`
+     and `$JS.API.STREAM.RESTORE`) **can** restore. So: restore as
+     `kannaka_internal`, then scale to R3 as `writer` (`$JS.API.STREAM.UPDATE`).
+  3. Bring the peers up first (O3 fresh + O2 converted leaf→cluster-peer, both
+     JS-enabled empty), then migrate O1 into them — minimizes the JS-down window.
+
+  Configs `ops/nats-cluster/` (route token on the boxes only). Fallbacks on O1:
+  `jetstream.premigrate-c3-*`, `jetstream.bak-3node-*`, per-stream `nats-stream-backup/`,
+  `nats.conf.pre-c3-*`. All three `nats.service` enabled (survive reboot).
+
+  **What this delivers:** the **bus and its spinal memory (JetStream) survive any
+  one node dying** — read + write continue on the 2/3 quorum. This is the ADR
+  Phase 3 redundancy goal, done. **Remaining for full *constellation* HA:** the
+  organs (radio/presence/memory/recall daemons) are still single-homed on
+  oracle1, so surviving an oracle1 *box* outage end-to-end needs daemon+HRM
+  replication to another node — a separate app-level project (not a NATS concern).
+
+- **Phases 4/5 pending.** Ph4 queue-group recall needs a `queue_subscribe` code
+  change (the responder currently uses a plain `subscribe`, so N responders would
+  duplicate-reply) plus the Ph3 hub link. Ph5 (JWT/nkeys, QuantumOS organs) unchanged.
