@@ -133,7 +133,9 @@ pub(crate) fn handle_swarm_serve(
             _serve_directed_only(sys, cfg, &transport, directed_sub, &agent_id, &nats_url)
         }
     };
-    let mut bcast_sub = match bcast_transport.subscribe_with_queue("KANNAKA.ask.broadcast", Some(&serve_group)) {
+    let mut bcast_sub = match bcast_transport
+        .subscribe_with_queue("KANNAKA.ask.broadcast", Some(&serve_group))
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[swarm serve] WARN: broadcast subscribe failed: {e}");
