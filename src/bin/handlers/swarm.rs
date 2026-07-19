@@ -101,7 +101,16 @@ pub(crate) fn handle_swarm_serve(
     // Single subscription per subject; in v1 we run them sequentially via
     // a switch, accepting that a busy listener processes one ask at a time.
     // Future: dedicated reader thread + channel per subject.
-    let mut directed_sub = match transport.subscribe(&directed) {
+    //
+    // ADR-0042 Phase 4: every serve subscription joins a per-identity queue
+    // group, so N `swarm serve` instances answering for the same agent_id
+    // (e.g. oracle1 + oracle3 both serving kannaka-prime) each receive
+    // exactly ONE copy of a request — redundant reflex, no duplicate replies.
+    // With a single instance the semantics are identical to a plain SUB.
+    // The group must be per-identity (not global): ask.broadcast is a shared
+    // subject, and a global group would split broadcasts BETWEEN identities.
+    let serve_group = format!("serve_{}", agent_id);
+    let mut directed_sub = match transport.subscribe_with_queue(&directed, Some(&serve_group)) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("subscribe directed: {e}");
@@ -124,7 +133,9 @@ pub(crate) fn handle_swarm_serve(
             _serve_directed_only(sys, cfg, &transport, directed_sub, &agent_id, &nats_url)
         }
     };
-    let mut bcast_sub = match bcast_transport.subscribe("KANNAKA.ask.broadcast") {
+    let mut bcast_sub = match bcast_transport
+        .subscribe_with_queue("KANNAKA.ask.broadcast", Some(&serve_group))
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("[swarm serve] WARN: broadcast subscribe failed: {e}");
@@ -145,7 +156,7 @@ pub(crate) fn handle_swarm_serve(
     let recall_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
     let mut recall_sub = recall_transport
         .as_ref()
-        .and_then(|t| t.subscribe(&recall_subject).ok());
+        .and_then(|t| t.subscribe_with_queue(&recall_subject, Some(&serve_group)).ok());
     match recall_sub.as_mut() {
         Some(s) => {
             let _ = s.set_timeout(Some(Duration::from_millis(250)));
