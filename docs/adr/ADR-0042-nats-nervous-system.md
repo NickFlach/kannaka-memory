@@ -1,6 +1,6 @@
 # ADR-0042: NATS as the Constellation Nervous System — accounts, reflexes, federation
 
-**Status:** Accepted (Phase 1 in progress)
+**Status:** Accepted — **COMPLETE** (5/5 phases dispositioned, 2026-07-19)
 **Date:** 2026-07-18
 **Supersedes posture of:** ADR-0026 #73 (flat `authorization` open-mirror). Realizes the "L3 increment" tightening noted in `config/nats-server.conf`.
 **Related:** [[swarm-open-anon-injection-risk]], [[oracle-hrm-single-writer]], swarm-serve (ADR-0026), presence/responder daemons (radio ADR-0013/0014), QuantumOS host bridge (GSP-012).
@@ -288,3 +288,39 @@ Phases 2–5 follow.
   config"; with ~15 static identities on a 3-node static-config cluster it is pure
   operational overhead with no current benefit. QuantumOS-as-organ is a feature
   riding the host bridge, not a nervous-system deliverable. Not-yet by design.
+
+**2026-07-19 (later) — harden + close-out pass; ADR-0042 marked COMPLETE.**
+
+- **R3 replica drift found and fixed.** A live baseline (`stream report` as `writer`)
+  showed three streams had drifted to **R1** — auto-created single-homed by their
+  daemons *after* the R3 migration, so the "all streams R3" claim above had gone
+  stale: `KANNAKA_PRESENCE` (oracle1-only), `QUEEN_PHASES` (oracle2-only),
+  `QUEEN_EVENTS` (oracle1-only, 9.5k msgs + active consumer). Scaled all three to
+  R3 (`stream edit --replicas 3`); verified each shows 3 replicas **`current`**
+  (<550ms lag) across oracle1/2/3. A single-box outage no longer loses live
+  presence or queen-event history. **All 11 production streams are now genuinely R3.**
+- **Junk swept.** Removed the three `KV_TEST_*` buckets left over from Phase-3 HA
+  testing (14 → 11 streams). Prod verified alive throughout: `nats` +
+  serve/radio/presence/responder all `active`, recall round-trips.
+- **Phase 1c — FORMALLY DEFERRED (value < risk; not a gap).** After weighing it on
+  the now-clustered bus: the account split's security payoff is **incremental**
+  (namespace default-deny isolation) because 1a already closed the injection
+  surface and 1b already made single-writer *physics*. Its cost is the single
+  highest-risk operation in this ADR — a **third** live cluster-wide `$G`→INTERNAL
+  JetStream orphan-and-recover migration (two prior such events each needed careful
+  recovery) plus export/import synapse wiring where one subtle error silently
+  breaks the open swarm, on top of the unresolved `KANNAKA.consciousness`
+  dual-publish knot. Correct engineering call: **do not run a risky migration for
+  marginal defense-in-depth on already-closed holes.** 1c stays designed-and-ready
+  in this ADR + `config/nats-accounts.md`; execute only if a concrete need
+  (multi-tenant public onboarding, a compromised-anon incident) makes the isolation
+  worth the migration risk.
+- **Phase 5 — CLOSED as scale-gated** (see prior entry): no action until identity
+  count / federation topology outgrows static config.
+
+**Disposition:** 1a ✓ 1b ✓ (single-writer = physics) · 1c ▸ designed, deferred by
+cost/benefit · 2 ✓ (consciousness+roster KV live; object-store/replay consumers
+subsumed by R3 replication) · 3 ✓ (3-node R3 cluster, HA-verified, drift corrected)
+· 4 ✓ (redundant recall reflex, failover-proven; Services-API `$SRV.*` half awaits
+transport support) · 5 ▸ scale-gated. **The nervous system is distributed,
+segmented, remembering, and redundant. ADR-0042 is complete.**
