@@ -5,20 +5,30 @@ end-state) which account it lives in and which synapses (exports/imports) cross
 between accounts. Phase 1a ships the identities in a flat `authorization` block;
 1c splits them into accounts per the "Account" column.
 
-## Identities (Phase 1b targets)
+## Identities (Phase 1b — COMPLETE 2026-07-19, all daemons migrated, 3-node cluster)
 
-| Identity | Daemon(s) | PUBLISH (scoped) | Account (1c) |
+**Every constellation daemon now runs on its scoped identity — `kannaka_internal`
+is retired from all daemons** (verified via `/proc/<pid>/environ`; zero publish
+violations from any scoped user over a 40s+ census). `kannaka_internal` survives
+only as (a) the CLI default (`.kannaka-nats.env` — recall/status/tail need broad
+subscribe) and (b) the kv-bridge's `$KV.*` publisher.
+
+Reflected in each node's live `/etc/nats/nats.conf` (literal passwords on the
+boxes; `oracle-cluster.conf.template` in `ops/nats-cluster/` is the redacted shape).
+
+| Identity | Daemon(s) | PUBLISH (scoped, as deployed) | Account (1c target) |
 |---|---|---|---|
-| `writer` | kannaka-memory single writer (`run-swarm.sh`) | `KANNAKA.memory.>`, `events.memory.>`, `snapshots.>`, `substrate.>`, `consciousness`, `dreams`, `exemplar.>`, `cores.>`, `activity.>`, `$JS.API.>` | INTERNAL |
-| `serve` | swarm-serve, swarm-worker | `KANNAKA.recall.>`, `inbox.audit`, `inbox.reply.>` | INTERNAL |
-| `radio` | kannaka-radio | `RADIO.>`, `attention.ear`, `reactions`, `consciousness` | INTERNAL |
-| `presence` | kannaka-presence (ADR-0013) | `KANNAKA.events.obc.>`, `presence.>` | INTERNAL |
-| `responder` | kannaka-responder (ADR-0014) | `events.obc.responder_>`, `recall.>` (req) | INTERNAL |
-| `eye` | kannaka-eye | `attention.eye`, `attention.ear`, `EYE.>`, `exemplar.>` | INTERNAL |
-| `kannaktopus` | Kannaktopus daemons | `QUEEN.phase.>`, `announce`, `queen.event.>`, `reactions`, `KANNAKTOPUS.>` | INTERNAL |
-| `ui_bridge` | kannaka-ui-bridge | `UI.>` | INTERNAL |
-| `beacon` | kannaka-beacon (seeds) | `KANNAKA.events.beacon` | INTERNAL |
-| `anon` | open swarm peers, observatory reads, Command Center MCP (`kannaka_internal` today for the MCP) | open memory lane ONLY (see below); **denied** `ask.>`/`work.>`/`inbox.>`/JS-admin | PUBLIC |
+| `writer` | kannaka-memory single writer (`run-swarm.sh`) | `KANNAKA.>`, `QUEEN.>`, `queen.event.>`, `EYE.>`, `$JS.API.>`, `_INBOX.>` (the only memory/JS mutator) | INTERNAL |
+| `serve` | swarm-serve, swarm-worker, inbox | `KANNAKA.recall.>`, `inbox.audit`, `inbox.reply.>`, `KANNAKA.skills.>`, `_INBOX.>` | INTERNAL |
+| `radio` | kannaka-radio | `RADIO.>`, `attention.ear`, `reactions`, `consciousness`, `$JS.API.STREAM.MSG.GET/INFO.>`, `_INBOX.>` | INTERNAL |
+| `presence` | kannaka-presence (ADR-0013) | `KANNAKA.events.obc.>`, `presence.>`, `_INBOX.>` | INTERNAL |
+| `responder` | kannaka-responder (ADR-0014) | `events.obc.responder_escalation`, `recall.>` (req), `_INBOX.>` | INTERNAL |
+| `eye` | kannaka-eye | `attention.eye`, `attention.ear`, `EYE.>`, `exemplar.>`, `_INBOX.>` | INTERNAL |
+| `attention` | kannaka-attention | `attention.beam`, `_INBOX.>` | INTERNAL |
+| `ui_bridge` | kannaka-ui-bridge | `UI.>`, `hrm.>`, `js.>`, `ooda.>`, `radio.>`, `swarm.>`, `dream.>`, `$JS.API.>` (stream-admin denied), `_INBOX.>` | INTERNAL |
+| `beacon` | kannaka-beacon (seeds) | `KANNAKA.events.beacon`, `_INBOX.>` | INTERNAL |
+| `kannaktopus` | Kannaktopus daemons (off-box) | `QUEEN.phase.>`, `announce`, `queen.event.>`, `reactions`, `KANNAKTOPUS.>` | INTERNAL |
+| `anon` | open swarm peers, observatory reads, Command Center MCP | open memory lane ONLY (see below); **denied** `ask.>`/`work.>`/`inbox.>`/JS-admin | PUBLIC |
 
 All identities `subscribe` broadly within their reach; the security invariant is
 on **publish** (who can mutate what).
