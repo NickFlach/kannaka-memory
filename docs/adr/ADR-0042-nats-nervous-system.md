@@ -201,21 +201,34 @@ Phases 2–5 follow.
   Live on O1, seeded. Remaining Ph2: `roster` populator (needs subject→key parse),
   object-store snapshots migration, durable per-organ replay consumers.
 
-- **Phase 3 (redundancy) STAGED — blocked on one OCI console change.** Two hard
-  lessons from a live, cleanly-rolled-back attempt (prod stayed alive; all 12
-  streams recovered from disk):
-  1. **Clustering a JS-enabled server orphans its standalone `$G` streams** (JS
-     flips to cluster-meta mode → streams invisible until rollback). The
-     single-writer hub must not gain a naive `cluster{}` block; use a 3-node
-     cluster with R3 migration, a 2-node cluster with **O2 JetStream-disabled**
-     (O1 stays the sole 1-node JS meta-group), or a **leaf node** (JS untouched).
+- **Phase 3 (redundancy) — LEAF LINK LIVE (O1⇄O2 over 6222).** Nick opened the OCI
+  ingress rule (`10.0.0.0/24` TCP 6222); the inter-box path went from i/o-timeout
+  → connection-refused → established. Then the cluster path was tried and
+  **abandoned for a leaf** after proving (twice, cleanly rolled back — prod stayed
+  alive, all 14 streams recovered from disk each time):
+  1. **Clustering a JS-enabled server orphans its standalone `$G` streams** — the
+     moment O1 gained a `cluster{}` block its JetStream flipped to cluster-meta
+     (RAFT) mode and the 14 streams went invisible (`stream ls`→0), even with the
+     route formed. They do **not** auto-migrate from standalone `$G` into the
+     clustered meta-group. On-disk data was never lost.
   2. **A 2-node JS cluster loses quorum on any node loss** — JS-HA needs 3 nodes.
-  3. **Inter-server ports (`6222`/`7422`) are dropped by the OCI VCN security
-     list** (firewalld open both sides; instance principal `NotAuthorized` to fix
-     it — tenancy-root compartment, no dynamic-group policy). **Unblock = one OCI
-     console ingress rule: `10.0.0.0/24` TCP `6222`.** Full runbook + reversible
-     JS-safe deploy: `ops/nats-cluster/README.md`. O2 already has the nats-server
-     binary + firewalld rules staged (nats.service disabled until the port opens).
+  **Chosen topology: leaf node.** O1 runs `leafnodes { listen: 0.0.0.0:6222 }`
+  (a leaf LISTENER does **not** cluster JetStream — O1's JS stays standalone, `$G`
+  intact, verified: 14 streams survived the leaf-listener restart). O2 leafs UP
+  (`leafnodes { remotes }`, JS-disabled) and now participates in the hub subject
+  space — verified by receiving live `QUEEN.phase.*` across the link. O2's
+  `nats.service` is enabled (survives reboot); the leaf auto-reconnects.
+  Configs: `ops/nats-leaf/`. Reversible: `nats.conf.pre-leaf-*` on O1.
+
+  **What the leaf delivers:** O2 is a live second NATS server bridged to the bus —
+  a second entry point, a local reflex domain, and the foundation for O2-side
+  responders/daemons. **What it does NOT deliver:** external-client failover on O1
+  death (leaf is hub-and-spoke — O2's uplink dies with O1) or JetStream HA (JS
+  stays single-node on O1). **Full active-active HA needs a 3-node cluster** (a 3rd
+  always-on node for JS R3 quorum + a `nats stream backup`/`restore` migration of
+  the `$G` streams into clustered mode) **plus daemon+HRM replication to O2** (the
+  constellation's organs are all single-homed on O1 today). Both are bounded
+  follow-on projects, noted in `ops/nats-cluster/README.md`.
 
 - **Phases 4/5 pending.** Ph4 queue-group recall needs a `queue_subscribe` code
   change (the responder currently uses a plain `subscribe`, so N responders would

@@ -1,5 +1,12 @@
 # ADR-0042 Phase 3 — Hub redundancy on the Oracle servers (runbook + blocker)
 
+> **STATUS (2026-07-19): the OCI port is open and a LEAF link is LIVE — see
+> `../nats-leaf/`.** Clustering was tried and abandoned because it orphans the
+> hub's JetStream streams (lesson #1 below, proven twice + rolled back). The leaf
+> is the JS-safe topology in production now. This doc remains the reference for
+> the *cluster* path, which is only worth doing as a **3-node** cluster (for JS R3
+> quorum) with an explicit `$G` stream migration — a future project.
+
 Goal: the NATS nervous system should survive one hub going down, so a partition
 or node outage doesn't make the constellation go limp. This directory is the
 staged, JS-safe deploy for that — **gated on one OCI console change that the
