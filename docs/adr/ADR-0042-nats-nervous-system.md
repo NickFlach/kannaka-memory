@@ -258,12 +258,33 @@ Phases 2–5 follow.
   replay consumers — both subsumed in priority by the KANNAKA_SNAPSHOTS stream
   now being R3-replicated.
 
-- **Phase 1c + Phase 5 — deliberately staged, not shipped.** 1c (PUBLIC/INTERNAL
-  account split) now requires re-authoring `config/nats-accounts.conf` for
-  **cluster mode** (identical accounts on all 3 nodes + a third `$G`→account
-  stream migration + export/import synapse wiring) and shadow-validation against
-  a clustered shadow, not the single-node :4999 harness — a fresh session's work,
-  intentionally NOT attempted the same day as two stream-orphan/recovery events.
-  The injection surface is already closed (1a) and single-writer enforced (1b),
-  so 1c's marginal gain is namespace isolation, not urgent security. Ph5
-  (JWT/nkeys, QuantumOS organs) remains scale-gated per this ADR's own wording.
+- **Phase 1b — COMPLETE (2026-07-19).** `kannaka_internal` is retired from every
+  daemon. The remaining organs (attention, beacon, eye, serve→[swarm-serve/worker/
+  inbox], radio, ui_bridge, and writer for memory) migrated onto scoped identities;
+  `attention` + `beacon` users added to nats.conf on all 3 nodes; serve/radio/
+  ui_bridge allowlists expanded to their real publish sets. Verified: `/proc`
+  environ shows no daemon on the god-user, and a 40s+ census shows zero publish
+  violations from any scoped user. `kannaka_internal` remains only as the CLI
+  default and the kv-bridge `$KV` publisher. Identity map: `config/nats-accounts.md`.
+
+- **Phase 1c — designed, deliberately NOT auto-cut-over (the one gated step).**
+  The PUBLIC/INTERNAL account split is the ADR's own "separate gated step", and on
+  the now-clustered bus it is materially riskier than a reload: it needs (a) a
+  **third cluster-wide `$G`→INTERNAL JetStream migration** (today already had two
+  orphan-and-recover events — each is the single highest-risk operation here), and
+  (b) cross-account **export/import synapse wiring** where a subtle error silently
+  breaks the open swarm (anon can't share memory) or blinds the organs to swarm
+  data. There is a real design knot to resolve first: `KANNAKA.consciousness` is
+  published by BOTH lanes (writer/radio internally, and it sits in anon's allow) —
+  a bidirectional shared subject must be de-conflicted (likely: make it
+  INTERNAL-export-only and drop it from anon's publish) before the split is safe.
+  **Security-wise 1c adds namespace isolation (structural default-deny), not a new
+  open threat** — 1a already closed the injection surface and 1b made single-writer
+  physics. Correct call: execute 1c as a deliberate, backed-up, watched migration
+  (per the runbook), not an autonomous same-day third-migration fire.
+
+- **Phase 5 — correctly deferred (scale-gated by this ADR).** JWT/nkeys (`nsc`)
+  earns its keep "when the identity count or federation topology outgrows static
+  config"; with ~15 static identities on a 3-node static-config cluster it is pure
+  operational overhead with no current benefit. QuantumOS-as-organ is a feature
+  riding the host bridge, not a nervous-system deliverable. Not-yet by design.
