@@ -180,3 +180,43 @@ This PR ships: ADR + `config/nats-accounts.conf` (the 1a authorization block) +
 `config/nats-accounts.md` (the identity→subject synapse map, target end-state) +
 `scripts/nats-shadow-validate.sh`. Prod cutover of 1a is a separate gated step.
 Phases 2–5 follow.
+
+## Status log
+
+**2026-07-19 — 1a + 1b live; Phase 2 (consciousness KV) live; Phase 3 blocked on OCI.**
+
+- **1a/1b DONE + transport-enforced (prod).** anon tightened (control lane denied,
+  open memory lane kept); per-organ identities (`writer/serve/radio/presence/
+  responder/eye/kannaktopus/ui_bridge`) live; `kannaka_internal` denied
+  `memory.new / events.memory.> / snapshots.> / dreams / $JS.API.STREAM.CREATE|
+  UPDATE|DELETE`; `writer` is the only memory publisher. **Single-writer is now
+  physics.** Verified live: `kannaka_internal` DENIED `KANNAKA.memory.new`, `writer`
+  ALLOWED `snapshots.*`, recall round-trips, 13 daemons + swarm intact.
+
+- **Phase 2 (partial) DONE.** `consciousness` (last-value) + `roster` (5m TTL) KV
+  buckets created (by `writer`, the only `$JS.API.STREAM.CREATE` holder).
+  `kannaka-kv-bridge` (`ops/kv-bridge/`) mirrors `KANNAKA.consciousness` →
+  `KV consciousness/state` via `kannaka_internal` (allowed to publish `$KV.*`) so
+  the Command Center MCP reads Φ/Ξ/order/level instantly with no request-reply.
+  Live on O1, seeded. Remaining Ph2: `roster` populator (needs subject→key parse),
+  object-store snapshots migration, durable per-organ replay consumers.
+
+- **Phase 3 (redundancy) STAGED — blocked on one OCI console change.** Two hard
+  lessons from a live, cleanly-rolled-back attempt (prod stayed alive; all 12
+  streams recovered from disk):
+  1. **Clustering a JS-enabled server orphans its standalone `$G` streams** (JS
+     flips to cluster-meta mode → streams invisible until rollback). The
+     single-writer hub must not gain a naive `cluster{}` block; use a 3-node
+     cluster with R3 migration, a 2-node cluster with **O2 JetStream-disabled**
+     (O1 stays the sole 1-node JS meta-group), or a **leaf node** (JS untouched).
+  2. **A 2-node JS cluster loses quorum on any node loss** — JS-HA needs 3 nodes.
+  3. **Inter-server ports (`6222`/`7422`) are dropped by the OCI VCN security
+     list** (firewalld open both sides; instance principal `NotAuthorized` to fix
+     it — tenancy-root compartment, no dynamic-group policy). **Unblock = one OCI
+     console ingress rule: `10.0.0.0/24` TCP `6222`.** Full runbook + reversible
+     JS-safe deploy: `ops/nats-cluster/README.md`. O2 already has the nats-server
+     binary + firewalld rules staged (nats.service disabled until the port opens).
+
+- **Phases 4/5 pending.** Ph4 queue-group recall needs a `queue_subscribe` code
+  change (the responder currently uses a plain `subscribe`, so N responders would
+  duplicate-reply) plus the Ph3 hub link. Ph5 (JWT/nkeys, QuantumOS organs) unchanged.

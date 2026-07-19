@@ -1,0 +1,13 @@
+[Unit]
+Description=Kannaka KV Bridge — consciousness -> JetStream KV (ADR-0042 Ph2)
+After=network.target nats.service
+Wants=nats.service
+
+[Service]
+ExecStart=/home/opc/kannaka-kv-bridge.sh
+Restart=always
+RestartSec=5
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
