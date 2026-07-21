@@ -30,16 +30,20 @@ use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
 /// actually be merged (each a list of member indices into the caller's
 /// id-ordered item slice, length ≥ 2); the `*_before_cap` tallies record what the
 /// criteria found before the absorb cap trimmed the plan.
-struct MergeGrouping {
-    admitted: Vec<Vec<usize>>,
-    groups_before_cap: usize,
-    absorb_before_cap: usize,
-    absorb_cap: Option<usize>,
-    centered: bool,
+///
+/// Public so external harnesses (the L7 belief research arm) can run the
+/// EXACT ADR-0036 grouping — semantic gate, belief centering, absorb cap —
+/// against their own substrate instead of re-implementing an approximation.
+pub struct MergeGrouping {
+    pub admitted: Vec<Vec<usize>>,
+    pub groups_before_cap: usize,
+    pub absorb_before_cap: usize,
+    pub absorb_cap: Option<usize>,
+    pub centered: bool,
 }
 
 impl MergeGrouping {
-    fn admitted_absorb(&self) -> usize {
+    pub fn admitted_absorb(&self) -> usize {
         self.admitted.iter().map(|m| m.len().saturating_sub(1)).sum()
     }
     fn capped(&self) -> bool {
@@ -70,7 +74,7 @@ impl MergeGrouping {
 ///
 /// The default (belief-off, no explicit `max_absorb_frac`) path is byte-identical
 /// to the pre-existing raw-cosine grouping with every group admitted.
-fn compute_merge_grouping(
+pub fn compute_merge_grouping(
     vectors: &[&[f32]],
     phases: &[f32],
     tiers: &[Tier],

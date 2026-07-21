@@ -87,6 +87,27 @@ initially-distinct sub-domains, then BRIDGE them mid-session (shared-vocab
 items, card-04 style) so their cores approach and fuse while apply-mode
 consolidation runs; prediction 2 then gets its first real test.
 
+## Prediction 2 — FIRST REAL RESULT (bridging + canary, follow-up commit)
+
+The P2 sub-session now: (a) drives a bare ChiralMedium (HrmStore's
+MediumBackend::insert never routes to the chiral field, so a fresh
+chiral-upgraded store can't ingest — cores stayed empty); (b) applies the
+EXACT ADR-0036 grouping (`compute_merge_grouping` made pub) to the right
+hemisphere each epoch, absorbing admitted non-carriers; (c) detects core
+FUSIONS by collision (two parents → one child core; the earlier
+died-into-sibling detector read every fusion as two survivals — chiral
+fusion count corrected 13 → 44); (d) proves the channel live with a CANARY
+exact-duplicate that must pass the gates.
+
+Result: canary absorbed ✓ (channel live), bridging fused cores 10→~5 with
+8 fusion events, and **merge_consolidation = 0.125** — 7 of 8 core fusions
+had NO consolidation event within ±1 epoch. First genuine evidence AGAINST
+prediction 2 in this regime: belief-core fusion is mostly an embedding-
+geometry event (bridge content pulls clusters together), not a
+consolidation event. Either the prediction needs restating (fusion ⇒
+*eventual* consolidation at longer horizons?) or core identity and memory
+consolidation are more independent than ADR-0037 assumed.
+
 ## Suggested next experiments (single-knob, per protocol)
 
 1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,

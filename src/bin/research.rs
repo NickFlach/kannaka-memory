@@ -4021,6 +4021,36 @@ fn run_experiment_l6_session(params: &Params) {
     println!("---");
 }
 
+/// Core-merge (fusion) events between consecutive snapshots. A fusion is a
+/// COLLISION: two or more cores of one snapshot whose nearest same-charge
+/// match (cosine ≥ `merge_cos`) in the next snapshot is the SAME core. (The
+/// earlier died-into-a-sibling detector missed real fusions: a fused core's
+/// fingerprint is a neighborhood centroid, so it matches BOTH parents above
+/// the survival threshold and every fusion read as two survivals.)
+fn core_merge_epochs(
+    snapshots: &[Vec<kannaka_memory::l6::CoreObs>],
+    merge_cos: f32,
+) -> Vec<usize> {
+    use kannaka_memory::l6;
+    let mut out = Vec::new();
+    for e in 0..snapshots.len().saturating_sub(1) {
+        let next = &snapshots[e + 1];
+        let mut child_hits: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for core in &snapshots[e] {
+            if let Some((j, s)) = l6::nearest_core(&core.fp, next, Some(core.charge)) {
+                if s >= merge_cos {
+                    *child_hits.entry(j).or_insert(0) += 1;
+                }
+            }
+        }
+        let fusions = child_hits.values().filter(|&&n| n >= 2).count();
+        for _ in 0..fusions {
+            out.push(e + 1);
+        }
+    }
+    out
+}
+
 /// L7 — the BELIEF arm (ADR-0037). Runs a real multi-agent belief substrate
 /// (ChiralMedium with content-born phase) and scores the README's three
 /// falsification predictions: core stability ⇒ recall reliability, core merge
@@ -4280,20 +4310,7 @@ fn run_experiment_l7_session(_params: &Params) {
     let mut absorb_all: Vec<usize> = Vec::new();
     for a in 0..n_agents {
         absorb_all.extend(absorb_epochs[a].iter().copied());
-        for e in 0..snapshots[a].len().saturating_sub(1) {
-            for core in &snapshots[a][e] {
-                let next = &snapshots[a][e + 1];
-                // One lookup, two thresholds: nearest ≥ min_cos = the core
-                // SURVIVED (same belief, drifted); in [merge_cos, min_cos) =
-                // it died into a content-similar sibling — a MERGE; below
-                // merge_cos = unrelated death (not a merge).
-                if let Some((_, s)) = l6::nearest_core(&core.fp, next, Some(core.charge)) {
-                    if s < min_cos && s >= merge_cos {
-                        merge_epochs_all.push(e + 1);
-                    }
-                }
-            }
-        }
+        merge_epochs_all.extend(core_merge_epochs(&snapshots[a], merge_cos));
     }
     let merge_consolidation_chiral = bf::merge_consolidation_score(&merge_epochs_all, &absorb_all, 1);
     println!("l7_merge_events:      {}", merge_epochs_all.len());
@@ -4307,74 +4324,104 @@ fn run_experiment_l7_session(_params: &Params) {
     // epoch dreams then APPLIES consolidation; absorb events come from the
     // apply report, merges from core tracking on the same store. ──
     let (merge_consolidation, hrm_merges, hrm_absorbs) = {
-        use kannaka_memory::hrm_store::HrmStore;
-        use kannaka_memory::medium::types::{ConsolidateMode, ConsolidateOpts};
-        use kannaka_memory::MediumBackend;
+        use kannaka_memory::hrm_store::compute_merge_grouping;
+        use kannaka_memory::medium::types::ConsolidateOpts;
 
-        let prev_under_belief = std::env::var("KANNAKA_MERGE_UNDER_BELIEF").ok();
-        std::env::set_var("KANNAKA_MERGE_UNDER_BELIEF", "1");
+        // Bare ChiralMedium (belief-born phases native, mid-session ingest
+        // just works) + the EXACT ADR-0036 grouping algorithm applied to its
+        // right hemisphere each epoch — semantic gate, belief centering,
+        // absorb cap, all of it. Absorptions are applied by removing the
+        // grouped non-carrier wavefronts; that removal is the consolidation
+        // event prediction 2 aligns against. (HrmStore itself is the wrong
+        // vehicle here: its MediumBackend::insert never routes to the chiral
+        // field, so a fresh chiral-upgraded store can't ingest mid-session.)
+        let mut cm = ChiralMedium::new();
 
-        let hrm_pipeline = {
-            let encoder = Box::new(SimpleHashEncoder::new(384, 42));
-            let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
-            EncodingPipeline::new(encoder, codebook)
-        };
-        let enc_pipeline = {
-            let encoder = Box::new(SimpleHashEncoder::new(384, 42));
-            let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
-            EncodingPipeline::new(encoder, codebook)
-        };
-        let tmp_hrm = std::env::temp_dir().join(format!("l7-hrm-{}.hrm", std::process::id()));
-        let mut hrm = HrmStore::new(hrm_pipeline, tmp_hrm.clone());
-        hrm.set_readonly(true); // never flush the throwaway store to disk
-
-        // Shared domains + a near-duplicate triplet per domain (three phrasings
-        // of one fact: high mutual cosine + content-born phase lock = exactly
-        // what belief-safe resonance-merge exists to consolidate).
-        for d in 0..3usize {
+        // Two initially-DISTINCT sub-domains + a near-duplicate triplet per
+        // domain (merge fodder). From mid-session, BRIDGE items mixing both
+        // vocabularies are ingested each epoch (card-04 pattern) so the two
+        // content clusters approach and their cores can FUSE while ADR-0036
+        // consolidation runs: prediction 2's antecedent, induced.
+        let (dom_a, dom_b) = (0usize, 3usize);
+        for d in [dom_a, dom_b] {
             for i in 0..items {
-                let s = domain_sentence(d, i);
-                if let Ok(v) = enc_pipeline.encode_text(&s) {
-                    let _ = hrm.insert(HyperMemory::new(v, s));
-                }
+                let _ = cm.store(&domain_sentence(d, i), 0.8, &pipeline);
             }
             for (t, suffix) in ["", " indeed", " truly"].iter().enumerate() {
-                let s = format!("{}{}", domain_sentence(d, 0), suffix);
-                if let Ok(v) = enc_pipeline.encode_text(&s) {
-                    let _ = hrm.insert(HyperMemory::new(v, format!("{s} #{t}")));
-                }
+                let s = format!("{}{} #{t}", domain_sentence(d, 0), suffix);
+                let _ = cm.store(&s, 0.8, &pipeline);
             }
+            // CANARY: an exact duplicate (identical text ⇒ identical vector ⇒
+            // centered cosine 1.0 + identical born phase) that MUST pass the
+            // ADR-0036 gates. Its absorption proves the consolidation channel
+            // is live — after which zero absorbs at merge epochs is genuine
+            // counter-evidence, not a blind observable.
+            let _ = cm.store(&domain_sentence(d, 1), 0.8, &pipeline);
         }
-
-        let opts = ConsolidateOpts {
-            mode: ConsolidateMode::Apply,
-            ..Default::default()
+        let bridge_sentence = |e: usize, x: usize| -> String {
+            let a = &DOMAIN_VOCAB[dom_a];
+            let b = &DOMAIN_VOCAB[dom_b];
+            format!(
+                "{} {} bridge {}: the {} of {} governs {} {}",
+                a[e % 4], b[(e + x) % 4], e, a[(e + 1) % 4], b[(e + x + 1) % 4],
+                a[(e + 2) % 4], b[(e + x + 2) % 4]
+            )
         };
+
+        let opts = ConsolidateOpts::default();
         let mut hrm_snaps: Vec<Vec<CoreObs>> = Vec::new();
         let mut hrm_absorb_epochs: Vec<usize> = Vec::new();
         for e in 0..epochs {
-            let _ = hrm.dream(2, None);
-            let rep = hrm.apply_consolidation(&opts);
-            if rep.would_absorb > 0 {
-                hrm_absorb_epochs.push(e);
+            if e >= epochs / 2 {
+                for x in 0..2 {
+                    let _ = cm.store(&bridge_sentence(e, x), 0.8, &pipeline);
+                }
             }
-            hrm_snaps.push(hrm.belief_core_snapshot());
-        }
-        let mut hrm_merge_epochs: Vec<usize> = Vec::new();
-        for e in 0..hrm_snaps.len().saturating_sub(1) {
-            for core in &hrm_snaps[e] {
-                if let Some((_, s)) = l6::nearest_core(&core.fp, &hrm_snaps[e + 1], Some(core.charge)) {
-                    if s < min_cos && s >= merge_cos {
-                        hrm_merge_epochs.push(e + 1);
+            let _ = cm.dream(true, 2);
+
+            // ADR-0036 grouping over the live right hemisphere.
+            let n = cm.right.count();
+            let rows: Vec<Vec<f32>> =
+                (0..n).map(|i| cm.right.wavefronts.row(i).to_vec()).collect();
+            let vrefs: Vec<&[f32]> = rows.iter().map(|v| v.as_slice()).collect();
+            let phases: Vec<f32> = (0..n).map(|i| cm.right.phase[i]).collect();
+            let tiers: Vec<_> = (0..n).map(|i| cm.right.metadata[i].tier).collect();
+            let energies: Vec<f32> = (0..n).map(|i| cm.right.energy[i]).collect();
+            let grouping = compute_merge_grouping(&vrefs, &phases, &tiers, &energies, &opts, true);
+
+            // Apply: absorb every non-carrier member (carrier = highest energy).
+            // Ids first — indices invalidate on remove. Left twins are left in
+            // place: this throwaway medium is never recalled against, only
+            // core-snapshotted (right hemisphere only).
+            let mut absorb_ids = Vec::new();
+            for group in &grouping.admitted {
+                let carrier = group
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| {
+                        energies[a].partial_cmp(&energies[b]).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap_or(group[0]);
+                for &m in group {
+                    if m != carrier {
+                        absorb_ids.push(cm.right.metadata[m].id);
                     }
                 }
             }
+            let mut absorbed = 0usize;
+            for id in &absorb_ids {
+                if cm.right.remove_wavefront(id) {
+                    absorbed += 1;
+                }
+            }
+            if absorbed > 0 {
+                hrm_absorb_epochs.push(e);
+            }
+            hrm_snaps.push(cm.belief_core_snapshot());
         }
-        match prev_under_belief {
-            Some(v) => std::env::set_var("KANNAKA_MERGE_UNDER_BELIEF", v),
-            None => std::env::remove_var("KANNAKA_MERGE_UNDER_BELIEF"),
-        }
-        let _ = std::fs::remove_file(&tmp_hrm);
+        let hrm_merge_epochs = core_merge_epochs(&hrm_snaps, merge_cos);
+        let core_counts: Vec<usize> = hrm_snaps.iter().map(|s| s.len()).collect();
+        println!("l7_hrm_core_counts:   {:?}", core_counts);
         (
             bf::merge_consolidation_score(&hrm_merge_epochs, &hrm_absorb_epochs, 1),
             hrm_merge_epochs.len(),
