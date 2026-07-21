@@ -4698,6 +4698,34 @@ fn main() {
                     match try_nats_connect(&nats_url) {
                         Some(transport) => {
                             let nats_phases = transport.get_all_phases().unwrap_or_default();
+                            // LIVENESS: the JetStream read path retains the LAST
+                            // phase per agent forever, so a retained read includes
+                            // long-departed agents. A peer is an agent the BROKER
+                            // heard in the last 5 minutes (mirrors the roster KV
+                            // TTL) — server ingest time, identity from the
+                            // subject, so a publisher with a skewed clock or a
+                            // non-AgentPhase payload (kannaktopus) still counts.
+                            // The live-gossip fallback always had this liveness
+                            // semantic by construction.
+                            let live_agents = if transport.has_jetstream() {
+                                transport
+                                    .live_phase_agents(chrono::Duration::minutes(5))
+                                    .ok()
+                            } else {
+                                None
+                            };
+                            // Parsed phases feed the TRUSTED count; freshness-
+                            // filter them too (payload clock — conforming agents
+                            // publish honest timestamps) so stale retained
+                            // entries can't stay "trusted" forever.
+                            let now = chrono::Utc::now();
+                            let nats_phases: Vec<_> = nats_phases
+                                .into_iter()
+                                .filter(|p| {
+                                    now.signed_duration_since(p.timestamp)
+                                        < chrono::Duration::minutes(5)
+                                })
+                                .collect();
                             // SECURITY (increment-0): the open NATS swarm lets
                             // anyone publish an AgentPhase. Report BOTH counts
                             // truthfully — `peer_count` is every phase observed
@@ -4708,7 +4736,10 @@ fn main() {
                             // two instead of silently inflating one number.
                             // Escape hatch KANNAKA_METRICS_TRUSTED_ONLY=0 makes
                             // trusted_peer_count == peer_count.
-                            peer_count = nats_phases.len();
+                            peer_count = live_agents
+                                .as_ref()
+                                .map(|v| v.len())
+                                .unwrap_or(nats_phases.len());
                             let trusted_peer_count = if cfg.swarm_trust.metrics_trusted_only {
                                 kannaka_memory::filter_wire_phases(
                                     nats_phases,

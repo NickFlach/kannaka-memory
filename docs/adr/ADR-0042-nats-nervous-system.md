@@ -258,6 +258,21 @@ Phases 2–5 follow.
   replay consumers — both subsumed in priority by the KANNAKA_SNAPSHOTS stream
   now being R3-replicated.
 
+- **Restricted-reader peer visibility closed (2026-07-21).** Closing anon's
+  `$JS.API.STREAM.CREATE` (1a) had a client-side casualty: `connect()` treated
+  the CREATE denial as "no JetStream" and fell back to live-gossip sniffing,
+  whose 1.5s-silence window can't hear 30s beacons — anon clients (Nick's
+  Windows node) reported 0 peers on a live swarm. anon's read lane
+  (`$JS.API.STREAM.MSG.GET.>`) was open the whole time. Fix (client only, no
+  server change): `connect()`/reconnect probe MSG.GET readability before
+  giving up on JetStream; `swarm status` peer_count now comes from
+  `live_phase_agents()` — identity from the `QUEEN.phase.<id>` subject,
+  liveness from BROKER ingest time (≤5m, mirroring the roster TTL) — so a
+  publisher with a skewed clock or a non-AgentPhase payload (kannaktopus-01
+  carries no `timestamp`) still counts as observed while staying outside
+  `trusted_peer_count`. Verified from the anon node: peers 0 → 3
+  (Flaukowski, kannaka-prime, kannaktopus-01), trusted 2.
+
 - **Phase 1b — COMPLETE (2026-07-19).** `kannaka_internal` is retired from every
   daemon. The remaining organs (attention, beacon, eye, serve→[swarm-serve/worker/
   inbox], radio, ui_bridge, and writer for memory) migrated onto scoped identities;

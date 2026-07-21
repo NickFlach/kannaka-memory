@@ -824,6 +824,11 @@ pub struct SwarmTransport {
     /// timed-out request can never collide with a later subscription.
     next_sid: AtomicU64,
     jetstream_ok: bool,
+    /// True only when this connection may CREATE/UPDATE streams (the writer
+    /// identity). `jetstream_ok` alone means readable — a create-denied
+    /// client (anon) reads retained state but must not attempt bucket/stream
+    /// management.
+    jetstream_writable: bool,
     connected: Arc<Mutex<bool>>,
     publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
     /// Last in-place revival attempt (see `try_revive_locked`). Rate-limits
@@ -1036,14 +1041,23 @@ impl SwarmTransport {
             url: url.to_string(),
             next_sid: AtomicU64::new(1),
             jetstream_ok: false,
+            jetstream_writable: false,
             connected: Arc::new(Mutex::new(true)),
             publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
             last_revive: Arc::new(Mutex::new(None)),
         };
 
-        // Try to ensure JetStream streams exist
-        transport.jetstream_ok = transport.ensure_stream().is_ok();
-        if transport.jetstream_ok {
+        // Try to ensure JetStream streams exist. A client whose NATS user is
+        // denied $JS.API.STREAM.CREATE (the open swarm's anon user, since
+        // ADR-0042 closed its control lane) can still READ streams the writer
+        // identity created — probe MSG.GET before giving up on JetStream, so
+        // such clients keep the retained-phase read path instead of falling
+        // back to live-gossip sniffing (whose 1.5s-silence window misses
+        // agents that beacon every 30s and reported 0 peers on live swarms).
+        let created = transport.ensure_stream().is_ok();
+        transport.jetstream_writable = created;
+        transport.jetstream_ok = created || transport.stream_readable(STREAM_NAME);
+        if created {
             let _ = transport.ensure_events_stream();
         }
 
@@ -1055,9 +1069,17 @@ impl SwarmTransport {
         Self::connect(DEFAULT_NATS_URL)
     }
 
-    /// Whether JetStream is available on this connection.
+    /// Whether JetStream is READABLE on this connection (retained-state
+    /// reads via MSG.GET). A create-denied client still reports true.
     pub fn has_jetstream(&self) -> bool {
         self.jetstream_ok
+    }
+
+    /// Whether this connection may also CREATE/UPDATE streams and buckets.
+    /// Gate stream/bucket management (and the integration tests that do it)
+    /// on this, not on `has_jetstream()`.
+    pub fn has_jetstream_write(&self) -> bool {
+        self.jetstream_writable
     }
 
     /// Get the URL this transport is connected to.
@@ -1097,9 +1119,11 @@ impl SwarmTransport {
         }
         *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
 
-        // Re-check JetStream
-        self.jetstream_ok = self.ensure_stream().is_ok();
-        if self.jetstream_ok {
+        // Re-check JetStream (same read-only degradation as connect())
+        let created = self.ensure_stream().is_ok();
+        self.jetstream_writable = created;
+        self.jetstream_ok = created || self.stream_readable(STREAM_NAME);
+        if created {
             let _ = self.ensure_events_stream();
         }
 
@@ -1305,19 +1329,20 @@ impl SwarmTransport {
     }
 
     /// Walk a JetStream stream by subject filter, returning the raw stored
-    /// messages as (subject, decoded payload) pairs. Shared engine behind
-    /// `get_stream_messages`, `kv_keys` and the phase reader; keeps the ONE
-    /// persistent connection reader for the whole walk (recreating a reader
-    /// per request used to lose pre-read bytes and return 0 rows).
+    /// messages as (subject, server ingest time RFC3339, decoded payload)
+    /// triples. Shared engine behind `get_stream_messages`, `kv_keys` and the
+    /// phase readers; keeps the ONE persistent connection reader for the
+    /// whole walk (recreating a reader per request used to lose pre-read
+    /// bytes and return 0 rows).
     fn stream_walk(
         &self,
         stream_name: &str,
         subject_filter: &str,
         max_messages: usize,
-    ) -> Result<Vec<(String, Vec<u8>)>, NatsError> {
+    ) -> Result<Vec<(String, String, Vec<u8>)>, NatsError> {
         let mut conn = self.lock_conn()?;
         let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
-        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut out: Vec<(String, String, Vec<u8>)> = Vec::new();
         let mut next_seq: u64 = 1;
 
         while out.len() < max_messages {
@@ -1356,12 +1381,19 @@ impl SwarmTransport {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Broker receive time — the liveness authority (a publisher's
+            // own clock can be skewed, and some payloads carry no timestamp).
+            let time = msg
+                .get("time")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             let data = msg
                 .get("data")
                 .and_then(|d| d.as_str())
                 .and_then(|b64| base64_decode(b64).ok())
                 .unwrap_or_default();
-            out.push((subject, data));
+            out.push((subject, time, data));
         }
         Ok(out)
     }
@@ -1399,6 +1431,22 @@ impl SwarmTransport {
                 "discard": "old",
                 "num_replicas": 1
             }),
+        )
+    }
+
+    /// True when the stream's read API answers this connection. A client can
+    /// be denied stream CREATE yet allowed MSG.GET (the anon swarm user) —
+    /// any JSON reply to the probe, including a "no message found" error,
+    /// proves readability; a permission denial produces no reply (timeout).
+    fn stream_readable(&self, stream_name: &str) -> bool {
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let req = serde_json::json!({ "seq": 1, "next_by_subj": ">" }).to_string();
+        let Ok(mut conn) = self.lock_conn() else {
+            return false;
+        };
+        matches!(
+            self.js_api_call_locked(&mut conn, &api_subject, req.as_bytes(), JS_API_TIMEOUT),
+            Ok(Some(_))
         )
     }
 
@@ -1664,7 +1712,7 @@ impl SwarmTransport {
         Ok(self
             .stream_walk(stream_name, subject_filter, max_messages)?
             .into_iter()
-            .filter_map(|(_, data)| serde_json::from_slice(&data).ok())
+            .filter_map(|(_, _, data)| serde_json::from_slice(&data).ok())
             .collect())
     }
 
@@ -1934,12 +1982,38 @@ impl SwarmTransport {
     fn get_all_phases_jetstream(&self) -> Result<Vec<AgentPhase>, NatsError> {
         let msgs = self.stream_walk(STREAM_NAME, "QUEEN.phase.>", STREAM_WALK_LIMIT)?;
         let mut phases: HashMap<String, AgentPhase> = HashMap::new();
-        for (_, data) in msgs {
+        for (_, _, data) in msgs {
             if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&data) {
                 phases.insert(phase.agent_id.clone(), phase);
             }
         }
         Ok(phases.into_values().collect())
+    }
+
+    /// Agents with a QUEEN.phase.* message ingested by the SERVER within
+    /// `max_age`. Identity is the subject token, so publishers whose payloads
+    /// don't conform to AgentPhase (no timestamp, missing fields) still
+    /// count; liveness is broker receive time, so a skewed or absent
+    /// publisher clock can't fake or forfeit freshness. This is the raw
+    /// "observed on the wire" peer set — trust filtering stays separate.
+    pub fn live_phase_agents(
+        &self,
+        max_age: chrono::Duration,
+    ) -> Result<Vec<String>, NatsError> {
+        let msgs = self.stream_walk(STREAM_NAME, "QUEEN.phase.>", STREAM_WALK_LIMIT)?;
+        let now = Utc::now();
+        let mut out = std::collections::HashSet::new();
+        for (subject, time, _) in msgs {
+            let Ok(t) = chrono::DateTime::parse_from_rfc3339(&time) else {
+                continue;
+            };
+            if now.signed_duration_since(t.with_timezone(&Utc)) < max_age {
+                if let Some(id) = subject.strip_prefix("QUEEN.phase.") {
+                    out.insert(id.to_string());
+                }
+            }
+        }
+        Ok(out.into_iter().collect())
     }
 
     /// Legacy PUB/SUB phase collection (fallback when JetStream is unavailable).
@@ -2163,7 +2237,7 @@ impl SwarmTransport {
         let msgs = self.stream_walk(&stream_name, &filter, STREAM_WALK_LIMIT)?;
         Ok(msgs
             .into_iter()
-            .filter_map(|(subject, _)| subject.strip_prefix(&prefix).map(String::from))
+            .filter_map(|(subject, _, _)| subject.strip_prefix(&prefix).map(String::from))
             .collect())
     }
 
@@ -3056,7 +3130,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV test");
             return;
         }
@@ -3087,7 +3161,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV keys test");
             return;
         }
@@ -3108,7 +3182,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV missing test");
             return;
         }
@@ -3126,7 +3200,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping discover_peers test");
             return;
         }
