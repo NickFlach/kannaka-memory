@@ -4082,6 +4082,9 @@ fn run_experiment_l7_session(_params: &Params) {
     // absorb channel MUST fire then, or a merge_consolidation of 0.0 would be
     // a dead instrument rather than a falsification.
     let junk_importance = envf("L7_JUNK_IMPORTANCE", 0.25);
+    // Merge↔absorb alignment horizon (epochs) for prediction 2 — the
+    // "fusion ⇒ EVENTUAL consolidation" restatement is tested by widening it.
+    let p2_window = envu("L7_P2_WINDOW", 1);
     const FP_DIMS: usize = 16; // must match belief_core_snapshot's fingerprint dims
 
     println!("=== L7 belief session (ADR-0037 falsification predictions) ===");
@@ -4423,7 +4426,7 @@ fn run_experiment_l7_session(_params: &Params) {
         let core_counts: Vec<usize> = hrm_snaps.iter().map(|s| s.len()).collect();
         println!("l7_hrm_core_counts:   {:?}", core_counts);
         (
-            bf::merge_consolidation_score(&hrm_merge_epochs, &hrm_absorb_epochs, 1),
+            bf::merge_consolidation_score(&hrm_merge_epochs, &hrm_absorb_epochs, p2_window),
             hrm_merge_epochs.len(),
             hrm_absorb_epochs.len(),
         )

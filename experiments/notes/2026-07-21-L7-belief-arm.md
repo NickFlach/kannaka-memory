@@ -101,7 +101,16 @@ exact-duplicate that must pass the gates.
 
 Result: canary absorbed ✓ (channel live), bridging fused cores 10→~5 with
 8 fusion events, and **merge_consolidation = 0.125** — 7 of 8 core fusions
-had NO consolidation event within ±1 epoch. First genuine evidence AGAINST
+had NO consolidation event within ±1 epoch.
+
+**Horizon sweep caveat (`L7_P2_WINDOW` 1/2/3/5 → 0.10/0.30/0.50/0.60 at 10
+epochs): the rise is a VACUITY ARTIFACT, not eventual consolidation.** With
+one absorb event (the canary) and merges scattered across epochs, a wider
+window mechanically sweeps more merges into range of that single event; at
+window ≥ session length any absorb scores 1.0 trivially. Keep the window ≪
+epochs, and note a proper "fusion ⇒ eventual consolidation" test needs
+MULTIPLE independent absorb events (a richer canary schedule, or a regime
+where consolidation genuinely fires more than once). First genuine evidence AGAINST
 prediction 2 in this regime: belief-core fusion is mostly an embedding-
 geometry event (bridge content pulls clusters together), not a
 consolidation event. Either the prediction needs restating (fusion ⇒
