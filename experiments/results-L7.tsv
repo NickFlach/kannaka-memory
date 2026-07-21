@@ -1,0 +1,4 @@
+run	fitness	stability_recall	merge_consolidation	shared_agreement	n_agents	epochs	couple	final_cores	p1_pairs	p3_pairs	merge_events
+L7-baseline-1	0.589251	0.3738	0.0000	0.7464	4	6	0	38	38	6	13
+L7-baseline-2	0.589251	0.3738	0.0000	0.7464	4	6	0	38	38	6	13
+L7-couple-1	0.527454	0.7439	0.0000	0.5000	4	6	1	18	18	6	3

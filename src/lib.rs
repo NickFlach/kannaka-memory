@@ -47,6 +47,7 @@ pub mod temporal;
 pub mod gap;
 pub mod research_planner;
 pub mod swarm_fitness;
+pub mod belief_fitness;
 pub mod hive_formation;
 pub mod swarm_loop;
 pub mod paradox;

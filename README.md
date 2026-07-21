@@ -90,6 +90,8 @@ kannaka belief recall-probe  # self-recall@k — does core stability predict rec
 
 A core only earns the word "belief" if it maps to a recallable content cluster **and** its dynamics predict: core stability ⇒ recall reliability, core merge ⇒ a consolidation event, shared cores ⇒ swarm agreement.
 
+Those three predictions are now *scored*, not just stated: the autoresearch ladder's **L7 belief arm** (`cargo run --release --bin research -- --level 7`) runs a real multi-agent belief substrate (nested-overlap domains, per-epoch dreams, spiral-core snapshots, optional Track-D coupling via `L7_COUPLE=1`) and turns each prediction into a [0,1] score plus a weighted `l7_fitness` (`src/belief_fitness.rs`; rows append to `experiments/results-L7.tsv`).
+
 ### Dream Consolidation
 
 When the medium is loaded but quiet, you trigger a dream:

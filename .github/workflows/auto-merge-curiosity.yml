@@ -20,7 +20,7 @@ name: Auto-merge curiosity research
 #     PR #272: alpha=0.13/chiral=0.10 vs master's chiral=0.15/alpha=0.12). Any
 #     PR touching paths outside the allowlist is labeled `needs-review` and left
 #     open for a human — never auto-merged.
-#   - The append-only results-L{3,4,5,6}.tsv conflicts are auto-resolved with the
+#   - The append-only results-L{3,4,5,6,7}.tsv conflicts are auto-resolved with the
 #     built-in `union` merge driver (exactly the manual flow).
 #   - Any PR with a NON-union conflict is skipped and left open — never forced.
 #   - Disable by deleting this file or via the Actions tab.
@@ -55,7 +55,7 @@ jobs:
           set -uo pipefail
           git config user.name "kannaka-curiosity-bot"
           git config user.email "noreply@github.com"
-          printf 'experiments/results-L6.tsv merge=union\nexperiments/results-L5.tsv merge=union\nexperiments/results-L4.tsv merge=union\nexperiments/results-L3.tsv merge=union\n' \
+          printf 'experiments/results-L7.tsv merge=union\nexperiments/results-L6.tsv merge=union\nexperiments/results-L5.tsv merge=union\nexperiments/results-L4.tsv merge=union\nexperiments/results-L3.tsv merge=union\n' \
             > .git/info/attributes
           git fetch origin master
           git checkout -B master origin/master
@@ -97,6 +97,7 @@ jobs:
             offlimits=$(gh pr view "$num" --json files --jq '
               .files[].path
               | select((startswith("experiments/notes/")
+                        or . == "experiments/results-L7.tsv"
                         or . == "experiments/results-L6.tsv"
                         or . == "experiments/results-L5.tsv"
                         or . == "experiments/results-L4.tsv"

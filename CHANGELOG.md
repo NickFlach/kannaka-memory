@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added — L7 belief research arm (ADR-0037 falsification, `research --level 7`)
+
+The autoresearch ladder gains its belief rung. The README's falsifiability
+clause — core stability ⇒ recall reliability, core merge ⇒ a consolidation
+event, shared cores ⇒ swarm agreement — is now scored instead of stated:
+
+- `src/belief_fitness.rs` (pure, unit-tested): Spearman-based prediction
+  scores with an honest no-evidence 0.5 midpoint, `merge_consolidation_score`
+  windowed event alignment, and a weighted `l7_fitness` (lower = better,
+  ladder convention).
+- `run_experiment_l7_session` (research.rs): unlike L6's synthetic fixtures,
+  every observable comes from a live multi-agent `ChiralMedium` belief
+  substrate — content-born phase ingest over nested-overlap vocabulary
+  domains (agent pairs genuinely differ in shared beliefs), per-epoch dreams
+  (absorb events = the consolidation observable), `belief_core_snapshot`
+  tracking, end-of-session recall probes, and pairwise `shared_cores` vs
+  recall-agreement. Knobs: `L7_AGENTS/L7_EPOCHS/L7_ITEMS/L7_MIN_COS/
+  L7_MERGE_COS/L7_COUPLE=1` (Track-D coupling each epoch). Rows append to
+  `experiments/results-L7.tsv`.
+- `auto-merge-curiosity.yml` allowlists/unions `results-L7.tsv`;
+  `autoresearch-cron.sh` fitness matcher generalized to any `lN_fitness`.
+
 ### Added — Windows seed-beacon installer (hidden, no console flash)
 
 `ops/windows/install-beacon-task.ps1` + `ops/windows/kannaka-beacon-hidden.vbs`
