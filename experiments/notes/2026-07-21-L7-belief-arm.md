@@ -117,6 +117,25 @@ consolidation event. Either the prediction needs restating (fusion ⇒
 *eventual* consolidation at longer horizons?) or core identity and memory
 consolidation are more independent than ADR-0037 assumed.
 
+## Coupling SCHEDULES: the trade-off dissolves under alternation (evening)
+
+`L7_COUPLE_SCHEDULE` (comma list, cycled per epoch):
+
+| schedule | stability_recall | shared_agreement | l7_fitness |
+|---|---|---|---|
+| 0.2,0.1 (strong→weak) | **0.5850** | **0.8536** | **0.4360** (day's best) |
+| 0.1,0.2 (weak→strong) | 0.6213 | 0.5000 | 0.5452 |
+| 0.1,0.1,0.2 | 0.5794 | 0.4155 | 0.5916 |
+| 0.15 fixed (compromise) | 0.4814 | 0.5696 | 0.5768 |
+
+**A swarm need not choose what it couples for — it can alternate, and ORDER
+matters: consolidate first (strong epoch), then diversify (weak epoch).**
+Strong-then-weak keeps both claims substantially satisfied; weak-then-strong
+collapses the swarm claim; a fixed midpoint satisfies neither. This answers
+open experiment 2 and is the arm's headline design insight so far — worth a
+Track-D default: heartbeat coupling could alternate strength instead of
+holding one value.
+
 ## Suggested next experiments (single-knob, per protocol)
 
 1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,

@@ -4077,6 +4077,14 @@ fn run_experiment_l7_session(_params: &Params) {
     let merge_cos = envf("L7_MERGE_COS", 0.60);
     let couple = std::env::var("L7_COUPLE").map(|v| v == "1").unwrap_or(false);
     let couple_strength = envf("L7_COUPLE_STRENGTH", 0.2);
+    // Optional per-epoch coupling SCHEDULE (comma-separated strengths, cycled):
+    // the day-one sweep showed s=0.1 optimizes shared⇒agreement while s=0.2
+    // optimizes stability⇒recall and no fixed strength satisfies both — this
+    // knob asks whether ALTERNATING what the swarm couples for can.
+    let couple_schedule: Vec<f32> = std::env::var("L7_COUPLE_SCHEDULE")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
     // Distractor importance. Default 0.25 = churn that never prunes (energy
     // threshold 0.01); setting it below 0.01 is the detector self-test — the
     // absorb channel MUST fire then, or a merge_consolidation of 0.0 would be
@@ -4203,11 +4211,16 @@ fn run_experiment_l7_session(_params: &Params) {
             snapshots[a].push(s.clone());
         }
         if couple {
+            let strength = if couple_schedule.is_empty() {
+                couple_strength
+            } else {
+                couple_schedule[e % couple_schedule.len()]
+            };
             for a in 0..n_agents {
                 for p in 0..n_agents {
                     if a != p && !snaps_now[p].is_empty() {
                         let _ = agents[a]
-                            .couple_toward_peer_cores(&snaps_now[p], 2, couple_strength, 0.5, min_cos);
+                            .couple_toward_peer_cores(&snaps_now[p], 2, strength, 0.5, min_cos);
                     }
                 }
             }
