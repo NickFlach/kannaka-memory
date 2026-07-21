@@ -23,10 +23,34 @@ the correlation loses its gradient), fitness 0.589→0.527.
 
 **Coupling appears to stabilize beliefs into recall-reliable structures.**
 
+## Coupling-strength sweep (same session, `L7_COUPLE_STRENGTH` knob added)
+
+| s | final cores | stability_recall | shared_agreement | l7_fitness |
+|---|---|---|---|---|
+| 0.05 | 36 | 0.37 | 0.26 | 0.759 |
+| 0.10 | 31 | 0.42 | **0.89** | **0.523** |
+| 0.20 | 18 | **0.74** | 0.50 | 0.527 |
+| 0.40 | 10 | 0.42 | 0.50 | 0.657 |
+| 0.80 | 25 | 0.32 | **0.11** | 0.707 |
+
+Non-monotone with a clear optimal band (~0.1–0.2), and the two predictions
+peak at DIFFERENT strengths: s=0.1 maximizes the swarm claim (shared ⇒
+agreement, 0.89) while keeping pair variance alive; s=0.2 maximizes the
+single-agent claim (stability ⇒ recall, 0.74) at the cost of collapsing the
+pair gradient; s=0.8 over-couples and actively anti-predicts (0.11) — the
+same weak-coupling-preserves-diversity lesson as the L5 Kuramoto K-sweep
+(K=0.5 beat K=1.0). Track-D's default strength should live in the 0.1–0.2
+band, and which end depends on whether the swarm optimizes collective
+agreement or individual recall reliability.
+
 ## Suggested next experiments (single-knob, per protocol)
 
-1. `L7_COUPLE` strength sweep (currently fixed 0.2 in-session): does a weaker
-   pull keep prediction 3's gradient while retaining the prediction 1 flip?
+1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,
+   shared_agreement 0.36/0.57/0.63. **No strength satisfies both predictions
+   at once**; the band interior is rugged and the two claims trade off
+   monotonically across it. s=0.1 (swarm-optimal) and s=0.2
+   (individual-optimal) stand as the two regimes — a swarm must choose (or
+   alternate) what it couples FOR.
 2. Consolidation-capable regime hunt for prediction 2: longer sessions
    (`L7_EPOCHS`), decay-rate pressure, or junk at importance near the 0.01
    prune threshold — does merge_consolidation leave 0 in ANY regime, or is

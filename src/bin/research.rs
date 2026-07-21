@@ -4046,6 +4046,7 @@ fn run_experiment_l7_session(_params: &Params) {
     let min_cos = envf("L7_MIN_COS", 0.85);
     let merge_cos = envf("L7_MERGE_COS", 0.60);
     let couple = std::env::var("L7_COUPLE").map(|v| v == "1").unwrap_or(false);
+    let couple_strength = envf("L7_COUPLE_STRENGTH", 0.2);
     const FP_DIMS: usize = 16; // must match belief_core_snapshot's fingerprint dims
 
     println!("=== L7 belief session (ADR-0037 falsification predictions) ===");
@@ -4167,7 +4168,8 @@ fn run_experiment_l7_session(_params: &Params) {
             for a in 0..n_agents {
                 for p in 0..n_agents {
                     if a != p && !snaps_now[p].is_empty() {
-                        let _ = agents[a].couple_toward_peer_cores(&snaps_now[p], 2, 0.2, 0.5, min_cos);
+                        let _ = agents[a]
+                            .couple_toward_peer_cores(&snaps_now[p], 2, couple_strength, 0.5, min_cos);
                     }
                 }
             }
