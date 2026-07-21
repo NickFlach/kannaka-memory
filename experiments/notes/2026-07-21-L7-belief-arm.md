@@ -70,6 +70,23 @@ Session-length note: uncoupled stability_recall degrades with epochs
 (6→12→18: 0.37→0.49→0.14, non-monotone but collapsing) while merges scale
 linearly (~2.3/epoch) — long uncoupled belief fields churn.
 
+## Prediction 2 unblinded: HrmStore substrate (same day, follow-up commit)
+
+The session now runs a dedicated prediction-2 sub-experiment on `HrmStore`
+(ADR-0036 belief-safe resonance-merge, `KANNAKA_MERGE_UNDER_BELIEF=1`,
+Apply mode each epoch, throwaway readonly store): near-duplicate triplets per
+domain give the merge machinery real prey, and **the absorb observable now
+fires** (`would_absorb > 0` — 1 absorb epoch in the first run). Remaining gap:
+the session generates no CORE-level merges to align against — near-dups
+collapse inside a single domain core rather than forming two cores that fuse.
+merge_consolidation therefore reads an honest 0.5 (no merges observed, live
+channel) instead of the earlier blind 0.5.
+
+**Open experimental design:** induce genuine core merges — ingest two
+initially-distinct sub-domains, then BRIDGE them mid-session (shared-vocab
+items, card-04 style) so their cores approach and fuse while apply-mode
+consolidation runs; prediction 2 then gets its first real test.
+
 ## Suggested next experiments (single-knob, per protocol)
 
 1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,

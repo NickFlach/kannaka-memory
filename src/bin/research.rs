@@ -4295,9 +4295,94 @@ fn run_experiment_l7_session(_params: &Params) {
             }
         }
     }
-    let merge_consolidation = bf::merge_consolidation_score(&merge_epochs_all, &absorb_all, 1);
+    let merge_consolidation_chiral = bf::merge_consolidation_score(&merge_epochs_all, &absorb_all, 1);
     println!("l7_merge_events:      {}", merge_epochs_all.len());
     println!("l7_absorb_epochs:     {}", absorb_all.len());
+    println!("merge_consolidation_chiral: {:.4} (observable blind in ChiralMedium — issue #583)", merge_consolidation_chiral);
+
+    // ── Prediction 2 PROPER — HrmStore substrate. ChiralMedium cannot dissolve
+    // (energy floor ≥ prune threshold, issue #583), so the real consolidation
+    // machinery is ADR-0036's belief-safe resonance-merge. One HrmStore agent
+    // ingests the shared domains PLUS mergeable near-duplicate triplets; each
+    // epoch dreams then APPLIES consolidation; absorb events come from the
+    // apply report, merges from core tracking on the same store. ──
+    let (merge_consolidation, hrm_merges, hrm_absorbs) = {
+        use kannaka_memory::hrm_store::HrmStore;
+        use kannaka_memory::medium::types::{ConsolidateMode, ConsolidateOpts};
+        use kannaka_memory::MediumBackend;
+
+        let prev_under_belief = std::env::var("KANNAKA_MERGE_UNDER_BELIEF").ok();
+        std::env::set_var("KANNAKA_MERGE_UNDER_BELIEF", "1");
+
+        let hrm_pipeline = {
+            let encoder = Box::new(SimpleHashEncoder::new(384, 42));
+            let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let enc_pipeline = {
+            let encoder = Box::new(SimpleHashEncoder::new(384, 42));
+            let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let tmp_hrm = std::env::temp_dir().join(format!("l7-hrm-{}.hrm", std::process::id()));
+        let mut hrm = HrmStore::new(hrm_pipeline, tmp_hrm.clone());
+        hrm.set_readonly(true); // never flush the throwaway store to disk
+
+        // Shared domains + a near-duplicate triplet per domain (three phrasings
+        // of one fact: high mutual cosine + content-born phase lock = exactly
+        // what belief-safe resonance-merge exists to consolidate).
+        for d in 0..3usize {
+            for i in 0..items {
+                let s = domain_sentence(d, i);
+                if let Ok(v) = enc_pipeline.encode_text(&s) {
+                    let _ = hrm.insert(HyperMemory::new(v, s));
+                }
+            }
+            for (t, suffix) in ["", " indeed", " truly"].iter().enumerate() {
+                let s = format!("{}{}", domain_sentence(d, 0), suffix);
+                if let Ok(v) = enc_pipeline.encode_text(&s) {
+                    let _ = hrm.insert(HyperMemory::new(v, format!("{s} #{t}")));
+                }
+            }
+        }
+
+        let opts = ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            ..Default::default()
+        };
+        let mut hrm_snaps: Vec<Vec<CoreObs>> = Vec::new();
+        let mut hrm_absorb_epochs: Vec<usize> = Vec::new();
+        for e in 0..epochs {
+            let _ = hrm.dream(2, None);
+            let rep = hrm.apply_consolidation(&opts);
+            if rep.would_absorb > 0 {
+                hrm_absorb_epochs.push(e);
+            }
+            hrm_snaps.push(hrm.belief_core_snapshot());
+        }
+        let mut hrm_merge_epochs: Vec<usize> = Vec::new();
+        for e in 0..hrm_snaps.len().saturating_sub(1) {
+            for core in &hrm_snaps[e] {
+                if let Some((_, s)) = l6::nearest_core(&core.fp, &hrm_snaps[e + 1], Some(core.charge)) {
+                    if s < min_cos && s >= merge_cos {
+                        hrm_merge_epochs.push(e + 1);
+                    }
+                }
+            }
+        }
+        match prev_under_belief {
+            Some(v) => std::env::set_var("KANNAKA_MERGE_UNDER_BELIEF", v),
+            None => std::env::remove_var("KANNAKA_MERGE_UNDER_BELIEF"),
+        }
+        let _ = std::fs::remove_file(&tmp_hrm);
+        (
+            bf::merge_consolidation_score(&hrm_merge_epochs, &hrm_absorb_epochs, 1),
+            hrm_merge_epochs.len(),
+            hrm_absorb_epochs.len(),
+        )
+    };
+    println!("l7_hrm_merge_events:  {}", hrm_merges);
+    println!("l7_hrm_absorb_epochs: {}", hrm_absorbs);
     println!("merge_consolidation:  {:.4}", merge_consolidation);
 
     // ── Prediction 3: shared cores ⇒ swarm agreement. Per agent pair:
