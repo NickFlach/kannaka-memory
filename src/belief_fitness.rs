@@ -97,14 +97,21 @@ pub fn stability_recall_score(pairs: &[(f32, f32)]) -> f32 {
 /// epochs where two tracks fused (one ended while a same-charge,
 /// content-similar track survived); `absorb_epochs` are the epochs whose dream
 /// reported wavefronts dissolved (the consolidation observable). The score is
-/// the fraction of merges with an absorb within ±`window` epochs. No merges
-/// observed = no evidence = 0.5.
+/// the fraction of merges with an absorb within ±`window` epochs.
+///
+/// No merges observed = no evidence = 0.5. No absorb events observed AT ALL is
+/// ALSO no evidence: a session whose substrate never dissolved anything has a
+/// blind observable, and merges against a blind observable neither support nor
+/// refute the implication. (Verified the hard way: ChiralMedium's holistic
+/// energy floor (0.01) sits above the deep-dream prune threshold (0.005), so
+/// `wavefronts_dissolved` is structurally 0 there — scoring that 0.0 would
+/// report a falsification the substrate cannot even express.)
 pub fn merge_consolidation_score(
     merge_epochs: &[usize],
     absorb_epochs: &[usize],
     window: usize,
 ) -> f32 {
-    if merge_epochs.is_empty() {
+    if merge_epochs.is_empty() || absorb_epochs.is_empty() {
         return 0.5;
     }
     let hits = merge_epochs
@@ -213,6 +220,13 @@ mod tests {
     #[test]
     fn no_merges_is_no_evidence() {
         assert_eq!(merge_consolidation_score(&[], &[0, 1, 2], 1), 0.5);
+    }
+
+    #[test]
+    fn blind_absorb_observable_is_no_evidence_not_refutation() {
+        // Merges happened but the substrate never dissolved anything — the
+        // observable is blind, so the implication is untested, not false.
+        assert_eq!(merge_consolidation_score(&[2, 4, 5], &[], 1), 0.5);
     }
 
     // ── fitness aggregation ──

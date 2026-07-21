@@ -4047,6 +4047,11 @@ fn run_experiment_l7_session(_params: &Params) {
     let merge_cos = envf("L7_MERGE_COS", 0.60);
     let couple = std::env::var("L7_COUPLE").map(|v| v == "1").unwrap_or(false);
     let couple_strength = envf("L7_COUPLE_STRENGTH", 0.2);
+    // Distractor importance. Default 0.25 = churn that never prunes (energy
+    // threshold 0.01); setting it below 0.01 is the detector self-test — the
+    // absorb channel MUST fire then, or a merge_consolidation of 0.0 would be
+    // a dead instrument rather than a falsification.
+    let junk_importance = envf("L7_JUNK_IMPORTANCE", 0.25);
     const FP_DIMS: usize = 16; // must match belief_core_snapshot's fingerprint dims
 
     println!("=== L7 belief session (ADR-0037 falsification predictions) ===");
@@ -4145,7 +4150,7 @@ fn run_experiment_l7_session(_params: &Params) {
                     "ephemeral flicker {} {} of agent {} passing note {}",
                     e, x, a, (e * 7 + x * 3 + a) % 13
                 );
-                let _ = cm.store(&junk, 0.25, &pipeline);
+                let _ = cm.store(&junk, junk_importance, &pipeline);
             }
             // Deep dream every third epoch — the consolidation pressure that
             // produces absorb events and core merges.

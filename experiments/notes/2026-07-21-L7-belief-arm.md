@@ -10,7 +10,7 @@ better; 0.5 per axis = no evidence.
 | axis | score | reading |
 |---|---|---|
 | stability_recall | 0.3738 | prediction 1 LEANS AGAINST: more-stable cores answer contested cues *less* reliably in this regime |
-| merge_consolidation | 0.0000 | prediction 2 FALSIFIED at this timescale: 13 core merges, zero field consolidation events (energy prune threshold 0.01 is unreachable in 6 epochs — cores churn as embedding artifacts over a stable field) |
+| merge_consolidation | ~~0.0000~~ **0.5000** | ~~prediction 2 FALSIFIED~~ **RETRACTED — see below: the observable is structurally blind; prediction 2 is UNTESTABLE in ChiralMedium as built** |
 | shared_agreement | 0.7464 | prediction 3 LEANS SUPPORTED: pairs sharing more cores agree more under ambiguous recall (the Track-D thesis) |
 | l7_fitness | 0.5893 | |
 
@@ -42,6 +42,33 @@ same weak-coupling-preserves-diversity lesson as the L5 Kuramoto K-sweep
 (K=0.5 beat K=1.0). Track-D's default strength should live in the 0.1–0.2
 band, and which end depends on whether the swarm optimizes collective
 agreement or individual recall reliability.
+
+## Prediction 2 RETRACTION + architecture finding (same day)
+
+The initial "falsified at this timescale" reading did not survive a detector
+self-test: junk stored at importance 0.001 — far below the deep-dream prune
+threshold (0.005) — STILL produced zero absorb events across 6, 12, and 18
+epoch sessions. Root cause is structural, not parametric:
+**`Hemisphere` wave dynamics floor energy at 0.01**
+(`hemisphere.rs` `(e + growth − dampening).max(0.01)`, plus a
+`dream_energy_floor` inside the dream), while the deep dream prunes below
+0.005 — so `wavefronts_dissolved` can NEVER be nonzero in the holistic
+hemisphere. Lite dreams have no prune path at all.
+
+Consequences:
+- `belief_fitness::merge_consolidation_score` now returns the no-evidence 0.5
+  when the session observed zero absorb events (blind observable ≠
+  refutation). Baseline l7_fitness moves 0.589 → 0.464.
+- The floor-vs-threshold contradiction itself is a substrate finding worth an
+  issue: either the floor or the prune threshold is dead code as shipped.
+- The REAL consolidation machinery is `HrmStore`'s ADR-0036 resonance-merge
+  (`KANNAKA_CONSOLIDATE`, belief-safe caps). Testing prediction 2 properly
+  means an L7 variant driving HrmStore-level sessions where merges CAN
+  consolidate — the natural next increment for this arm.
+
+Session-length note: uncoupled stability_recall degrades with epochs
+(6→12→18: 0.37→0.49→0.14, non-monotone but collapsing) while merges scale
+linearly (~2.3/epoch) — long uncoupled belief fields churn.
 
 ## Suggested next experiments (single-knob, per protocol)
 
