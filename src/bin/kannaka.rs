@@ -4815,28 +4815,49 @@ fn main() {
                     } else {
                         nats_phases
                     };
-                    if nats_phases.is_empty() {
-                        eprintln!(
-                            "No swarm phases found via NATS. Publish first with 'swarm publish'."
-                        );
-                        process::exit(1);
-                    }
-
                     let mut queen = kannaka_memory::QueenSync::new(
                         kannaka_memory::QueenConfig::default(),
                         &agent_id,
                     );
                     queen.derive_local_state(&sys.engine);
 
-                    let state = queen.queen_sync_step(&nats_phases);
+                    if nats_phases.is_empty() {
+                        // BOOTSTRAP: hearing no one must not silence us — the
+                        // first node's sync IS its announcement. The old
+                        // exit(1)-without-publishing deadlocked an empty swarm
+                        // (two such nodes wait on each other forever) and made
+                        // the witness invisible for weeks when its JS read
+                        // lane closed: every tick heard nothing, so every
+                        // tick published nothing.
+                        let phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
+                        if let Err(e) = transport.publish_phase(&phase) {
+                            eprintln!("[nats] bootstrap phase publish failed: {e}");
+                            process::exit(1);
+                        }
+                        eprintln!(
+                            "No peer phases heard — published our own phase so the swarm can find us."
+                        );
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "bootstrap_announce": true,
+                                "peers_heard": 0,
+                                "agent_id": agent_id,
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        let state = queen.queen_sync_step(&nats_phases);
 
-                    // Publish updated phase back to NATS
-                    let updated_phase = queen.to_agent_phase(0, sys.engine.store.count(), 0);
-                    if let Err(e) = transport.publish_phase(&updated_phase) {
-                        eprintln!("[nats] Warning: failed to publish updated phase: {e}");
+                        // Publish updated phase back to NATS
+                        let updated_phase =
+                            queen.to_agent_phase(0, sys.engine.store.count(), 0);
+                        if let Err(e) = transport.publish_phase(&updated_phase) {
+                            eprintln!("[nats] Warning: failed to publish updated phase: {e}");
+                        }
+
+                        println!("{}", serde_json::to_string_pretty(&state).unwrap());
                     }
-
-                    println!("{}", serde_json::to_string_pretty(&state).unwrap());
                 }
                 "queen" => {
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
