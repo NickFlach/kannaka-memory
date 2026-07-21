@@ -1059,6 +1059,13 @@ impl SwarmTransport {
         transport.jetstream_ok = created || transport.stream_readable(STREAM_NAME);
         if created {
             let _ = transport.ensure_events_stream();
+        } else if transport.jetstream_ok {
+            // Give the scary async "-ERR Permissions Violation ... STREAM.CREATE"
+            // its context: for a non-writer identity this is EXPECTED, not a
+            // failure — retained reads are active and the swarm is fully usable.
+            eprintln!(
+                "[nats] JetStream read-only for this user (stream create denied — expected for non-writer identities); retained reads active"
+            );
         }
 
         Ok(transport)
@@ -1125,6 +1132,10 @@ impl SwarmTransport {
         self.jetstream_ok = created || self.stream_readable(STREAM_NAME);
         if created {
             let _ = self.ensure_events_stream();
+        } else if self.jetstream_ok {
+            eprintln!(
+                "[nats] JetStream read-only for this user (stream create denied — expected for non-writer identities); retained reads active"
+            );
         }
 
         // Replay buffered messages in order. On failure the unsent remainder

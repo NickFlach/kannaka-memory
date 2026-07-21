@@ -24,6 +24,36 @@ launcher behind, so the uninstaller stops the task, kills exactly this launcher'
 process tree (matched by launcher path, so a second beacon on the host is never
 touched), and removes the copied `.vbs`.
 
+## [0.11.1] — 2026-07-21
+
+### Fixed — restricted NATS users see the swarm again (peers were 0 on live swarms)
+
+ADR-0042 closed `$JS.API.STREAM.CREATE` for non-writer identities; the client
+treated that denial as "no JetStream" and fell back to live-gossip sniffing,
+whose 1.5s-silence window can't hear 30s beacons — so `swarm status` reported
+0 peers on a live swarm and the statusline showed `0p`. The read lane
+(`$JS.API.STREAM.MSG.GET`) was open the whole time:
+
+- `connect()`/reconnect now probe MSG.GET readability after a denied CREATE
+  and keep the retained-phase JetStream path (new `has_jetstream_write()`
+  gates stream/bucket management separately).
+- `peer_count` comes from `live_phase_agents()`: identity from the
+  `QUEEN.phase.<id>` subject, liveness from the **broker's** ingest time
+  (≤5 min, mirroring the roster KV TTL) — immune to publisher clock skew,
+  payloads that don't conform to `AgentPhase`, and the retained stream's
+  graveyard of long-departed agents.
+- The startup `Permissions Violation ... STREAM.CREATE` server error now gets
+  a follow-up line explaining it is EXPECTED for non-writer identities
+  (JetStream read-only; retained reads active).
+
+### Fixed — `swarm sync` bootstraps an empty swarm instead of deadlocking
+
+Hearing no peer phases used to `exit(1)` **without publishing** ("publish
+first with 'swarm publish'") — two such nodes wait on each other forever, and
+a node whose read path was broken ticked silently for weeks. Sync now
+publishes its own phase (`{"bootstrap_announce": true}`, exit 0): the first
+node's sync IS its announcement.
+
 ## [0.10.9] — 2026-07-08
 
 ### Changed — entropy source defaults to `reservoir` (Quantum-Wave T1.5 flip, #475)
