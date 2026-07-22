@@ -4152,10 +4152,38 @@ fn main() {
                         .ok()
                         .and_then(|v| v.parse::<f32>().ok())
                         .unwrap_or(0.7);
+                    // L7 belief-arm result (2026-07-21): no single coupling strength
+                    // satisfies both the individual claim (stability⇒recall) and the
+                    // swarm claim (shared⇒agreement) — but a strong-then-weak
+                    // ALTERNATION does, and the order is load-bearing (weak-then-strong
+                    // collapses the swarm claim). schedule=alternate runs odd coupling
+                    // events at strong (default 2× weak) and even events at weak;
+                    // the first event is strong — consolidate, then diversify.
+                    // **Alternation is the DEFAULT** (Nick, 2026-07-21, on the L7
+                    // verdicts); set KANNAKA_EXEMPLAR_COUPLING_SCHEDULE=fixed for the
+                    // old single-strength behavior. The measured 2:1 strong:weak
+                    // ratio is preserved at production magnitudes (0.10/0.05).
+                    let coupling_strength_weak = std::env::var("KANNAKA_EXEMPLAR_COUPLING_STRENGTH")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(0.05);
+                    let coupling_strength_strong = std::env::var("KANNAKA_EXEMPLAR_COUPLING_STRONG")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(coupling_strength_weak * 2.0);
+                    let coupling_alternate = std::env::var("KANNAKA_EXEMPLAR_COUPLING_SCHEDULE")
+                        .map(|v| !v.eq_ignore_ascii_case("fixed"))
+                        .unwrap_or(true);
                     if coupling_on {
-                        println!(
-                            "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2} (phase-only; a coupling tick briefly blocks the beacon; needs belief on)"
-                        );
+                        if coupling_alternate {
+                            println!(
+                                "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2}, schedule=alternate strong-then-weak ({coupling_strength_strong:.3}/{coupling_strength_weak:.3}) (phase-only; a coupling tick briefly blocks the beacon; needs belief on)"
+                            );
+                        } else {
+                            println!(
+                                "[couple] always-on belief coupling ENABLED — every {coupling_ticks} ticks, min_cos {coupling_min_cos:.2}, strength {coupling_strength_weak:.3} fixed (phase-only; a coupling tick briefly blocks the beacon; needs belief on)"
+                            );
+                        }
                     }
 
                     let mut tick: u64 = 0;
@@ -4290,6 +4318,19 @@ fn main() {
                                         // Gentle per-event nudge: small strength/cycles + a
                                         // tight displacement budget so consensus accrues
                                         // gradually across heartbeats, never in one jump.
+                                        // Under schedule=alternate the strength swings
+                                        // strong/weak per coupling EVENT (odd=strong, so
+                                        // the first event consolidates before diversifying).
+                                        let couple_event = tick / coupling_ticks;
+                                        let event_strength = if coupling_alternate {
+                                            if couple_event % 2 == 1 {
+                                                coupling_strength_strong
+                                            } else {
+                                                coupling_strength_weak
+                                            }
+                                        } else {
+                                            coupling_strength_weak
+                                        };
                                         let (moved, saved_ok) = sys
                                             .engine
                                             .store
@@ -4299,7 +4340,7 @@ fn main() {
                                                 h.couple_belief(
                                                     &peer_cores,
                                                     5,
-                                                    0.05,
+                                                    event_strength,
                                                     0.2,
                                                     coupling_min_cos,
                                                 )
@@ -4313,7 +4354,7 @@ fn main() {
                                             );
                                         } else if moved > 0 {
                                             println!(
-                                                "[couple] tick #{tick}: nudged {moved} wavefronts toward {} cores from {sources} peer(s)",
+                                                "[couple] tick #{tick}: nudged {moved} wavefronts toward {} cores from {sources} peer(s) (strength {event_strength:.3})",
                                                 peer_cores.len()
                                             );
                                         }

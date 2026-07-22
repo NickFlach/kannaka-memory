@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed — Track-D heartbeat coupling alternates strong→weak BY DEFAULT
+
+The L7 belief arm measured that no fixed coupling strength satisfies both
+falsification claims — stability⇒recall wants strong coupling, shared⇒
+agreement wants weak — but a strong-then-weak alternation satisfies both,
+and the order is load-bearing (consolidate, then diversify). The always-on
+heartbeat coupling (`KANNAKA_EXEMPLAR_COUPLING`, still default-off overall)
+now runs `schedule=alternate` by default: odd coupling events at
+`KANNAKA_EXEMPLAR_COUPLING_STRONG` (default 2× weak), even events at
+`KANNAKA_EXEMPLAR_COUPLING_STRENGTH` (default 0.05). Opt back into the old
+single-strength behavior with `KANNAKA_EXEMPLAR_COUPLING_SCHEDULE=fixed`.
+
 ### Added — L7 belief research arm (ADR-0037 falsification, `research --level 7`)
 
 The autoresearch ladder gains its belief rung. The README's falsifiability
