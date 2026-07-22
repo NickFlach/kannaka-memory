@@ -155,6 +155,22 @@ open experiment 2 and is the arm's headline design insight so far — worth a
 Track-D default: heartbeat coupling could alternate strength instead of
 holding one value.
 
+## MIN_COS sensitivity + clause restatement (late evening)
+
+`L7_MIN_COS` sweep on the alternating (0.2,0.1) config: 0.75 → both
+correlations degrade (loose matching = false-positive tracks/shares); 0.85
+(default) → best (P1 0.585 / P3 0.854); 0.92 → P3 holds (0.865), P1 dips
+(track fragmentation). **Verdicts stable across the sensible band; P2 = 0.0
+at every setting (robust falsification). Default 0.85 validated.**
+
+`DREAM_GRAVITY` × belief is NOT yet runnable: that knob lives in the L5
+dream-chain harness, not in `ChiralMedium::dream` — a medium-level gravity
+hook is prerequisite (open experiment, requires substrate code).
+
+README falsifiability clause restated from "predicts" to **measured** with
+the day's verdicts (graduation criterion met for the clause; remaining:
+issue #583 disposition + stochastic-regime 10-run checks).
+
 ## Suggested next experiments (single-knob, per protocol)
 
 1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,

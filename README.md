@@ -90,7 +90,11 @@ kannaka belief recall-probe  # self-recall@k — does core stability predict rec
 
 A core only earns the word "belief" if it maps to a recallable content cluster **and** its dynamics predict: core stability ⇒ recall reliability, core merge ⇒ a consolidation event, shared cores ⇒ swarm agreement.
 
-Those three predictions are now *scored*, not just stated: the autoresearch ladder's **L7 belief arm** (`cargo run --release --bin research -- --level 7`) runs a real multi-agent belief substrate (nested-overlap domains, per-epoch dreams, spiral-core snapshots, optional Track-D coupling via `L7_COUPLE=1`) and turns each prediction into a [0,1] score plus a weighted `l7_fitness` (`src/belief_fitness.rs`; rows append to `experiments/results-L7.tsv`).
+Those three predictions are now *measured*, not just stated — the autoresearch ladder's **L7 belief arm** (`cargo run --release --bin research -- --level 7`, design in `research/program-l7.md`) runs a real multi-agent belief substrate and scores each prediction in [0,1] (`src/belief_fitness.rs`; rows append to `experiments/results-L7.tsv`). **Measured verdicts (2026-07-21, stable across the fingerprint-matching band):**
+
+- *core stability ⇒ recall reliability* — **holds under Track-D coupling** (0.74 at strength 0.2), fails without it (long uncoupled fields churn);
+- *shared cores ⇒ swarm agreement* — **holds** (0.85+), strongest under a strong→weak alternating coupling schedule (consolidate-then-diversify — the two claims trade off at any fixed strength but alternation satisfies both);
+- *core merge ⇒ a consolidation event* — **falsified** (0.0 with a canary-proven live channel): core fusion is an embedding-geometry event, independent of ADR-0036 consolidation. The clause survives as two claims about coupling, not three about cores.
 
 ### Dream Consolidation
 
