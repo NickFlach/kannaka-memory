@@ -4359,6 +4359,10 @@ fn run_experiment_l7_session(_params: &Params) {
         // content clusters approach and their cores can FUSE while ADR-0036
         // consolidation runs: prediction 2's antecedent, induced.
         let (dom_a, dom_b) = (0usize, 3usize);
+        // Canary CONTENTS, not ids: the merge may keep EITHER pair member as
+        // carrier (highest post-dream energy) and absorb the other — id
+        // tracking mislabels the original's absorption as organic.
+        let canary_contents = [domain_sentence(dom_a, 1), domain_sentence(dom_b, 1)];
         for d in [dom_a, dom_b] {
             for i in 0..items {
                 let _ = cm.store(&domain_sentence(d, i), 0.8, &pipeline);
@@ -4370,8 +4374,9 @@ fn run_experiment_l7_session(_params: &Params) {
             // CANARY: an exact duplicate (identical text ⇒ identical vector ⇒
             // centered cosine 1.0 + identical born phase) that MUST pass the
             // ADR-0036 gates. Its absorption proves the consolidation channel
-            // is live — after which zero absorbs at merge epochs is genuine
-            // counter-evidence, not a blind observable.
+            // is live. Canary ids are tracked so their absorptions count ONLY
+            // as capability proof — never as alignment evidence (they are
+            // experimenter artifacts, not substrate consolidation).
             let _ = cm.store(&domain_sentence(d, 1), 0.8, &pipeline);
         }
         let bridge_sentence = |e: usize, x: usize| -> String {
@@ -4387,6 +4392,7 @@ fn run_experiment_l7_session(_params: &Params) {
         let opts = ConsolidateOpts::default();
         let mut hrm_snaps: Vec<Vec<CoreObs>> = Vec::new();
         let mut hrm_absorb_epochs: Vec<usize> = Vec::new();
+        let mut channel_proven = false;
         for e in 0..epochs {
             if e >= epochs / 2 {
                 for x in 0..2 {
@@ -4424,13 +4430,21 @@ fn run_experiment_l7_session(_params: &Params) {
                     }
                 }
             }
-            let mut absorbed = 0usize;
+            let mut organic_absorbed = 0usize;
             for id in &absorb_ids {
+                let is_canary = (0..cm.right.count())
+                    .find(|&i| cm.right.metadata[i].id == *id)
+                    .map(|i| canary_contents.contains(&cm.right.metadata[i].content))
+                    .unwrap_or(false);
                 if cm.right.remove_wavefront(id) {
-                    absorbed += 1;
+                    if is_canary {
+                        channel_proven = true;
+                    } else {
+                        organic_absorbed += 1;
+                    }
                 }
             }
-            if absorbed > 0 {
+            if organic_absorbed > 0 {
                 hrm_absorb_epochs.push(e);
             }
             hrm_snaps.push(cm.belief_core_snapshot());
@@ -4438,8 +4452,14 @@ fn run_experiment_l7_session(_params: &Params) {
         let hrm_merge_epochs = core_merge_epochs(&hrm_snaps, merge_cos);
         let core_counts: Vec<usize> = hrm_snaps.iter().map(|s| s.len()).collect();
         println!("l7_hrm_core_counts:   {:?}", core_counts);
+        println!("l7_hrm_channel_proven: {}", channel_proven);
         (
-            bf::merge_consolidation_score(&hrm_merge_epochs, &hrm_absorb_epochs, p2_window),
+            bf::merge_consolidation_score_proven(
+                &hrm_merge_epochs,
+                &hrm_absorb_epochs,
+                p2_window,
+                channel_proven,
+            ),
             hrm_merge_epochs.len(),
             hrm_absorb_epochs.len(),
         )

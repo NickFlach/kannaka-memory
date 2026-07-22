@@ -117,6 +117,25 @@ consolidation event. Either the prediction needs restating (fusion ⇒
 *eventual* consolidation at longer horizons?) or core identity and memory
 consolidation are more independent than ADR-0037 assumed.
 
+## Prediction 2 — CLEAN falsification (canary semantics fixed, evening)
+
+Two instrument corrections finalize the P2 verdict:
+1. Canary absorptions are EXPERIMENTER ARTIFACTS — they prove the channel
+   can fire but are not alignment evidence. The scorer gained
+   `merge_consolidation_score_proven(..., channel_proven)`: merges + proven
+   channel + zero ORGANIC absorbs = genuine 0.0 (vs no-evidence 0.5 when
+   unproven). The earlier 0.125 was artifact-contaminated.
+2. Canary attribution is by CONTENT, not id — the merge may keep either pair
+   member as carrier and absorb the *original* (which is exactly what
+   happened: `channel_proven` initially read false while the pair merged).
+
+Final: channel_proven ✓, organic absorbs 0, fusions 8 →
+**merge_consolidation = 0.0000. Prediction 2 is falsified in this regime:
+belief-core fusion and memory consolidation are independent phenomena.**
+ADR-0037's clause should be restated — core merges are embedding-geometry
+events; consolidation is an energy/redundancy event; the substrate exhibits
+both without coupling them.
+
 ## Coupling SCHEDULES: the trade-off dissolves under alternation (evening)
 
 `L7_COUPLE_SCHEDULE` (comma list, cycled per epoch):

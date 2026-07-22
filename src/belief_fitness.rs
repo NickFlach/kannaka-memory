@@ -111,8 +111,26 @@ pub fn merge_consolidation_score(
     absorb_epochs: &[usize],
     window: usize,
 ) -> f32 {
-    if merge_epochs.is_empty() || absorb_epochs.is_empty() {
+    merge_consolidation_score_proven(merge_epochs, absorb_epochs, window, false)
+}
+
+/// Like [`merge_consolidation_score`], with the blind-channel ambiguity
+/// resolved by an explicit capability proof. `absorb_epochs` must contain only
+/// ORGANIC consolidation events — canary absorptions are experimenter
+/// artifacts and belong in `channel_proven`, not the alignment set. With the
+/// channel proven live, merges against zero organic events are genuine
+/// counter-evidence (0.0), not no-evidence.
+pub fn merge_consolidation_score_proven(
+    merge_epochs: &[usize],
+    absorb_epochs: &[usize],
+    window: usize,
+    channel_proven: bool,
+) -> f32 {
+    if merge_epochs.is_empty() {
         return 0.5;
+    }
+    if absorb_epochs.is_empty() {
+        return if channel_proven { 0.0 } else { 0.5 };
     }
     let hits = merge_epochs
         .iter()
@@ -227,6 +245,19 @@ mod tests {
         // Merges happened but the substrate never dissolved anything — the
         // observable is blind, so the implication is untested, not false.
         assert_eq!(merge_consolidation_score(&[2, 4, 5], &[], 1), 0.5);
+    }
+
+    #[test]
+    fn proven_channel_with_zero_organic_absorbs_is_refutation() {
+        // The canary proved consolidation CAN fire; fusions occurred; nothing
+        // organic consolidated — that is counter-evidence, not ignorance.
+        assert_eq!(merge_consolidation_score_proven(&[2, 4, 5], &[], 1, true), 0.0);
+        // Without the proof, the same data stays no-evidence.
+        assert_eq!(merge_consolidation_score_proven(&[2, 4, 5], &[], 1, false), 0.5);
+        // No merges is no evidence regardless of proof.
+        assert_eq!(merge_consolidation_score_proven(&[], &[], 1, true), 0.5);
+        // With organic absorbs present, alignment scores as before.
+        assert_eq!(merge_consolidation_score_proven(&[2], &[2], 1, true), 1.0);
     }
 
     // ── fitness aggregation ──
