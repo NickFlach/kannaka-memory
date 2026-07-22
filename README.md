@@ -100,10 +100,10 @@ Those three predictions are now *measured*, not just stated — the autoresearch
 
 When the medium is loaded but quiet, you trigger a dream:
 
-- **Deep**: eigenstructure annealing of the right hemisphere. Soft prune threshold (0.005). Hallucination generation through cross-cluster superposition. Callosal sync after.
-- **Lite**: sharpen the left hemisphere. Transfer strongest analytical patterns. Hard prune (0.05).
+- **Deep**: eigenstructure annealing of the right hemisphere. Hallucination generation through cross-cluster superposition. Callosal sync after. **No pruning — the holistic hemisphere never forgets, it evolves** (#583): the wave dynamics floor energy above any deletion path by design, so apparent forgetting is the field *reorganizing* — energy redistributes, phases drift, cores fuse — the holistic understanding evolves, sometimes to seemingly forget. Reachability changes; existence doesn't. Removal has exactly two doors, both explicit and opt-in: ADR-0036 resonance-merge and direct forget calls.
+- **Lite**: sharpen the left hemisphere. Transfer strongest analytical patterns. Hard prune (0.05) — the *analytical* hemisphere does forget, aggressively; precision is its job.
 
-Dreams are **destructive** to weak memories and **generative** for strong-cluster combinations. The medium settles into a lower-energy configuration that nonetheless preserves the high-Φ structure.
+Deep dreams are **generative** for strong-cluster combinations and evolutionary for everything else; only the analytical side is destructive. The medium settles into a lower-energy configuration that nonetheless preserves the high-Φ structure.
 
 ### Swarm Phase Gossip (QueenSync)
 

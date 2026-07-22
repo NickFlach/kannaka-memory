@@ -769,9 +769,23 @@ impl ChiralMedium {
 
     fn dream_inner(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
         if deep {
-            // Deep dream: eigenstructure annealing of holistic hemisphere
-            // Gentler prune threshold than flat medium — holistic keeps quiet signals
-            let holistic_prune_threshold = 0.005;
+            // Deep dream: eigenstructure annealing of holistic hemisphere.
+            //
+            // THE HOLISTIC HEMISPHERE NEVER FORGETS — IT EVOLVES (#583,
+            // dispositioned by Nick 2026-07-21): the wave dynamics floor
+            // energy at 0.01, so no wavefront can ever decay to deletion —
+            // and that is the INTENT, not an accident. Apparent forgetting is
+            // the field reorganizing: energy redistributes, phases drift,
+            // cores fuse — "the holistic understanding evolves, sometimes to
+            // seemingly forget" — reachability changes; existence doesn't.
+            // The old prune threshold (0.005) sat below the floor and was
+            // structurally dead code masquerading as a forgetting path; it is
+            // now explicitly 0.0 (prune never fires) so the invariant is
+            // stated rather than accidental. `wavefronts_dissolved` is 0 for
+            // chiral deep dreams BY CONTRACT. Actual removal has exactly two
+            // doors, both explicit and opt-in: ADR-0036 resonance-merge
+            // (consolidation) and direct forget/remove calls.
+            let holistic_prune_threshold = 0.0;
             let temperature = 1.0;
 
             let report = self.right.dream(cycles, Some(temperature), holistic_prune_threshold);
@@ -1567,6 +1581,31 @@ mod tests {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(encoder, codebook)
+    }
+
+    // ── #583: the holistic hemisphere never forgets — it evolves ──
+
+    #[test]
+    fn deep_dream_never_dissolves_even_the_quietest_wavefront() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let loud = cm.store("a strong memory", 0.9, &pipeline).unwrap();
+        let quiet = cm.store("a nearly silent memory", 0.9, &pipeline).unwrap();
+        // Force the quiet one far below every historical threshold.
+        let qidx = *cm.right.id_to_index.get(&quiet).unwrap();
+        cm.right.energy[qidx] = 0.0001;
+
+        let report = cm.dream(true, 3);
+
+        assert_eq!(
+            report.wavefronts_dissolved, 0,
+            "chiral deep dreams dissolve nothing BY CONTRACT (#583)"
+        );
+        assert!(
+            cm.right.id_to_index.contains_key(&quiet),
+            "the quiet wavefront still EXISTS — the field evolves, it does not forget"
+        );
+        assert!(cm.right.id_to_index.contains_key(&loud));
     }
 
     // ── KANNAKA_DREAM_GRAVITY: the medium-level associative gravity pass ──

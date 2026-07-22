@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed — #583 dispositioned: the holistic hemisphere never forgets, it evolves
+
+The energy floor (0.01) sitting above the deep-dream prune threshold (0.005)
+was not a bug but an undeclared invariant — dispositioned as INTENT: the
+holistic hemisphere's understanding *evolves* (energy redistributes, phases
+drift, cores fuse; reachability changes, existence doesn't) and never
+deletes. The dead sub-floor prune is now an explicit 0.0 with the contract
+documented (`wavefronts_dissolved` = 0 for chiral deep dreams by design), a
+regression test pins the guarantee (a 0.0001-energy wavefront survives a
+deep dream), and removal is documented as having exactly two explicit,
+opt-in doors: ADR-0036 resonance-merge and direct forget calls. The lite
+(analytical) hemisphere's hard prune is unchanged — precision is its job.
+
 ### Changed — Track-D heartbeat coupling alternates strong→weak BY DEFAULT
 
 The L7 belief arm measured that no fixed coupling strength satisfies both
