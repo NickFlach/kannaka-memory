@@ -4159,6 +4159,10 @@ fn main() {
                     // collapses the swarm claim). schedule=alternate runs odd coupling
                     // events at strong (default 2× weak) and even events at weak;
                     // the first event is strong — consolidate, then diversify.
+                    // **Alternation is the DEFAULT** (Nick, 2026-07-21, on the L7
+                    // verdicts); set KANNAKA_EXEMPLAR_COUPLING_SCHEDULE=fixed for the
+                    // old single-strength behavior. The measured 2:1 strong:weak
+                    // ratio is preserved at production magnitudes (0.10/0.05).
                     let coupling_strength_weak = std::env::var("KANNAKA_EXEMPLAR_COUPLING_STRENGTH")
                         .ok()
                         .and_then(|v| v.parse::<f32>().ok())
@@ -4168,8 +4172,8 @@ fn main() {
                         .and_then(|v| v.parse::<f32>().ok())
                         .unwrap_or(coupling_strength_weak * 2.0);
                     let coupling_alternate = std::env::var("KANNAKA_EXEMPLAR_COUPLING_SCHEDULE")
-                        .map(|v| v.eq_ignore_ascii_case("alternate"))
-                        .unwrap_or(false);
+                        .map(|v| !v.eq_ignore_ascii_case("fixed"))
+                        .unwrap_or(true);
                     if coupling_on {
                         if coupling_alternate {
                             println!(
