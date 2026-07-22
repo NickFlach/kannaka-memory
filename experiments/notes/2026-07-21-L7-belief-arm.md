@@ -171,6 +171,28 @@ README falsifiability clause restated from "predicts" to **measured** with
 the day's verdicts (graduation criterion met for the clause; remaining:
 issue #583 disposition + stochastic-regime 10-run checks).
 
+## Gravity × belief (medium-level hook built — night)
+
+`ChiralMedium::dream` now ends with an associative phase-gravity pass when
+`KANNAKA_DREAM_GRAVITY` > 0 (default 0.0 byte-identical; faithful port of the
+L5 harness knob incl. the pre-dream-anchor lesson; 3 unit tests). Sweep on
+the alternating-coupling config:
+
+| gravity | stability_recall | shared_agreement | l7_fitness |
+|---|---|---|---|
+| 0 | 0.5850 | **0.8536** | **0.4672** |
+| 0.25 | 0.6597 | 0.1522 | 0.6829 |
+| 0.5 | 0.6546 | 0.1522 | 0.6849 |
+| 1.0 | **0.6837** | 0.1679 | 0.6678 |
+
+**Gravity is an individual-recall knob and a swarm-coherence poison.** It
+lifts stability⇒recall (as L5 found for solo query_gravity) while driving
+shared⇒agreement to ANTI-predictive (~0.15): each node sharpens around its
+own attractor domain, so shared beliefs stop predicting shared answers. The
+individual-vs-collective axis appears a third time (coupling strength,
+coupling order, now gravity). Recommendation: keep `KANNAKA_DREAM_GRAVITY`
+default-off for swarm deployments; consider it for solo nodes only.
+
 ## Suggested next experiments (single-knob, per protocol)
 
 1. DONE — refined 0.125/0.15/0.175: stability_recall 0.64/0.48/0.44,

@@ -38,6 +38,20 @@ pub fn belief_phase_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Medium-level DREAM_GRAVITY gain (`KANNAKA_DREAM_GRAVITY`, **default 0.0 =
+/// OFF**, dreams byte-identical). Distinct from the L5 research harness's
+/// `DREAM_GRAVITY` env, which drives the harness's own dream chain — this one
+/// gates the post-dream associative gravity pass inside `ChiralMedium::dream`
+/// itself, making the gravity×belief interplay measurable on the live medium
+/// (L7 arm, `research/program-l7.md`).
+pub fn dream_gravity_gain() -> f32 {
+    std::env::var("KANNAKA_DREAM_GRAVITY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|g: &f32| g.is_finite() && *g > 0.0)
+        .unwrap_or(0.0)
+}
+
 /// ADR-0036 belief-safe merge: opt in to the DESTRUCTIVE resonance-merge apply
 /// while the belief substrate is active. **Default OFF** — set
 /// `KANNAKA_MERGE_UNDER_BELIEF=1|on|true`. When off (the default), a dream under
@@ -685,7 +699,75 @@ impl ChiralMedium {
     ///   - Higher prune threshold (0.05) — analytical is aggressive about precision
     ///
     /// Returns a DreamReport with statistics about what happened.
+    ///
+    /// When `KANNAKA_DREAM_GRAVITY` > 0, the dream ends with an associative
+    /// phase-gravity pass (see [`Self::apply_dream_gravity`]) — the
+    /// medium-level port of the L5 harness knob that lifted `query_gravity`
+    /// 0.37 → 1.0. Default 0.0 keeps behavior byte-identical.
     pub fn dream(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
+        let gravity_gain = dream_gravity_gain();
+        // PRE-dream snapshot: phase topology + the attractor (highest-energy
+        // wavefront's phase). Anchoring to live post-dream phases fails — the
+        // Kuramoto relaxation moves phases every cycle, so "neighbors" drift
+        // away from the stored topology (the hard-won L5 lesson).
+        let gravity_pre: Option<(Vec<(Uuid, f32)>, f32)> = (gravity_gain > 0.0).then(|| {
+            let n = self.right.count();
+            let mut best = f32::NEG_INFINITY;
+            let mut attractor = 0.0f32;
+            let snap: Vec<(Uuid, f32)> = (0..n)
+                .map(|i| {
+                    if self.right.energy[i] > best {
+                        best = self.right.energy[i];
+                        attractor = self.right.phase[i];
+                    }
+                    (self.right.metadata[i].id, self.right.phase[i])
+                })
+                .collect();
+            (snap, attractor)
+        });
+        let report = self.dream_inner(deep, cycles);
+        if let Some((snap, attractor)) = gravity_pre {
+            self.apply_dream_gravity(gravity_gain, &snap, attractor);
+        }
+        report
+    }
+
+    /// Associative phase-gravity: reinforce right-hemisphere wavefronts whose
+    /// PRE-dream phase was aligned with the attractor's, fade the phase-
+    /// opposed ones. Multiplicative (`e *= 1 + gain·(align − ½)`), clamped to
+    /// the hemisphere's `[0, 2]` energy invariant; ids not in the snapshot
+    /// (dream hallucinations) are untouched. Under belief phase, phases are
+    /// content-born, so gravity concentrates energy on the attractor's
+    /// CONTENT DOMAIN — the gravity×belief interplay the L7 arm measures.
+    /// Not energy-conserving: a recall-sharpening experiment knob, off by
+    /// default. Returns the number of wavefronts touched.
+    pub fn apply_dream_gravity(
+        &mut self,
+        gain: f32,
+        pre_phases: &[(Uuid, f32)],
+        attractor_phase: f32,
+    ) -> usize {
+        if gain <= 0.0 {
+            return 0;
+        }
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let mut touched = 0usize;
+        for (id, phase0) in pre_phases {
+            let Some(&idx) = self.right.id_to_index.get(id) else {
+                continue;
+            };
+            let raw = (phase0 - attractor_phase).abs();
+            let dphi = raw.min(two_pi - raw); // circular distance, 0..π
+            // 1.0 at the attractor phase, 0.5 a quarter turn, 0.0 anti-phase.
+            let align = 1.0 - dphi / std::f32::consts::PI;
+            let g = (1.0 + gain * (align - 0.5)).max(0.0);
+            self.right.energy[idx] = (self.right.energy[idx] * g).clamp(0.0, 2.0);
+            touched += 1;
+        }
+        touched
+    }
+
+    fn dream_inner(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
         if deep {
             // Deep dream: eigenstructure annealing of holistic hemisphere
             // Gentler prune threshold than flat medium — holistic keeps quiet signals
@@ -1485,6 +1567,57 @@ mod tests {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(encoder, codebook)
+    }
+
+    // ── KANNAKA_DREAM_GRAVITY: the medium-level associative gravity pass ──
+
+    #[test]
+    fn dream_gravity_reinforces_phase_neighbors_and_fades_opposed() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let a = cm.store("attractor memory", 0.8, &pipeline).unwrap();
+        let n = cm.store("neighbor memory", 0.8, &pipeline).unwrap();
+        let o = cm.store("opposed memory", 0.8, &pipeline).unwrap();
+        // Hand-set the pre-dream topology: attractor at phase 0 with top
+        // energy, a near neighbor, and an anti-phase memory.
+        for (id, phase, energy) in [(a, 0.0f32, 1.0f32), (n, 0.2, 0.5), (o, std::f32::consts::PI, 0.5)] {
+            let idx = *cm.right.id_to_index.get(&id).unwrap();
+            cm.right.phase[idx] = phase;
+            cm.right.energy[idx] = energy;
+        }
+        let snap: Vec<(Uuid, f32)> = [(a, 0.0f32), (n, 0.2), (o, std::f32::consts::PI)]
+            .into_iter()
+            .collect();
+        let touched = cm.apply_dream_gravity(0.5, &snap, 0.0);
+        assert_eq!(touched, 3);
+        let e = |id: &Uuid| cm.right.energy[*cm.right.id_to_index.get(id).unwrap()];
+        assert!(e(&a) > 1.0, "the attractor itself reinforces (align=1)");
+        assert!(e(&n) > 0.5, "phase-neighbor gains energy, got {}", e(&n));
+        assert!(e(&o) < 0.5, "anti-phase memory fades, got {}", e(&o));
+        assert!(e(&a) <= 2.0 && e(&n) <= 2.0 && e(&o) >= 0.0, "energy invariant [0,2] holds");
+    }
+
+    #[test]
+    fn dream_gravity_zero_gain_is_inert() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let id = cm.store("a memory", 0.8, &pipeline).unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let before = cm.right.energy[idx];
+        let touched = cm.apply_dream_gravity(0.0, &[(id, 0.3)], 0.0);
+        assert_eq!(touched, 0);
+        assert_eq!(cm.right.energy[idx], before, "gain 0 must be byte-identical");
+    }
+
+    #[test]
+    fn dream_gravity_skips_ids_not_in_the_field() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let id = cm.store("a memory", 0.8, &pipeline).unwrap();
+        // A snapshot id that no longer exists (dissolved/absorbed) is skipped.
+        let ghost = Uuid::new_v4();
+        let touched = cm.apply_dream_gravity(0.5, &[(id, 0.0), (ghost, 1.0)], 0.0);
+        assert_eq!(touched, 1, "only the live wavefront is touched");
     }
 
     #[test]
