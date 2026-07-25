@@ -15,6 +15,9 @@
 use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
+/// NIP-44 v2 encrypted payloads (bridge inbound DM crypto).
+pub mod nip44;
+
 /// Errors surfaced by the membrane's identity primitives. Verification errors
 /// are deliberately coarse — a caller must not branch on *why* an event failed
 /// to verify, only that it did.
