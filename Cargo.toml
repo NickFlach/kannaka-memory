@@ -56,6 +56,10 @@ bech32 = { version = "0.11", optional = true }
 # (HKDF extract/expand + payload MAC), ChaCha20 stream cipher, base64 payload.
 # sha2 (above) is the hash. All pure-Rust RustCrypto — no C toolchain.
 hmac = { version = "0.12", optional = true }
+# The bridge daemon's relay connection (behind the `bridge` feature, O2-only —
+# NOT in default, so CI/default builds never pull a TLS/WebSocket stack).
+# rustls avoids OpenSSL linkage.
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
 chacha20 = { version = "0.9", optional = true }
 base64 = { version = "0.22", optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
@@ -102,6 +106,9 @@ default = ["hrm", "nats", "glyph", "nostr"]
 nats = []
 # ADR-0043: NIP-01 sign/verify + nsec/npub encoding for the Nostr membrane.
 nostr = ["k256", "bech32", "hmac", "chacha20", "base64"]
+# ADR-0043 Phase 1: the kannaka-nostr-bridge daemon (relay ws + NATS routing).
+# O2-only, NOT in default — keeps the TLS/WS stack out of every other build.
+bridge = ["nostr", "tungstenite"]
 # mcp removed — CLI is the canonical interface
 # audio feature retained as a no-op alias so external Cargo.toml entries
 # specifying features = ["audio"] still build. Audio support is now always on.
@@ -112,6 +119,11 @@ collective = []  # rayon is now unconditional
 hrm = ["ndarray"]  # blake3 promoted to an unconditional dependency (inc-1a)
 # tui feature removed in v0.5.13 — see NickFlach/kannaka-tui
 # sqlite-migrate feature removed
+
+[[bin]]
+name = "kannaka-nostr-bridge"
+path = "src/bin/kannaka_nostr_bridge.rs"
+required-features = ["bridge"]
 
 [[bin]]
 name = "research"

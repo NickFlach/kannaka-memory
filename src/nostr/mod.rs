@@ -21,6 +21,9 @@ pub mod nip44;
 /// NIP-59 gift wrap + NIP-17 DM unwrap (bridge inbound gate).
 pub mod nip59;
 
+/// Bridge inbound pipeline: dedupe + rate-limit + accept/reject decision.
+pub mod bridge;
+
 /// Errors surfaced by the membrane's identity primitives. Verification errors
 /// are deliberately coarse — a caller must not branch on *why* an event failed
 /// to verify, only that it did.
