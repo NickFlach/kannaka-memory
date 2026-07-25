@@ -446,7 +446,9 @@ EXAMPLE:
                      preserves an existing profile on republish, --identity adds NIP-39 i tags\n  \
                      nip05 --name <local> --pubkey <hex|npub>\n                                    \
                      emit the .well-known/nostr.json names fragment\n  \
-                     verify [--file <path>]         verify a NIP-01 event (recomputes id + BIP-340), stdin if no --file\n\n\
+                     verify [--file <path>]         verify a NIP-01 event (recomputes id + BIP-340), stdin if no --file\n  \
+                     kax-bind --nsec <nsec> --domain <d> --bot-id <uuid> --user-id <id> --nonce <hex>\n                                    \
+                     sign the KAX npub↔bot binding commitment (ADR-0043 attestation)\n\n\
                      Keys are disposable per-role identities (bridge, labs, dvm…), never the\n\
                      reputation-bearing voice key. The nsec is printed once and never persisted here.",
                 )

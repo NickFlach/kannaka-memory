@@ -151,6 +151,39 @@ impl Keypair {
             sig: to_hex(&sig.to_bytes()),
         }
     }
+
+    /// BIP-340 schnorr-sign an arbitrary 32-byte digest (raw message, no
+    /// pre-hash), returning the 64-byte signature as hex. For protocol
+    /// commitments outside NIP-01 — e.g. the KAX npub↔bot binding digest.
+    pub fn sign_digest(&self, digest: &[u8; 32]) -> String {
+        let sig: Signature = self
+            .signing
+            .sign_raw(digest, &rand_aux())
+            .expect("schnorr sign_raw over 32-byte digest");
+        to_hex(&sig.to_bytes())
+    }
+}
+
+/// The KAX npub↔bot binding commitment digest (ADR-0043). MUST byte-match the
+/// server's `npubBindDigest` in Agent-Kax (`artifacts/api-server/src/lib/
+/// npubBind.ts`): sha256 of the compact canonical JSON array
+/// `["kax:npub-bind:v1", domain, npub, botId, userId, nonce]`. Domain-separated
+/// by the leading string tag so it can never collide with a NIP-01 event id
+/// (whose array begins with the integer 0) — a signature gathered for a KAX
+/// binding can never be replayed as a signed Nostr event.
+pub fn kax_bind_digest(
+    domain: &str,
+    npub: &str,
+    bot_id: &str,
+    user_id: &str,
+    nonce: &str,
+) -> [u8; 32] {
+    let value = serde_json::json!(["kax:npub-bind:v1", domain, npub, bot_id, user_id, nonce]);
+    let canonical = serde_json::to_string(&value).expect("json array serializes");
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
 }
 
 /// Encode a 32-byte x-only pubkey hex as `npub1…`.
@@ -297,6 +330,39 @@ mod tests {
         let mut bad = msg.clone();
         bad[0] ^= 1;
         assert!(schnorr_verify_raw(pubkey, &bad, sig).is_err());
+    }
+
+    // The KAX bind digest must byte-match the Agent-Kax server's npubBindDigest.
+    // Vector computed independently (Python json.dumps compact + hashlib). A
+    // drift here means kannaka-signed bindings would be rejected by KAX.
+    #[test]
+    fn kax_bind_digest_matches_known_vector() {
+        let d = kax_bind_digest(
+            "kax.ninja-portal.com",
+            "npub1j9t89fsgkpascqdezsrlw3p743jmkks084g6d0drzwuxaz3qaq6qx8w8dz",
+            "0f05e10b-f8a1-46d6-b4a2-a7d4bae837f7",
+            "user-abc",
+            "0011223344556677",
+        );
+        assert_eq!(
+            super::to_hex(&d),
+            "6c9740647a3639d9ad72e3af25285714d73efb2b287679fa6cdfecaec08a476c"
+        );
+    }
+
+    #[test]
+    fn sign_digest_roundtrips_and_binds_pubkey() {
+        let kp = Keypair::generate();
+        let digest = kax_bind_digest("kax.ninja-portal.com", "npubX", "bot", "user", "nonce");
+        let sig = kp.sign_digest(&digest);
+        // Valid under this key over this exact digest.
+        schnorr_verify_raw(&kp.public_hex(), &digest, &sig).expect("own sig verifies");
+        // A one-field change to the commit invalidates it.
+        let other = kax_bind_digest("kax.ninja-portal.com", "npubX", "bot", "user", "nonce2");
+        assert!(schnorr_verify_raw(&kp.public_hex(), &other, &sig).is_err());
+        // A different key does not verify.
+        let kp2 = Keypair::generate();
+        assert!(schnorr_verify_raw(&kp2.public_hex(), &digest, &sig).is_err());
     }
 
     #[test]

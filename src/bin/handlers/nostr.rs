@@ -13,7 +13,7 @@
 
 use std::process;
 
-use kannaka_memory::nostr::{npub_from_pubkey_hex, Event, Keypair};
+use kannaka_memory::nostr::{kax_bind_digest, npub_from_pubkey_hex, Event, Keypair};
 
 const USAGE: &str = "Usage: kannaka nostr <keygen|profile|nip05|verify> [args]\n\
     \n\
@@ -23,7 +23,9 @@ const USAGE: &str = "Usage: kannaka nostr <keygen|profile|nip05|verify> [args]\n
     \x20       [--identity platform:name,proof]...   NIP-39 `i` tags (repeatable)\n\
     \x20                                       emit a signed kind-0 profile event (JSON)\n\
     nip05   --name <local> --pubkey <hex|npub>  emit the .well-known/nostr.json fragment\n\
-    verify  [--file <path>]                  verify a NIP-01 event JSON (stdin if no --file)";
+    verify  [--file <path>]                  verify a NIP-01 event JSON (stdin if no --file)\n\
+    kax-bind --nsec <nsec> --domain <d> --bot-id <uuid> --user-id <id> --nonce <hex>\n\
+    \x20                                       sign the KAX npub↔bot binding commit (ADR-0043)";
 
 pub(crate) fn handle_nostr(args: &[String]) {
     let sub = match args.get(1) {
@@ -38,6 +40,7 @@ pub(crate) fn handle_nostr(args: &[String]) {
         "profile" => profile(args),
         "nip05" => nip05(args),
         "verify" => verify(args),
+        "kax-bind" => kax_bind(args),
         "-h" | "--help" | "help" => println!("{USAGE}"),
         other => {
             eprintln!("kannaka nostr: unknown subcommand '{other}'\n{USAGE}");
@@ -203,6 +206,48 @@ fn bech32_npub_to_hex(npub: &str) -> Result<String, String> {
         return Err("npub round-trip mismatch".into());
     }
     Ok(s)
+}
+
+fn kax_bind(args: &[String]) {
+    let nsec = flag(args, "--nsec").unwrap_or_else(|| die("kax-bind requires --nsec"));
+    let domain = flag(args, "--domain").unwrap_or_else(|| die("kax-bind requires --domain"));
+    let bot_id = flag(args, "--bot-id").unwrap_or_else(|| die("kax-bind requires --bot-id"));
+    let user_id = flag(args, "--user-id").unwrap_or_else(|| die("kax-bind requires --user-id"));
+    let nonce = flag(args, "--nonce").unwrap_or_else(|| die("kax-bind requires --nonce"));
+    let kp = Keypair::from_nsec(nsec).unwrap_or_else(|e| die(&format!("bad --nsec: {e}")));
+
+    // The npub in the commit is THIS key's — the proof is "I, npub X, bind
+    // myself to bot Y". Derive it from the nsec rather than trusting a flag, so
+    // the operator can't accidentally sign a commitment for a different key.
+    let npub = kp.to_npub().unwrap_or_else(|e| die(&format!("npub: {e}")));
+    let digest = kax_bind_digest(domain, &npub, bot_id, user_id, nonce);
+    let sig = kp.sign_digest(&digest);
+
+    // Print the sig plus every field that went into the commit, so the operator
+    // can POST { obcBotId, npub, sig } to /auth/agent/npub/verify and audit that
+    // the digest matches what the server rebuilds. The nonce came from the
+    // server's /challenge; the digest is echoed for cross-checking only.
+    let out = serde_json::json!({
+        "npub": npub,
+        "domain": domain,
+        "botId": bot_id,
+        "userId": user_id,
+        "nonce": nonce,
+        "bindDigestHex": to_hex_local(&digest),
+        "sig": sig,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&out).unwrap_or_else(|e| die(&format!("emit: {e}")))
+    );
+}
+
+fn to_hex_local(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 fn verify(args: &[String]) {
