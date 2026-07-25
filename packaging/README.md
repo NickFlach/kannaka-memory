@@ -47,7 +47,16 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   --build-arg VERSION=0.11.1 -f packaging/docker/Dockerfile --push .
 ```
 
-## Homebrew (not yet)
+## Homebrew
 
-A tap `nickflach/homebrew-kannaka` with a formula that downloads the macOS
-release binary + verifies sha256 is the remaining channel — same asset URLs.
+Tap: [`NickFlach/homebrew-kannaka`](https://github.com/NickFlach/homebrew-kannaka)
+
+```sh
+brew install nickflach/kannaka/kannaka
+```
+
+Binary formula (macOS + Linux, arm64 + x86_64) with sha256 digests pinned from
+the release sidecars. The `brew-bump` job in
+[`publish-channels.yml`](../.github/workflows/publish-channels.yml) regenerates
+the formula on every release — it needs a `TAP_PUSH_TOKEN` repo secret (PAT
+with contents:write on the tap) and skips cleanly without one.
