@@ -2,6 +2,234 @@
 
 ## [Unreleased]
 
+### Changed — #583 dispositioned: the holistic hemisphere never forgets, it evolves
+
+The energy floor (0.01) sitting above the deep-dream prune threshold (0.005)
+was not a bug but an undeclared invariant — dispositioned as INTENT: the
+holistic hemisphere's understanding *evolves* (energy redistributes, phases
+drift, cores fuse; reachability changes, existence doesn't) and never
+deletes. The dead sub-floor prune is now an explicit 0.0 with the contract
+documented (`wavefronts_dissolved` = 0 for chiral deep dreams by design), a
+regression test pins the guarantee (a 0.0001-energy wavefront survives a
+deep dream), and removal is documented as having exactly two explicit,
+opt-in doors: ADR-0036 resonance-merge and direct forget calls. The lite
+(analytical) hemisphere's hard prune is unchanged — precision is its job.
+
+### Changed — Track-D heartbeat coupling alternates strong→weak BY DEFAULT
+
+The L7 belief arm measured that no fixed coupling strength satisfies both
+falsification claims — stability⇒recall wants strong coupling, shared⇒
+agreement wants weak — but a strong-then-weak alternation satisfies both,
+and the order is load-bearing (consolidate, then diversify). The always-on
+heartbeat coupling (`KANNAKA_EXEMPLAR_COUPLING`, still default-off overall)
+now runs `schedule=alternate` by default: odd coupling events at
+`KANNAKA_EXEMPLAR_COUPLING_STRONG` (default 2× weak), even events at
+`KANNAKA_EXEMPLAR_COUPLING_STRENGTH` (default 0.05). Opt back into the old
+single-strength behavior with `KANNAKA_EXEMPLAR_COUPLING_SCHEDULE=fixed`.
+
+### Added — L7 belief research arm (ADR-0037 falsification, `research --level 7`)
+
+The autoresearch ladder gains its belief rung. The README's falsifiability
+clause — core stability ⇒ recall reliability, core merge ⇒ a consolidation
+event, shared cores ⇒ swarm agreement — is now scored instead of stated:
+
+- `src/belief_fitness.rs` (pure, unit-tested): Spearman-based prediction
+  scores with an honest no-evidence 0.5 midpoint, `merge_consolidation_score`
+  windowed event alignment, and a weighted `l7_fitness` (lower = better,
+  ladder convention).
+- `run_experiment_l7_session` (research.rs): unlike L6's synthetic fixtures,
+  every observable comes from a live multi-agent `ChiralMedium` belief
+  substrate — content-born phase ingest over nested-overlap vocabulary
+  domains (agent pairs genuinely differ in shared beliefs), per-epoch dreams
+  (absorb events = the consolidation observable), `belief_core_snapshot`
+  tracking, end-of-session recall probes, and pairwise `shared_cores` vs
+  recall-agreement. Knobs: `L7_AGENTS/L7_EPOCHS/L7_ITEMS/L7_MIN_COS/
+  L7_MERGE_COS/L7_COUPLE=1` (Track-D coupling each epoch). Rows append to
+  `experiments/results-L7.tsv`.
+- `auto-merge-curiosity.yml` allowlists/unions `results-L7.tsv`;
+  `autoresearch-cron.sh` fitness matcher generalized to any `lN_fitness`.
+
+### Added — Windows seed-beacon installer (hidden, no console flash)
+
+`ops/windows/install-beacon-task.ps1` + `ops/windows/kannaka-beacon-hidden.vbs`
+are the Windows equivalent of `ops/services/kannaka-beacon.service`: they run the
+per-seed `kannaka swarm beacon --loop` heartbeat as a hidden, auto-starting
+Scheduled Task. A naive `cmd`/console-action task flashes a console window every
+epoch in the interactive session — and the task "Hidden" flag does **not**
+suppress it (it only hides the task from the Task Scheduler UI). The installer
+instead points the action at `wscript.exe` running a launcher that starts the
+console binary with window style 0 (hidden): zero UI, no stored password, network
+preserved (the "run whether user is logged on or not" path would need a password,
+or fall back to S4U with no network — which breaks NATS publishing). The task
+starts at logon, restarts on failure, and **runs on battery** — a laptop seed
+that stopped beaconing on battery would freeze swarm promotions (anti-eclipse
+fail-closed). Seed-only; `--loop` refuses on a non-seed. See ADR-0039.
+
+`ops/windows/uninstall-beacon-task.ps1` is the matching teardown: a bare
+`Unregister-ScheduledTask` leaves the running `--loop` daemon and the copied
+launcher behind, so the uninstaller stops the task, kills exactly this launcher's
+process tree (matched by launcher path, so a second beacon on the host is never
+touched), and removes the copied `.vbs`.
+
+## [0.11.1] — 2026-07-21
+
+### Fixed — restricted NATS users see the swarm again (peers were 0 on live swarms)
+
+ADR-0042 closed `$JS.API.STREAM.CREATE` for non-writer identities; the client
+treated that denial as "no JetStream" and fell back to live-gossip sniffing,
+whose 1.5s-silence window can't hear 30s beacons — so `swarm status` reported
+0 peers on a live swarm and the statusline showed `0p`. The read lane
+(`$JS.API.STREAM.MSG.GET`) was open the whole time:
+
+- `connect()`/reconnect now probe MSG.GET readability after a denied CREATE
+  and keep the retained-phase JetStream path (new `has_jetstream_write()`
+  gates stream/bucket management separately).
+- `peer_count` comes from `live_phase_agents()`: identity from the
+  `QUEEN.phase.<id>` subject, liveness from the **broker's** ingest time
+  (≤5 min, mirroring the roster KV TTL) — immune to publisher clock skew,
+  payloads that don't conform to `AgentPhase`, and the retained stream's
+  graveyard of long-departed agents.
+- The startup `Permissions Violation ... STREAM.CREATE` server error now gets
+  a follow-up line explaining it is EXPECTED for non-writer identities
+  (JetStream read-only; retained reads active).
+
+### Fixed — `swarm sync` bootstraps an empty swarm instead of deadlocking
+
+Hearing no peer phases used to `exit(1)` **without publishing** ("publish
+first with 'swarm publish'") — two such nodes wait on each other forever, and
+a node whose read path was broken ticked silently for weeks. Sync now
+publishes its own phase (`{"bootstrap_announce": true}`, exit 0): the first
+node's sync IS its announcement.
+
+## [0.10.9] — 2026-07-08
+
+### Changed — entropy source defaults to `reservoir` (Quantum-Wave T1.5 flip, #475)
+
+The default `[entropy].source` flips from `prng` to `reservoir` after 5 clean
+days of the T1.5 reservoir dogfood. What this does and does NOT change:
+
+- **Source only.** The independent T1.4 consumption gate
+  (`[entropy].dream_perturbation` / `KANNAKA_DREAM_ENTROPY`) stays **default
+  false**, so no deployment starts drawing from the reservoir — or grows a
+  `kannaka-quantum` CLI dependency — from this flip alone. Selecting the source
+  is inert until consumption is explicitly opted in.
+- **Fails loud, never silent PRNG.** When a deployment does turn consumption on,
+  a reservoir draw fails loudly on an empty or missing CLI
+  (`CliUnavailable`/`ReservoirEmpty`) rather than silently falling back to the
+  PRNG — every stamped provenance chain stays TRUE.
+- **Opt back out** any time with `[entropy].source = "prng"` (or
+  `KANNAKA_ENTROPY_SOURCE=prng`).
+
+### Fixed — deterministic revelation proof-of-work test (#517)
+
+`test_execute_revelation_publishes_hint` was a ~1.8%-per-run flake (bounded PoW
+search over a random salt); the test glyph is now sealed with a fixed salt so
+the reveal search is deterministic. Production `seal` behaviour is unchanged.
+
+## [0.10.8] — 2026-07-08
+
+### Added — guided seed-ceremony helpers for the corroboration gate
+
+`kannaka swarm activate-gate` and `kannaka swarm beacon --loop` (PR #514) turn
+the inc-1b corroboration-gate seed ceremony into ~2 commands per node, with
+safety rails. `activate-gate` is a per-node guided flip: it ensures the node's
+key, prints its pubkey (to pin on the other seeds), collects the seed set, runs
+a preflight checklist, and is a DRY RUN by default — `--yes` writes (pins seeds
++ enables `corroboration_gate_enabled`), and `--force` only bypasses the
+`>=2`-seed refusal (a single-seed root can never promote past Quarantine).
+`beacon --loop` runs the per-seed heartbeat emitter (one beacon per epoch) an
+armed gate needs to promote (anti-eclipse fail-closed). See ADR-0039 and
+`ops/services/kannaka-beacon.service`. Both remain inert until an operator runs
+the ceremony; the gate stays dormant by default.
+
+### Fixed — NATS subscription liveness + resumable MSG payload reads
+
+Two liveness defects in the NATS transport (PR #515, `Fixes #499, #500`), both
+load-bearing for the dormant corroboration gate (a subscriber that hangs deaf or
+dies mid-frame stops seeing seed beacons, which fail-closed freezes promotion):
+
+- **#500 — subscriptions had no liveness.** A subscription only answered server
+  PINGs, so a silent connection death (NAT/conntrack drop, firewall, peer
+  power-off with no FIN/RST) hung the listener/worker deaf forever while looking
+  alive. Subscriptions now track time-since-last-frame, proactively PING after
+  60s of silence, and report `Closed` after 150s so the caller reconnects/exits.
+  `set_timeout(None)`/large values are clamped to a 30s poll cap so an otherwise
+  blocking recv still wakes to run the check.
+- **#499 — `swarm serve` died on one WAN retransmission.** A read timeout during
+  a MSG payload was fatal; `serve`'s 250ms socket timeout turned any multi-KB
+  reply straddling a lost-segment RTO into a process death. The payload + CRLF
+  now read resumably (the byte count is known) up to a 30s frame budget.
+
+### Fixed — `recall` clap variadic-positional debug-assert
+
+`recall` declared two variadic positionals, which trips a clap debug-assert when
+generating shell completions (PR #514).
+
+### Docs
+
+- ADR-0039 documents the corroboration trust model, and the CHANGELOG entries
+  for v0.10.6/v0.10.7 were backfilled (PR #516).
+
+## [0.10.7] — 2026-07-07
+
+### Added — increment-1 corroboration trust model (DORMANT by default)
+
+The behaviour-based absorb-side trust model lands as a single write-side
+chokepoint, `absorb_gate::admit()`, that every wire→store absorb path routes
+through (ADR-0039, PRs #509–#513). Trust becomes cryptographic and
+corroboration-counted rather than name-based: **identity says who, corroboration
+proves what.**
+
+- **inc-1a ed25519 provenance substrate** — sign/verify over a memory's
+  canonical bytes with a replay LRU; the signature binds a fixed signed
+  agent-id (the pubkey is the identity; the forgeable wire agent-id is not
+  bound). Every node always-signs its own `memory.new`/exemplar emits.
+- **inc-1b corroboration reputation engine** — a pubkey-keyed trust store rooted
+  at operator-pinned seeds. A "corroboration" is another distinct trusted key
+  independently signing-and-remembering the same content
+  (`blake3(normalize(content))`); `RepStore::decide()` promotes to `Live` on
+  enough distinct fresh lineages, else holds in **Quarantine** (never drops).
+- **Heartbeat beacons (anti-eclipse)** — an armed gate additionally requires a
+  fresh seed beacon to promote; stale/absent beacons past
+  `beacon_grace_epochs` (default 3) freeze promotion to Quarantine, never Drop.
+- **Operator CLI** — `kannaka identity` (keygen/pubkey/enroll-seed/vouch/revoke)
+  and `kannaka reputation` (show/list/hard-reject) inspect and manage the
+  ledger.
+- **Unconditional sanitization** runs even while dormant: `admit()` clamps
+  `amplitude`/`phase`/`frequency` and forces `hallucinated` to the local
+  default, never the wire value.
+
+**DORMANT BY DEFAULT:** with `corroboration_gate_enabled=false` and no
+`seed_pubkeys` (both defaults), `admit()` returns `Live` with sanitized fields —
+byte-for-byte inc-0 behaviour. Activation is a deliberate operator seed ceremony,
+not this release. New `SwarmTrustConfig` tunables: `KANNAKA_TRUST_THRESHOLD`,
+`KANNAKA_THETA_LO` (0.4), `KANNAKA_THETA_HI` (0.7), `KANNAKA_ACCRUAL_ALPHA`
+(0.05), `KANNAKA_EPOCH_LENGTH_MS` (60000), `KANNAKA_BEACON_GRACE_EPOCHS` (3),
+`KANNAKA_SEED_PUBKEYS`, `KANNAKA_CORROBORATION_GATE`.
+
+## [0.10.6] — 2026-07-07
+
+### Added — increment-0 read-side injection gate (the swarm stays open)
+
+Defensive read-side trust filter for the open NATS swarm (PR #507), shipped in
+response to the 2026-07-06 anonymous injection where one socket spoofed 48
+`agent_id`s on `KANNAKA.events.>`. Anonymous publish stays allowed; the read
+side stops trusting attacker-controlled wire fields:
+
+- **`trusted_agents`** allowlist (exact or `prefix*`, e.g. `qos-*`). When
+  `metrics_trusted_only` is set (default), only allowlisted phases (plus this
+  node's own) feed swarm metrics and drive the pairwise Kuramoto step.
+- Every kept phase's wire `trust_score` is clamped to `wire_trust_cap`, so a
+  message cannot assert its own trust.
+- Env: `KANNAKA_TRUSTED_AGENTS` (comma-separated, REPLACES the list),
+  `KANNAKA_METRICS_TRUSTED_ONLY=0` (escape hatch).
+
+### Fixed — NATS config drift reconcile
+
+Reconciled the committed NATS config with the deployed anonymous-publish ACL and
+added a drift check (PR #508), so the shipped defaults match what the swarm
+server actually enforces.
+
 ## [0.10.5] — 2026-07-05
 
 ### Added — network + quiet on the lab_qos_boot MCP tool

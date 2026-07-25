@@ -1,0 +1,35 @@
+# ADR-0042 Phase 3 — 3-node JetStream R3 cluster node config (LIVE).
+# One per node. Substitute the __PLACEHOLDERS__; paste O1's live `authorization {...}`
+# block where marked (per-organ passwords stay on the boxes, never in git):
+#   AUTH=$(sudo sed -n '/^authorization {/,/^}/p' /etc/nats/nats.conf)   # on O1
+# __ROUTE_TOKEN__: shared cluster-route secret (openssl rand -hex 12), same on all 3.
+# Per node set: __SERVER_NAME__ (oracle1|oracle2|oracle3), __SELF_PRIV__ (own 10.0.0.x),
+# and the two __PEERn_PRIV__ (the other two nodes' 10.0.0.x). O1 also appends the
+# websocket{} block (nginx-terminated wss://swarm.ninja-portal.com/nats); O2/O3 omit it.
+#
+# Node IPs (2026-07-19): oracle1=10.0.0.101  oracle2=10.0.0.112  oracle3=10.0.0.65
+listen: 0.0.0.0:4222
+max_payload: 64MB
+server_name: __SERVER_NAME__
+client_advertise: "__SELF_PRIV__:4222"
+
+jetstream {
+  store_dir: /var/lib/nats/jetstream
+  max_mem: 1G
+  max_file: 10G
+}
+
+no_auth_user: anon
+
+cluster {
+  name: kannaka
+  listen: 0.0.0.0:6222
+  advertise: "__SELF_PRIV__:6222"
+  authorization { user: route, password: "__ROUTE_TOKEN__" }
+  routes: [ "nats-route://route:__ROUTE_TOKEN__@__PEER1_PRIV__:6222", "nats-route://route:__ROUTE_TOKEN__@__PEER2_PRIV__:6222" ]
+}
+
+# <<< paste O1's live `authorization { users = [ ... ] }` block here >>>
+
+# O1 ONLY — append:
+# websocket { port: 4223, no_tls: true, no_auth_user: anon }

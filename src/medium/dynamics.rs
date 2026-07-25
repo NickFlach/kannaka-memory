@@ -318,8 +318,13 @@ impl Medium {
                 break;
             }
 
-            // Store energy state for convergence detection
-            let prev_energy: Vec<f32> = self.store.energy.to_vec();
+            // Store energy state for convergence detection. Slice to the ACTIVE
+            // count, not the full tensor capacity — else prev_energy.len() is the
+            // amortized capacity and the `current_count == prev_energy.len()`
+            // convergence guard below is false whenever capacity>len (the normal
+            // case, and always after a prune), so the early-stop never fires and
+            // `converged` is silently always false (mirrors Hemisphere::dream).
+            let prev_energy: Vec<f32> = self.store.energy.slice(s![..self.store.len]).to_vec();
 
             // 1. Compute coherence matrix H·H^T and eigenstructure
             let coherence = self.coherence_matrix();
@@ -623,7 +628,7 @@ impl Medium {
             
             // Everything else: maintain energy, just phase-explore
             // The field stays hot — dreams organize, not destroy
-            if alignment >= 0.05 && alignment <= 0.1 {
+            if (0.05..=0.1).contains(&alignment) {
                 let exploration = temperature * 0.005;
                 self.store.phase[i] += exploration * (alignment * 10.0 - 0.5).sin();
             }
@@ -698,7 +703,7 @@ impl Medium {
                     let content = format!("HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]", 
                                          idx1, idx2, temperature);
                     
-                    if let Ok(_) = self.add_wavefront(&new_vector, content, energy) {
+                    if self.add_wavefront(&new_vector, content, energy).is_ok() {
                         // Set the phase for the newly added wavefront
                         let new_idx = self.wavefront_count() - 1;
                         self.store.phase[new_idx] = phase;

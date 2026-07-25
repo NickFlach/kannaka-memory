@@ -1,0 +1,14 @@
+[Unit]
+Description=Kannaka Swarm Serve — oracle3 redundant recall responder (ADR-0042 Ph4)
+After=network.target nats.service
+Wants=nats.service
+
+[Service]
+ExecStart=/usr/local/bin/run-kannaka-serve.sh
+User=opc
+Restart=always
+RestartSec=5
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

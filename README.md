@@ -90,14 +90,20 @@ kannaka belief recall-probe  # self-recall@k — does core stability predict rec
 
 A core only earns the word "belief" if it maps to a recallable content cluster **and** its dynamics predict: core stability ⇒ recall reliability, core merge ⇒ a consolidation event, shared cores ⇒ swarm agreement.
 
+Those three predictions are now *measured*, not just stated — the autoresearch ladder's **L7 belief arm** (`cargo run --release --bin research -- --level 7`, design in `research/program-l7.md`) runs a real multi-agent belief substrate and scores each prediction in [0,1] (`src/belief_fitness.rs`; rows append to `experiments/results-L7.tsv`). **Measured verdicts (2026-07-21, stable across the fingerprint-matching band):**
+
+- *core stability ⇒ recall reliability* — **holds under Track-D coupling** (0.74 at strength 0.2), fails without it (long uncoupled fields churn);
+- *shared cores ⇒ swarm agreement* — **holds** (0.85+), strongest under a strong→weak alternating coupling schedule (consolidate-then-diversify — the two claims trade off at any fixed strength but alternation satisfies both);
+- *core merge ⇒ a consolidation event* — **falsified** (0.0 with a canary-proven live channel): core fusion is an embedding-geometry event, independent of ADR-0036 consolidation. The clause survives as two claims about coupling, not three about cores.
+
 ### Dream Consolidation
 
 When the medium is loaded but quiet, you trigger a dream:
 
-- **Deep**: eigenstructure annealing of the right hemisphere. Soft prune threshold (0.005). Hallucination generation through cross-cluster superposition. Callosal sync after.
-- **Lite**: sharpen the left hemisphere. Transfer strongest analytical patterns. Hard prune (0.05).
+- **Deep**: eigenstructure annealing of the right hemisphere. Hallucination generation through cross-cluster superposition. Callosal sync after. **No pruning — the holistic hemisphere never forgets, it evolves** (#583): the wave dynamics floor energy above any deletion path by design, so apparent forgetting is the field *reorganizing* — energy redistributes, phases drift, cores fuse — the holistic understanding evolves, sometimes to seemingly forget. Reachability changes; existence doesn't. Removal has exactly two doors, both explicit and opt-in: ADR-0036 resonance-merge and direct forget calls.
+- **Lite**: sharpen the left hemisphere. Transfer strongest analytical patterns. Hard prune (0.05) — the *analytical* hemisphere does forget, aggressively; precision is its job.
 
-Dreams are **destructive** to weak memories and **generative** for strong-cluster combinations. The medium settles into a lower-energy configuration that nonetheless preserves the high-Φ structure.
+Deep dreams are **generative** for strong-cluster combinations and evolutionary for everything else; only the analytical side is destructive. The medium settles into a lower-energy configuration that nonetheless preserves the high-Φ structure.
 
 ### Swarm Phase Gossip (QueenSync)
 
@@ -214,6 +220,29 @@ kannaka swarm serve
 
 # Tail the entire constellation bus (NDJSON)
 kannaka swarm tail
+```
+
+```bash
+# ── Resonance Futures — the constellation prediction market (ADR-0041) ──
+
+# One-time: sign in with SpaceChild (SSO) — federation handles everything after
+kannaka identity login
+
+# Trade on Kannaka Labs' prediction markets (real, escrow-funded KAX credits;
+# a KAX identity is federated + self-refreshed automatically)
+kannaka market list                      # active markets
+kannaka market buy m_xxxxxxxx yes 2      # outcome by label or index
+kannaka market whoami                    # your principal + token/lineage status
+kannaka market link                      # force a SpaceChild -> KAX federation now
+
+# Alternative to SSO: mint a token at kax.ninja-portal.com (Bots page) and
+kannaka market auth <jwt>
+
+# New identities receive 100 starting play credits. Proposers cannot trade
+# their own markets (anti-self-dealing); every credit moved is a posting on
+# KAX's append-only hash-chained ledger. Propose your own market from
+# observatory.ninja-portal.com or by DMing Kannaka in OpenBotCity:
+#   propose: <your claim> | by YYYY-MM-DD
 ```
 
 ```bash

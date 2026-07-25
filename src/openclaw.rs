@@ -173,7 +173,11 @@ pub fn build_consciousness_payload(
     })
 }
 
-fn make_pipeline() -> EncodingPipeline {
+/// Construct the production encoding pipeline (Ollama all-minilm with a
+/// deterministic hash fallback). Public so one-shot data tools — e.g. the #107
+/// re-encode migration binary — refresh wavefronts with the SAME pipeline the
+/// running system uses, not a test stand-in.
+pub fn make_pipeline() -> EncodingPipeline {
     let ollama = OllamaEncoder::default_local(); // all-minilm, 384-dim
     let hash_fallback = SimpleHashEncoder::new(CODEBOOK_INPUT_DIM, CODEBOOK_SEED);
     let composite = CompositeEncoder::new(Box::new(ollama), Box::new(hash_fallback));
@@ -205,6 +209,15 @@ pub struct KannakaMemorySystem {
     /// if post-dream Ξ falls below `xi_trigger`. None = disabled (default). Set
     /// by the bin via `set_triage_policy` from `[triage]` config.
     triage_policy: Option<TriageParams>,
+    /// ADR-0040 — cerebellar novelty detector. DORMANT by default; enabled by
+    /// `KANNAKA_NOVELTY=1` at construction or `set_novelty_enabled(true)`. When
+    /// on, each `recall` observes the top hit's familiarity and records the
+    /// surprise in `last_novelty`. OBSERVE-ONLY for now: it does not yet gate
+    /// curiosity/autoresearch (that wiring is deferred per the ADR roadmap).
+    novelty: Option<crate::novelty::NoveltyDetector>,
+    /// The novelty signal from the most recent `recall` (None when disabled or
+    /// before any recall).
+    last_novelty: Option<crate::novelty::Novelty>,
 }
 
 /// ADR-0031 triage policy parameters (Phase 1–3).
@@ -323,6 +336,12 @@ impl KannakaMemorySystem {
             flux,
             nats_url: None,
             triage_policy: None,
+            novelty: if std::env::var("KANNAKA_NOVELTY").map(|v| v == "1").unwrap_or(false) {
+                Some(crate::novelty::NoveltyDetector::new())
+            } else {
+                None
+            },
+            last_novelty: None,
         })
     }
 
@@ -427,7 +446,7 @@ impl KannakaMemorySystem {
 
     pub fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<RecallResult>, SystemError> {
         let results = self.engine.store.resonate_query(query, top_k)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
 
         let mut out = Vec::new();
@@ -458,7 +477,43 @@ impl KannakaMemorySystem {
                 m.record_retrieval();
             }
         }
+        // ADR-0040: observe recall familiarity as a cerebellar novelty signal
+        // (dormant unless enabled). The top hit's strength is the familiarity
+        // drive — a known query resonates high (routine), an unseen query low
+        // (novel). Observe-only: recorded in `last_novelty` (and logged when on);
+        // it does not gate behaviour yet. `as_mut().unwrap()` borrows `novelty`
+        // only for the call (Novelty is Copy), so `last_novelty` assigns cleanly.
+        if self.novelty.is_some() {
+            let drive = out.first().map(|r| r.strength);
+            let n = self.novelty.as_mut().unwrap().observe_recall("recall", drive);
+            eprintln!(
+                "[novelty] query={:?} familiarity={:.3} surprise={:.3} theta={:.3} novel={}",
+                query,
+                drive.unwrap_or(0.0),
+                n.score,
+                n.theta,
+                n.novel
+            );
+            self.last_novelty = Some(n);
+        }
         Ok(out)
+    }
+
+    /// ADR-0040: enable or disable the cerebellar novelty detector at runtime.
+    /// Enabling starts a fresh baseline; disabling clears the detector and the
+    /// last signal. Dormant by default (also gated by `KANNAKA_NOVELTY=1` at
+    /// construction).
+    pub fn set_novelty_enabled(&mut self, on: bool) {
+        self.novelty = on.then(crate::novelty::NoveltyDetector::new);
+        if !on {
+            self.last_novelty = None;
+        }
+    }
+
+    /// ADR-0040: the novelty signal from the most recent `recall`, or None when
+    /// the detector is disabled or no recall has run since it was enabled.
+    pub fn last_novelty(&self) -> Option<crate::novelty::Novelty> {
+        self.last_novelty
     }
 
     /// Literal text search over memory content. Distinct from [`recall`]:
@@ -488,7 +543,7 @@ impl KannakaMemorySystem {
             .map(|t| t.to_string())
             .collect();
         let memories = self.engine.store.all_memories()
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
         let mut scored: Vec<SearchResult> = Vec::new();
         for m in memories {
@@ -566,7 +621,7 @@ impl KannakaMemorySystem {
         top_k: usize,
     ) -> Result<Vec<RecallResult>, SystemError> {
         let results = self.engine.store.resonate_query_with_beam(beam, query, top_k)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         let now = Utc::now();
 
         let mut out = Vec::with_capacity(results.len());
@@ -818,7 +873,7 @@ impl KannakaMemorySystem {
         // Phase 1: Wave-native dream (eigenstructure annealing on holographic medium)
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
         let wave_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
             wave_report.cycles_completed, wave_report.wavefronts_dissolved,
@@ -1013,7 +1068,7 @@ impl KannakaMemorySystem {
         let before = self.bridge.assess(&self.engine);
 
         let report = self.engine.store.dream_native(1, Some(0.5), 0.0)
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         let after = self.bridge.assess(&self.engine);
         self.mark_dreamed();
@@ -1265,7 +1320,7 @@ impl KannakaMemorySystem {
 
         // Absorb through the HRM-native path (low importance for hallucinations)
         let id = self.engine.store.absorb(content, 0.3, Some(&category))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         // Collect valid parent IDs before taking mutable borrow
         let found_parents: Vec<String> = parent_ids.iter()
@@ -1451,7 +1506,7 @@ impl KannakaMemorySystem {
 
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.6, Some("experience"))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
 
         if self.auto_save {
             self.save()?;
@@ -1496,7 +1551,7 @@ impl KannakaMemorySystem {
         
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.7, Some("experience"))
-            .map_err(|e| SystemError::Store(e))?;
+            .map_err(SystemError::Store)?;
         
         if self.auto_save {
             self.save()?;
@@ -1684,6 +1739,45 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].id, id);
         assert!(results[0].content.contains("fox"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ADR-0040: the novelty tap is wired into recall, dormant by default,
+    // observe-only. Verifies the integration (not the primitive — that is
+    // covered by novelty.rs's own suite): dormant → no signal; enabled →
+    // populated per recall and an unfamiliar query is at least as surprising
+    // as the routine one; disabling clears it.
+    #[test]
+    fn novelty_tap_dormant_by_default_and_signals_when_enabled() {
+        let dir = temp_dir("novelty");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("the quick brown fox jumps over the lazy dog").unwrap();
+
+        // Dormant by default (no env, no enable): recall records nothing.
+        let _ = sys.recall("quick brown fox", 3).unwrap();
+        assert!(sys.last_novelty().is_none(), "novelty is dormant unless enabled");
+
+        // Enable and build a routine baseline on a repeated familiar query.
+        sys.set_novelty_enabled(true);
+        for _ in 0..40 {
+            let _ = sys.recall("quick brown fox", 3).unwrap();
+        }
+        let routine = sys.last_novelty().expect("enabled → Some after a recall");
+
+        // An unfamiliar query resonates lower → at least as surprising as routine.
+        let _ = sys.recall("wholly unrelated zqx nonsense probe", 3).unwrap();
+        let unseen = sys.last_novelty().expect("still Some");
+        assert!(
+            unseen.score >= routine.score,
+            "an unfamiliar query should be at least as surprising as the routine one: {} vs {}",
+            unseen.score,
+            routine.score
+        );
+
+        // Disabling clears the detector and the last signal.
+        sys.set_novelty_enabled(false);
+        let _ = sys.recall("quick brown fox", 3).unwrap();
+        assert!(sys.last_novelty().is_none(), "disabling clears the signal");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

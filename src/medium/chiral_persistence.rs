@@ -280,7 +280,7 @@ impl ChiralMedium {
 
         // Write callosum state (bincode)
         let callosum_bytes = bincode::serialize(&self.callosum)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         w.write_all(&(callosum_bytes.len() as u32).to_le_bytes())?;
         w.write_all(&callosum_bytes)?;
 
@@ -288,7 +288,7 @@ impl ChiralMedium {
         let scales_vec: Vec<(uuid::Uuid, ChiralScale)> =
             self.scales.iter().map(|(&k, &v)| (k, v)).collect();
         let scales_bytes = bincode::serialize(&scales_vec)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         w.write_all(&(scales_bytes.len() as u32).to_le_bytes())?;
         w.write_all(&scales_bytes)?;
 
@@ -296,7 +296,7 @@ impl ChiralMedium {
         let lr_vec: Vec<(uuid::Uuid, uuid::Uuid)> =
             self.left_to_right.iter().map(|(&k, &v)| (k, v)).collect();
         let lr_bytes = bincode::serialize(&lr_vec)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         w.write_all(&(lr_bytes.len() as u32).to_le_bytes())?;
         w.write_all(&lr_bytes)?;
 
@@ -425,7 +425,7 @@ impl ChiralMedium {
         let mut callosum_bytes = vec![0u8; callosum_len];
         reader.read_exact(&mut callosum_bytes)?;
         let callosum: CorpusCallosum = bincode::deserialize(&callosum_bytes)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
 
         // Read scales
         reader.read_exact(&mut len_bytes)?;
@@ -434,7 +434,7 @@ impl ChiralMedium {
         let mut scales_bytes = vec![0u8; scales_len];
         reader.read_exact(&mut scales_bytes)?;
         let scales_vec: Vec<(uuid::Uuid, ChiralScale)> = bincode::deserialize(&scales_bytes)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         let scales: HashMap<uuid::Uuid, ChiralScale> = scales_vec.into_iter().collect();
 
         // Read ID mappings
@@ -444,7 +444,7 @@ impl ChiralMedium {
         let mut lr_bytes = vec![0u8; lr_len];
         reader.read_exact(&mut lr_bytes)?;
         let lr_vec: Vec<(uuid::Uuid, uuid::Uuid)> = bincode::deserialize(&lr_bytes)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         let left_to_right: HashMap<uuid::Uuid, uuid::Uuid> = lr_vec.iter().cloned().collect();
         let right_to_left: HashMap<uuid::Uuid, uuid::Uuid> =
             lr_vec.into_iter().map(|(l, r)| (r, l)).collect();
@@ -510,7 +510,7 @@ impl ChiralMedium {
 
         // Metadata (bincode)
         let meta_bytes = bincode::serialize(&h.metadata)
-            .map_err(|e| MediumError::Serialization(e))?;
+            .map_err(MediumError::Serialization)?;
         w.write_all(&(meta_bytes.len() as u32).to_le_bytes())?;
         w.write_all(&meta_bytes)?;
 

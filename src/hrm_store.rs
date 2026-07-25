@@ -30,16 +30,20 @@ use crate::medium::chiral::{ChiralMedium, ChiralConsciousness};
 /// actually be merged (each a list of member indices into the caller's
 /// id-ordered item slice, length ≥ 2); the `*_before_cap` tallies record what the
 /// criteria found before the absorb cap trimmed the plan.
-struct MergeGrouping {
-    admitted: Vec<Vec<usize>>,
-    groups_before_cap: usize,
-    absorb_before_cap: usize,
-    absorb_cap: Option<usize>,
-    centered: bool,
+///
+/// Public so external harnesses (the L7 belief research arm) can run the
+/// EXACT ADR-0036 grouping — semantic gate, belief centering, absorb cap —
+/// against their own substrate instead of re-implementing an approximation.
+pub struct MergeGrouping {
+    pub admitted: Vec<Vec<usize>>,
+    pub groups_before_cap: usize,
+    pub absorb_before_cap: usize,
+    pub absorb_cap: Option<usize>,
+    pub centered: bool,
 }
 
 impl MergeGrouping {
-    fn admitted_absorb(&self) -> usize {
+    pub fn admitted_absorb(&self) -> usize {
         self.admitted.iter().map(|m| m.len().saturating_sub(1)).sum()
     }
     fn capped(&self) -> bool {
@@ -70,7 +74,7 @@ impl MergeGrouping {
 ///
 /// The default (belief-off, no explicit `max_absorb_frac`) path is byte-identical
 /// to the pre-existing raw-cosine grouping with every group admitted.
-fn compute_merge_grouping(
+pub fn compute_merge_grouping(
     vectors: &[&[f32]],
     phases: &[f32],
     tiers: &[Tier],
@@ -283,7 +287,12 @@ fn apply_entropy_perturbation(
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::entropy::seed_from_bytes(bytes));
     let mut count = 0;
     for (i, m) in metadata.iter_mut().enumerate() {
-        if m.hallucinated {
+        // Only perturb+stamp hallucinations NOT already stamped. Without the
+        // provenance.is_none() gate this re-jitters every persisted hallucination
+        // on EVERY dream (an unbounded ±0.05 rad phase random-walk that drifts
+        // settled wavefronts' recall) and re-draws paid entropy each steady-state
+        // dream — the phantom-spend #521 exists to prevent. One draw, one stamp.
+        if m.hallucinated && m.provenance.is_none() {
             let jitter = (rng.gen::<f32>() - 0.5) * 0.1; // ±0.05 rad, entropy-seeded
             if let Some(p) = phases.get_mut(i) {
                 *p += jitter;
@@ -443,9 +452,20 @@ impl HrmStore {
         // tier promotion. rebuild_cache runs after every dream/absorb, so without
         // this snapshot the count would reset to 0 on each rebuild. Preserve it
         // across the clear, exactly like connections above.
+        //
+        // #497: ALSO preserve the updated_at of a GHOST — a memory with
+        // retrieval_count 0 but a real ADR-0037 ghosting stamp (updated_at !=
+        // created_at). rebuild reconstructs from the medium's WavefrontMeta (which
+        // has no updated_at) and defaults it to created_at; if we don't restore the
+        // stamp, the next deep dream's stage_compact_ghosts sees the ghost past the
+        // 7-day horizon and hard-deletes it with zero recovery window — re-opening
+        // the 295→88 over-prune loss the stamp exists to prevent.
         let saved_reactivation: std::collections::HashMap<uuid::Uuid, (u32, Option<DateTime<Utc>>)> =
             self.memory_cache.iter()
-                .filter(|(_, m)| m.retrieval_count > 0)
+                .filter(|(_, m)| {
+                    m.retrieval_count > 0
+                        || (m.updated_at.is_some() && m.updated_at != Some(m.created_at))
+                })
                 .map(|(id, m)| (*id, (m.retrieval_count, m.updated_at)))
                 .collect();
 
@@ -560,11 +580,37 @@ impl HrmStore {
     /// wave parameters (amplitude, phase, frequency) on the cached copy. This
     /// method writes those changes back to the authoritative tensor storage.
     fn sync_cache_to_medium(&mut self) {
-        for (id, mem) in &self.memory_cache {
-            if let Some(index) = self.medium.get_wavefront_index(id) {
-                self.medium.store.energy[index] = mem.amplitude;
-                self.medium.store.frequency[index] = mem.frequency;
-                self.medium.store.phase[index] = mem.phase;
+        // #496: in chiral mode the RIGHT hemisphere is authoritative — it is what
+        // `save_medium` persists and what `rebuild_cache` reloads. The particle
+        // dream strengthens ENERGY on the cached copy via get_mut; pre-fix that
+        // was written to the flat `self.medium` (never saved in chiral mode) and
+        // reverted on every reload, while the dream's prunes (applied to
+        // chiral.right) stuck — the asymmetry #496 describes.
+        //
+        // ONLY energy is synced here (not frequency/phase). frequency and phase
+        // are set once by Hemisphere::add_wavefront (freq=1.0, a born phase) and
+        // are only ever mutated on chiral.right DIRECTLY (kuramoto/callosal/dream,
+        // each of which rebuilds the cache) — the cache is a reflection, never an
+        // authoritative source, for those two. Writing them back from the cache
+        // would clobber the authoritative values with a stale default whenever a
+        // wavefront was added via insert_raw_wavefront (whose cache record keeps
+        // WaveParams::default freq=0.1/phase=0.0) — corrupting the 96 substrate
+        // anchors on their first flush. Pre-PR the flat-medium sync never reached
+        // disk in chiral mode, so energy-only here is the exact scope #496 needs
+        // and matches pre-PR behavior for freq/phase.
+        if let Some(ref mut chiral) = self.chiral {
+            for (id, mem) in &self.memory_cache {
+                if let Some(&index) = chiral.right.id_to_index.get(id) {
+                    chiral.right.energy[index] = mem.amplitude;
+                }
+            }
+        } else {
+            for (id, mem) in &self.memory_cache {
+                if let Some(index) = self.medium.get_wavefront_index(id) {
+                    self.medium.store.energy[index] = mem.amplitude;
+                    self.medium.store.frequency[index] = mem.frequency;
+                    self.medium.store.phase[index] = mem.phase;
+                }
             }
         }
     }
@@ -685,7 +731,13 @@ impl HrmStore {
                 .unwrap_or_default();
 
         for (id, m) in &self.memory_cache {
-            if m.retrieval_count == 0 {
+            // #497: persist a GHOST's updated_at too — a memory with retrieval_count
+            // 0 but a real ADR-0037 ghosting stamp (updated_at != created_at) — so
+            // the stamp survives a restart and stage_compact_ghosts doesn't
+            // hard-delete the ghost past the horizon. Skip only truly-untouched
+            // memories (no recalls AND no real update).
+            let real_update = m.updated_at.is_some() && m.updated_at != Some(m.created_at);
+            if m.retrieval_count == 0 && !real_update {
                 continue;
             }
             let entry = merged.entry(id.to_string()).or_insert((0, None));
@@ -1017,8 +1069,35 @@ impl HrmStore {
     /// (`None` ⇒ `prng://legacy`), never a false `prng://` claim about entropy
     /// that was not consumed. A draw failure (e.g. empty reservoir) logs loudly
     /// and leaves the cycle deterministic — never a silent fabricated stamp.
+    /// #521: the number of wavefronts a dream-entropy draw would actually jitter
+    /// and stamp — only those flagged `hallucinated`, in the authoritative medium
+    /// (`chiral.right` when present, else the flat store). This is the honest
+    /// "touched set" of a dream: `apply_entropy_perturbation` perturbs and stamps
+    /// exactly these, so a draw is only warranted when the count is > 0.
+    fn dream_entropy_touched_count(&self) -> usize {
+        // Only UN-stamped hallucinations are a real touch target (see
+        // apply_entropy_perturbation): a hallucination stamped by an earlier dream
+        // must not trigger another paid draw. Match the perturbation's gate exactly.
+        let untouched = |m: &crate::medium::types::WavefrontMeta| {
+            m.hallucinated && m.provenance.is_none()
+        };
+        match self.chiral {
+            Some(ref c) => c.right.metadata.iter().filter(|m| untouched(m)).count(),
+            None => self.medium.store.metadata.iter().filter(|m| untouched(m)).count(),
+        }
+    }
+
     fn apply_dream_entropy(&mut self) {
         if !crate::entropy::dream_entropy_enabled() {
+            return;
+        }
+        // #521: the entropy jitter only touches `hallucinated` wavefronts. If this
+        // dream produced none, drawing would spend reservoir bytes to perturb and
+        // stamp NOTHING — a phantom cost, and a dark Observatory panel. Check the
+        // touched set BEFORE drawing: an empty set records an honest absence (no
+        // draw, no spend, no provenance) rather than a false consumption.
+        let touched = self.dream_entropy_touched_count();
+        if touched == 0 {
             return;
         }
         let mut source = crate::entropy::default_source();
@@ -1031,13 +1110,33 @@ impl HrmStore {
                 return;
             }
         };
-        if let Some(ref mut chiral) = self.chiral {
-            if let Some(ph) = chiral.right.phase.as_slice_mut() {
-                apply_entropy_perturbation(&mut chiral.right.metadata, ph, &draw.bytes, &draw.provenance);
+        let stamped = if let Some(ref mut chiral) = self.chiral {
+            match chiral.right.phase.as_slice_mut() {
+                Some(ph) => apply_entropy_perturbation(
+                    &mut chiral.right.metadata,
+                    ph,
+                    &draw.bytes,
+                    &draw.provenance,
+                ),
+                None => 0,
             }
         } else if let Some(ph) = self.medium.store.phase.as_slice_mut() {
-            apply_entropy_perturbation(&mut self.medium.store.metadata, ph, &draw.bytes, &draw.provenance);
-        }
+            apply_entropy_perturbation(
+                &mut self.medium.store.metadata,
+                ph,
+                &draw.bytes,
+                &draw.provenance,
+            )
+        } else {
+            0
+        };
+        // #521 (option A surfacing): the per-wavefront provenance stamps ARE the
+        // dream-level view the Observatory panel aggregates. Log the count so a
+        // consumed draw is visibly tied to real targets (never a phantom spend).
+        eprintln!(
+            "[entropy] dream stamped {stamped}/{touched} wavefront(s) with {} provenance",
+            draw.provenance.source
+        );
     }
 
     /// Wave-native dream using Medium's eigenstructure annealing.
@@ -1108,12 +1207,24 @@ impl HrmStore {
         // ShortTerm decay/evict projection (M3). Reactivation is not persisted
         // until ADR-0036 Phase 1, so "evict" uses the session-local
         // retrieval_count == 0 — a conservative undercount until then.
+        //
+        // Exclude merge PARTICIPANTS from the evict count. Grouping admits members
+        // purely on cosine+phase (amplitude never gates it), so a decayed ShortTerm
+        // near-duplicate can be BOTH merged AND evict-eligible. apply_consolidation
+        // removes it via the merge and skips ALL merge members (merged_ids) in its
+        // evict pass; if the plan also counts it as an evict it double-subtracts,
+        // over-stating loss and breaking the dryrun_apply_parity invariant.
+        let merged_indices: std::collections::HashSet<usize> =
+            grouping.admitted.iter().flatten().copied().collect();
         let mut st_total = 0usize;
         let mut st_evict = 0usize;
-        for (_, m) in &entries {
+        for (i, (_, m)) in entries.iter().enumerate() {
             if m.tier == Tier::ShortTerm {
                 st_total += 1;
-                if m.amplitude < opts.shortterm_evict && m.retrieval_count == 0 {
+                if m.amplitude < opts.shortterm_evict
+                    && m.retrieval_count == 0
+                    && !merged_indices.contains(&i)
+                {
                     st_evict += 1;
                 }
             }
@@ -1635,6 +1746,43 @@ impl HrmStore {
         }
     }
 
+    /// Re-encode every memory's content through the current pipeline, fixing
+    /// wavefronts written by the broken #106 encoder (#107). Chiral-only for now
+    /// (production HRMs are v2 chiral). Returns `(scanned, updated)`. With
+    /// `dry_run`, computes the counts and touches nothing on disk. On a real run
+    /// it re-encodes in place — preserving wave-state, ghost stamps, and ids via
+    /// `ChiralMedium::re_encode_all` — then rebuilds the cache, invalidates the now
+    /// stale `.clusters.json` sidecar, and persists. Snapshot the HRM first
+    /// (the deployment gate #107 specifies) and verify recall before adopting.
+    pub fn recompute_encoding(&mut self, dry_run: bool) -> Result<(usize, usize), StoreError> {
+        let scanned = self.count();
+        if self.chiral.is_none() {
+            return Err(StoreError::Other(
+                "recompute_encoding supports chiral (v2) HRMs only; this store is flat".to_string(),
+            ));
+        }
+        let updated = {
+            let pipeline = &self.pipeline;
+            let chiral = self.chiral.as_mut().unwrap();
+            // dry_run makes re_encode_all COUNT eligible wavefronts without mutating
+            // the in-memory hemispheres, so a dry run leaves the store untouched.
+            chiral
+                .re_encode_all(pipeline, dry_run)
+                .map_err(|e| StoreError::Other(format!("re-encode failed: {}", e)))?
+        };
+        if dry_run {
+            return Ok((scanned, updated));
+        }
+        self.rebuild_cache()?;
+        self.mark_dirty();
+        self.save_medium()?;
+        // The cluster sidecar was computed from the OLD vectors — drop it so
+        // bridge::assess recomputes clusters against the corrected embeddings.
+        let clusters = self.hrm_path.with_extension("clusters.json");
+        let _ = std::fs::remove_file(&clusters);
+        Ok((scanned, updated))
+    }
+
     /// Get chiral consciousness summary (bilateral metrics).
     pub fn chiral_consciousness(&self) -> Option<ChiralConsciousness> {
         self.chiral.as_ref().map(|c| c.consciousness_summary())
@@ -1773,8 +1921,11 @@ impl HrmStore {
         if let Some(ref mut chiral) = self.chiral {
             // Compute SGA classification
             let content_hash = {
-                let content = chiral.right.id_to_index.get(id)
-                    .and_then(|&idx| Some(chiral.right.metadata[idx].content.clone()))
+                let content = chiral
+                    .right
+                    .id_to_index
+                    .get(id)
+                    .map(|&idx| chiral.right.metadata[idx].content.clone())
                     .unwrap_or_default();
                 let mut h: u64 = 0xcbf29ce484222325;
                 for b in content.bytes() {
@@ -1877,14 +2028,36 @@ impl HrmStore {
 }
 
 impl MediumBackend for HrmStore {
-    fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError> {
+    fn insert(&mut self, mut memory: HyperMemory) -> Result<Uuid, StoreError> {
         let id = memory.id;
-        
+
         // Check for duplicates
         if self.memory_cache.contains_key(&id) {
             return Err(StoreError::DuplicateId(id));
         }
-        
+
+        // SECURITY (inc-1b): wire immune/amplitude fields are never trusted. The
+        // authoritative wire-boundary defense is `absorb_gate::admit` (it forces
+        // `hallucinated` to the local default and clamps amplitude ≤0.95 BEFORE
+        // this is reached). This clamp is defense-in-depth: any path — wire or
+        // local — that reaches the medium is bounded to finite, sane numeric
+        // ranges so a pathological `amplitude`/`frequency`/`phase` can't wrap the
+        // wave math or corrupt the store. `hallucinated` is intentionally NOT
+        // forced here — legitimate dream hallucinations insert with it set true.
+        memory.amplitude = if memory.amplitude.is_finite() {
+            memory.amplitude.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        memory.frequency = if memory.frequency.is_finite() {
+            memory.frequency.clamp(0.0, 1_000_000.0)
+        } else {
+            0.1
+        };
+        if !memory.phase.is_finite() {
+            memory.phase = 0.0;
+        }
+
         // Add to medium using the vector directly to preserve the memory's UUID
         let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
             .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;
@@ -1926,22 +2099,22 @@ impl MediumBackend for HrmStore {
     }
 
     fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<(Uuid, f32)>, StoreError> {
-        // Use the medium's resonance-based search
-        let mut scores = Vec::new();
-        
-        for (i, meta) in self.medium.store.metadata.iter().enumerate() {
-            let wavefront = self.medium.store.wavefronts.row(i);
-            let similarity: f32 = wavefront.iter()
-                .zip(query.iter())
-                .map(|(a, b)| a * b)
-                .sum();
-            
-            scores.push((meta.id, similarity));
-        }
-        
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // #498: score over the LIVE `memory_cache` (the authoritative set `get`
+        // reads), NOT the flat `medium.store` view. The flat view retains dropped
+        // hallucinations / stale energies after a chiral rebuild (only
+        // `sync_medium_from_chiral` refreshes it), so scoring it let dead ids rank
+        // in and silently consume the top_k budget (callers then skip them via
+        // `get().ok().flatten()`, shrinking the real neighbour set). Use NORMALIZED
+        // cosine similarity — like `TestMedium::search` — so a similarity threshold
+        // in `stage_detect` / `stage_wire_topk` means the same thing on both
+        // backends instead of scaling with raw hypervector norm.
+        let mut scores: Vec<(Uuid, f32)> = self
+            .memory_cache
+            .values()
+            .map(|m| (m.id, crate::wave::cosine_similarity(query, &m.vector)))
+            .collect();
+        scores.sort_by(|a, b| b.1.total_cmp(&a.1));
         scores.truncate(top_k);
-        
         Ok(scores)
     }
 
@@ -1956,7 +2129,7 @@ impl MediumBackend for HrmStore {
     }
 
     fn delete(&mut self, id: &Uuid) -> Result<bool, StoreError> {
-        if let Some(_) = self.memory_cache.remove(id) {
+        if self.memory_cache.remove(id).is_some() {
             // Remove from flat medium (best-effort).
             if let Err(e) = self.medium.remove_wavefront(id) {
                 // Log error but don't fail - cache was already updated
@@ -2222,6 +2395,111 @@ mod tests {
         assert_eq!(store.count(), 0);
     }
 
+    // #498: search scores the LIVE cache with NORMALIZED cosine, not raw dot
+    // products over the (possibly stale) flat medium view.
+    #[test]
+    fn search_normalizes_and_excludes_non_live_ids() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        // Non-unit vectors so cosine (≈1.0 self-match) is distinguishable from a
+        // raw dot product (which would scale with the vector norm, ≈0.25·DIM).
+        let va = vec![0.5f32; WAVEFRONT_DIM];
+        let mut vb = vec![0.0f32; WAVEFRONT_DIM];
+        for x in vb.iter_mut().take(WAVEFRONT_DIM / 2) {
+            *x = 1.0;
+        }
+        let ida = store.insert(HyperMemory::new(va.clone(), "alpha".into())).unwrap();
+        let idb = store.insert(HyperMemory::new(vb.clone(), "beta".into())).unwrap();
+
+        // Normalized: querying with alpha's own vector self-matches at ~1.0.
+        let hits = store.search(&va, 5).unwrap();
+        let top = hits.first().expect("a hit");
+        assert_eq!(top.0, ida, "alpha ranks first for its own vector");
+        assert!(
+            (top.1 - 1.0).abs() < 1e-3,
+            "cosine self-match must be ~1.0 (a raw dot would be ~0.25·DIM), got {}",
+            top.1
+        );
+
+        // Dead-id exclusion: simulate the post-chiral-rebuild staleness where an
+        // id lingers in the flat medium view but is dropped from the live cache.
+        store.memory_cache.remove(&idb);
+        let hits2 = store.search(&vb, 5).unwrap();
+        assert!(
+            hits2.iter().all(|(id, _)| *id != idb),
+            "an id absent from the live cache must not appear (dead ids must not eat the k-budget)"
+        );
+    }
+
+    // #497: rebuild_cache reconstructs memories from the medium (which has no
+    // updated_at), so a GHOST — retrieval_count 0 but a real ADR-0037 ghosting
+    // stamp — used to have its stamp reset to created_at and get hard-deleted past
+    // the 7-day horizon. rebuild must now PRESERVE the ghost's stamp.
+    #[test]
+    fn rebuild_preserves_ghost_updated_at() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        let id = store
+            .insert(HyperMemory::new(vec![0.3f32; WAVEFRONT_DIM], "ghost".into()))
+            .unwrap();
+
+        // Ghost it: a distinct recent stamp, and NO recalls — the exact shape that
+        // used to lose its stamp on rebuild.
+        let ghost_time = Utc::now() - chrono::Duration::days(1);
+        {
+            let m = store.get_mut(&id).unwrap().unwrap();
+            m.updated_at = Some(ghost_time);
+            assert_eq!(m.retrieval_count, 0, "precondition: a ghost has no recalls");
+            assert_ne!(m.updated_at, Some(m.created_at), "precondition: stamp != created_at");
+        }
+
+        store.rebuild_cache().unwrap();
+
+        let m = store.get(&id).unwrap().expect("memory survives rebuild");
+        assert_eq!(
+            m.updated_at,
+            Some(ghost_time),
+            "#497: rebuild must preserve a ghost's ADR-0037 stamp, not reset it to created_at"
+        );
+    }
+
+    // #107: recompute_encoding re-encodes chiral wavefronts in place. dry-run
+    // reports the counts without writing; a real run rewrites the corrupted right
+    // vector to match a fresh encoding of the same content.
+    #[test]
+    fn recompute_encoding_chiral_fixes_vectors() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        store.upgrade_to_chiral();
+        let content = "resonance and standing waves";
+        // Seed with broken-encoder junk (the all-negative corner #106 produced).
+        let bad = vec![-0.9f32; WAVEFRONT_DIM];
+        let id = store.insert_raw_wavefront(bad, content.into(), 0.7).unwrap();
+
+        // What a correct encoding of this content lands as in a fresh right slot.
+        let want = {
+            let tmp2 = NamedTempFile::new().unwrap();
+            let mut refs = HrmStore::new(make_test_pipeline(), tmp2.path().to_path_buf());
+            refs.upgrade_to_chiral();
+            let good = make_test_pipeline().encode_text(content).unwrap();
+            let rid = refs.insert_raw_wavefront(good, content.into(), 0.7).unwrap();
+            let cm = refs.chiral_medium().unwrap();
+            let ridx = *cm.right.id_to_index.get(&rid).unwrap();
+            cm.right.wavefronts.row(ridx).to_vec()
+        };
+
+        // dry-run: counts only, nothing written.
+        assert_eq!(store.recompute_encoding(true).unwrap(), (1, 1));
+
+        // real run fixes the corrupted vector.
+        assert_eq!(store.recompute_encoding(false).unwrap(), (1, 1));
+        let cm = store.chiral_medium().unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let got = cm.right.wavefronts.row(idx).to_vec();
+        let cos = crate::wave::cosine_similarity(&got, &want);
+        assert!(cos > 0.999, "recompute_encoding fixed the right vector (cos={cos})");
+    }
+
     #[test]
     fn hrm_store_persistence() {
         let pipeline1 = make_test_pipeline();
@@ -2245,6 +2523,79 @@ mod tests {
             let memories = store.all_memories().unwrap();
             assert_eq!(memories[0].content, "persistent content");
         }
+    }
+
+    // #496: in chiral mode the RIGHT hemisphere is the authoritative store that
+    // chiral.save() persists and rebuild_cache reloads. sync_cache_to_medium used
+    // to write dream mutations (energy strengthening) to the FLAT medium, which is
+    // never saved in chiral mode — so the particle dream's constructive work
+    // silently reverted on every reload while its prunes (applied to chiral.right)
+    // stuck. sync must write to chiral.right so strengthening persists too.
+    #[test]
+    fn chiral_dream_strengthening_persists_across_reload() {
+        let pipeline1 = make_test_pipeline();
+        let pipeline2 = make_test_pipeline();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_path_buf();
+
+        let id = {
+            let mut store = HrmStore::new(pipeline1, path.clone());
+            store.upgrade_to_chiral();
+            // Seed a wavefront into the right hemisphere at a known low energy.
+            let id = store
+                .insert_raw_wavefront(vec![0.3f32; WAVEFRONT_DIM], "dreamed".into(), 0.40)
+                .unwrap();
+            // A deep dream strengthens it (raises amplitude) by mutating the cache
+            // via get_mut — exactly the path sync_cache_to_medium must persist.
+            store.get_mut(&id).unwrap().unwrap().amplitude = 0.95;
+            store.flush().unwrap();
+            id
+        };
+
+        // Reload from disk: rebuild_cache reads chiral.right. If the mutation only
+        // reached the (unsaved) flat medium, the reloaded energy is the original
+        // 0.40 and this assertion fails — the #496 revert.
+        let store = HrmStore::load(pipeline2, path).unwrap();
+        let amp = store.get(&id).unwrap().expect("wavefront survives reload").amplitude;
+        assert!(
+            (amp - 0.95).abs() < 1e-4,
+            "#496: chiral dream-strengthened energy must persist across reload, got {amp}"
+        );
+    }
+
+    // #530 review regression: the chiral sync must persist ONLY energy, not
+    // frequency/phase. insert_raw_wavefront sets chiral.right.frequency=1.0 (via
+    // add_wavefront) but its cache record keeps WaveParams::default (0.1), so a
+    // freq-syncing flush would clobber the authoritative 1.0 -> 0.1 on disk. The
+    // strengthened energy must still persist.
+    #[test]
+    fn chiral_sync_preserves_raw_insert_frequency() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let id = {
+            let mut store = HrmStore::new(make_test_pipeline(), path.clone());
+            store.upgrade_to_chiral();
+            let id = store
+                .insert_raw_wavefront(vec![0.3f32; WAVEFRONT_DIM], "anchor".into(), 0.8)
+                .unwrap();
+            let cm = store.chiral_medium().unwrap();
+            let idx = *cm.right.id_to_index.get(&id).unwrap();
+            assert_eq!(cm.right.frequency[idx], 1.0, "precondition: add_wavefront set freq 1.0");
+            // Strengthen energy (the #496 path), then flush.
+            store.get_mut(&id).unwrap().unwrap().amplitude = 0.95;
+            store.flush().unwrap();
+            id
+        };
+
+        let store = HrmStore::load(make_test_pipeline(), path).unwrap();
+        let amp = store.get(&id).unwrap().expect("survives reload").amplitude;
+        assert!((amp - 0.95).abs() < 1e-4, "#496: strengthened energy persists, got {amp}");
+        let cm = store.chiral_medium().unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        assert_eq!(
+            cm.right.frequency[idx], 1.0,
+            "#530: raw-insert frequency 1.0 must NOT be clobbered to the cache default 0.1"
+        );
     }
 
     #[test]
@@ -2975,6 +3326,72 @@ mod tests {
         assert_eq!(plan.would_evict, 1);
     }
 
+    // hunt regression: dream-entropy perturbation must touch each hallucination
+    // ONCE. Re-touching a stamped hallucination every dream would re-draw paid
+    // entropy and random-walk its phase (unbounded ±0.05 rad drift).
+    #[test]
+    fn entropy_perturbation_stamps_each_hallucination_once() {
+        use crate::medium::types::WavefrontMeta;
+        let mut meta = vec![
+            WavefrontMeta::new(uuid::Uuid::new_v4(), "real".into()),
+            WavefrontMeta::new(uuid::Uuid::new_v4(), "hallu".into()),
+        ];
+        meta[1].hallucinated = true;
+        let mut phases = vec![0.0f32, 1.0f32];
+        let bytes = [7u8; 32];
+        let prov = crate::entropy::Provenance::default();
+
+        let n1 = apply_entropy_perturbation(&mut meta, &mut phases, &bytes, &prov);
+        assert_eq!(n1, 1, "the un-stamped hallucination is perturbed once");
+        assert!(meta[1].provenance.is_some(), "hallucination is stamped");
+        let phase_after_first = phases[1];
+
+        let n2 = apply_entropy_perturbation(&mut meta, &mut phases, &bytes, &prov);
+        assert_eq!(n2, 0, "an already-stamped hallucination is NOT re-drawn/re-perturbed");
+        assert_eq!(
+            phases[1], phase_after_first,
+            "phase must not random-walk on repeat entropy passes"
+        );
+    }
+
+    // hunt regression: a ShortTerm near-duplicate pair that is BOTH merge-eligible
+    // (near-identical) AND evict-eligible (amplitude 0.05 < 0.15, retr 0). The plan
+    // must not double-count them — apply absorbs one via the merge and skips ALL
+    // merge members in its evict pass, so plan/apply projections must still match.
+    #[test]
+    fn dryrun_apply_parity_merge_evict_overlap() {
+        let build = || {
+            let mut store = HrmStore::new(
+                make_test_pipeline(),
+                NamedTempFile::new().unwrap().path().to_path_buf(),
+            );
+            let base = vec![0.5f32; WAVEFRONT_DIM];
+            let mut a = base.clone();
+            a[0] += 0.001;
+            insert_ctl(&mut store, a, "dupA", 0.05, 0.0, Tier::ShortTerm, 0);
+            let mut b = base.clone();
+            b[1] += 0.001;
+            insert_ctl(&mut store, b, "dupB", 0.05, 0.0, Tier::ShortTerm, 0);
+            let mut u = vec![0.0f32; WAVEFRONT_DIM];
+            u[200] = 1.0;
+            insert_ctl(&mut store, u, "solo", 1.0, 0.0, Tier::LongTerm, 0);
+            store
+        };
+
+        let plan = build().plan_consolidation(&ConsolidateOpts {
+            mode: ConsolidateMode::DryRun,
+            ..Default::default()
+        });
+        let mut apply_store = build();
+        let applied = apply_store.apply_consolidation(&apply_opts());
+
+        assert_eq!(plan.would_evict, applied.would_evict, "evict parity (merge/evict overlap)");
+        assert_eq!(
+            plan.projected_memories, applied.projected_memories,
+            "projected-count parity (merge/evict overlap)"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // T1.4 (#474) — gated dream entropy: default-off determinism + honest,
     // reproducible provenance only when a draw actually occurs.
@@ -3036,5 +3453,41 @@ mod tests {
         let (mut mc, mut pc) = (mk(), vec![0.5f32, 0.5]);
         apply_entropy_perturbation(&mut mc, &mut pc, &[42u8; 10], &prov);
         assert_ne!(pa[0], pc[0], "different entropy ⇒ different dream perturbation");
+    }
+
+    // #521: the dream-entropy draw is gated on a non-empty touched set. A dream
+    // with no hallucinated wavefronts has a zero touched count, so `apply_dream_
+    // entropy` returns before drawing — an inert dream spends no reservoir bytes
+    // and records an honest absence, instead of stamping nothing at real cost.
+    #[test]
+    fn dream_entropy_touched_count_gates_the_draw() {
+        use crate::medium::types::WavefrontMeta;
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+
+        // Nothing hallucinated ⇒ zero touched set ⇒ no draw is warranted.
+        assert_eq!(
+            store.dream_entropy_touched_count(),
+            0,
+            "no hallucinations ⇒ nothing to perturb ⇒ the dream must not draw"
+        );
+
+        // Add one hallucination + one ordinary wavefront to whichever medium the
+        // gate reads; only the hallucination is a real stamp target.
+        let push = |metas: &mut Vec<WavefrontMeta>| {
+            let mut h = WavefrontMeta::new(Uuid::new_v4(), "hallu".into());
+            h.hallucinated = true;
+            metas.push(h);
+            metas.push(WavefrontMeta::new(Uuid::new_v4(), "ordinary".into()));
+        };
+        match store.chiral {
+            Some(ref mut c) => push(&mut c.right.metadata),
+            None => push(&mut store.medium.store.metadata),
+        }
+        assert_eq!(
+            store.dream_entropy_touched_count(),
+            1,
+            "only the hallucinated wavefront counts toward the touched set"
+        );
     }
 }

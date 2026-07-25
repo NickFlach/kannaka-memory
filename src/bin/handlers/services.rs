@@ -44,6 +44,217 @@ fn http_post_json_with_token(url: &str, body: &str, token: &str) -> Result<Strin
 }
 
 // ---------------------------------------------------------------------------
+// KAX identity token plumbing (ADR-0041): labs-tier trading requires a
+// KAX-issued EdDSA JWT. A human drops one in once (`kannaka market auth <jwt>`,
+// minted on the KAX Bots page); the CLI then self-refreshes it against KAX
+// `/api/auth/token/refresh` (tokens live 15 min; the refresh lineage is
+// server-bounded, default 30 days) so swarm agents can trade unattended.
+// ---------------------------------------------------------------------------
+
+/// Minimal base64url (no padding) decoder — enough to read a JWT payload.
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut rev = [255u8; 256];
+    for (i, &c) in TABLE.iter().enumerate() { rev[c as usize] = i as u8; }
+    let bytes = s.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4 + 3);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for &b in bytes {
+        let v = rev[b as usize];
+        if v == 255 { return None; }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Decode a JWT's payload claims without verifying (verification is the
+/// server's job — the CLI only needs exp/sub/kind for UX + refresh timing).
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    let raw = b64url_decode(payload)?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn now_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Persist a (new) KAX token to the config file. Loads the on-disk config
+/// unmodified (so env overrides aren't baked in) and saves 0600.
+fn persist_kax_token(token: &str) {
+    let mut on_disk = KannakaConfig::load_unmodified();
+    on_disk.ghostsignals.kax_token = token.to_string();
+    if let Err(e) = on_disk.save() {
+        eprintln!("  warning: could not persist KAX token to config: {}", e);
+    }
+}
+
+/// POST the SpaceChild access token to KAX's federation exchange. Returns the
+/// KAX token on success, or (status, message) on failure.
+fn post_exchange(url: &str, spacechild_access: &str) -> Result<String, (u16, String)> {
+    let body = serde_json::json!({ "spacechild_token": spacechild_access }).to_string();
+    match ureq::post(url)
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(12))
+        .send_string(&body)
+    {
+        Ok(resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["token"].as_str().map(String::from))
+                .ok_or((0, "unexpected exchange response".to_string()))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let text = resp.into_string().unwrap_or_default();
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or(text);
+            Err((code, msg))
+        }
+        Err(e) => Err((0, e.to_string())),
+    }
+}
+
+/// SpaceChild federation (ADR-0041 Phase B): exchange the stored SpaceChild
+/// session (`kannaka identity login`) for a KAX identity token — no browser,
+/// no KAX password. Refreshes the SpaceChild session once on a 401 and
+/// retries, so a live refresh token keeps an agent trading indefinitely.
+fn exchange_spacechild_for_kax(cfg: &KannakaConfig) -> Option<String> {
+    use kannaka_memory::identity::{identity_path, AuthClient, IdentityStore};
+    let path = identity_path();
+    let store = IdentityStore::load(&path).ok().flatten()?;
+    let url = format!("{}/api/auth/token/exchange", cfg.ghostsignals.kax_url.trim_end_matches('/'));
+    match post_exchange(&url, &store.access_token) {
+        Ok(tok) => {
+            persist_kax_token(&tok);
+            eprintln!("  \u{2713} KAX identity federated via SpaceChild ({})", store.email);
+            Some(tok)
+        }
+        Err((401, _)) => {
+            // SpaceChild access token expired — refresh the session, retry once.
+            let client = AuthClient::from_env();
+            match client.refresh(&store.refresh_token) {
+                Ok((access, refresh)) => {
+                    let mut s2 = store.clone();
+                    s2.access_token = access.clone();
+                    s2.refresh_token = refresh;
+                    s2.obtained_at = chrono::Utc::now();
+                    let _ = s2.save(&path);
+                    match post_exchange(&url, &access) {
+                        Ok(tok) => {
+                            persist_kax_token(&tok);
+                            eprintln!("  \u{2713} KAX identity federated via SpaceChild ({})", s2.email);
+                            Some(tok)
+                        }
+                        Err((code, m)) => {
+                            eprintln!("  SpaceChild exchange failed after refresh ({}): {}", code, m);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  SpaceChild session expired ({}). Run: kannaka identity login", e);
+                    None
+                }
+            }
+        }
+        Err((code, m)) => {
+            eprintln!("  SpaceChild exchange failed ({}): {}", code, m);
+            None
+        }
+    }
+}
+
+/// Return a usable KAX token, self-refreshing when it is within 5 minutes of
+/// expiry. Falls back to SpaceChild federation when no token is configured or
+/// the refresh lineage is dead — so `kannaka identity login` alone is enough.
+/// None only when every path is exhausted.
+fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
+    let tok = cfg.ghostsignals.kax_token.trim();
+    if tok.is_empty() {
+        return exchange_spacechild_for_kax(cfg).or_else(|| remint_help());
+    }
+    let exp = jwt_claims(tok).and_then(|c| c["exp"].as_i64()).unwrap_or(0);
+    let now = now_epoch();
+    if exp - now > 300 {
+        return Some(tok.to_string()); // comfortably fresh
+    }
+    // Within 5 min of expiry (or past it, or unreadable) — try a refresh.
+    let url = format!("{}/api/auth/token/refresh", cfg.ghostsignals.kax_url.trim_end_matches('/'));
+    let body = serde_json::json!({ "token": tok }).to_string();
+    match ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(8))
+        .send_string(&body)
+    {
+        Ok(resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(fresh) = v["token"].as_str() {
+                    persist_kax_token(fresh);
+                    return Some(fresh.to_string());
+                }
+            }
+            eprintln!("  KAX token refresh returned an unexpected response.");
+            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(|| remint_help()) }
+        }
+        Err(e) => {
+            if exp > now {
+                // Still valid — use it and let a later run retry the refresh.
+                eprintln!("  warning: KAX token refresh failed ({}); using current token", e);
+                Some(tok.to_string())
+            } else {
+                eprintln!("  KAX token expired and refresh failed: {}", e);
+                // Dead lineage — federation can mint a fresh one if a
+                // SpaceChild session is on disk.
+                exchange_spacechild_for_kax(cfg).or_else(|| remint_help())
+            }
+        }
+    }
+}
+
+fn remint_help() -> Option<String> {
+    eprintln!("  Get a KAX identity one of two ways:");
+    eprintln!("    kannaka identity login                 (SpaceChild SSO — fully automatic after)");
+    eprintln!("    kannaka market auth <jwt>              (mint on kax.ninja-portal.com, Bots page)");
+    None
+}
+
+/// Resolve an outcome argument to the hub's integer index: a bare integer is
+/// used as-is; otherwise the market's outcome labels are fetched and matched
+/// case-insensitively (so `yes` / `No` work).
+fn resolve_outcome_index(base: &str, market_id: &str, outcome: &str) -> Result<(u64, String), String> {
+    if let Ok(n) = outcome.parse::<u64>() {
+        return Ok((n, outcome.to_string()));
+    }
+    let url = format!("{}/api/markets/{}", base, market_id);
+    let body = http_get(&url)?;
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("bad market JSON: {e}"))?;
+    let outcomes = v["market"]["outcomes"].as_array()
+        .or_else(|| v["outcomes"].as_array())
+        .ok_or_else(|| "market has no outcomes array".to_string())?;
+    for (i, o) in outcomes.iter().enumerate() {
+        let label = o.as_str().unwrap_or("");
+        if label.eq_ignore_ascii_case(outcome) {
+            return Ok((i as u64, label.to_string()));
+        }
+    }
+    let labels: Vec<&str> = outcomes.iter().filter_map(|o| o.as_str()).collect();
+    Err(format!("outcome '{}' not found; this market's outcomes: {}", outcome, labels.join(", ")))
+}
+
+// ---------------------------------------------------------------------------
 // Radio commands
 // ---------------------------------------------------------------------------
 
@@ -171,13 +382,91 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
     };
     let token = &cfg.ghostsignals.token;
 
-    if token.is_empty() && matches!(sub, "buy" | "create" | "portfolio") {
+    // buy works with EITHER a KAX identity token (labs-tier, attributed) or the
+    // legacy GhostSignals token (play tier). create/portfolio keep the legacy
+    // requirement for now.
+    // buy proceeds even with nothing configured: ensure_fresh_kax_token can
+    // federate a KAX identity from a stored SpaceChild session on the fly.
+    if token.is_empty() && matches!(sub, "create" | "portfolio") {
         eprintln!("  GhostSignals token not configured.");
         eprintln!("  Run 'kannaka init' to register with GhostSignals.");
         process::exit(1);
     }
 
     match sub {
+        "auth" => {
+            let jwt = match args.get(2) {
+                Some(j) => j.trim().to_string(),
+                None => {
+                    eprintln!("Usage: kannaka market auth <kax-identity-jwt>");
+                    eprintln!("  Mint one at kax.ninja-portal.com (Bots page → Identity Token).");
+                    process::exit(1);
+                }
+            };
+            let claims = match jwt_claims(&jwt) {
+                Some(c) if c["sub"].is_string() && c["kind"].is_string() => c,
+                _ => {
+                    eprintln!("  That does not look like a KAX identity token (expected a JWT with sub + kind claims).");
+                    process::exit(1);
+                }
+            };
+            persist_kax_token(&jwt);
+            let kind = claims["kind"].as_str().unwrap_or("?");
+            let sub_c = claims["sub"].as_str().unwrap_or("?");
+            let exp = claims["exp"].as_i64().unwrap_or(0);
+            let mins = (exp - now_epoch()).max(0) / 60;
+            println!("  \u{2713} KAX identity stored.");
+            if kind == "agent" {
+                println!("  Principal: kax:agent:{}", claims["bot_id"].as_str().unwrap_or("?"));
+            } else {
+                println!("  Principal: kax:{}:{}", kind, sub_c);
+            }
+            println!("  Token expires in ~{} min — the CLI auto-refreshes it before market calls.", mins);
+        }
+        "link" => {
+            // Force a SpaceChild -> KAX federation exchange right now.
+            match exchange_spacechild_for_kax(cfg) {
+                Some(tok) => {
+                    if let Some(c) = jwt_claims(&tok) {
+                        let kind = c["kind"].as_str().unwrap_or("?");
+                        println!("  Principal: kax:{}:{}", kind, c["sub"].as_str().unwrap_or("?"));
+                    }
+                    println!("  Federated token stored; market commands will self-refresh it.");
+                }
+                None => {
+                    eprintln!("  No usable SpaceChild session. Run: kannaka identity login");
+                    process::exit(1);
+                }
+            }
+        }
+        "whoami" => {
+            let tok = cfg.ghostsignals.kax_token.trim();
+            if tok.is_empty() {
+                println!("  No KAX identity configured. Run: kannaka market auth <jwt>");
+                return;
+            }
+            match jwt_claims(tok) {
+                Some(c) => {
+                    let kind = c["kind"].as_str().unwrap_or("?");
+                    let principal = if kind == "agent" {
+                        format!("kax:agent:{}", c["bot_id"].as_str().unwrap_or("?"))
+                    } else {
+                        format!("kax:{}:{}", kind, c["sub"].as_str().unwrap_or("?"))
+                    };
+                    let now = now_epoch();
+                    let exp = c["exp"].as_i64().unwrap_or(0);
+                    let oat = c["oat"].as_i64().or_else(|| c["iat"].as_i64()).unwrap_or(now);
+                    println!("  Principal:      {}", principal);
+                    println!("  Token expires:  {} min (auto-refreshed before market calls)", (exp - now).max(0) / 60);
+                    println!("  Lineage age:    {} day(s) (server refuses refresh past its max lifetime)", (now - oat).max(0) / 86400);
+                    if let Some(scopes) = c["scopes"].as_array() {
+                        let s: Vec<&str> = scopes.iter().filter_map(|x| x.as_str()).collect();
+                        println!("  Scopes:         {}", s.join(", "));
+                    }
+                }
+                None => println!("  Stored KAX token is unreadable — re-run: kannaka market auth <jwt>"),
+            }
+        }
         "list" => {
             let url = format!("{}/api/markets", base);
             match http_get(&url) {
@@ -305,26 +594,68 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                 },
             };
 
+            // The hub takes the outcome as an INTEGER index; accept a bare
+            // index or a label (yes/no) resolved against the market.
+            let (outcome_idx, outcome_label) = match resolve_outcome_index(base, market_id, outcome) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("  {}", e);
+                    process::exit(1);
+                }
+            };
+
+            // Prefer the KAX identity token (labs-tier: the hub verifies it and
+            // derives the trader from the claims); fall back to the legacy
+            // GhostSignals token for play-tier markets.
+            let kax = ensure_fresh_kax_token(cfg);
+            let bearer: &str = match &kax {
+                Some(t) => t.as_str(),
+                None if !token.is_empty() => token.as_str(),
+                None => {
+                    // ensure_fresh_kax_token already printed the re-mint help.
+                    process::exit(1);
+                }
+            };
+
             let url = format!("{}/api/markets/{}/trade", base, market_id);
+            // trader_id rides along for play-tier markets; on labs-tier the hub
+            // overwrites it with the KAX-derived principal.
             let body = serde_json::json!({
-                "outcome": outcome,
+                "outcome": outcome_idx,
                 "shares": shares,
-                "agent_id": "self",
+                "trader_id": cfg.agent.id,
             }).to_string();
-            match http_post_json_with_token(&url, &body, token) {
+            match http_post_json_with_token(&url, &body, bearer) {
                 Ok(resp) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        if v["ok"].as_bool() == Some(false) {
+                            eprintln!("  Trade rejected: {}", v["error"].as_str().unwrap_or("unknown error"));
+                            process::exit(1);
+                        }
                         let cost = v["cost"].as_f64().unwrap_or(0.0);
-                        let new_price = v["new_price"].as_f64().unwrap_or(0.0);
-                        println!("  \u{2713} Bought {} shares of '{}' on {}", shares, outcome, market_id);
-                        println!("  Cost: {:.2} ghost coins", cost);
-                        println!("  New price: {:.2}", new_price);
+                        println!("  \u{2713} Bought {} share(s) of '{}' on {}", shares, outcome_label, market_id);
+                        println!("  Cost: {:.4} credits", cost);
+                        if let Some(prices) = v["prices"].as_array() {
+                            let p: Vec<String> = prices.iter()
+                                .filter_map(|x| x.as_f64())
+                                .map(|x| format!("{:.2}", x))
+                                .collect();
+                            println!("  New prices: [{}]", p.join(", "));
+                        }
+                        if v["cost_minor"].is_string() {
+                            println!("  Ledger: debit posted on the KAX credit ledger (labs-tier).");
+                        }
                     } else {
                         println!("{}", resp);
                     }
                 }
                 Err(e) => {
                     eprintln!("  Trade failed: {}", e);
+                    if e.contains("401") {
+                        eprintln!("  (labs-tier markets need a KAX identity token: kannaka market auth <jwt>)");
+                    } else if e.contains("409") {
+                        eprintln!("  (insufficient credits, or you proposed this market — proposers can't trade their own markets)");
+                    }
                     process::exit(1);
                 }
             }
@@ -451,7 +782,10 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
         }
         _ => {
-            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard>");
+            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard|auth|link|whoami>");
+            eprintln!("  auth <jwt>   store a KAX identity token (labs-tier trading; auto-refreshed)");
+            eprintln!("  link         federate a KAX identity from your SpaceChild login (kannaka identity login)");
+            eprintln!("  whoami       show the stored KAX principal + token/lineage status");
             process::exit(1);
         }
     }

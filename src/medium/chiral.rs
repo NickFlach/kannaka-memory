@@ -38,6 +38,20 @@ pub fn belief_phase_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Medium-level DREAM_GRAVITY gain (`KANNAKA_DREAM_GRAVITY`, **default 0.0 =
+/// OFF**, dreams byte-identical). Distinct from the L5 research harness's
+/// `DREAM_GRAVITY` env, which drives the harness's own dream chain — this one
+/// gates the post-dream associative gravity pass inside `ChiralMedium::dream`
+/// itself, making the gravity×belief interplay measurable on the live medium
+/// (L7 arm, `research/program-l7.md`).
+pub fn dream_gravity_gain() -> f32 {
+    std::env::var("KANNAKA_DREAM_GRAVITY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|g: &f32| g.is_finite() && *g > 0.0)
+        .unwrap_or(0.0)
+}
+
 /// ADR-0036 belief-safe merge: opt in to the DESTRUCTIVE resonance-merge apply
 /// while the belief substrate is active. **Default OFF** — set
 /// `KANNAKA_MERGE_UNDER_BELIEF=1|on|true`. When off (the default), a dream under
@@ -138,6 +152,88 @@ pub struct ChiralMedium {
     pub left_to_right: std::collections::HashMap<Uuid, Uuid>,
     /// Right-to-left ID mapping (reverse)
     pub right_to_left: std::collections::HashMap<Uuid, Uuid>,
+}
+
+/// Chiral-router mode (env `KANNAKA_CHIRAL_ROUTER`). `off` (default) is today's
+/// behavior — the ingest echoes every gated item to left (near-mirror). `novelty`
+/// is the differentiation experiment: novel items stay RIGHT-only, and only the
+/// routinized minority (familiarity crossing, per the cerebellar novelty
+/// detector) is projected to LEFT — so left becomes a crystallized minority, not
+/// a mirror. Isolated behind an env flag so the A/B needs no rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChiralRouter {
+    Off,
+    Novelty,
+}
+
+pub(crate) fn chiral_router_mode() -> ChiralRouter {
+    match std::env::var("KANNAKA_CHIRAL_ROUTER") {
+        Ok(v) if v.eq_ignore_ascii_case("novelty") => ChiralRouter::Novelty,
+        _ => ChiralRouter::Off,
+    }
+}
+
+/// Routinization familiarity threshold for `KANNAKA_CHIRAL_ROUTER=novelty`
+/// (sweepable via `KANNAKA_CHIRAL_ROUTINIZE_THETA`, default 0.8). An ingest whose
+/// content already resonates in RIGHT at/above this — i.e. a REPEAT — is
+/// routinized to LEFT; a novel item (below it) stays right-only. Absolute
+/// familiarity, not the relative-surprise novelty detector: at ingest the stream
+/// is mostly novel so a learned-baseline surprise signal can't separate repeats.
+pub(crate) fn chiral_routinize_theta() -> f32 {
+    std::env::var("KANNAKA_CHIRAL_ROUTINIZE_THETA")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.8)
+}
+
+/// Read-side hemisphere differentiation (exp-2). The write-side router
+/// (`KANNAKA_CHIRAL_ROUTER`) crystallizes a routinized minority into LEFT; this
+/// decides how `recall_vector` USES that minority. `Off` (default) is the current
+/// resonance-ranked union of both hemispheres — byte-identical to before.
+/// `Weighted` boosts left matches so a routinized memory resists eviction when a
+/// novel flood degrades its right-hemisphere resonance. `Beeman` orders the
+/// precise-left (fine) hits ahead of the associative-right (coarse) backfill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChiralRecall {
+    Off,
+    Weighted,
+    Beeman,
+}
+
+pub(crate) fn chiral_recall_mode() -> ChiralRecall {
+    let mode = match std::env::var("KANNAKA_CHIRAL_RECALL") {
+        Ok(v) if v.eq_ignore_ascii_case("weighted") => ChiralRecall::Weighted,
+        Ok(v) if v.eq_ignore_ascii_case("beeman") => ChiralRecall::Beeman,
+        _ => ChiralRecall::Off,
+    };
+    // One-time LOUD warning when a non-default mode is active. These are
+    // EXPERIMENTAL read-side modes: `beeman` is measured-CATASTROPHIC (exp-2: core
+    // p@1 0.65 -> 0.075) because left stores Fano-folded vectors and recall queries
+    // raw — it stays a footgun until the query-fold (exp-2b / #70) makes left-match
+    // resonance meaningful. Without this, an operator who set KANNAKA_CHIRAL_RECALL
+    // via a stale shell/systemd env would get silent recall collapse.
+    if mode != ChiralRecall::Off {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "[kannaka] WARNING: KANNAKA_CHIRAL_RECALL={:?} is an EXPERIMENTAL read-side \
+                 recall mode; beeman is measured-catastrophic (exp-2) pending exp-2b. Unset \
+                 KANNAKA_CHIRAL_RECALL to restore default recall.",
+                mode
+            );
+        });
+    }
+    mode
+}
+
+/// Left-match resonance multiplier for `KANNAKA_CHIRAL_RECALL=weighted`
+/// (`KANNAKA_CHIRAL_RECALL_BOOST`, default 1.5). >1 lets the crystallized left
+/// survive a novel flood; 1.0 is a no-op (equivalent to Off's ranking).
+pub(crate) fn chiral_recall_boost() -> f32 {
+    std::env::var("KANNAKA_CHIRAL_RECALL_BOOST")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.5)
 }
 
 impl ChiralMedium {
@@ -294,6 +390,28 @@ impl ChiralMedium {
         //    Use the first line through this memory's Fano point
         let fold_line = self.fano.lines_through_point(fano_point)[0] as usize;
 
+        // Chiral router (KANNAKA_CHIRAL_ROUTER=novelty, exp 1): decide whether this
+        // ingest should echo to LEFT. In `off` mode every gated item echoes (today's
+        // near-mirror). In `novelty` mode a NOVEL item stays RIGHT-only, and only a
+        // ROUTINIZED item — familiarity crossing, per the cerebellar novelty detector
+        // fed by how strongly the incoming content already resonates in RIGHT — is
+        // projected to left, so left crystallizes the routinized minority, not a mirror.
+        let is_routine = match chiral_router_mode() {
+            ChiralRouter::Off => true,
+            ChiralRouter::Novelty => {
+                // Absolute familiarity: how strongly does the incoming content
+                // already resonate in RIGHT? A REPEAT resonates high; a novel item
+                // low. Only a repeat (>= theta) is routinized to left.
+                let familiarity = self
+                    .right
+                    .resonate(vector, 1)
+                    .first()
+                    .map(|r| r.resonance_strength)
+                    .unwrap_or(0.0);
+                familiarity >= chiral_routinize_theta()
+            }
+        };
+
         // 3. Optic chiasm: input enters RIGHT hemisphere first
         let right_id = self.right.add_wavefront(vector, content.clone(), importance)?;
 
@@ -309,9 +427,10 @@ impl ChiralMedium {
         let scale = ChiralScale::perception(importance);
         self.scales.insert(right_id, scale);
 
-        // 6. Echo to LEFT hemisphere via callosum (if budget allows)
-        //    Uses the geometrically correct fold line for this memory's Fano group
-        if self.callosum.passes_gate(importance) && self.callosum.has_budget() {
+        // 6. Echo to LEFT hemisphere via callosum (if budget allows AND — in
+        //    novelty-router mode — the item is routinized, not novel).
+        //    Uses the geometrically correct fold line for this memory's Fano group.
+        if is_routine && self.callosum.passes_gate(importance) && self.callosum.has_budget() {
             let folded = self.fano.fold(
                 vector,
                 self.right.dims,
@@ -404,8 +523,20 @@ impl ChiralMedium {
 
     /// Recall with a pre-encoded vector.
     pub fn recall_vector(&self, vector: &[f32], top_k: usize) -> Vec<ChiralResonance> {
+        let recall_mode = chiral_recall_mode();
+
         // 1. Search left hemisphere (analytical - fast, precise)
-        let left_matches = self.left.resonate(vector, top_k);
+        let mut left_matches = self.left.resonate(vector, top_k);
+        // Read-side differentiation (exp-2, dormant; Off = unchanged). `weighted`
+        // boosts left matches so a routinized memory resists eviction when a novel
+        // flood degrades its right-hemisphere resonance. Boosting strength does not
+        // change ids, so the paired_right_ids bookkeeping below is unaffected.
+        if recall_mode == ChiralRecall::Weighted {
+            let boost = chiral_recall_boost();
+            for r in left_matches.iter_mut() {
+                r.resonance_strength *= boost;
+            }
+        }
 
         // 2. Search right hemisphere (holistic - deep, associative)
         let right_matches = self.right.resonate(vector, top_k * 2);
@@ -442,23 +573,115 @@ impl ChiralMedium {
             })
             .collect();
 
-        // 5. Add right-hemisphere matches that aren't already paired with left matches
+        // 5/6. Merge + rank. Beeman (exp-2) keeps the precise-left (fine) hits
+        // ahead of the associative-right (coarse) backfill; Off/Weighted rank the
+        // full union by resonance strength (Off is byte-identical to the prior
+        // behavior — the boost is 1× and the beeman branch is skipped).
+        let by_strength = |a: &ChiralResonance, b: &ChiralResonance| {
+            b.resonance_strength
+                .partial_cmp(&a.resonance_strength)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        };
+
+        if recall_mode == ChiralRecall::Beeman {
+            results.sort_by(&by_strength);
+            let mut coarse: Vec<ChiralResonance> = right_matches
+                .into_iter()
+                .filter(|r| !paired_right_ids.contains(&r.id))
+                .map(|mut r| {
+                    r.is_intuition = true;
+                    r
+                })
+                .collect();
+            coarse.sort_by(&by_strength);
+            results.extend(coarse);
+            results.truncate(top_k);
+            return results;
+        }
+
+        // Add right-hemisphere matches that aren't already paired with left matches
         for mut r in right_matches {
             if !paired_right_ids.contains(&r.id) {
                 r.is_intuition = true;
                 results.push(r);
             }
         }
-
-        // 6. Sort by resonance strength and take top_k
-        results.sort_by(|a, b| {
-            b.resonance_strength
-                .partial_cmp(&a.resonance_strength)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(&by_strength);
         results.truncate(top_k);
-
         results
+    }
+
+    /// Re-encode every stored memory's content through `pipeline`, replacing the
+    /// wavefront vectors IN PLACE while preserving all wave-state (energy, phase,
+    /// frequency) and metadata (#107). This fixes an HRM whose vectors were written
+    /// by a broken encoder (#106) without disturbing dream energies, ghost stamps,
+    /// or ids. The RIGHT hemisphere (authoritative) is re-encoded from its stored
+    /// content; each paired LEFT wavefront is re-derived as the Fano fold of the
+    /// corrected right vector on the SAME line it was stored on (read from the left
+    /// slot's `fano_group`), so left stays geometrically consistent. Callosal noise
+    /// is not re-applied — the refreshed left is a clean fold of the corrected
+    /// right. Returns the count of right-hemisphere wavefronts re-encoded; the
+    /// caller must rebuild derived caches and invalidate cluster sidecars.
+    pub fn re_encode_all(
+        &mut self,
+        pipeline: &EncodingPipeline,
+        dry_run: bool,
+    ) -> Result<usize, MediumError> {
+        let mut updated = 0usize;
+        for i in 0..self.right.count() {
+            // Only re-encode genuine TEXT wavefronts. SKIP:
+            //  - dream HALLUCINATIONS (metadata.hallucinated): their vectors are
+            //    synthetic cross-cluster superpositions, NOT encoder output —
+            //    re-encoding their "HALLUCINATION: ..." debug label pollutes recall.
+            //  - non-text MODALITIES (audio/visual/network/mixed): re-encoding their
+            //    content string as text corrupts the perceptual embedding.
+            // NOTE Modality::Unknown covers BOTH pre-ADR-0042 text memories AND raw
+            // substrate anchors (insert_raw_wavefront), which are indistinguishable
+            // for existing data — this tool is for TEXT HRMs; do NOT run it on a
+            // substrate HRM (the binary warns loudly).
+            let hallucinated = self.right.metadata[i].hallucinated;
+            let modality = self.right.metadata[i].modality;
+            if hallucinated || !matches!(modality, Modality::Semantic | Modality::Unknown) {
+                continue;
+            }
+            let content = self.right.metadata[i].content.clone();
+            if dry_run {
+                updated += 1;
+                continue;
+            }
+            let new_vec = pipeline.encode_text(&content).map_err(|e| {
+                MediumError::Serialization(bincode::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("encoding failed: {}", e),
+                )))
+            })?;
+            // Replace the right wavefront in place (adapts to dims like
+            // add_wavefront; energy/phase/frequency/metadata untouched).
+            self.right.set_wavefront_vector(i, &new_vec);
+            updated += 1;
+
+            // Re-derive the paired LEFT wavefront (if any) as a clean fold of the
+            // corrected right vector, on the fold line recorded for that left slot.
+            let right_id = self.right.metadata[i].id;
+            if let Some(&left_id) = self.right_to_left.get(&right_id) {
+                if let Some(&left_idx) = self.left.id_to_index.get(&left_id) {
+                    let fano_point = self.left.metadata[left_idx]
+                        .fano_group
+                        .or(self.right.metadata[i].fano_group)
+                        .unwrap_or(0);
+                    if let Some(&line) = self.fano.lines_through_point(fano_point).first() {
+                        let folded = self.fano.fold(
+                            &new_vec,
+                            self.right.dims,
+                            self.left.dims,
+                            line as usize,
+                        );
+                        self.left.set_wavefront_vector(left_idx, &folded);
+                    }
+                }
+            }
+        }
+        Ok(updated)
     }
 
     /// Dream: mode-specific hemispheric refinement (ADR-0024 CS-7).
@@ -476,11 +699,93 @@ impl ChiralMedium {
     ///   - Higher prune threshold (0.05) — analytical is aggressive about precision
     ///
     /// Returns a DreamReport with statistics about what happened.
+    ///
+    /// When `KANNAKA_DREAM_GRAVITY` > 0, the dream ends with an associative
+    /// phase-gravity pass (see [`Self::apply_dream_gravity`]) — the
+    /// medium-level port of the L5 harness knob that lifted `query_gravity`
+    /// 0.37 → 1.0. Default 0.0 keeps behavior byte-identical.
     pub fn dream(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
+        let gravity_gain = dream_gravity_gain();
+        // PRE-dream snapshot: phase topology + the attractor (highest-energy
+        // wavefront's phase). Anchoring to live post-dream phases fails — the
+        // Kuramoto relaxation moves phases every cycle, so "neighbors" drift
+        // away from the stored topology (the hard-won L5 lesson).
+        let gravity_pre: Option<(Vec<(Uuid, f32)>, f32)> = (gravity_gain > 0.0).then(|| {
+            let n = self.right.count();
+            let mut best = f32::NEG_INFINITY;
+            let mut attractor = 0.0f32;
+            let snap: Vec<(Uuid, f32)> = (0..n)
+                .map(|i| {
+                    if self.right.energy[i] > best {
+                        best = self.right.energy[i];
+                        attractor = self.right.phase[i];
+                    }
+                    (self.right.metadata[i].id, self.right.phase[i])
+                })
+                .collect();
+            (snap, attractor)
+        });
+        let report = self.dream_inner(deep, cycles);
+        if let Some((snap, attractor)) = gravity_pre {
+            self.apply_dream_gravity(gravity_gain, &snap, attractor);
+        }
+        report
+    }
+
+    /// Associative phase-gravity: reinforce right-hemisphere wavefronts whose
+    /// PRE-dream phase was aligned with the attractor's, fade the phase-
+    /// opposed ones. Multiplicative (`e *= 1 + gain·(align − ½)`), clamped to
+    /// the hemisphere's `[0, 2]` energy invariant; ids not in the snapshot
+    /// (dream hallucinations) are untouched. Under belief phase, phases are
+    /// content-born, so gravity concentrates energy on the attractor's
+    /// CONTENT DOMAIN — the gravity×belief interplay the L7 arm measures.
+    /// Not energy-conserving: a recall-sharpening experiment knob, off by
+    /// default. Returns the number of wavefronts touched.
+    pub fn apply_dream_gravity(
+        &mut self,
+        gain: f32,
+        pre_phases: &[(Uuid, f32)],
+        attractor_phase: f32,
+    ) -> usize {
+        if gain <= 0.0 {
+            return 0;
+        }
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let mut touched = 0usize;
+        for (id, phase0) in pre_phases {
+            let Some(&idx) = self.right.id_to_index.get(id) else {
+                continue;
+            };
+            let raw = (phase0 - attractor_phase).abs();
+            let dphi = raw.min(two_pi - raw); // circular distance, 0..π
+            // 1.0 at the attractor phase, 0.5 a quarter turn, 0.0 anti-phase.
+            let align = 1.0 - dphi / std::f32::consts::PI;
+            let g = (1.0 + gain * (align - 0.5)).max(0.0);
+            self.right.energy[idx] = (self.right.energy[idx] * g).clamp(0.0, 2.0);
+            touched += 1;
+        }
+        touched
+    }
+
+    fn dream_inner(&mut self, deep: bool, cycles: usize) -> super::DreamReport {
         if deep {
-            // Deep dream: eigenstructure annealing of holistic hemisphere
-            // Gentler prune threshold than flat medium — holistic keeps quiet signals
-            let holistic_prune_threshold = 0.005;
+            // Deep dream: eigenstructure annealing of holistic hemisphere.
+            //
+            // THE HOLISTIC HEMISPHERE NEVER FORGETS — IT EVOLVES (#583,
+            // dispositioned by Nick 2026-07-21): the wave dynamics floor
+            // energy at 0.01, so no wavefront can ever decay to deletion —
+            // and that is the INTENT, not an accident. Apparent forgetting is
+            // the field reorganizing: energy redistributes, phases drift,
+            // cores fuse — "the holistic understanding evolves, sometimes to
+            // seemingly forget" — reachability changes; existence doesn't.
+            // The old prune threshold (0.005) sat below the floor and was
+            // structurally dead code masquerading as a forgetting path; it is
+            // now explicitly 0.0 (prune never fires) so the invariant is
+            // stated rather than accidental. `wavefronts_dissolved` is 0 for
+            // chiral deep dreams BY CONTRACT. Actual removal has exactly two
+            // doors, both explicit and opt-in: ADR-0036 resonance-merge
+            // (consolidation) and direct forget/remove calls.
+            let holistic_prune_threshold = 0.0;
             let temperature = 1.0;
 
             let report = self.right.dream(cycles, Some(temperature), holistic_prune_threshold);
@@ -1278,6 +1583,82 @@ mod tests {
         EncodingPipeline::new(encoder, codebook)
     }
 
+    // ── #583: the holistic hemisphere never forgets — it evolves ──
+
+    #[test]
+    fn deep_dream_never_dissolves_even_the_quietest_wavefront() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let loud = cm.store("a strong memory", 0.9, &pipeline).unwrap();
+        let quiet = cm.store("a nearly silent memory", 0.9, &pipeline).unwrap();
+        // Force the quiet one far below every historical threshold.
+        let qidx = *cm.right.id_to_index.get(&quiet).unwrap();
+        cm.right.energy[qidx] = 0.0001;
+
+        let report = cm.dream(true, 3);
+
+        assert_eq!(
+            report.wavefronts_dissolved, 0,
+            "chiral deep dreams dissolve nothing BY CONTRACT (#583)"
+        );
+        assert!(
+            cm.right.id_to_index.contains_key(&quiet),
+            "the quiet wavefront still EXISTS — the field evolves, it does not forget"
+        );
+        assert!(cm.right.id_to_index.contains_key(&loud));
+    }
+
+    // ── KANNAKA_DREAM_GRAVITY: the medium-level associative gravity pass ──
+
+    #[test]
+    fn dream_gravity_reinforces_phase_neighbors_and_fades_opposed() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let a = cm.store("attractor memory", 0.8, &pipeline).unwrap();
+        let n = cm.store("neighbor memory", 0.8, &pipeline).unwrap();
+        let o = cm.store("opposed memory", 0.8, &pipeline).unwrap();
+        // Hand-set the pre-dream topology: attractor at phase 0 with top
+        // energy, a near neighbor, and an anti-phase memory.
+        for (id, phase, energy) in [(a, 0.0f32, 1.0f32), (n, 0.2, 0.5), (o, std::f32::consts::PI, 0.5)] {
+            let idx = *cm.right.id_to_index.get(&id).unwrap();
+            cm.right.phase[idx] = phase;
+            cm.right.energy[idx] = energy;
+        }
+        let snap: Vec<(Uuid, f32)> = [(a, 0.0f32), (n, 0.2), (o, std::f32::consts::PI)]
+            .into_iter()
+            .collect();
+        let touched = cm.apply_dream_gravity(0.5, &snap, 0.0);
+        assert_eq!(touched, 3);
+        let e = |id: &Uuid| cm.right.energy[*cm.right.id_to_index.get(id).unwrap()];
+        assert!(e(&a) > 1.0, "the attractor itself reinforces (align=1)");
+        assert!(e(&n) > 0.5, "phase-neighbor gains energy, got {}", e(&n));
+        assert!(e(&o) < 0.5, "anti-phase memory fades, got {}", e(&o));
+        assert!(e(&a) <= 2.0 && e(&n) <= 2.0 && e(&o) >= 0.0, "energy invariant [0,2] holds");
+    }
+
+    #[test]
+    fn dream_gravity_zero_gain_is_inert() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let id = cm.store("a memory", 0.8, &pipeline).unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let before = cm.right.energy[idx];
+        let touched = cm.apply_dream_gravity(0.0, &[(id, 0.3)], 0.0);
+        assert_eq!(touched, 0);
+        assert_eq!(cm.right.energy[idx], before, "gain 0 must be byte-identical");
+    }
+
+    #[test]
+    fn dream_gravity_skips_ids_not_in_the_field() {
+        let pipeline = test_pipeline();
+        let mut cm = ChiralMedium::new();
+        let id = cm.store("a memory", 0.8, &pipeline).unwrap();
+        // A snapshot id that no longer exists (dissolved/absorbed) is skipped.
+        let ghost = Uuid::new_v4();
+        let touched = cm.apply_dream_gravity(0.5, &[(id, 0.0), (ghost, 1.0)], 0.0);
+        assert_eq!(touched, 1, "only the live wavefront is touched");
+    }
+
     #[test]
     fn store_creates_bilateral_wavefronts() {
         let mut cm = ChiralMedium::new();
@@ -1294,6 +1675,91 @@ mod tests {
 
         // Should have a scale entry
         assert!(cm.scales.contains_key(&id));
+    }
+
+    // #107: re_encode_all rewrites the RIGHT wavefront to the fresh encoding of its
+    // stored content (fixing the #106 bad-subspace vectors) while preserving energy
+    // and metadata; the paired LEFT is re-folded without panic.
+    #[test]
+    fn re_encode_all_refreshes_right_preserving_state() {
+        let pipeline = test_pipeline();
+        let content = "a memory about resonance and standing waves";
+
+        // Reference: what a fresh store of this content yields in the right slot
+        // (same reduced dims as the wavefronts we'll compare against).
+        let mut ref_cm = ChiralMedium::new();
+        let ref_id = ref_cm.store(content, 0.8, &pipeline).unwrap();
+        let ref_idx = *ref_cm.right.id_to_index.get(&ref_id).unwrap();
+        let want = ref_cm.right.wavefronts.row(ref_idx).to_vec();
+
+        let mut cm = ChiralMedium::new();
+        let id = cm.store(content, 0.8, &pipeline).unwrap();
+        let idx = *cm.right.id_to_index.get(&id).unwrap();
+        let energy_before = cm.right.energy[idx];
+
+        // Simulate a broken-encoder vector: overwrite the right wavefront with the
+        // all-negative-corner junk #106 produced, keeping content + energy intact.
+        let cols = cm.right.wavefronts.ncols();
+        cm.right.wavefronts.row_mut(idx).assign(&ndarray::Array1::from(vec![-0.9f32; cols]));
+        let cos_bad = crate::wave::cosine_similarity(&cm.right.wavefronts.row(idx).to_vec(), &want);
+
+        let n = cm.re_encode_all(&pipeline, false).unwrap();
+        assert!(n >= 1, "re-encoded at least the stored memory");
+
+        let got = cm.right.wavefronts.row(idx).to_vec();
+        let cos_fixed = crate::wave::cosine_similarity(&got, &want);
+        assert!(
+            cos_fixed > 0.999,
+            "right wavefront re-encoded to the fresh vector (cos {cos_bad:.3} -> {cos_fixed:.3})"
+        );
+        assert_eq!(cm.right.energy[idx], energy_before, "energy (wave-state) preserved");
+        assert_eq!(cm.right.metadata[idx].content, content, "content preserved");
+    }
+
+    // #532 review: re_encode_all must NOT clobber dream-hallucinated wavefronts
+    // (their vectors are synthetic superpositions, not text encodings). A
+    // hallucinated wavefront's vector must survive re_encode_all untouched.
+    #[test]
+    fn re_encode_all_skips_hallucinated() {
+        let pipeline = test_pipeline();
+        let text = "a genuine text memory";
+
+        // Reference: the correct stored (reduced-dims) encoding of the text.
+        let mut ref_cm = ChiralMedium::new();
+        let rid = ref_cm.store(text, 0.8, &pipeline).unwrap();
+        let want = ref_cm
+            .right
+            .wavefronts
+            .row(*ref_cm.right.id_to_index.get(&rid).unwrap())
+            .to_vec();
+
+        let mut cm = ChiralMedium::new();
+        let text_id = cm.store(text, 0.8, &pipeline).unwrap();
+        let hall_id = cm
+            .store("HALLUCINATION: superposition of patterns 1-2", 0.6, &pipeline)
+            .unwrap();
+        let cols = cm.right.wavefronts.ncols();
+
+        // Corrupt BOTH (as #106 would), and mark the second a dream hallucination
+        // with a distinctive synthetic vector (NOT the text encoding of its label).
+        let tidx = *cm.right.id_to_index.get(&text_id).unwrap();
+        cm.right.wavefronts.row_mut(tidx).assign(&ndarray::Array1::from(vec![-0.9f32; cols]));
+        let hidx = *cm.right.id_to_index.get(&hall_id).unwrap();
+        cm.right.metadata[hidx].hallucinated = true;
+        let synthetic = vec![0.42f32; cols];
+        cm.right.wavefronts.row_mut(hidx).assign(&ndarray::Array1::from(synthetic.clone()));
+
+        let n = cm.re_encode_all(&pipeline, false).unwrap();
+        assert_eq!(n, 1, "only the genuine text wavefront is re-encoded, not the hallucination");
+
+        // Hallucination byte-preserved; text fixed to the correct encoding.
+        assert_eq!(
+            cm.right.wavefronts.row(hidx).to_vec(),
+            synthetic,
+            "#532: hallucinated wavefront must NOT be re-encoded"
+        );
+        let cos = crate::wave::cosine_similarity(&cm.right.wavefronts.row(tidx).to_vec(), &want);
+        assert!(cos > 0.999, "the genuine text wavefront IS re-encoded (cos={cos})");
     }
 
     #[test]
@@ -1579,6 +2045,246 @@ mod tests {
             circ(pb, pf) > circ(pb, pn),
             "unrelated content should be further in phase than a near-duplicate"
         );
+    }
+
+    // Chiral-router exp 1 (KANNAKA_CHIRAL_ROUTER=novelty): a NOVEL first sighting
+    // stays RIGHT-only; a REPEAT (resonates in right >= theta) routinizes to LEFT.
+    // In `off` (default) every gated item echoes (near-mirror). #[ignore] because
+    // it sets a process-global env var (the codebase convention for env tests).
+    #[test]
+    #[ignore = "experiment: KANNAKA_CHIRAL_ROUTER routing; run with --ignored --nocapture"]
+    fn chiral_router_novelty_routes_repeat_to_left() {
+        let pipeline = test_pipeline();
+        let item = "a distinctive analytical proposition about routinization";
+
+        // OFF (default): both the first sighting AND the repeat echo to left.
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        let mut off = ChiralMedium::new();
+        off.store(item, 0.8, &pipeline).unwrap();
+        off.store(item, 0.8, &pipeline).unwrap();
+        let off_left = off.left.count();
+
+        // NOVELTY: the novel first sighting is right-only; the repeat routinizes.
+        std::env::set_var("KANNAKA_CHIRAL_ROUTER", "novelty");
+        std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", "0.1");
+        let mut nov = ChiralMedium::new();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_novel = nov.left.count();
+        nov.store(item, 0.8, &pipeline).unwrap();
+        let after_repeat = nov.left.count();
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+        std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+
+        assert!(off_left >= 1, "off mode: gated items echo to left (near-mirror), got {off_left}");
+        assert_eq!(after_novel, 0, "novelty mode: a novel first sighting stays RIGHT-only");
+        assert!(
+            after_repeat > after_novel,
+            "novelty mode: the repeat routinizes to LEFT ({after_novel} -> {after_repeat})"
+        );
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_CHIRAL_ROUTER"]
+    fn experiment_chiral_routinization_differentiation() {
+        // EXP-1 (hemisphere differentiation, from the approved research workflow).
+        // Does novelty-gated routinization turn the LEFT hemisphere from a near-
+        // mirror into a crystallized MINORITY — raising hemispheric divergence Δ
+        // (ADR-0024 CS-4) into a mid-band without collapsing callosal efficiency κ
+        // (CS-5) — and which way does core recall move?
+        //
+        // Corpus: CORE items stored R=3× (routinized through repetition),
+        // interleaved with one-off NOVEL noise (interference). In `off` the
+        // callosum budget is spent indiscriminately (near-mirror, low Δ); in
+        // `novelty` only the routinized core crosses to left (small left, higher
+        // Δ). resonance_strength = sim·energy·phase (core.rs:381) is NOT a clean
+        // cosine, so absolute θ is encoder-scale-sensitive — we SWEEP θ to read
+        // separability rather than assume it, and average over seeds (multi-run).
+        const NCORE: usize = 10;
+        const NNOISE: usize = 40;
+        const ROUNDS: usize = 3;
+        let seeded = |seed: u64| -> EncodingPipeline {
+            let encoder = Box::new(SimpleHashEncoder::new(384, seed));
+            let codebook = Codebook::new(384, WAVEFRONT_DIM, seed);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let core: Vec<String> =
+            (0..NCORE).map(|i| format!("stable core anchor proposition {i}")).collect();
+        let noise: Vec<String> =
+            (0..NNOISE).map(|i| format!("ephemeral one-off novel filler {i}")).collect();
+
+        // Averaged over seeds: [left, right, core_in_left, noise_in_left, Δ, κ, p@1].
+        // Δ-cosine turned out saturated by the Fano fold (see report), so the REAL
+        // differentiation signal is the CONTENT composition of left: does it hold
+        // the core (differentiated) or a full folded copy of everything (mirror)?
+        let run = |router: &str, theta: f32, seeds: &[u64]| -> [f32; 7] {
+            let mut acc = [0.0f32; 7];
+            for &seed in seeds {
+                std::env::set_var("KANNAKA_CHIRAL_ROUTER", router);
+                std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", format!("{theta}"));
+                let pipeline = seeded(seed);
+                let mut cm = ChiralMedium::new();
+                let per = NNOISE / ROUNDS;
+                for round in 0..ROUNDS {
+                    for c in core.iter() {
+                        cm.store(c, 0.9, &pipeline).unwrap();
+                    }
+                    let lo = round * per;
+                    let hi = if round == ROUNDS - 1 { NNOISE } else { lo + per };
+                    for n in noise[lo..hi].iter() {
+                        cm.store(n, 0.5, &pipeline).unwrap();
+                    }
+                }
+                // Content differentiation: what does LEFT actually hold?
+                let core_left = (0..cm.left.count())
+                    .filter(|&i| cm.left.metadata[i].content.starts_with("stable core"))
+                    .count();
+                let noise_left = cm.left.count() - core_left;
+                let (mut hits, mut tot) = (0usize, 0usize);
+                for c in core.iter() {
+                    let res = cm.recall(c, 1, &pipeline).unwrap();
+                    tot += 1;
+                    if res.first().map(|r| r.content == *c).unwrap_or(false) {
+                        hits += 1;
+                    }
+                }
+                let cs = cm.consciousness_summary();
+                acc[0] += cs.left_count as f32;
+                acc[1] += cs.right_count as f32;
+                acc[2] += core_left as f32;
+                acc[3] += noise_left as f32;
+                acc[4] += cs.hemispheric_divergence;
+                acc[5] += cs.callosal_efficiency;
+                acc[6] += hits as f32 / tot.max(1) as f32;
+            }
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+            let n = seeds.len() as f32;
+            for v in acc.iter_mut() {
+                *v /= n;
+            }
+            acc
+        };
+
+        // Separability probe: against a POPULATED right, can an absolute familiarity
+        // threshold tell a REPEAT (exact prior) from a truly NOVEL item apart? If
+        // the two resonance scales overlap, no fixed θ can route cleanly.
+        {
+            let pipeline = seeded(0);
+            let mut cm = ChiralMedium::new();
+            for c in core.iter() {
+                cm.store(c, 0.9, &pipeline).unwrap();
+            }
+            for nz in noise.iter() {
+                cm.store(nz, 0.5, &pipeline).unwrap();
+            }
+            let repeat = pipeline.encode_text(&core[0]).unwrap();
+            let fresh = pipeline.encode_text("utterly unseen never-stored phrase").unwrap();
+            let rr = cm.right.resonate(&repeat, 1);
+            let rr = rr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            let fr = cm.right.resonate(&fresh, 1);
+            let fr = fr.first().map(|r| r.resonance_strength).unwrap_or(0.0);
+            eprintln!("[exp1] separability: repeat_resonance={rr:.3}  novel_resonance={fr:.3}");
+        }
+
+        let seeds: Vec<u64> = (0..4).collect();
+        eprintln!("[exp1] corpus: {NCORE} core x{ROUNDS} + {NNOISE} noise; seeds={}", seeds.len());
+        eprintln!("[exp1] {:>16} | left right  coreL noiseL    Δ      κ    p@1", "config");
+        let print = |label: String, a: [f32; 7]| {
+            eprintln!(
+                "[exp1] {label:>16} | {:4.1} {:5.1}  {:5.1} {:6.1}  {:.3}  {:.3}  {:.3}",
+                a[0], a[1], a[2], a[3], a[4], a[5], a[6]
+            );
+        };
+        print("off (mirror)".to_string(), run("off", 0.0, &seeds));
+        for theta in [0.3f32, 0.5, 0.7, 0.9] {
+            print(format!("novelty th={theta}"), run("novelty", theta, &seeds));
+        }
+    }
+
+    #[test]
+    #[ignore = "experiment: run with --ignored --nocapture; sets KANNAKA_CHIRAL_* env"]
+    fn experiment_chiral_recall_forgetting() {
+        // EXP-2 (the read-side payoff). Does consulting the crystallized LEFT at
+        // recall time protect core memories from catastrophic forgetting under a
+        // HEAVY novel flood? Three configs:
+        //   baseline: router=off,     recall=off      (today — left a folded mirror)
+        //   weighted: router=novelty, recall=weighted (boost crystallized-left)
+        //   beeman:   router=novelty, recall=beeman   (precise-left ranked first)
+        // Metric: core precision@1 and recall@5 after the flood, averaged / seeds.
+        // CAVEAT the run will expose: left stores Fano-FOLDED vectors and recall
+        // resonates the RAW query against them, so left-match resonance may be
+        // noisy — if the read-side shows no lift, the fold (not the routing) is why.
+        const NCORE: usize = 10;
+        const NNOISE: usize = 120; // ~3× exp-1: a heavier flood to induce forgetting
+        const ROUNDS: usize = 3;
+        let seeded = |seed: u64| -> EncodingPipeline {
+            let encoder = Box::new(SimpleHashEncoder::new(384, seed));
+            let codebook = Codebook::new(384, WAVEFRONT_DIM, seed);
+            EncodingPipeline::new(encoder, codebook)
+        };
+        let core: Vec<String> =
+            (0..NCORE).map(|i| format!("stable core anchor proposition {i}")).collect();
+        let noise: Vec<String> =
+            (0..NNOISE).map(|i| format!("ephemeral one-off novel filler {i}")).collect();
+
+        // Returns [core p@1, core recall@5, left_count, right_count] over seeds.
+        let run = |router: &str, recall: &str, seeds: &[u64]| -> [f32; 4] {
+            let mut acc = [0.0f32; 4];
+            for &seed in seeds {
+                std::env::set_var("KANNAKA_CHIRAL_ROUTER", router);
+                std::env::set_var("KANNAKA_CHIRAL_ROUTINIZE_THETA", "0.8");
+                std::env::set_var("KANNAKA_CHIRAL_RECALL", recall);
+                let pipeline = seeded(seed);
+                let mut cm = ChiralMedium::new();
+                let per = NNOISE / ROUNDS;
+                for round in 0..ROUNDS {
+                    for c in core.iter() {
+                        cm.store(c, 0.9, &pipeline).unwrap();
+                    }
+                    let lo = round * per;
+                    let hi = if round == ROUNDS - 1 { NNOISE } else { lo + per };
+                    for n in noise[lo..hi].iter() {
+                        cm.store(n, 0.5, &pipeline).unwrap();
+                    }
+                }
+                let (mut p1, mut r5) = (0usize, 0usize);
+                for c in core.iter() {
+                    let res = cm.recall(c, 5, &pipeline).unwrap();
+                    if res.first().map(|r| r.content == *c).unwrap_or(false) {
+                        p1 += 1;
+                    }
+                    if res.iter().any(|r| r.content == *c) {
+                        r5 += 1;
+                    }
+                }
+                let cs = cm.consciousness_summary();
+                acc[0] += p1 as f32 / NCORE as f32;
+                acc[1] += r5 as f32 / NCORE as f32;
+                acc[2] += cs.left_count as f32;
+                acc[3] += cs.right_count as f32;
+            }
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTER");
+            std::env::remove_var("KANNAKA_CHIRAL_ROUTINIZE_THETA");
+            std::env::remove_var("KANNAKA_CHIRAL_RECALL");
+            let n = seeds.len() as f32;
+            for v in acc.iter_mut() {
+                *v /= n;
+            }
+            acc
+        };
+
+        let seeds: Vec<u64> = (0..4).collect();
+        eprintln!("[exp2] corpus: {NCORE} core x{ROUNDS} + {NNOISE} noise; seeds={}", seeds.len());
+        eprintln!("[exp2] {:>22} | p@1(core) r@5(core)  left  right", "config");
+        let print = |label: &str, a: [f32; 4]| {
+            eprintln!(
+                "[exp2] {label:>22} |   {:.3}     {:.3}   {:5.1} {:5.1}",
+                a[0], a[1], a[2], a[3]
+            );
+        };
+        print("baseline off/off", run("off", "off", &seeds));
+        print("novelty/weighted", run("novelty", "weighted", &seeds));
+        print("novelty/beeman", run("novelty", "beeman", &seeds));
     }
 
     #[test]

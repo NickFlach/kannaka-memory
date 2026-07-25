@@ -1,0 +1,18 @@
+# ADR-0042 Phase 3 — Oracle2 leaf peer. Full /etc/nats/nats.conf for O2.
+# JetStream is intentionally omitted (disabled): O2 shares O1's subject space over
+# the leaf; the hub's JetStream is never clustered/touched. Replace __LEAF_TOKEN__
+# (must match O1's leafnodes listener) and paste O1's live `authorization { ... }`
+# block where marked (its per-organ passwords stay on the boxes, never in git):
+#   AUTH=$(sudo sed -n '/^authorization {/,/^}/p' /etc/nats/nats.conf)  # on O1
+listen: 0.0.0.0:4222
+max_payload: 64MB
+server_name: oracle2
+client_advertise: "10.0.0.112:4222"
+
+no_auth_user: anon
+
+leafnodes {
+  remotes: [ { url: "nats-leaf://leaf:__LEAF_TOKEN__@10.0.0.101:6222" } ]
+}
+
+# <<< paste O1's live `authorization { users = [ ... ] }` block here >>>

@@ -1,6 +1,6 @@
-#!/bin/bash
-# ─────────────────────────────────────────────────────────────────────────────
-# autoresearch-cron.sh — nightly OODA cycle for self-optimization.
+﻿#!/bin/bash
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# autoresearch-cron.sh â€” nightly OODA cycle for self-optimization.
 #
 # Pairs with dream-cron.sh: dream consolidates the *memory* every night,
 # autoresearch tunes the *parameters* every night so consciousness doesn't
@@ -12,17 +12,17 @@
 #   3. Hypothesize ONE param change targeting that metric (rotates through a
 #      curated list so consecutive nights don't try the same knob).
 #   4. Edit `experiment_params()`, commit on a dated branch.
-#   5. Re-run × 5, compare averages.
-#   6. Keep if Δ ≤ −0.005 (L4 noise floor); else `git reset --hard HEAD~1`.
+#   5. Re-run Ã— 5, compare averages.
+#   6. Keep if Î” â‰¤ âˆ’0.005 (L4 noise floor); else `git reset --hard HEAD~1`.
 #   7. Log to research/results-L4.tsv. Push kept commits to origin/master.
 #
-# This script is intentionally LIGHT — heavy hypothesis logic (which knob to
+# This script is intentionally LIGHT â€” heavy hypothesis logic (which knob to
 # turn, when to give up) lives in the autoresearch sub-agent that orchestrate
 # spawns. The cron just provides the schedule + the guardrails.
 #
 # Schedule: 02:00 UTC daily, 5 hours ahead of the dream cron at 07:00 UTC,
 # so memory upkeep + param upkeep don't compete for the same HRM lock.
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 set -u
 
 REPO=/home/opc/kannaka-memory
@@ -57,7 +57,7 @@ cd "$REPO" || { echo "repo $REPO not found"; exit 1; }
 git fetch origin master 2>&1 | tail -3
 git reset --hard origin/master 2>&1 | tail -3
 
-# ── Level: versioned source of truth in experiments/ooda-state.json (.level) ──
+# â”€â”€ Level: versioned source of truth in experiments/ooda-state.json (.level) â”€â”€
 # Wave 4 Task 4.4 (#356): the OODA level is owned by ooda-state.json so the cron
 # and the curiosity loop graduate together when a level is solved. An explicit
 # OODA_LEVEL env still overrides for manual runs; a legacy state file that lacks
@@ -71,13 +71,13 @@ fi
 LEVEL="${OODA_LEVEL:-${STATE_LEVEL:-4}}"
 echo "resolved OODA level=$LEVEL (state=${STATE_LEVEL:-none}, env=${OODA_LEVEL:-unset})"
 
-# ── Baseline ──────────────────────────────────────────────────────────────
+# â”€â”€ Baseline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "--- baseline ---"
 BASELINE_SUM=0
 BASELINE_RUNS=0
 for i in $(seq 1 "$RUNS"); do
     RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
-             | awk '/^fitness:|^l6_fitness:/ { print $2; exit }')
+             | awk '/^fitness:|^l[0-9]_fitness:/ { print $2; exit }')
     if [[ -n "$RESULT" ]]; then
         BASELINE_SUM=$(echo "$BASELINE_SUM + $RESULT" | bc -l)
         BASELINE_RUNS=$((BASELINE_RUNS + 1))
@@ -95,11 +95,11 @@ fi
 BASELINE_AVG=$(echo "scale=6; $BASELINE_SUM / $BASELINE_RUNS" | bc -l)
 echo "baseline avg=$BASELINE_AVG runs=$BASELINE_RUNS"
 
-# ── Hypothesis rotation ──────────────────────────────────────────────────
+# â”€â”€ Hypothesis rotation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # A different knob each night; the autoresearch protocol prefers single-
 # variable moves. Rotation keyed on day-of-year so adjacent nights don't
 # repeat. Heavy-hitting changes (chain redesign, encoder tweaks) need the
-# interactive sub-agent — this cron only nudges existing knobs.
+# interactive sub-agent â€” this cron only nudges existing knobs.
 DAY=$(date +%j)
 case $((DAY % 7)) in
     0) PARAM="kuramoto_steps";        FROM=20;    TO=22 ;;
@@ -135,13 +135,13 @@ git checkout -b "$BRANCH" 2>&1 | tail -3
 git -c user.name=autoresearch-cron -c user.email=autoresearch@kannaka.local \
     commit -am "experiment(ooda-cron): $PARAM $FROM -> $TO (auto)" 2>&1 | tail -3
 
-# ── Hypothesis runs ──────────────────────────────────────────────────────
+# â”€â”€ Hypothesis runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "--- hypothesis runs ---"
 HYP_SUM=0
 HYP_RUNS=0
 for i in $(seq 1 "$RUNS"); do
     RESULT=$(timeout 600 cargo run --release --quiet --bin research -- --level "$LEVEL" 2>/dev/null \
-             | awk '/^fitness:|^l6_fitness:/ { print $2; exit }')
+             | awk '/^fitness:|^l[0-9]_fitness:/ { print $2; exit }')
     if [[ -n "$RESULT" ]]; then
         HYP_SUM=$(echo "$HYP_SUM + $RESULT" | bc -l)
         HYP_RUNS=$((HYP_RUNS + 1))
@@ -161,20 +161,20 @@ NEG_KEEP=$(echo "0 - $KEEP_THRESHOLD" | bc -l)
 echo "hyp avg=$HYP_AVG  baseline=$BASELINE_AVG  delta=$DELTA  keep_if<=$NEG_KEEP"
 
 if (( $(echo "$DELTA <= $NEG_KEEP" | bc -l) )); then
-    echo "KEEP — pushing $BRANCH to master"
+    echo "KEEP â€” pushing $BRANCH to master"
     git checkout master
     git merge --ff-only "$BRANCH" 2>&1 | tail -3
     git push origin master 2>&1 | tail -3
     git branch -D "$BRANCH" 2>/dev/null
     STATUS="keep"
 else
-    echo "REVERT — Δ above keep threshold"
+    echo "REVERT â€” Î” above keep threshold"
     git checkout master 2>&1 | tail -3
     git branch -D "$BRANCH" 2>/dev/null
     STATUS="revert"
 fi
 
-# ── Log a row ─────────────────────────────────────────────────────────────
+# â”€â”€ Log a row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 COMMIT=$(git rev-parse --short HEAD)
 TSV="research/results-L${LEVEL}.tsv"
 {
@@ -189,7 +189,7 @@ if [[ "$STATUS" == "keep" ]]; then
     git push origin master 2>&1 | tail -3
 fi
 
-# ── Plateau detector / auto-advance (Wave 4 Task 4.4 / #356) ───────────────
+# â”€â”€ Plateau detector / auto-advance (Wave 4 Task 4.4 / #356) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Codify the curiosity loop's own arithmetic: once a level has gone N
 # consecutive cycles without surfacing a new research axis (the curiosity loop
 # drops a `*-no-new-axes.md` note each such cycle), the level is solved.
@@ -206,7 +206,7 @@ maybe_advance_level() {
         return 0
     fi
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "plateau: python3 absent — cannot rewrite ooda-state; skipping advance"
+        echo "plateau: python3 absent â€” cannot rewrite ooda-state; skipping advance"
         return 0
     fi
     python3 - "$OODA_STATE" "$LEVEL" "${BASELINE_AVG:-NA}" "$notes" <<'PY'
@@ -216,7 +216,7 @@ try:
     state = json.load(open(path))
 except Exception:
     state = {}
-# Backward compat: legacy state files may lack `.level` — establish it.
+# Backward compat: legacy state files may lack `.level` â€” establish it.
 state.setdefault("level", level)
 if int(state.get("level", level)) != level:
     print("plateau: state already advanced past L%d; no-op" % level)

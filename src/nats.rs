@@ -400,6 +400,86 @@ const MAX_MSG_PAYLOAD: usize = 8 * 1024 * 1024;
 /// 16 KiB is not NATS protocol traffic.
 const MAX_CONTROL_LINE: u64 = 16 * 1024;
 
+/// Read one control line into `out`, BOUNDED to `MAX_CONTROL_LINE` bytes. A peer
+/// (or MITM) that never sends `\n` — a desynced/garbage/hostile server — would
+/// otherwise grow `out` without bound and OOM us. `take` caps the pull; a line
+/// that hits the cap without a newline is a protocol desync. Returns bytes read.
+fn read_control_line<R: BufRead>(reader: &mut R, out: &mut String) -> Result<usize, NatsError> {
+    let n = {
+        let mut limited = (&mut *reader).take(MAX_CONTROL_LINE);
+        limited.read_line(out)?
+    };
+    if n as u64 >= MAX_CONTROL_LINE && !out.ends_with('\n') {
+        return Err(NatsError::Protocol(format!(
+            "control line exceeds {} bytes without newline — protocol desync",
+            MAX_CONTROL_LINE
+        )));
+    }
+    Ok(n)
+}
+
+/// How long the payload (+trailing CRLF) of a single MSG frame may take to
+/// arrive once its header line has been read. The byte count is KNOWN at this
+/// point, so a read timeout mid-payload is a transient stall — a lost TCP
+/// segment has an RTO of 200ms–1s+, and a multi-KB ask/recall reply spans
+/// several segments — NOT a desync. We ride timeouts out up to this bound
+/// (#499). Before the fix, `swarm serve`'s 250ms socket timeout turned any
+/// such stall into a fatal "short MSG payload read" and killed the daemon on
+/// one WAN retransmission. Only after this whole budget elapses with zero
+/// progress is the stream declared dead.
+const MSG_FRAME_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Why a `read_exact_resumable` did not fill its buffer.
+#[derive(Debug)]
+enum ResumableReadError {
+    /// The peer closed (read returned 0) partway through — the stream cannot
+    /// be resynced, so the connection is dead.
+    Eof,
+    /// The overall frame deadline passed with the buffer still unfilled: the
+    /// payload never finished arriving. Dead.
+    Timeout,
+    /// A non-timeout I/O error.
+    Io(std::io::Error),
+}
+
+/// Fill `buf` completely, tolerating transient read timeouts.
+///
+/// `Read::read_exact` maps a `TimedOut`/`WouldBlock` to a fatal
+/// `UnexpectedEof`-class error. For a NATS MSG payload the byte count is known
+/// up front, so a timeout mid-payload is resumable: loop `read()` into the
+/// unfilled tail, treating `TimedOut`/`WouldBlock`/`Interrupted` as "no
+/// progress this poll — try again" until the buffer fills or `deadline`
+/// passes. `Ok(0)` is a real EOF (peer closed mid-payload) and IS fatal — the
+/// byte stream can no longer be resynced (#499).
+fn read_exact_resumable<R: Read>(
+    reader: &mut R,
+    buf: &mut [u8],
+    deadline: Instant,
+) -> Result<(), ResumableReadError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => return Err(ResumableReadError::Eof),
+            Ok(n) => filled += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(ResumableReadError::Timeout);
+                }
+                // else: transient stall — poll again until the deadline.
+            }
+            Err(e) => return Err(ResumableReadError::Io(e)),
+        }
+    }
+    Ok(())
+}
+
 /// Read exactly one protocol frame. Returns `Err` on any condition that
 /// desyncs the byte stream (partial line consumed before a timeout, short
 /// payload read, unparseable MSG header, missing CRLF, non-UTF-8 control
@@ -462,14 +542,35 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
             // (server max_payload defaults to 1 MiB).
             return Err(NatsError::Protocol(format!("MSG payload {nbytes} exceeds {MAX_MSG_PAYLOAD} byte cap — refusing allocation")));
         }
+        // Resumable payload read: the byte count is known, so a mid-payload
+        // read timeout (a lost segment straddling a short socket timeout) is
+        // ridden out to MSG_FRAME_DEADLINE rather than treated as a desync
+        // (#499). One shared deadline covers the payload AND the trailing CRLF.
+        let frame_deadline = Instant::now() + MSG_FRAME_DEADLINE;
         let mut payload = vec![0u8; nbytes];
-        reader.read_exact(&mut payload).map_err(|e| {
-            NatsError::Protocol(format!("short MSG payload read: {e}"))
-        })?;
+        match read_exact_resumable(reader, &mut payload, frame_deadline) {
+            Ok(()) => {}
+            // Peer closed mid-payload — a genuine connection close, so hand the
+            // caller a clean Closed (reconnect/exit) rather than a desync error.
+            Err(ResumableReadError::Eof) => return Ok(ReadOutcome::Closed),
+            Err(ResumableReadError::Timeout) => {
+                return Err(NatsError::Protocol(format!(
+                    "MSG payload stalled past {MSG_FRAME_DEADLINE:?} — connection dead"
+                )))
+            }
+            Err(ResumableReadError::Io(e)) => return Err(NatsError::Io(e)),
+        }
         let mut crlf = [0u8; 2];
-        reader.read_exact(&mut crlf).map_err(|e| {
-            NatsError::Protocol(format!("missing CRLF after MSG payload: {e}"))
-        })?;
+        match read_exact_resumable(reader, &mut crlf, frame_deadline) {
+            Ok(()) => {}
+            Err(ResumableReadError::Eof) => return Ok(ReadOutcome::Closed),
+            Err(ResumableReadError::Timeout) => {
+                return Err(NatsError::Protocol(
+                    "MSG trailing CRLF stalled — connection dead".to_string(),
+                ))
+            }
+            Err(ResumableReadError::Io(e)) => return Err(NatsError::Io(e)),
+        }
         if &crlf != b"\r\n" {
             return Err(NatsError::Protocol(
                 "MSG payload not followed by CRLF".to_string(),
@@ -598,9 +699,10 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // so no pre-read bytes are ever discarded by an into_inner()/drop.
     let mut reader = BufReader::new(stream);
 
-    // Read the INFO line.
+    // Read the INFO line (bounded — a hostile/MITM server could otherwise stream
+    // an unbounded INFO during the pre-auth handshake and OOM the client).
     let mut info_line = String::new();
-    reader.read_line(&mut info_line)?;
+    read_control_line(&mut reader, &mut info_line)?;
     if !info_line.starts_with("INFO ") {
         return Err(NatsError::Protocol(format!(
             "expected INFO, got: {}",
@@ -709,6 +811,11 @@ pub struct SwarmTransport {
     /// timed-out request can never collide with a later subscription.
     next_sid: AtomicU64,
     jetstream_ok: bool,
+    /// True only when this connection may CREATE/UPDATE streams (the writer
+    /// identity). `jetstream_ok` alone means readable — a create-denied
+    /// client (anon) reads retained state but must not attempt bucket/stream
+    /// management.
+    jetstream_writable: bool,
     connected: Arc<Mutex<bool>>,
     publish_buffer: Arc<Mutex<VecDeque<BufferedMessage>>>,
     /// Last in-place revival attempt (see `try_revive_locked`). Rate-limits
@@ -921,15 +1028,31 @@ impl SwarmTransport {
             url: url.to_string(),
             next_sid: AtomicU64::new(1),
             jetstream_ok: false,
+            jetstream_writable: false,
             connected: Arc::new(Mutex::new(true)),
             publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
             last_revive: Arc::new(Mutex::new(None)),
         };
 
-        // Try to ensure JetStream streams exist
-        transport.jetstream_ok = transport.ensure_stream().is_ok();
-        if transport.jetstream_ok {
+        // Try to ensure JetStream streams exist. A client whose NATS user is
+        // denied $JS.API.STREAM.CREATE (the open swarm's anon user, since
+        // ADR-0042 closed its control lane) can still READ streams the writer
+        // identity created — probe MSG.GET before giving up on JetStream, so
+        // such clients keep the retained-phase read path instead of falling
+        // back to live-gossip sniffing (whose 1.5s-silence window misses
+        // agents that beacon every 30s and reported 0 peers on live swarms).
+        let created = transport.ensure_stream().is_ok();
+        transport.jetstream_writable = created;
+        transport.jetstream_ok = created || transport.stream_readable(STREAM_NAME);
+        if created {
             let _ = transport.ensure_events_stream();
+        } else if transport.jetstream_ok {
+            // Give the scary async "-ERR Permissions Violation ... STREAM.CREATE"
+            // its context: for a non-writer identity this is EXPECTED, not a
+            // failure — retained reads are active and the swarm is fully usable.
+            eprintln!(
+                "[nats] JetStream read-only for this user (stream create denied — expected for non-writer identities); retained reads active"
+            );
         }
 
         Ok(transport)
@@ -940,9 +1063,17 @@ impl SwarmTransport {
         Self::connect(DEFAULT_NATS_URL)
     }
 
-    /// Whether JetStream is available on this connection.
+    /// Whether JetStream is READABLE on this connection (retained-state
+    /// reads via MSG.GET). A create-denied client still reports true.
     pub fn has_jetstream(&self) -> bool {
         self.jetstream_ok
+    }
+
+    /// Whether this connection may also CREATE/UPDATE streams and buckets.
+    /// Gate stream/bucket management (and the integration tests that do it)
+    /// on this, not on `has_jetstream()`.
+    pub fn has_jetstream_write(&self) -> bool {
+        self.jetstream_writable
     }
 
     /// Get the URL this transport is connected to.
@@ -982,10 +1113,16 @@ impl SwarmTransport {
         }
         *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
 
-        // Re-check JetStream
-        self.jetstream_ok = self.ensure_stream().is_ok();
-        if self.jetstream_ok {
+        // Re-check JetStream (same read-only degradation as connect())
+        let created = self.ensure_stream().is_ok();
+        self.jetstream_writable = created;
+        self.jetstream_ok = created || self.stream_readable(STREAM_NAME);
+        if created {
             let _ = self.ensure_events_stream();
+        } else if self.jetstream_ok {
+            eprintln!(
+                "[nats] JetStream read-only for this user (stream create denied — expected for non-writer identities); retained reads active"
+            );
         }
 
         // Replay buffered messages in order. On failure the unsent remainder
@@ -1190,19 +1327,20 @@ impl SwarmTransport {
     }
 
     /// Walk a JetStream stream by subject filter, returning the raw stored
-    /// messages as (subject, decoded payload) pairs. Shared engine behind
-    /// `get_stream_messages`, `kv_keys` and the phase reader; keeps the ONE
-    /// persistent connection reader for the whole walk (recreating a reader
-    /// per request used to lose pre-read bytes and return 0 rows).
+    /// messages as (subject, server ingest time RFC3339, decoded payload)
+    /// triples. Shared engine behind `get_stream_messages`, `kv_keys` and the
+    /// phase readers; keeps the ONE persistent connection reader for the
+    /// whole walk (recreating a reader per request used to lose pre-read
+    /// bytes and return 0 rows).
     fn stream_walk(
         &self,
         stream_name: &str,
         subject_filter: &str,
         max_messages: usize,
-    ) -> Result<Vec<(String, Vec<u8>)>, NatsError> {
+    ) -> Result<Vec<(String, String, Vec<u8>)>, NatsError> {
         let mut conn = self.lock_conn()?;
         let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
-        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut out: Vec<(String, String, Vec<u8>)> = Vec::new();
         let mut next_seq: u64 = 1;
 
         while out.len() < max_messages {
@@ -1241,12 +1379,19 @@ impl SwarmTransport {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Broker receive time — the liveness authority (a publisher's
+            // own clock can be skewed, and some payloads carry no timestamp).
+            let time = msg
+                .get("time")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             let data = msg
                 .get("data")
                 .and_then(|d| d.as_str())
                 .and_then(|b64| base64_decode(b64).ok())
                 .unwrap_or_default();
-            out.push((subject, data));
+            out.push((subject, time, data));
         }
         Ok(out)
     }
@@ -1284,6 +1429,22 @@ impl SwarmTransport {
                 "discard": "old",
                 "num_replicas": 1
             }),
+        )
+    }
+
+    /// True when the stream's read API answers this connection. A client can
+    /// be denied stream CREATE yet allowed MSG.GET (the anon swarm user) —
+    /// any JSON reply to the probe, including a "no message found" error,
+    /// proves readability; a permission denial produces no reply (timeout).
+    fn stream_readable(&self, stream_name: &str) -> bool {
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let req = serde_json::json!({ "seq": 1, "next_by_subj": ">" }).to_string();
+        let Ok(mut conn) = self.lock_conn() else {
+            return false;
+        };
+        matches!(
+            self.js_api_call_locked(&mut conn, &api_subject, req.as_bytes(), JS_API_TIMEOUT),
+            Ok(Some(_))
         )
     }
 
@@ -1543,7 +1704,7 @@ impl SwarmTransport {
         Ok(self
             .stream_walk(stream_name, subject_filter, max_messages)?
             .into_iter()
-            .filter_map(|(_, data)| serde_json::from_slice(&data).ok())
+            .filter_map(|(_, _, data)| serde_json::from_slice(&data).ok())
             .collect())
     }
 
@@ -1705,6 +1866,7 @@ impl SwarmTransport {
         agent_id: &str,
         memory_count: usize,
         cluster_count: usize,
+        sig: Option<&crate::provenance::ProvenanceSig>,
     ) -> Result<(), NatsError> {
         let mut payload = serde_json::json!({
             "agent_id": agent_id,
@@ -1713,6 +1875,13 @@ impl SwarmTransport {
             "cluster_count": cluster_count,
         });
         add_envelope(&mut payload);
+        // inc-1b: attach the optional provenance signature so peers running the
+        // corroboration gate can verify + accrue. Additive + harmless when off.
+        if let Some(s) = sig {
+            if let (Some(obj), Ok(v)) = (payload.as_object_mut(), serde_json::to_value(s)) {
+                obj.insert("provenance_sig".to_string(), v);
+            }
+        }
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw("KANNAKA.memory.new", &bytes)
@@ -1726,7 +1895,31 @@ impl SwarmTransport {
         memory: &crate::memory::HyperMemory,
         agent_id: &str,
     ) -> Result<(), NatsError> {
-        self.publish_memory_new_with_counts(memory, agent_id, 0, 0)
+        self.publish_memory_new_with_counts(memory, agent_id, 0, 0, None)
+    }
+
+    // -----------------------------------------------------------------------
+    // Heartbeat beacons (inc-1b PART A anti-eclipse)
+    // -----------------------------------------------------------------------
+
+    /// Publish a signed heartbeat [`Beacon`](crate::beacon::Beacon) to
+    /// [`BEACON_SUBJECT`](crate::beacon::BEACON_SUBJECT). A seed emits one per
+    /// epoch; receivers (`swarm listen --auto-sync`) verify + feed
+    /// `QuarantineStaging::ingest_beacon` so an ARMED corroboration gate sees a
+    /// fresh beacon and un-freezes Live promotion (a stale/absent seed beacon
+    /// freezes it — anti-eclipse fail-closed).
+    ///
+    /// The subject is under `KANNAKA.events.>`, which the deployed server's
+    /// anon ACL already allows, so no server ACL change is required. The
+    /// canonical `schema_version`/`ts` envelope is stamped (matching every other
+    /// publisher); the extra keys are ignored when the beacon is decoded.
+    pub fn publish_beacon(&self, beacon: &crate::beacon::Beacon) -> Result<(), NatsError> {
+        let mut value =
+            serde_json::to_value(beacon).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        add_envelope(&mut value);
+        let payload =
+            serde_json::to_vec(&value).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.publish_raw(crate::beacon::BEACON_SUBJECT, &payload)
     }
 
     // -----------------------------------------------------------------------
@@ -1781,12 +1974,38 @@ impl SwarmTransport {
     fn get_all_phases_jetstream(&self) -> Result<Vec<AgentPhase>, NatsError> {
         let msgs = self.stream_walk(STREAM_NAME, "QUEEN.phase.>", STREAM_WALK_LIMIT)?;
         let mut phases: HashMap<String, AgentPhase> = HashMap::new();
-        for (_, data) in msgs {
+        for (_, _, data) in msgs {
             if let Ok(phase) = serde_json::from_slice::<AgentPhase>(&data) {
                 phases.insert(phase.agent_id.clone(), phase);
             }
         }
         Ok(phases.into_values().collect())
+    }
+
+    /// Agents with a QUEEN.phase.* message ingested by the SERVER within
+    /// `max_age`. Identity is the subject token, so publishers whose payloads
+    /// don't conform to AgentPhase (no timestamp, missing fields) still
+    /// count; liveness is broker receive time, so a skewed or absent
+    /// publisher clock can't fake or forfeit freshness. This is the raw
+    /// "observed on the wire" peer set — trust filtering stays separate.
+    pub fn live_phase_agents(
+        &self,
+        max_age: chrono::Duration,
+    ) -> Result<Vec<String>, NatsError> {
+        let msgs = self.stream_walk(STREAM_NAME, "QUEEN.phase.>", STREAM_WALK_LIMIT)?;
+        let now = Utc::now();
+        let mut out = std::collections::HashSet::new();
+        for (subject, time, _) in msgs {
+            let Ok(t) = chrono::DateTime::parse_from_rfc3339(&time) else {
+                continue;
+            };
+            if now.signed_duration_since(t.with_timezone(&Utc)) < max_age {
+                if let Some(id) = subject.strip_prefix("QUEEN.phase.") {
+                    out.insert(id.to_string());
+                }
+            }
+        }
+        Ok(out.into_iter().collect())
     }
 
     /// Legacy PUB/SUB phase collection (fallback when JetStream is unavailable).
@@ -2010,7 +2229,7 @@ impl SwarmTransport {
         let msgs = self.stream_walk(&stream_name, &filter, STREAM_WALK_LIMIT)?;
         Ok(msgs
             .into_iter()
-            .filter_map(|(subject, _)| subject.strip_prefix(&prefix).map(String::from))
+            .filter_map(|(subject, _, _)| subject.strip_prefix(&prefix).map(String::from))
             .collect())
     }
 
@@ -2056,13 +2275,28 @@ impl SwarmTransport {
         if include_memories {
             let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
             let _ = write!(frame, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid());
+            // PART A anti-eclipse: heartbeat beacons ride the SAME auto-sync
+            // subscription so the corroboration gate's freshness advances from
+            // the one reader this connection already polls. Under the
+            // anon-allowed KANNAKA.events.> ACL (no server ACL change).
+            let _ = write!(frame, "SUB {} {}\r\n", crate::beacon::BEACON_SUBJECT, self.alloc_sid());
         }
         conn.write_frames(&frame)?;
         let stream_clone = conn.writer.try_clone()?;
+        // Finite read timeout so `next_event` can run its liveness check even
+        // if the caller never calls `set_timeout` (#500). This subscription
+        // also carries beacon heartbeats, so a silent death here would freeze
+        // the corroboration gate — it MUST detect the dead socket and exit for
+        // a systemd restart rather than hang deaf.
+        stream_clone.set_read_timeout(Some(SUB_POLL_MAX))?;
 
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: first_sid.to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: SUB_PING_IDLE,
+            liveness_timeout: SUB_LIVENESS_TIMEOUT,
         })
     }
 
@@ -2322,11 +2556,67 @@ impl SwarmTransport {
         // which is shared with the transport — this also clears the
         // transport's default timeout. Acceptable under the documented
         // one-subscription-per-connection model.
-        stream_clone.set_read_timeout(None)?;
+        //
+        // A finite cap (not None) is REQUIRED for liveness (#500): an
+        // infinite read blocks forever on a silently-dead socket and never
+        // wakes to run the liveness check. `set_timeout(None)` and any value
+        // above SUB_POLL_MAX are clamped to it.
+        stream_clone.set_read_timeout(Some(SUB_POLL_MAX))?;
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: sid.to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: SUB_PING_IDLE,
+            liveness_timeout: SUB_LIVENESS_TIMEOUT,
         })
+    }
+}
+
+/// Subscription liveness (#500).
+///
+/// A subscription socket only ever ANSWERS server PINGs and never enables TCP
+/// keepalive, so a silent connection death (NAT/conntrack drop, firewall RST
+/// loss, peer power-off with no FIN/RST) delivers nothing forever and the
+/// listener/worker hangs deaf while looking alive. We defend on two axes:
+///  - `SUB_POLL_MAX` caps the socket read timeout so an otherwise-blocking
+///    `recv` wakes periodically to run the liveness check (a `None`/infinite
+///    timeout is clamped to this).
+///  - after `SUB_PING_IDLE` of total silence we PROACTIVELY send our own PING
+///    (the client never used to initiate one) so liveness no longer depends on
+///    the server's ~2min ping_interval, and after `SUB_LIVENESS_TIMEOUT` of
+///    silence with no frame of any kind we declare the socket dead (`Closed`).
+const SUB_POLL_MAX: Duration = Duration::from_secs(30);
+const SUB_PING_IDLE: Duration = Duration::from_secs(60);
+const SUB_LIVENESS_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// What the liveness policy wants after an idle read timeout on a subscription.
+#[derive(Debug, PartialEq, Eq)]
+enum LivenessAction {
+    /// Still within tolerance — report `Timeout` and keep polling.
+    Poll,
+    /// Idle past the ping threshold and no probe outstanding — send a client
+    /// PING to elicit a PONG, then keep polling.
+    Ping,
+    /// Idle past the death threshold — declare the connection `Closed`.
+    Dead,
+}
+
+/// Pure liveness decision (kept separate from the socket so it is unit-testable
+/// without a live server). `idle` is time since the last frame of any kind;
+/// `probe_outstanding` is whether we already sent a PING this idle gap.
+fn liveness_action(
+    idle: Duration,
+    probe_outstanding: bool,
+    ping_idle: Duration,
+    deadline: Duration,
+) -> LivenessAction {
+    if idle >= deadline {
+        LivenessAction::Dead
+    } else if idle >= ping_idle && !probe_outstanding {
+        LivenessAction::Ping
+    } else {
+        LivenessAction::Poll
     }
 }
 
@@ -2335,6 +2625,19 @@ pub struct NatsSubscription {
     reader: BufReader<TcpStream>,
     /// The (first) subscription id registered for this subscription.
     sid: String,
+    /// Instant of the last frame of ANY kind read from the server. Reset on
+    /// every Msg/Ping/Pong/etc.; drives the idle-death check (#500).
+    last_frame: Instant,
+    /// Set when we sent a client PING during the current idle gap and are
+    /// awaiting its PONG. Cleared when any frame arrives. Stops us re-PINGing
+    /// on every poll.
+    probe_sent: bool,
+    /// Idle gap after which we proactively PING (defaulted from
+    /// `SUB_PING_IDLE`; a field so tests can shrink it).
+    ping_idle: Duration,
+    /// Idle gap after which the socket is declared dead (defaulted from
+    /// `SUB_LIVENESS_TIMEOUT`; a field so tests can shrink it).
+    liveness_timeout: Duration,
 }
 
 /// A received NATS message.
@@ -2383,29 +2686,79 @@ impl NatsSubscription {
         &self.sid
     }
 
+    /// Record that a frame of any kind just arrived: the connection is alive,
+    /// so the idle clock resets and any outstanding liveness probe is answered.
+    fn mark_frame(&mut self) {
+        self.last_frame = Instant::now();
+        self.probe_sent = false;
+    }
+
+    /// Write a raw control frame (PING/PONG) on a clone of the subscription
+    /// socket. Best-effort: a failed write on a dying socket just means the
+    /// liveness deadline will fire instead.
+    fn send_control(&self, bytes: &[u8]) {
+        if let Ok(mut s) = self.reader.get_ref().try_clone() {
+            let _ = s.write_all(bytes);
+            let _ = s.flush();
+        }
+    }
+
     /// Poll for the next event, distinguishing timeout from connection
     /// death. Server PINGs are answered transparently; `-ERR` lines are
     /// logged (authorization errors close the subscription).
+    ///
+    /// Liveness (#500): every frame refreshes the idle clock. When a read
+    /// times out we consult `liveness_action` — after `ping_idle` of silence
+    /// we send our own PING to elicit a PONG, and after `liveness_timeout` of
+    /// silence with no frame at all we report `Closed` so the caller
+    /// reconnects/exits instead of hanging deaf on a silently-dead socket.
     pub fn next_event(&mut self) -> SubEvent {
         loop {
             match read_frame(&mut self.reader) {
                 Ok(ReadOutcome::Frame(Frame::Msg { subject, reply_to, payload, .. })) => {
+                    self.mark_frame();
                     return SubEvent::Msg(NatsMessage { subject, payload, reply_to });
                 }
                 Ok(ReadOutcome::Frame(Frame::Ping)) => {
-                    if let Ok(mut s) = self.reader.get_ref().try_clone() {
-                        let _ = write!(s, "PONG\r\n");
-                        let _ = s.flush();
-                    }
+                    self.mark_frame();
+                    self.send_control(b"PONG\r\n");
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    self.mark_frame();
                     eprintln!("[nats] server error: {}", m);
                     if is_auth_error(&m) {
                         return SubEvent::Closed;
                     }
                 }
-                Ok(ReadOutcome::Frame(_)) => continue,
-                Ok(ReadOutcome::TimedOut) => return SubEvent::Timeout,
+                // Pong (answering our probe), +OK, INFO: liveness refreshed,
+                // nothing else to do — keep polling.
+                Ok(ReadOutcome::Frame(_)) => {
+                    self.mark_frame();
+                    continue;
+                }
+                Ok(ReadOutcome::TimedOut) => {
+                    match liveness_action(
+                        self.last_frame.elapsed(),
+                        self.probe_sent,
+                        self.ping_idle,
+                        self.liveness_timeout,
+                    ) {
+                        LivenessAction::Poll => return SubEvent::Timeout,
+                        LivenessAction::Ping => {
+                            self.send_control(b"PING\r\n");
+                            self.probe_sent = true;
+                            return SubEvent::Timeout;
+                        }
+                        LivenessAction::Dead => {
+                            eprintln!(
+                                "[nats] subscription {} silent for {:?} (no frame, no PONG) — treating as closed (#500)",
+                                self.sid,
+                                self.last_frame.elapsed()
+                            );
+                            return SubEvent::Closed;
+                        }
+                    }
+                }
                 Ok(ReadOutcome::Closed) => return SubEvent::Closed,
                 Err(e) => {
                     eprintln!("[nats] subscription protocol error: {}", e);
@@ -2431,8 +2784,18 @@ impl NatsSubscription {
     /// NOTE: the timeout is a property of the underlying socket, which is
     /// shared with the SwarmTransport that created this subscription — fine
     /// under the one-subscription-per-connection model.
+    ///
+    /// The requested timeout is clamped to at most `SUB_POLL_MAX`, and `None`
+    /// (previously an infinite block) becomes `SUB_POLL_MAX`. This guarantees
+    /// the read wakes periodically so the liveness check in `next_event` can
+    /// run even when a caller asked to block indefinitely (#500). Callers all
+    /// loop on `SubEvent::Timeout`, so the extra wakeups are transparent.
     pub fn set_timeout(&self, timeout: Option<Duration>) -> Result<(), NatsError> {
-        self.reader.get_ref().set_read_timeout(timeout)?;
+        let effective = match timeout {
+            Some(t) => t.min(SUB_POLL_MAX),
+            None => SUB_POLL_MAX,
+        };
+        self.reader.get_ref().set_read_timeout(Some(effective))?;
         Ok(())
     }
 }
@@ -2444,6 +2807,27 @@ impl NatsSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // hunt: the handshake INFO read (and any control line) must be BOUNDED — a
+    // hostile/MITM server streaming an unbounded line would otherwise OOM us.
+    #[test]
+    fn read_control_line_rejects_overlong_line() {
+        use std::io::Cursor;
+        // A line longer than the cap with no newline is a protocol desync, not
+        // an unbounded read (a bare read_line would have swallowed the whole thing).
+        let overlong = vec![b'x'; MAX_CONTROL_LINE as usize + 100];
+        let mut cur = Cursor::new(overlong);
+        let mut out = String::new();
+        assert!(
+            matches!(read_control_line(&mut cur, &mut out), Err(NatsError::Protocol(_))),
+            "an over-long control line must be rejected as a protocol desync"
+        );
+        // A normal line is accepted and returned intact.
+        let mut ok = Cursor::new(b"INFO {\"server_id\":\"x\"}\r\n".to_vec());
+        let mut line = String::new();
+        let n = read_control_line(&mut ok, &mut line).unwrap();
+        assert!(n > 0 && line.starts_with("INFO "), "a normal INFO line reads fine");
+    }
 
     #[test]
     fn parse_nats_url_default_port() {
@@ -2738,7 +3122,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV test");
             return;
         }
@@ -2769,7 +3153,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV keys test");
             return;
         }
@@ -2790,7 +3174,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping KV missing test");
             return;
         }
@@ -2808,7 +3192,7 @@ mod tests {
             Some(t) => t,
             None => return,
         };
-        if !transport.has_jetstream() {
+        if !transport.has_jetstream_write() {
             eprintln!("JetStream not available, skipping discover_peers test");
             return;
         }
@@ -2861,5 +3245,324 @@ mod tests {
 
         let payload = serde_json::json!({ "agent_id": "reconnect-test" });
         transport.announce_event("join", &payload).expect("announce after reconnect");
+    }
+
+    // -----------------------------------------------------------------------
+    // Liveness + resumable frame reads (#499, #500)
+    //
+    // These are hermetic: `read_exact_resumable` and `liveness_action` are
+    // pure and driven by scripted mocks; the frame/subscription tests use a
+    // loopback TCP pair (no NATS server) so we can inject stalls, silence, and
+    // EOF deterministically.
+    // -----------------------------------------------------------------------
+
+    /// A `Read` that replays a scripted sequence of chunks, timeouts, and EOF.
+    struct ScriptReader {
+        steps: VecDeque<ScriptStep>,
+    }
+    enum ScriptStep {
+        Data(Vec<u8>),
+        /// Yield a `WouldBlock` (a read timeout).
+        Timeout,
+        /// Yield `Ok(0)` (peer closed).
+        Eof,
+    }
+    impl Read for ScriptReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.steps.pop_front() {
+                Some(ScriptStep::Data(d)) => {
+                    let n = d.len().min(buf.len());
+                    buf[..n].copy_from_slice(&d[..n]);
+                    if n < d.len() {
+                        self.steps.push_front(ScriptStep::Data(d[n..].to_vec()));
+                    }
+                    Ok(n)
+                }
+                Some(ScriptStep::Timeout) => {
+                    Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block"))
+                }
+                Some(ScriptStep::Eof) | None => Ok(0),
+            }
+        }
+    }
+
+    #[test]
+    fn resumable_read_survives_interspersed_timeouts() {
+        // #499: a payload split across segments, with a read timeout landing
+        // INSIDE the frame, still fills completely (pre-fix this was fatal).
+        let mut r = ScriptReader {
+            steps: VecDeque::from(vec![
+                ScriptStep::Data(b"he".to_vec()),
+                ScriptStep::Timeout,
+                ScriptStep::Timeout,
+                ScriptStep::Data(b"ll".to_vec()),
+                ScriptStep::Data(b"o".to_vec()),
+            ]),
+        };
+        let mut buf = [0u8; 5];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        read_exact_resumable(&mut r, &mut buf, deadline).expect("should fill despite timeouts");
+        assert_eq!(&buf, b"hello");
+    }
+
+    #[test]
+    fn resumable_read_gives_up_after_deadline() {
+        // Only timeouts, deadline already elapsed → declared dead, not looped.
+        let mut r = ScriptReader {
+            steps: VecDeque::from(vec![ScriptStep::Timeout, ScriptStep::Timeout]),
+        };
+        let mut buf = [0u8; 4];
+        let deadline = Instant::now(); // already reached
+        match read_exact_resumable(&mut r, &mut buf, deadline) {
+            Err(ResumableReadError::Timeout) => {}
+            _ => panic!("expected Timeout past deadline"),
+        }
+    }
+
+    #[test]
+    fn resumable_read_eof_midway_is_fatal() {
+        // Peer closes with the buffer half-filled → EOF (unresyncable).
+        let mut r = ScriptReader {
+            steps: VecDeque::from(vec![ScriptStep::Data(b"ab".to_vec()), ScriptStep::Eof]),
+        };
+        let mut buf = [0u8; 5];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        match read_exact_resumable(&mut r, &mut buf, deadline) {
+            Err(ResumableReadError::Eof) => {}
+            _ => panic!("expected Eof"),
+        }
+    }
+
+    #[test]
+    fn liveness_action_transitions() {
+        let ping = Duration::from_secs(60);
+        let dead = Duration::from_secs(150);
+        // Fresh / lightly idle → keep polling.
+        assert_eq!(
+            liveness_action(Duration::from_secs(10), false, ping, dead),
+            LivenessAction::Poll
+        );
+        // Past the ping threshold, no probe yet → send one.
+        assert_eq!(
+            liveness_action(Duration::from_secs(90), false, ping, dead),
+            LivenessAction::Ping
+        );
+        // Past the ping threshold but a probe is already outstanding → poll
+        // (don't flood PINGs every wakeup).
+        assert_eq!(
+            liveness_action(Duration::from_secs(90), true, ping, dead),
+            LivenessAction::Poll
+        );
+        // Past the death threshold → dead, even with a probe outstanding.
+        assert_eq!(
+            liveness_action(Duration::from_secs(200), true, ping, dead),
+            LivenessAction::Dead
+        );
+    }
+
+    fn loopback_pair() -> (TcpStream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).expect("connect loopback");
+        let (server, _) = listener.accept().expect("accept loopback");
+        (client, server)
+    }
+
+    /// Poll `read_frame` past benign timeouts. A single call can legitimately
+    /// see `TimedOut` before the writer thread is scheduled — especially when
+    /// the whole suite runs in parallel and starves it — so loop until a real
+    /// outcome (Frame or Closed) lands, bounded by a generous wall-clock budget
+    /// that only trips on a true hang.
+    fn read_frame_until(reader: &mut BufReader<TcpStream>, budget: Duration) -> ReadOutcome {
+        let deadline = Instant::now() + budget;
+        loop {
+            match read_frame(reader).expect("read_frame returned a protocol error") {
+                ReadOutcome::TimedOut => {
+                    if Instant::now() >= deadline {
+                        panic!("no frame within {budget:?}");
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    #[test]
+    fn read_frame_reads_whole_msg() {
+        let (client, mut server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        server.write_all(b"MSG sub.a 1 5\r\nhello\r\n").unwrap();
+        server.flush().unwrap();
+        let mut reader = BufReader::new(client);
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
+            ReadOutcome::Frame(Frame::Msg { subject, payload, .. }) => {
+                assert_eq!(subject, "sub.a");
+                assert_eq!(payload, b"hello");
+            }
+            _ => panic!("expected a MSG frame"),
+        }
+    }
+
+    #[test]
+    fn read_frame_survives_mid_payload_stall() {
+        // #499 end-to-end over real sockets: the second half of the payload
+        // arrives AFTER the socket read timeout fires mid-frame. Pre-fix this
+        // returned a fatal "short MSG payload read"; now the frame completes.
+        let (client, mut server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let writer = std::thread::spawn(move || {
+            server.write_all(b"MSG sub.b 1 5\r\nhel").unwrap();
+            server.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(250)); // straddle the 100ms timeout
+            server.write_all(b"lo\r\n").unwrap();
+            server.flush().unwrap();
+            // keep the socket open until the reader is done
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        // read_frame_until rides out the header-not-written-yet timeout; the
+        // mid-PAYLOAD stall is ridden out INSIDE read_frame itself (the #499 fix).
+        let mut reader = BufReader::new(client);
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
+            ReadOutcome::Frame(Frame::Msg { payload, .. }) => assert_eq!(payload, b"hello"),
+            _ => panic!("expected a MSG frame after the stall"),
+        }
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn read_frame_reports_closed_on_eof() {
+        let (client, server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        drop(server); // peer closes cleanly
+        let mut reader = BufReader::new(client);
+        match read_frame_until(&mut reader, Duration::from_secs(10)) {
+            ReadOutcome::Closed => {}
+            _ => panic!("expected Closed on EOF"),
+        }
+    }
+
+    #[test]
+    fn subscription_self_initiates_ping_when_idle() {
+        // #500: the client PROACTIVELY sends its own PING after `ping_idle` of
+        // silence (it never used to initiate one). A large liveness_timeout
+        // keeps this test purely about the ping — it cannot race a death.
+        let (client, mut server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut sub = NatsSubscription {
+            reader: BufReader::new(client),
+            sid: "42".to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: Duration::from_millis(30),
+            liveness_timeout: Duration::from_secs(30), // far away — no death here
+        };
+        // Poll well past ping_idle. Each next_event blocks ~20ms, so ~40 polls
+        // is ~0.8s of wall time — comfortably past 30ms even under load — and
+        // the 30s deadline means no Closed can occur.
+        for _ in 0..40 {
+            match sub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => panic!("must not die with a 30s liveness timeout"),
+                SubEvent::Msg(_) => panic!("no message was ever sent"),
+            }
+        }
+        server.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut buf = [0u8; 64];
+        let n = server.read(&mut buf).unwrap_or(0);
+        let got = String::from_utf8_lossy(&buf[..n]);
+        assert!(got.contains("PING"), "client should self-initiate a PING, got {got:?}");
+    }
+
+    #[test]
+    fn subscription_declares_silent_socket_dead() {
+        // #500: an OPEN but silent socket (no frames, no server PING) is
+        // eventually declared Closed so the caller reconnects/exits instead of
+        // hanging deaf. Generous poll budget so a loaded runner can't false-fail.
+        let (client, _server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut sub = NatsSubscription {
+            reader: BufReader::new(client),
+            sid: "43".to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: Duration::from_millis(40),
+            liveness_timeout: Duration::from_millis(200),
+        };
+        let start = Instant::now();
+        let mut saw_closed = false;
+        while start.elapsed() < Duration::from_secs(15) {
+            match sub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    saw_closed = true;
+                    break;
+                }
+                SubEvent::Msg(_) => panic!("no message was ever sent"),
+            }
+        }
+        assert!(saw_closed, "a silent socket must eventually be declared Closed");
+    }
+
+    #[test]
+    fn subscription_stays_alive_while_frames_flow() {
+        // A message arriving keeps liveness fresh — the subscription yields it
+        // and does NOT report Closed. A large liveness_timeout guarantees a
+        // starved writer thread cannot trip a false death.
+        let (client, mut server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut sub = NatsSubscription {
+            reader: BufReader::new(client),
+            sid: "44".to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: Duration::from_millis(40),
+            liveness_timeout: Duration::from_secs(30), // cannot race the writer
+        };
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            server.write_all(b"MSG sub.c 1 2\r\nhi\r\n").unwrap();
+            server.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+        });
+        let start = Instant::now();
+        let mut got_msg = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            match sub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Msg(m) => {
+                    assert_eq!(m.payload, b"hi");
+                    got_msg = true;
+                    break;
+                }
+                SubEvent::Closed => panic!("live socket wrongly declared closed"),
+            }
+        }
+        assert!(got_msg, "message should have been delivered");
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn set_timeout_clamps_none_and_large_to_poll_max() {
+        // `None` and any value above SUB_POLL_MAX must be clamped so the read
+        // still wakes to run the liveness check (#500).
+        let (client, _server) = loopback_pair();
+        let sub = NatsSubscription {
+            reader: BufReader::new(client),
+            sid: "44".to_string(),
+            last_frame: Instant::now(),
+            probe_sent: false,
+            ping_idle: SUB_PING_IDLE,
+            liveness_timeout: SUB_LIVENESS_TIMEOUT,
+        };
+        sub.set_timeout(None).unwrap();
+        assert_eq!(sub.reader.get_ref().read_timeout().unwrap(), Some(SUB_POLL_MAX));
+        sub.set_timeout(Some(Duration::from_secs(3600))).unwrap();
+        assert_eq!(sub.reader.get_ref().read_timeout().unwrap(), Some(SUB_POLL_MAX));
+        // A value below the cap is preserved.
+        sub.set_timeout(Some(Duration::from_millis(250))).unwrap();
+        assert_eq!(
+            sub.reader.get_ref().read_timeout().unwrap(),
+            Some(Duration::from_millis(250))
+        );
     }
 }

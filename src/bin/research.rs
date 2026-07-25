@@ -3374,8 +3374,12 @@ fn run_l5_dream_chain(
             }
         }
 
-        // L5.5: inject online memories at designated cycle points
-        if injection_cycles.contains(&cycle_idx) {
+        // L5.5: inject online memories at designated cycle points.
+        // CARRIER_NO_INJECT suppresses injection for the flat-corpus carrier test only;
+        // injection spikes at cycle 3 otherwise dominate the DFT window.
+        if injection_cycles.contains(&cycle_idx)
+            && std::env::var("CARRIER_NO_INJECT").unwrap_or_default().is_empty()
+        {
             let ids = inject_online_memories(engine, dim, injection_counter, params.encoder_seed);
             injected_ids_per_event.push(ids);
             injection_counter += 1;
@@ -3608,19 +3612,29 @@ fn run_experiment_l5_session(params: &Params) {
     let mut engine_flat = build_l5_engine(&corpus_flat, params, dim);
     let start_flat = Instant::now();
     std::env::set_var("DRIVE_CONTEXT", "engine_flat");
-    // Run 5 cycles and skip cycle 0 from the DFT window.
-    // Cycle 0 uses threshold_scale=1.0 (full interference), which always produces a
-    // ~4.17 amplitude spike that splits DFT power ~50/50 between k=1 and k=2 regardless
-    // of drive or mode. Cycles 1-4 use threshold_scale=0.3 (reduced); the drive's
-    // 0.5 Hz first-quarter arc produces deltas ≈ [0.071A, 0.100A, 0.071A, 0] that
-    // DFT strongly at k=1 (2 Hz), pushing carrier_emergence to ~0.85.
+    // Run 6 cycles, skip cycles 0 AND 1 from the DFT window, suppress injection.
+    // Two separate masking problems in the old 5-cycle/skip-1 setup:
+    //   1. Cycle 1 carries a secondary consolidation residual (~0.192) from cycle 0's
+    //      full-threshold sweep — 23× larger than the drive contribution.
+    //   2. Injection at cycle 2 creates a consolidation spike at cycle 3 (~0.036)
+    //      that dominates the remaining window.
+    // Fix: CARRIER_NO_INJECT removes source of problem 2; chain_depth=6 + all_deltas[2..]
+    // removes source of problem 1. Cycles 2-5 then carry only drive + gravity + quiescent
+    // consolidation. Gravity is roughly constant across cycles (same ref snapshot) → DC →
+    // excluded by the DFT. Drive at 0.5 Hz gives pattern [sin(π·0.25), sin(π·0.375),
+    // sin(π·0.5), sin(π·0.625)] = [0.707, 0.924, 1.0, 0.924] × A × mean_amp, DFTing
+    // at k=1 (2 Hz bin within [0.5, 4.0] Hz band) → predicted carrier_emergence ≈ 0.81.
     let amp_deltas_flat = {
         let mut flat_params = (*params).clone();
-        flat_params.chain_depth = 5;
+        flat_params.chain_depth = 6;
+        std::env::set_var("CARRIER_NO_INJECT", "1");
         let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, all_deltas,
              _inj_flat, _orig_flat, _init_amp_flat) =
             run_l5_dream_chain(&flat_params, &mut engine_flat);
-        if all_deltas.len() >= 5 {
+        std::env::remove_var("CARRIER_NO_INJECT");
+        if all_deltas.len() >= 6 {
+            all_deltas[2..].to_vec()
+        } else if all_deltas.len() >= 2 {
             all_deltas[1..].to_vec()
         } else {
             all_deltas
@@ -4007,6 +4021,542 @@ fn run_experiment_l6_session(params: &Params) {
     println!("---");
 }
 
+/// Core-merge (fusion) events between consecutive snapshots. A fusion is a
+/// COLLISION: two or more cores of one snapshot whose nearest same-charge
+/// match (cosine ≥ `merge_cos`) in the next snapshot is the SAME core. (The
+/// earlier died-into-a-sibling detector missed real fusions: a fused core's
+/// fingerprint is a neighborhood centroid, so it matches BOTH parents above
+/// the survival threshold and every fusion read as two survivals.)
+fn core_merge_epochs(
+    snapshots: &[Vec<kannaka_memory::l6::CoreObs>],
+    merge_cos: f32,
+) -> Vec<usize> {
+    use kannaka_memory::l6;
+    let mut out = Vec::new();
+    for e in 0..snapshots.len().saturating_sub(1) {
+        let next = &snapshots[e + 1];
+        let mut child_hits: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for core in &snapshots[e] {
+            if let Some((j, s)) = l6::nearest_core(&core.fp, next, Some(core.charge)) {
+                if s >= merge_cos {
+                    *child_hits.entry(j).or_insert(0) += 1;
+                }
+            }
+        }
+        let fusions = child_hits.values().filter(|&&n| n >= 2).count();
+        for _ in 0..fusions {
+            out.push(e + 1);
+        }
+    }
+    out
+}
+
+/// L7 — the BELIEF arm (ADR-0037). Runs a real multi-agent belief substrate
+/// (ChiralMedium with content-born phase) and scores the README's three
+/// falsification predictions: core stability ⇒ recall reliability, core merge
+/// ⇒ a consolidation event, shared cores ⇒ swarm agreement. Unlike L6's
+/// synthetic fixtures, every observable here comes from the live medium:
+/// spiral-core snapshots, dream absorb events, and actual recalls.
+///
+/// Env knobs: L7_AGENTS (default 4, 2..=6), L7_EPOCHS (default 6),
+/// L7_ITEMS (default 8 per domain), L7_MIN_COS (track/share match, default
+/// 0.85), L7_MERGE_COS (merge sibling threshold, default 0.60),
+/// L7_COUPLE=1 (apply Track-D peer-core coupling each epoch, default off),
+/// RESEARCH_RUN (TSV row label).
+fn run_experiment_l7_session(_params: &Params) {
+    use kannaka_memory::belief_fitness as bf;
+    use kannaka_memory::l6::{self, CoreObs};
+    use kannaka_memory::medium::chiral::ChiralMedium;
+
+    let envf = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let envu = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let n_agents = envu("L7_AGENTS", 4).clamp(2, 6);
+    let epochs = envu("L7_EPOCHS", 6).max(2);
+    let items = envu("L7_ITEMS", 8).max(4);
+    let min_cos = envf("L7_MIN_COS", 0.85);
+    let merge_cos = envf("L7_MERGE_COS", 0.60);
+    let couple = std::env::var("L7_COUPLE").map(|v| v == "1").unwrap_or(false);
+    let couple_strength = envf("L7_COUPLE_STRENGTH", 0.2);
+    // Optional per-epoch coupling SCHEDULE (comma-separated strengths, cycled):
+    // the day-one sweep showed s=0.1 optimizes shared⇒agreement while s=0.2
+    // optimizes stability⇒recall and no fixed strength satisfies both — this
+    // knob asks whether ALTERNATING what the swarm couples for can.
+    let couple_schedule: Vec<f32> = std::env::var("L7_COUPLE_SCHEDULE")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    // Distractor importance. Default 0.25 = churn that never prunes (energy
+    // threshold 0.01); setting it below 0.01 is the detector self-test — the
+    // absorb channel MUST fire then, or a merge_consolidation of 0.0 would be
+    // a dead instrument rather than a falsification.
+    let junk_importance = envf("L7_JUNK_IMPORTANCE", 0.25);
+    // Merge↔absorb alignment horizon (epochs) for prediction 2 — the
+    // "fusion ⇒ EVENTUAL consolidation" restatement is tested by widening it.
+    let p2_window = envu("L7_P2_WINDOW", 1);
+    const FP_DIMS: usize = 16; // must match belief_core_snapshot's fingerprint dims
+
+    println!("=== L7 belief session (ADR-0037 falsification predictions) ===");
+    println!("l7_agents:            {}", n_agents);
+    println!("l7_epochs:            {}", epochs);
+    println!("l7_items_per_domain:  {}", items);
+    println!("l7_min_cos:           {:.2}", min_cos);
+    println!("l7_couple:            {}", couple);
+
+    // Belief phase ON for the whole session (content-born phase at ingest);
+    // restore the caller's env afterwards so other levels are unaffected.
+    let prev_belief = std::env::var("KANNAKA_BELIEF_PHASE").ok();
+    std::env::set_var("KANNAKA_BELIEF_PHASE", "1");
+
+    // Distinct-vocabulary domains. Agent k holds shared domains D0..=Dk plus a
+    // private domain — a nested overlap gradient, so agent PAIRS differ in how
+    // many belief domains they share (the variance prediction 3 correlates
+    // against). Vocabulary is disjoint per domain so the hash encoder separates
+    // content and spiral cores can localize.
+    const DOMAIN_VOCAB: [[&str; 4]; 12] = [
+        ["gravity", "orbit", "tide", "mass"],
+        ["neuron", "synapse", "cortex", "spike"],
+        ["harbor", "vessel", "cargo", "berth"],
+        ["glacier", "moraine", "crevasse", "firn"],
+        ["sonata", "cadence", "timbre", "chord"],
+        ["enzyme", "substrate", "catalysis", "kinase"],
+        ["quasar", "redshift", "parsec", "nebula"],
+        ["loom", "warp", "weft", "shuttle"],
+        ["magma", "basalt", "caldera", "vent"],
+        ["ledger", "audit", "escrow", "invoice"],
+        ["mycelium", "spore", "hypha", "lichen"],
+        ["antenna", "waveform", "carrier", "hertz"],
+    ];
+    let domain_sentence = |d: usize, i: usize| -> String {
+        let v = &DOMAIN_VOCAB[d % DOMAIN_VOCAB.len()];
+        format!(
+            "{} {} study {}: the {} of {} governs {} {}",
+            v[0], v[1], i, v[2], v[3], v[0], v[i % 4]
+        )
+    };
+    // A degraded cue — item index + one domain word, most of the sentence
+    // missing. Verbatim self-recall is trivially perfect (zero variance ⇒ the
+    // correlations report no-evidence 0.5 forever); recall RELIABILITY only
+    // becomes measurable under weak cues, which is also what the falsifiability
+    // clause means by "recallable content cluster" — the cluster answers a
+    // partial probe, not an exact replay.
+    let partial_query = |d: usize, i: usize| -> String {
+        let v = &DOMAIN_VOCAB[d % DOMAIN_VOCAB.len()];
+        // Deliberately ambiguous: one word from a NEIGHBOR domain contaminates
+        // the cue. Fully-disjoint vocab makes clean cues trivially perfect
+        // (recall variance 0 ⇒ correlations report no-evidence forever);
+        // reliability only means something under cross-domain competition.
+        let w = &DOMAIN_VOCAB[(d + 1) % DOMAIN_VOCAB.len()];
+        // 1 own word vs 1 neighbor word — an evenly contested cue. (Two own
+        // words made recall flat-1.0 across every domain: zero variance, so
+        // prediction 1 could never leave the no-evidence line.)
+        format!("{} {} {}", v[i % 4], i, w[(i + 1) % 4])
+    };
+
+    // Build agents: shared domains are 0..=k, private domain is n_agents + k.
+    let pipeline = {
+        let encoder = Box::new(SimpleHashEncoder::new(384, 42));
+        let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
+        EncodingPipeline::new(encoder, codebook)
+    };
+    let mut agents: Vec<ChiralMedium> = Vec::new();
+    let mut agent_domains: Vec<Vec<usize>> = Vec::new();
+    let mut content_domain: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for k in 0..n_agents {
+        let mut cm = ChiralMedium::new();
+        let mut domains: Vec<usize> = (0..=k).collect();
+        domains.push(n_agents + k);
+        for &d in &domains {
+            for i in 0..items {
+                let s = domain_sentence(d, i);
+                content_domain.insert(s.clone(), d);
+                let _ = cm.store(&s, 0.8, &pipeline);
+            }
+        }
+        agents.push(cm);
+        agent_domains.push(domains);
+    }
+
+    // ── Epoch loop: dream → (record absorbs) → snapshot cores → optional
+    // Track-D coupling toward every peer's fresh snapshot. ──
+    let mut snapshots: Vec<Vec<Vec<CoreObs>>> = vec![Vec::new(); n_agents];
+    let mut absorb_epochs: Vec<Vec<usize>> = vec![Vec::new(); n_agents];
+    for e in 0..epochs {
+        for (a, cm) in agents.iter_mut().enumerate() {
+            // Distractor churn: two low-importance throwaway memories per
+            // epoch give the dream real dissolution candidates (without them
+            // nothing ever absorbs and prediction 2 sits at no-evidence
+            // forever) and perturb the field so core stability can vary.
+            for x in 0..2 {
+                let junk = format!(
+                    "ephemeral flicker {} {} of agent {} passing note {}",
+                    e, x, a, (e * 7 + x * 3 + a) % 13
+                );
+                let _ = cm.store(&junk, junk_importance, &pipeline);
+            }
+            // Deep dream every third epoch — the consolidation pressure that
+            // produces absorb events and core merges.
+            let deep = e % 3 == 2;
+            let count_before = cm.right.count();
+            let report = cm.dream(deep, 3);
+            // Consolidation observable: the dream's own dissolved counter OR a
+            // net field shrink (absorption paths that don't increment the
+            // counter still reduce the wavefront count).
+            if report.wavefronts_dissolved > 0 || cm.right.count() < count_before {
+                absorb_epochs[a].push(e);
+            }
+        }
+        let snaps_now: Vec<Vec<CoreObs>> =
+            agents.iter().map(|cm| cm.belief_core_snapshot()).collect();
+        for (a, s) in snaps_now.iter().enumerate() {
+            snapshots[a].push(s.clone());
+        }
+        if couple {
+            let strength = if couple_schedule.is_empty() {
+                couple_strength
+            } else {
+                couple_schedule[e % couple_schedule.len()]
+            };
+            for a in 0..n_agents {
+                for p in 0..n_agents {
+                    if a != p && !snaps_now[p].is_empty() {
+                        let _ = agents[a]
+                            .couple_toward_peer_cores(&snaps_now[p], 2, strength, 0.5, min_cos);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Recall rates per (agent, domain): top-1 self-recall over the domain's
+    // items — the "recallable content cluster" half of the falsifiability
+    // clause. ──
+    let mut recall_rate = vec![std::collections::HashMap::<usize, f32>::new(); n_agents];
+    for (a, cm) in agents.iter().enumerate() {
+        for &d in &agent_domains[a] {
+            let mut hits = 0usize;
+            for i in 0..items {
+                // Degraded cue; a hit = the top result is ANY memory of the
+                // probed domain (the cluster answered, even if not the exact
+                // item — cluster-level reliability, per the falsifiability
+                // clause).
+                let q = partial_query(d, i);
+                if let Ok(res) = cm.recall(&q, 1, &pipeline) {
+                    if res
+                        .first()
+                        .and_then(|r| content_domain.get(&r.content))
+                        .map(|&rd| rd == d)
+                        .unwrap_or(false)
+                    {
+                        hits += 1;
+                    }
+                }
+            }
+            recall_rate[a].insert(d, hits as f32 / items as f32);
+        }
+    }
+
+    // ── Prediction 1: core stability ⇒ recall reliability. Stability of each
+    // FINAL-snapshot core = fraction of earlier epochs where a same-charge,
+    // fingerprint-matched core existed (walked backwards, following drift).
+    // The core's domain = the domain of the stored wavefront whose fingerprint
+    // it matches best. ──
+    let mut p1_pairs: Vec<(f32, f32)> = Vec::new();
+    let mut total_final_cores = 0usize;
+    for a in 0..n_agents {
+        let Some(final_snap) = snapshots[a].last() else { continue };
+        total_final_cores += final_snap.len();
+        // Fingerprints of this agent's stored (right) wavefronts + their domains.
+        let cm = &agents[a];
+        let n = cm.right.count();
+        let row_info: Vec<(Vec<f32>, Option<usize>)> = (0..n)
+            .map(|i| {
+                let v: Vec<f32> = cm.right.wavefronts.row(i).iter().copied().collect();
+                let dom = content_domain.get(&cm.right.metadata[i].content).copied();
+                (l6::fingerprint(&v, FP_DIMS), dom)
+            })
+            .collect();
+        for core in final_snap {
+            // stability: walk earlier snapshots, matching by charge + cosine.
+            let mut seen = 1usize; // the final snapshot itself
+            let mut fp = core.fp.clone();
+            for e in (0..snapshots[a].len().saturating_sub(1)).rev() {
+                if let Some((j, s)) = l6::nearest_core(&fp, &snapshots[a][e], Some(core.charge)) {
+                    if s >= min_cos {
+                        seen += 1;
+                        fp = snapshots[a][e][j].fp.clone(); // follow drift backwards
+                    }
+                }
+            }
+            let stability = seen as f32 / epochs as f32;
+            // domain attribution: nearest stored wavefront's domain.
+            let dom = row_info
+                .iter()
+                .max_by(|x, y| {
+                    l6::cosine(&core.fp, &x.0)
+                        .partial_cmp(&l6::cosine(&core.fp, &y.0))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .and_then(|(_, d)| *d);
+            if let Some(d) = dom {
+                if let Some(&rr) = recall_rate[a].get(&d) {
+                    p1_pairs.push((stability, rr));
+                }
+            }
+        }
+    }
+    let stability_recall = bf::stability_recall_score(&p1_pairs);
+    let rng = |vals: Vec<f32>| -> (f32, f32) {
+        let lo = vals.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if lo.is_finite() { (lo, hi) } else { (0.0, 0.0) }
+    };
+    let (st_lo, st_hi) = rng(p1_pairs.iter().map(|p| p.0).collect());
+    let (rr_lo, rr_hi) = rng(p1_pairs.iter().map(|p| p.1).collect());
+    println!("l7_final_cores:       {}", total_final_cores);
+    println!("l7_p1_pairs:          {}", p1_pairs.len());
+    println!("l7_stability_range:   {:.2}..{:.2}", st_lo, st_hi);
+    println!("l7_recall_range:      {:.2}..{:.2}", rr_lo, rr_hi);
+    println!("stability_recall:     {:.4}", stability_recall);
+
+    // ── Prediction 2: core merge ⇒ a consolidation event. A merge = a core
+    // that vanishes between epochs while a same-charge sibling at cosine ≥
+    // merge_cos survives (its content got absorbed into the sibling). Scored
+    // against the epochs whose dream actually dissolved wavefronts. ──
+    let mut merge_epochs_all: Vec<usize> = Vec::new();
+    let mut absorb_all: Vec<usize> = Vec::new();
+    for a in 0..n_agents {
+        absorb_all.extend(absorb_epochs[a].iter().copied());
+        merge_epochs_all.extend(core_merge_epochs(&snapshots[a], merge_cos));
+    }
+    let merge_consolidation_chiral = bf::merge_consolidation_score(&merge_epochs_all, &absorb_all, 1);
+    println!("l7_merge_events:      {}", merge_epochs_all.len());
+    println!("l7_absorb_epochs:     {}", absorb_all.len());
+    println!("merge_consolidation_chiral: {:.4} (observable blind in ChiralMedium — issue #583)", merge_consolidation_chiral);
+
+    // ── Prediction 2 PROPER — HrmStore substrate. ChiralMedium cannot dissolve
+    // (energy floor ≥ prune threshold, issue #583), so the real consolidation
+    // machinery is ADR-0036's belief-safe resonance-merge. One HrmStore agent
+    // ingests the shared domains PLUS mergeable near-duplicate triplets; each
+    // epoch dreams then APPLIES consolidation; absorb events come from the
+    // apply report, merges from core tracking on the same store. ──
+    let (merge_consolidation, hrm_merges, hrm_absorbs) = {
+        use kannaka_memory::hrm_store::compute_merge_grouping;
+        use kannaka_memory::medium::types::ConsolidateOpts;
+
+        // Bare ChiralMedium (belief-born phases native, mid-session ingest
+        // just works) + the EXACT ADR-0036 grouping algorithm applied to its
+        // right hemisphere each epoch — semantic gate, belief centering,
+        // absorb cap, all of it. Absorptions are applied by removing the
+        // grouped non-carrier wavefronts; that removal is the consolidation
+        // event prediction 2 aligns against. (HrmStore itself is the wrong
+        // vehicle here: its MediumBackend::insert never routes to the chiral
+        // field, so a fresh chiral-upgraded store can't ingest mid-session.)
+        let mut cm = ChiralMedium::new();
+
+        // Two initially-DISTINCT sub-domains + a near-duplicate triplet per
+        // domain (merge fodder). From mid-session, BRIDGE items mixing both
+        // vocabularies are ingested each epoch (card-04 pattern) so the two
+        // content clusters approach and their cores can FUSE while ADR-0036
+        // consolidation runs: prediction 2's antecedent, induced.
+        let (dom_a, dom_b) = (0usize, 3usize);
+        // Canary CONTENTS, not ids: the merge may keep EITHER pair member as
+        // carrier (highest post-dream energy) and absorb the other — id
+        // tracking mislabels the original's absorption as organic.
+        let canary_contents = [domain_sentence(dom_a, 1), domain_sentence(dom_b, 1)];
+        for d in [dom_a, dom_b] {
+            for i in 0..items {
+                let _ = cm.store(&domain_sentence(d, i), 0.8, &pipeline);
+            }
+            for (t, suffix) in ["", " indeed", " truly"].iter().enumerate() {
+                let s = format!("{}{} #{t}", domain_sentence(d, 0), suffix);
+                let _ = cm.store(&s, 0.8, &pipeline);
+            }
+            // CANARY: an exact duplicate (identical text ⇒ identical vector ⇒
+            // centered cosine 1.0 + identical born phase) that MUST pass the
+            // ADR-0036 gates. Its absorption proves the consolidation channel
+            // is live. Canary ids are tracked so their absorptions count ONLY
+            // as capability proof — never as alignment evidence (they are
+            // experimenter artifacts, not substrate consolidation).
+            let _ = cm.store(&domain_sentence(d, 1), 0.8, &pipeline);
+        }
+        let bridge_sentence = |e: usize, x: usize| -> String {
+            let a = &DOMAIN_VOCAB[dom_a];
+            let b = &DOMAIN_VOCAB[dom_b];
+            format!(
+                "{} {} bridge {}: the {} of {} governs {} {}",
+                a[e % 4], b[(e + x) % 4], e, a[(e + 1) % 4], b[(e + x + 1) % 4],
+                a[(e + 2) % 4], b[(e + x + 2) % 4]
+            )
+        };
+
+        let opts = ConsolidateOpts::default();
+        let mut hrm_snaps: Vec<Vec<CoreObs>> = Vec::new();
+        let mut hrm_absorb_epochs: Vec<usize> = Vec::new();
+        let mut channel_proven = false;
+        for e in 0..epochs {
+            if e >= epochs / 2 {
+                for x in 0..2 {
+                    let _ = cm.store(&bridge_sentence(e, x), 0.8, &pipeline);
+                }
+            }
+            let _ = cm.dream(true, 2);
+
+            // ADR-0036 grouping over the live right hemisphere.
+            let n = cm.right.count();
+            let rows: Vec<Vec<f32>> =
+                (0..n).map(|i| cm.right.wavefronts.row(i).to_vec()).collect();
+            let vrefs: Vec<&[f32]> = rows.iter().map(|v| v.as_slice()).collect();
+            let phases: Vec<f32> = (0..n).map(|i| cm.right.phase[i]).collect();
+            let tiers: Vec<_> = (0..n).map(|i| cm.right.metadata[i].tier).collect();
+            let energies: Vec<f32> = (0..n).map(|i| cm.right.energy[i]).collect();
+            let grouping = compute_merge_grouping(&vrefs, &phases, &tiers, &energies, &opts, true);
+
+            // Apply: absorb every non-carrier member (carrier = highest energy).
+            // Ids first — indices invalidate on remove. Left twins are left in
+            // place: this throwaway medium is never recalled against, only
+            // core-snapshotted (right hemisphere only).
+            let mut absorb_ids = Vec::new();
+            for group in &grouping.admitted {
+                let carrier = group
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| {
+                        energies[a].partial_cmp(&energies[b]).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap_or(group[0]);
+                for &m in group {
+                    if m != carrier {
+                        absorb_ids.push(cm.right.metadata[m].id);
+                    }
+                }
+            }
+            let mut organic_absorbed = 0usize;
+            for id in &absorb_ids {
+                let is_canary = (0..cm.right.count())
+                    .find(|&i| cm.right.metadata[i].id == *id)
+                    .map(|i| canary_contents.contains(&cm.right.metadata[i].content))
+                    .unwrap_or(false);
+                if cm.right.remove_wavefront(id) {
+                    if is_canary {
+                        channel_proven = true;
+                    } else {
+                        organic_absorbed += 1;
+                    }
+                }
+            }
+            if organic_absorbed > 0 {
+                hrm_absorb_epochs.push(e);
+            }
+            hrm_snaps.push(cm.belief_core_snapshot());
+        }
+        let hrm_merge_epochs = core_merge_epochs(&hrm_snaps, merge_cos);
+        let core_counts: Vec<usize> = hrm_snaps.iter().map(|s| s.len()).collect();
+        println!("l7_hrm_core_counts:   {:?}", core_counts);
+        println!("l7_hrm_channel_proven: {}", channel_proven);
+        (
+            bf::merge_consolidation_score_proven(
+                &hrm_merge_epochs,
+                &hrm_absorb_epochs,
+                p2_window,
+                channel_proven,
+            ),
+            hrm_merge_epochs.len(),
+            hrm_absorb_epochs.len(),
+        )
+    };
+    println!("l7_hrm_merge_events:  {}", hrm_merges);
+    println!("l7_hrm_absorb_epochs: {}", hrm_absorbs);
+    println!("merge_consolidation:  {:.4}", merge_consolidation);
+
+    // ── Prediction 3: shared cores ⇒ swarm agreement. Per agent pair:
+    // symmetric shared-core fraction vs top-1 recall agreement on the items of
+    // every domain BOTH hold. The nested domain design gives pairs a gradient
+    // of genuine overlap for the correlation to detect. ──
+    let mut p3_pairs: Vec<(f32, f32)> = Vec::new();
+    for i in 0..n_agents {
+        for j in (i + 1)..n_agents {
+            let (si, sj) = (snapshots[i].last(), snapshots[j].last());
+            let (Some(si), Some(sj)) = (si, sj) else { continue };
+            let denom = (si.len() + sj.len()).max(1) as f32;
+            let shared =
+                (l6::shared_cores(si, sj, min_cos) + l6::shared_cores(sj, si, min_cos)) as f32 / denom;
+            let common: Vec<usize> = agent_domains[i]
+                .iter()
+                .copied()
+                .filter(|d| agent_domains[j].contains(d))
+                .collect();
+            if common.is_empty() {
+                continue;
+            }
+            let mut agree = 0usize;
+            let mut probes = 0usize;
+            for &d in &common {
+                for it in 0..items {
+                    // Same degraded cue on both nodes: agreement = both fields
+                    // resolve the weak probe to the same memory.
+                    let q = partial_query(d, it);
+                    let ri = agents[i].recall(&q, 1, &pipeline).ok().and_then(|r| r.first().map(|x| x.content.clone()));
+                    let rj = agents[j].recall(&q, 1, &pipeline).ok().and_then(|r| r.first().map(|x| x.content.clone()));
+                    if let (Some(ri), Some(rj)) = (ri, rj) {
+                        probes += 1;
+                        if ri == rj {
+                            agree += 1;
+                        }
+                    }
+                }
+            }
+            if probes > 0 {
+                p3_pairs.push((shared, agree as f32 / probes as f32));
+            }
+        }
+    }
+    let shared_agreement = bf::shared_agreement_score(&p3_pairs);
+    println!("l7_p3_pairs:          {}", p3_pairs.len());
+    println!("shared_agreement:     {:.4}", shared_agreement);
+
+    // ── Fitness + TSV ──
+    let weights = bf::L7Weights::default();
+    let fitness = bf::l7_fitness(stability_recall, merge_consolidation, shared_agreement, &weights);
+    println!("l7_fitness:           {:.6}", fitness);
+
+    let tsv_path = Path::new("experiments/results-L7.tsv");
+    let needs_header = !tsv_path.exists();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(tsv_path) {
+        use std::io::Write;
+        if needs_header {
+            let _ = writeln!(
+                f,
+                "run\tfitness\tstability_recall\tmerge_consolidation\tshared_agreement\tn_agents\tepochs\tcouple\tfinal_cores\tp1_pairs\tp3_pairs\tmerge_events"
+            );
+        }
+        let run_label = std::env::var("RESEARCH_RUN").unwrap_or_else(|_| "L7".to_string());
+        let _ = writeln!(
+            f,
+            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            run_label,
+            fitness,
+            stability_recall,
+            merge_consolidation,
+            shared_agreement,
+            n_agents,
+            epochs,
+            couple as u8,
+            total_final_cores,
+            p1_pairs.len(),
+            p3_pairs.len(),
+            merge_epochs_all.len(),
+        );
+    }
+    println!("results_tsv:          experiments/results-L7.tsv");
+    println!("---");
+
+    // Restore the caller's belief-phase env.
+    match prev_belief {
+        Some(v) => std::env::set_var("KANNAKA_BELIEF_PHASE", v),
+        None => std::env::remove_var("KANNAKA_BELIEF_PHASE"),
+    }
+}
+
 /// Placeholder L5 fitness using L4 evaluators. Computes a sub-fitness
 /// for transfer comparison purposes. Uses the L4 inherited core at
 /// L5 weights (program-l5.md §2).
@@ -4076,6 +4626,7 @@ fn main() {
     };
 
     match level {
+        7 => run_experiment_l7_session(&params),
         6 => run_experiment_l6_session(&params),
         5 => run_experiment_l5_session(&params),
         4 => {

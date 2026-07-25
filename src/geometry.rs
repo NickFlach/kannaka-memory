@@ -52,7 +52,7 @@ impl CliffordElement {
 
     /// Create a basis vector eᵢ
     pub fn basis_vector(i: u8) -> Self {
-        if i < 1 || i > 7 {
+        if !(1..=7).contains(&i) {
             panic!("Basis vector index must be 1..7, got {}", i);
         }
         let mut grades = BTreeMap::new();
@@ -233,7 +233,7 @@ impl Z4Element {
 
     /// Power r^k
     pub fn power(k: i32) -> Self {
-        let index = ((k % 4 + 4) % 4) as usize;
+        let index = k.rem_euclid(4) as usize;
         let mut coefficients = [0.0; 4];
         coefficients[index] = 1.0;
         Self::new(coefficients)
@@ -386,7 +386,7 @@ impl Z3Element {
 
     /// Power τ^k
     pub fn power(k: i32) -> Self {
-        let index = ((k % 3 + 3) % 3) as usize;
+        let index = k.rem_euclid(3) as usize;
         let mut coefficients = [0.0; 3];
         coefficients[index] = 1.0;
         Self::new(coefficients)
@@ -703,7 +703,7 @@ pub fn transform_d(element: &SgaElement, k: i32) -> SgaElement {
 
 /// Apply T transform k times: permute basis vectors in 8-cycle
 pub fn transform_t(element: &SgaElement, k: i32) -> SgaElement {
-    let k_mod = ((k % 8 + 8) % 8) as u8;
+    let k_mod = k.rem_euclid(8) as u8;
     
     if k_mod == 0 {
         return element.clone();
@@ -781,7 +781,7 @@ impl CrossProductTable {
 
     /// Get cross product result
     pub fn get(&self, i: u8, j: u8) -> (u8, i8) {
-        if i < 1 || i > 7 || j < 1 || j > 7 {
+        if !(1..=7).contains(&i) || !(1..=7).contains(&j) {
             panic!("Basis vector indices must be 1..7");
         }
         

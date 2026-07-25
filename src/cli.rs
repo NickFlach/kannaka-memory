@@ -202,7 +202,11 @@ EXAMPLES:
                     .help("Timeout for --collective (default 8)"))
                 .arg(Arg::new("envelope").long("envelope").action(ArgAction::SetTrue)
                     .help("Wrap output in the standard JSON envelope (ADR-0029 Phase 4b)"))
-                .arg(Arg::new("__raw").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..))
+                // FIX: `query` is already a variadic (num_args(1..)) positional; a
+                // second `__raw` trailing positional made TWO variadic positionals,
+                // which clap debug-asserts on during `kannaka completions <shell>`
+                // (debug builds). The recall handler re-parses raw args itself, so
+                // `query` alone (shown in --help) is sufficient — no __raw needed.
                 .after_help(r#"EXAMPLES:
   kannaka recall "spiral waves" --top-k 8
   kannaka recall "shared beliefs" --collective --timeout 12   # swarm-wide via the substrate"#),
@@ -349,6 +353,22 @@ EXAMPLE:
         .subcommand(
             Command::new("swarm")
                 .about("Multi-agent swarm operations over NATS")
+                .long_about(
+                    "kannaka swarm — multi-agent operations over NATS.\n\n\
+                     Common sub-verbs:\n  \
+                     join | status | sync | listen | serve | tail | publish | leave\n  \
+                     exemplars | cores | peers | absorb | autoabsorb | enqueue | worker\n  \
+                     brief | health | gaps | plan | loop\n\n\
+                     Corroboration-gate seed ceremony (inc-1b):\n  \
+                     activate-gate [--seed <b64>]... [--yes] [--force]\n      \
+                     guided per-node gate flip — DRY-RUN by default; --yes arms the gate\n      \
+                     (pins the seed set + enables corroboration_gate_enabled); --force only\n      \
+                     bypasses the >=2-seed refusal (still needs --yes to write).\n  \
+                     beacon [--loop] [--interval-secs N]\n      \
+                     emit a signed seed heartbeat once, or --loop one-per-epoch under\n      \
+                     systemd/cron on a seed (refuses on a non-seed). An armed gate needs a\n      \
+                     FRESH seed beacon to promote (anti-eclipse fail-closed).",
+                )
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
         .subcommand(
@@ -376,7 +396,40 @@ EXAMPLE:
         // against spacechild-auth, tokens stored in <data_dir>/identity.json.
         .subcommand(
             Command::new("identity")
-                .about("SpaceChild SSO identity: register, login, whoami, logout (KANNAKA_AUTH_URL to override endpoint)")
+                .about("Agent identity: register/login/whoami/logout (SpaceChild SSO) + keygen/pubkey/enroll-seed/vouch/revoke (inc-1 crypto identity + corroboration trust root)")
+                .long_about(
+                    "kannaka identity — two identity layers for a swarm agent.\n\n\
+                     SpaceChild SSO session (KANNAKA_AUTH_URL to override endpoint):\n  \
+                     register | login | whoami | logout\n\n\
+                     inc-1 cryptographic swarm identity + corroboration trust root:\n  \
+                     keygen                  ensure <data_dir>/node_key.ed25519, print base64 pubkey (idempotent)\n  \
+                     pubkey                  print this node's base64 verifying pubkey\n  \
+                     enroll-seed <b64-pk>    operator: pin a base64 pubkey as a trust-root seed (config)\n  \
+                     vouch <b64-pk>          seeds only: record a vouch edge this_node -> target (store)\n  \
+                     revoke <b64-pk>         operator: unpin a seed + floor its reputation to 0\n\n\
+                     Seeds + the corroboration gate stay DORMANT until an operator pins a\n\
+                     seed AND sets swarm_trust.corroboration_gate_enabled — these verbs change\n\
+                     no automatic runtime behaviour on their own.",
+                )
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
+        // ── Reputation ledger (inc-1 corroboration trust model) ────────
+        // Operator inspection of the pubkey-keyed reputation store + the
+        // single-operator hard-reject lever. Read-only except hard-reject.
+        .subcommand(
+            Command::new("reputation")
+                .about("Inspect the inc-1 corroboration trust ledger: show, list, hard-reject")
+                .long_about(
+                    "kannaka reputation — inspect the pubkey-keyed corroboration trust ledger\n\
+                     (config seeds + <data_dir>/reputation.{log,snapshot.gz}).\n\n\
+                     SUBCOMMANDS:\n  \
+                     show <b64-pubkey> [--json]    rep, seed_status, seed_root, promoted/poison counts\n  \
+                     list [--json]                 table of known pubkeys → rep + status\n  \
+                     hard-reject <b64-mem-hash> --origin <b64-pubkey>\n                                   \
+                     operator: dock the origin's rep (P_POISON) for a rejected memory\n\n\
+                     The gate stays dormant until seeds are pinned AND\n\
+                     swarm_trust.corroboration_gate_enabled is set; inspection changes nothing.",
+                )
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
         // ── Constellation services (HTTP) ──────────────────────────────
@@ -522,12 +575,12 @@ fn resolve_plugin(verb: &str, args: Vec<String>) -> Dispatch {
         .iter()
         .find(|(alias, _)| *alias == verb)
         .map(|(_, real)| (*real).to_string())
-        .unwrap_or_else(|| format!("kannaka-{}", verb));
+        .unwrap_or_else(|| format!("kannaka-{verb}"));
 
     match which::which(OsStr::new(&target_name)) {
         Ok(path) => Dispatch::Plugin { binary: path, args },
         Err(_) => {
-            eprintln!("error: '{}' is not a kannaka subcommand and no plugin '{}' was found on PATH", verb, target_name);
+            eprintln!("error: '{verb}' is not a kannaka subcommand and no plugin '{target_name}' was found on PATH");
             eprintln!();
             eprintln!("Try:");
             eprintln!("  kannaka --help          # built-in subcommands");
@@ -550,7 +603,7 @@ fn print_plugins() {
     for (verb, target) in KNOWN_ALIASES {
         if let Ok(p) = which::which(OsStr::new(target)) {
             if seen.insert(target.to_string()) {
-                rows.push((format!("kannaka {}", verb), p.display().to_string()));
+                rows.push((format!("kannaka {verb}"), p.display().to_string()));
             }
         }
     }
@@ -586,7 +639,7 @@ fn print_plugins() {
                 let Some(suffix) = stem.strip_prefix("kannaka-") else { continue };
                 if suffix.is_empty() { continue; }
                 if seen.insert(stem.clone()) {
-                    rows.push((format!("kannaka {}", suffix), ent.path().display().to_string()));
+                    rows.push((format!("kannaka {suffix}"), ent.path().display().to_string()));
                 }
             }
         }
@@ -596,14 +649,14 @@ fn print_plugins() {
         println!("  (none — install a kannaka-* binary or one of the aliased targets)");
         println!();
         for (verb, target) in KNOWN_ALIASES {
-            println!("  alias 'kannaka {}' would exec '{}' (not on PATH)", verb, target);
+            println!("  alias 'kannaka {verb}' would exec '{target}' (not on PATH)");
         }
         return;
     }
 
     rows.sort();
     for (verb, path) in rows {
-        println!("  {:<28} {}", verb, path);
+        println!("  {verb:<28} {path}");
     }
 }
 
@@ -801,7 +854,7 @@ pub fn print_envelope(command: &str, data: serde_json::Value) {
         "data": data,
         "errors": [],
     });
-    println!("{}", env);
+    println!("{env}");
 }
 
 /// Same as `print_envelope` but with a single error attached.
@@ -817,7 +870,7 @@ pub fn print_envelope_error(command: &str, error_message: impl Into<String>) {
         "data": serde_json::Value::Null,
         "errors": [error_message.into()],
     });
-    println!("{}", env);
+    println!("{env}");
 }
 
 /// Exec the plugin binary, inheriting stdio so the operator sees the

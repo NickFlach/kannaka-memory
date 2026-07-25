@@ -516,11 +516,11 @@ impl ResonanceEngine {
 
         for mem in &all {
             let cat = match mem.frequency {
-                f if f >= 1.8 && f <= 2.4 => "experience",
-                f if f >= 1.3 && f < 1.8  => "emotion",
-                f if f >= 1.0 && f < 1.3  => "social",
-                f if f >= 0.8 && f < 1.0  => "skill",
-                f if f >= 0.0 && f < 0.8  => "knowledge",
+                f if (1.8..=2.4).contains(&f) => "experience",
+                f if (1.3..1.8).contains(&f)  => "emotion",
+                f if (1.0..1.3).contains(&f)  => "social",
+                f if (0.8..1.0).contains(&f)  => "skill",
+                f if (0.0..0.8).contains(&f)  => "knowledge",
                 _                         => "other",
             };
             buckets.entry(cat).or_default().push(mem.id);

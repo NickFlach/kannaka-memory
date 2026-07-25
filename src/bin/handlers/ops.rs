@@ -98,6 +98,11 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
             } else if !display.ghostsignals.token.is_empty() {
                 display.ghostsignals.token = "***".to_string();
             }
+            if display.ghostsignals.kax_token.len() > 8 {
+                display.ghostsignals.kax_token = format!("{}...", &display.ghostsignals.kax_token[..8]);
+            } else if !display.ghostsignals.kax_token.is_empty() {
+                display.ghostsignals.kax_token = "***".to_string();
+            }
             match toml::to_string_pretty(&display) {
                 Ok(text) => println!("{}", text),
                 Err(e) => {
@@ -115,6 +120,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     eprintln!("Keys: agent.id, agent.display_name, llm.provider, llm.model,");
                     eprintln!("      llm.api_key, llm.base_url, swarm.enabled, swarm.nats_url, swarm.role,");
                     eprintln!("      ghostsignals.enabled, ghostsignals.token, ghostsignals.hub_url,");
+                    eprintln!("      ghostsignals.kax_url, ghostsignals.kax_token,");
                     eprintln!("      constellation.radio_url, constellation.observatory_url,");
                     eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check,");
                     eprintln!("      triage.enabled, triage.redundancy, triage.min_amplitude,");
@@ -188,6 +194,8 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                 }
                 "ghostsignals.token"   => new_cfg.ghostsignals.token = value.clone(),
                 "ghostsignals.hub_url" => new_cfg.ghostsignals.hub_url = value.clone(),
+                "ghostsignals.kax_url" => new_cfg.ghostsignals.kax_url = value.clone(),
+                "ghostsignals.kax_token" => new_cfg.ghostsignals.kax_token = value.clone(),
                 "constellation.radio_url" => new_cfg.constellation.radio_url = value.clone(),
                 "constellation.observatory_url" => new_cfg.constellation.observatory_url = value.clone(),
                 "updates.auto_check" => {

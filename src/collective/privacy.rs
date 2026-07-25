@@ -463,7 +463,18 @@ pub fn seal_with_commitments(
     difficulty: u32,
     agent_id: &str,
 ) -> SealResult {
-    let glyph = seal(memory, difficulty, agent_id);
+    seal_with_commitments_salt(memory, difficulty, agent_id, random_bytes_32())
+}
+
+/// Like [`seal_with_commitments`] but with a caller-supplied salt (test seam;
+/// see [`seal_with_salt`]).
+pub(crate) fn seal_with_commitments_salt(
+    memory: &HyperMemory,
+    difficulty: u32,
+    agent_id: &str,
+    salt: [u8; 32],
+) -> SealResult {
+    let glyph = seal_with_salt(memory, difficulty, agent_id, salt);
 
     // Generate Pedersen commitments for wave properties
     let vec_hash = hash_vector(&memory.vector);
@@ -493,9 +504,20 @@ pub fn seal(
     difficulty: u32,
     agent_id: &str,
 ) -> PrivacyGlyph {
-    // Generate salt
-    let salt = random_bytes_32();
+    seal_with_salt(memory, difficulty, agent_id, random_bytes_32())
+}
 
+/// Like [`seal`] but with a caller-supplied salt. Production always seals with
+/// a fresh random salt (via [`seal`]); this seam exists so tests can pin the
+/// salt and get a fully deterministic glyph_hash (and therefore a deterministic
+/// hashcash reveal search in [`create_hint`]) — see the flake note in the
+/// revelation tests. Not a public API.
+pub(crate) fn seal_with_salt(
+    memory: &HyperMemory,
+    difficulty: u32,
+    agent_id: &str,
+    salt: [u8; 32],
+) -> PrivacyGlyph {
     // Serialize the memory payload
     let payload = serialize_payload(memory);
 
@@ -630,8 +652,14 @@ pub fn create_hint(
 
     // Solve at the reduced difficulty to produce a partial solution
     let target_zeros = new_difficulty;
-    // Search up to 4x the expected work (2^difficulty) to handle variance
-    let search_bound = 4u64.saturating_mul(1u64 << new_difficulty.min(40));
+    // Search up to 64x the expected 2^difficulty work. The reveal MUST find a
+    // solution or the whole hint path silently breaks; at Nx the expected work the
+    // miss probability is ~e^-N, so the old 4x bound missed ~e^-4 ≈ 1.8% of random
+    // salts — a real production hint-failure rate AND a recurring CI flake
+    // (test_bloom_with_hint / test_execute_revelation_publishes_hint). 64x
+    // (~e^-64 ≈ 0, matching seal's cap) makes it reliable for any salt; the search
+    // still returns as soon as it finds a solution, so the common cost is unchanged.
+    let search_bound = 64u64.saturating_mul(1u64 << new_difficulty.min(40));
     let mut nonce_counter: u64 = 0;
 
     loop {
@@ -997,6 +1025,22 @@ mod tests {
         // Bloom with hint — should work at reduced cost
         let solution = bloom_with_hint(&glyph, &hint, 4);
         assert!(solution.is_some(), "Should bloom with hint at reduced difficulty");
+    }
+
+    // Regression: create_hint must reliably find a low-difficulty solution across
+    // independent (random-salt) glyphs. The old 4x search bound missed ~1.8% of
+    // salts, intermittently flaking test_bloom_with_hint (and the revelation hint
+    // test) in CI. With the 64x bound it must not miss across many glyphs.
+    #[test]
+    fn create_hint_reliable_across_random_salts() {
+        for i in 0..400 {
+            let mem = test_memory(&format!("salt probe {i}"));
+            let glyph = seal(&mem, 6, "agent-1");
+            assert!(
+                create_hint(&glyph, 4, "agent-1").is_some(),
+                "create_hint(difficulty 4) must find a solution for glyph {i}"
+            );
+        }
     }
 
     #[test]

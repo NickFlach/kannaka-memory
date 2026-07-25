@@ -47,6 +47,7 @@ pub mod temporal;
 pub mod gap;
 pub mod research_planner;
 pub mod swarm_fitness;
+pub mod belief_fitness;
 pub mod hive_formation;
 pub mod swarm_loop;
 pub mod paradox;
@@ -66,6 +67,10 @@ pub mod hrm_store;
 pub mod recall_bench;
 pub mod entropy;
 pub mod qubo;
+
+/// Cerebellar novelty detection — a dependency-free dual-timescale differentiator
+/// (surprise = learned-baseline − fast familiarity). See `novelty.rs`.
+pub mod novelty;
 
 pub mod config;
 
@@ -93,6 +98,27 @@ pub mod openalex;
 
 // Dispatch — research-grounded broadcast-ready voice shared by all surfaces.
 pub mod dispatch;
+
+// ed25519 provenance substrate (inc-1a): sign/verify swarm memory + phase
+// statements, bounded replay protection, node key at rest. Identity/
+// attribution/integrity only — no absorb/trust/enrollment behaviour here.
+pub mod provenance;
+
+// pubkey-keyed swarm-trust decision core (inc-1b): pure corroboration formulas,
+// reputation store, append-only corroboration DAG, fail-closed persistence.
+// Adds a module + config fields; NO absorb-path wiring / admit() chokepoint yet.
+pub mod reputation;
+
+// absorb chokepoint (inc-1b): the `admit()` gate every wire→store path routes
+// through — unconditional field sanitization + a DORMANT-BY-DEFAULT corroboration
+// promotion gate (armed only when corroboration_gate_enabled AND seeds pinned).
+pub mod absorb_gate;
+
+// heartbeat beacons (inc-1b PART A): signed seed liveness proofs + a freshness
+// tracker. The corroboration gate requires a FRESH seed beacon to promote to
+// Live; stale/absent beacons freeze promotion (eclipse/partition fail-closed).
+// DORMANT unless the gate is armed.
+pub mod beacon;
 
 // Re-export canonical consciousness types
 pub use consciousness::{
@@ -134,6 +160,31 @@ pub use paradox::{
 
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, HiveInfo, Handedness, SwarmAgent, PartitionPhiResult};
 pub use queen::{filter_wire_phases, sanitize_display, agent_matches_allowlist, wire_source_trusted};
+
+// ed25519 provenance substrate (inc-1a).
+pub use provenance::{
+    canonical_mem, canonical_phase, node_signing_key, sign_mem, verify_mem, verifying_key_bytes,
+    ProvenanceSig, ReplayLru, VerifyErr, DOMAIN_BIND, DOMAIN_BOOT, DOMAIN_HRM, DOMAIN_MEM,
+    DOMAIN_PHASE, DOMAIN_ROT, PROV_ALG_ED25519, REPLAY_CAP, SKEW_MS,
+};
+
+// pubkey-keyed swarm-trust decision core (inc-1b).
+pub use reputation::{
+    accrual, distinct_lineage_count, g, k_for, lineage_weight, promotion_weight, w,
+    CorroborationDag, Promotion, RepRecord, RepStore, SeedStatus, P_POISON, P_VOUCH,
+};
+
+// absorb chokepoint (inc-1b).
+pub use absorb_gate::{
+    admit, commit_promotion, content_hash, epoch_now, gate_active, AdmitDecision, CleanFields,
+    PendingPromotion, QuarantineStaging, StagedMemory, HIGH_IMPACT_AMPLITUDE, MAX_WIRE_AMPLITUDE,
+    PROV_TIER, SIGN_AGENT_ID, SUBJECT_EXEMPLAR, SUBJECT_MEMORY_NEW,
+};
+
+// heartbeat beacons (inc-1b PART A).
+pub use beacon::{
+    roll_reject_root, Beacon, BeaconReject, BeaconTracker, BEACON_SUBJECT, EMPTY_REJECT_ROOT,
+};
 pub use invariant::{
     InvariantMetrics, DeltaCluster, compute_delta, compute_convergence_rate, 
     compute_irrationality, compute_invariant_metrics, cluster_by_delta, delta_distance
