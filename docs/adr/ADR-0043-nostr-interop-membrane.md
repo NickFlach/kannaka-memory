@@ -157,6 +157,20 @@ the last thing we build, not the first.
 
 ## Phases (revised post-review — each phase carries its now-mandatory gates)
 
+> **Phase 0 status (2026-07-25, PR #603 merged):** the sign/verify *core* has
+> landed. `src/nostr/` (behind the `nostr` feature, in `default`) does NIP-01
+> canonical serialization + event-id, BIP-340 schnorr sign/verify (pure-Rust
+> k256 — the `Signer`/`Verifier` traits double-hash the id and are avoided in
+> favour of `sign_raw`/`verify_raw`; interop confirmed against the BIP-340
+> reference verifier + an official spec vector as a regression test), and
+> nsec/npub encoding. `kannaka nostr keygen|profile|nip05|verify` mints
+> disposable per-role keys and emits self-verified kind-0 profiles + NIP-05
+> fragments. This discharges blocker #4 (inbound verify / canonicalization).
+> **Still open in Phase 0:** actually minting+custodying the per-role nsecs on
+> the boxes (0600 env files), publishing `ninja-portal.com/.well-known/
+> nostr.json`, NIP-39 claims, the KAX three-legged npub↔bot attestation, and
+> moving the voice key off O1.
+
 - **Phase 0 — Identity (cheap, immediate):** mint per-role keys, kind-0
   profiles, NIP-05 at ninja-portal.com, NIP-39 claims. Extend the radio
   adapter's signer into a shared lib **that also verifies inbound** (recompute
