@@ -130,3 +130,15 @@ jobs:
             kannaka-macos-aarch64/kannaka-macos-aarch64
             kannaka-macos-aarch64.sha256/kannaka-macos-aarch64.sha256
           generate_release_notes: true
+
+  # Distribution channels (GHCR image + npm) consume the release assets just
+  # published above — see publish-channels.yml for triggers and secrets.
+  publish-channels:
+    needs: release
+    uses: ./.github/workflows/publish-channels.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit
