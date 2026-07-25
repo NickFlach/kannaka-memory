@@ -1,0 +1,117 @@
+name: Publish Channels
+
+# Distribution channels for an EXISTING release (ADR-0044 B1): GHCR container
+# image + npm package. Both consume the release's published binaries — nothing
+# here rebuilds them.
+#
+# Triggers:
+#   - workflow_call from release.yml (auto on every v* tag). A `release:` event
+#     trigger would NOT work here: releases created by the release workflow's
+#     own GITHUB_TOKEN never fire events for other workflows.
+#   - workflow_dispatch for backfill/re-push of an already-released version.
+#
+# npm requires an NPM_TOKEN repo secret — a granular automation token with
+# "Bypass two-factor authentication" enabled (the account's 2FA is passkey-only,
+# so a non-bypass token dead-ends in an interactive EOTP web flow). The job
+# skips cleanly when the secret is absent.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z, no leading v)"
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z, no leading v)"
+        required: true
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  docker-ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tolerate both "0.11.1" and "v0.11.1" (release.yml passes github.ref_name).
+      - name: Resolve version
+        id: v
+        env:
+          RAW: ${{ inputs.version }}
+        run: echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile's fetch stage runs `/kannaka --version`, so this build
+      # self-tests BOTH arches (arm64 executes under QEMU) before any push.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/nickflach/kannaka:${{ steps.v.outputs.version }}
+            ghcr.io/nickflach/kannaka:latest
+
+  npm-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for NPM_TOKEN
+        id: token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::NPM_TOKEN secret not set — skipping npm publish (add a granular token with bypass-2FA to enable)."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish to npm
+        if: steps.token.outputs.present == 'true'
+        working-directory: packaging/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # postinstall must not run inside the publish environment
+          KANNAKA_SKIP_DOWNLOAD: "1"
+          RAW: ${{ inputs.version }}
+        run: |
+          V="${RAW#v}"
+          npm version "$V" --no-git-tag-version --allow-same-version
+          # Refuse to clobber an existing version (npm would 403 anyway; this
+          # keeps re-runs of the workflow green).
+          if npm view "kannaka@$V" version >/dev/null 2>&1; then
+            echo "kannaka@$V already published — skipping."
+          else
+            npm publish --access public
+          fi
