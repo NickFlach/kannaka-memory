@@ -50,8 +50,14 @@ sha2 = "0.10"
 # for nsec/npub encoding. Gated behind the `nostr` feature; sha2 (already a
 # dep above) computes the event id. Chosen over the C-linked `secp256k1` crate
 # and the heavy `nostr` crate to keep cross-platform, lean-dep builds.
-k256 = { version = "0.13", features = ["schnorr"], optional = true }
+k256 = { version = "0.13", features = ["schnorr", "ecdh"], optional = true }
 bech32 = { version = "0.11", optional = true }
+# NIP-44 v2 encrypted-DM crypto (bridge inbound, ADR-0043 Phase 1): HMAC-SHA256
+# (HKDF extract/expand + payload MAC), ChaCha20 stream cipher, base64 payload.
+# sha2 (above) is the hash. All pure-Rust RustCrypto — no C toolchain.
+hmac = { version = "0.12", optional = true }
+chacha20 = { version = "0.9", optional = true }
+base64 = { version = "0.22", optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 toml = "0.8"
@@ -95,7 +101,7 @@ flate2 = "1"
 default = ["hrm", "nats", "glyph", "nostr"]
 nats = []
 # ADR-0043: NIP-01 sign/verify + nsec/npub encoding for the Nostr membrane.
-nostr = ["k256", "bech32"]
+nostr = ["k256", "bech32", "hmac", "chacha20", "base64"]
 # mcp removed — CLI is the canonical interface
 # audio feature retained as a no-op alias so external Cargo.toml entries
 # specifying features = ["audio"] still build. Audio support is now always on.
