@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-25
+
+### Added — Nostr membrane Phase 0: NIP-01 sign/verify core + `kannaka nostr` (ADR-0043)
+
+New `nostr` feature (in default): canonical NIP-01 serialization + event id,
+BIP-340 schnorr sign/verify (pure-Rust k256 via `sign_raw`/`verify_raw` — the
+Signer/Verifier traits double-hash the id and every event would be rejected
+by standard verifiers; interop proven against the BIP-340 reference verifier,
+official spec vector kept as a regression test), nsec/npub bech32. CLI:
+`kannaka nostr keygen|profile|nip05|verify` — disposable per-role keys (nsec
+printed once, never persisted), self-verified kind-0 profiles, NIP-05
+fragments, event verification. `Event::verify` recomputes the id from
+canonical bytes — the membrane's inbound gate (review blocker #4).
+
+### Added — distribution channels (ADR-0044 B1)
+
+`npx kannaka` (npm wrapper: postinstall downloads the platform release
+binary + verifies its published sha256), `ghcr.io/nickflach/kannaka`
+multi-arch image, `brew install nickflach/kannaka/kannaka` tap — all
+auto-published per release by `publish-channels.yml` (GHCR via GITHUB_TOKEN;
+npm needs NPM_TOKEN; brew bump needs TAP_PUSH_TOKEN).
+
 ### Changed — #583 dispositioned: the holistic hemisphere never forgets, it evolves
 
 The energy floor (0.01) sitting above the deep-dream prune threshold (0.005)
