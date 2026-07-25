@@ -44,12 +44,10 @@ pub fn plan_research(gaps: &[CoverageGap], dedupe_min_peers: usize) -> Vec<Resea
             let priority = (1.0 - g.coverage).clamp(0.0, 1.0) * kind_weight(g.kind);
             let rationale = match g.kind {
                 GapKind::WeaklyRepresented => format!(
-                    "weakly represented (coverage {:.2}, held by {} peer(s)) — ingest to deepen",
-                    g.coverage, g.peers_holding
+                    "weakly represented (coverage {g.coverage:.2}, held by {g.peers_holding} peer(s)) — ingest to deepen"
                 ),
                 GapKind::LowConfidence => format!(
-                    "low confidence (coverage {:.2}) — ingest to corroborate / resolve",
-                    g.coverage
+                    "low confidence (coverage {g.coverage:.2}) — ingest to corroborate / resolve"
                 ),
             };
             ResearchTask {
