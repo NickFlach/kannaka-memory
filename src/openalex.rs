@@ -37,7 +37,7 @@ impl Work {
         } else {
             let shown: Vec<&str> = self.authors.iter().take(4).map(|s| s.as_str()).collect();
             let etal = if self.authors.len() > 4 { " et al." } else { "" };
-            format!(" — {}{}", shown.join(", "), etal)
+            format!(" — {}{etal}", shown.join(", "))
         };
         let year = self.year.map(|y| format!(" ({y})")).unwrap_or_default();
         let src = self.source.as_deref().map(|s| format!(" [{s}]")).unwrap_or_default();
@@ -48,8 +48,8 @@ impl Work {
             format!("\nConcepts: {}", names.join(", "))
         };
         let abs = self.abstract_text.as_deref().unwrap_or("(no abstract)");
-        format!("research: {}{}{}{}\n{}\nOpenAlex: {} cited_by={}{}",
-            self.title, year, authors, src, abs, self.id, self.cited_by_count, concepts)
+        format!("research: {}{year}{authors}{src}\n{abs}\nOpenAlex: {} cited_by={}{concepts}",
+            self.title, self.id, self.cited_by_count)
     }
 
     /// Importance in [0,1] for HRM ingestion, from citation count (log-scaled,
@@ -78,7 +78,7 @@ impl Default for SearchOpts {
 /// Search OpenAlex works for `query`. Returns ranked works (relevance order).
 pub fn search_works(query: &str, opts: &SearchOpts) -> Result<Vec<Work>, String> {
     let per_page = opts.limit.clamp(1, 50);
-    let mut url = format!("{API}?search={}&per-page={}", percent_encode(query), per_page);
+    let mut url = format!("{API}?search={}&per-page={per_page}", percent_encode(query));
 
     // OpenAlex filter syntax: comma-joined `field:op value` clauses.
     let mut filters: Vec<String> = Vec::new();
@@ -183,7 +183,7 @@ fn percent_encode(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
