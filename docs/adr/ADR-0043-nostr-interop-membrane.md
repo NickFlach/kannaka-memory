@@ -1,6 +1,6 @@
 # ADR-0043: Nostr Interop Membrane — portable identity, open compute, agent economy
 
-**Status:** Accepted (2026-07-25) — Phase 0 COMPLETE + deployed; Phase 1 next.
+**Status:** Accepted (2026-07-25) — Phase 0 + Phase 1 COMPLETE + deployed (relay live, bridge live). Phase 2 (compute) next.
 **Depends on:** ADR-0042 (NATS nervous system — COMPLETE), ADR-0041 (Resonance Futures / KAX identity + ledger), ADR-0039 (corroboration trust model)
 
 ## Context
@@ -192,6 +192,27 @@ the last thing we build, not the first.
   reputation-bearing **voice key moves off O1** (host on O2 or behind a
   NIP-46 remote signer); DVM/bridge use disposable per-role keys, never the
   voice key. No new daemon yet.
+> **Phase 1 status: COMPLETE + deployed (2026-07-25).**
+> - **Relay** (outbound/sovereignty): `wss://relay.ninja-portal.com` on O2 —
+>   nostr-rs-relay (not strfry: no C++ toolchain on O2, Rust is present),
+>   **write-allowlisted to the 3 constellation pubkeys** (disk-safety: only our
+>   own events can land; proven — allowlisted accepted, stranger rejected),
+>   caps + retention, nginx wss + Let's Encrypt (auto-renew), `relay_data_mb`
+>   in the Flux host-metrics probe, NIP-65 published so clients read Kannaka
+>   from her own relay.
+> - **Bridge** (inbound): `kannaka-nostr-bridge` on O2. Crypto floor **NIP-44
+>   v2** (`src/nostr/nip44.rs`, validated against the OFFICIAL vectors —
+>   encrypt reproduces published ciphertext byte-for-byte) + **NIP-59** gift-
+>   wrap unwrap (`nip59.rs`, enforces rumor.pubkey===seal.pubkey) + pipeline
+>   (`bridge.rs`, crash-durable dedupe + per-sender rate-limit). Daemon behind
+>   the O2-only `bridge` feature (tungstenite). **PROVEN end-to-end + cross-
+>   impl:** a NIP-17 DM sent via `nostr-tools` (reference JS) → public relay →
+>   the Rust bridge unwrapped + routed it onto `KANNAKA.events.nostr.dm`.
+> - **Open in Phase 1:** the responder REPLY loop (subscribe the routed DMs,
+>   generate a reply, send it OUT via the voice signer → relays); a dedicated
+>   minimal `bridge` NATS identity (currently anon-localhost publish of
+>   `KANNAKA.events.>`, which the ACL already allows).
+>
 - **Phase 1 — Membrane inbound:** strfry relay **on O2 only**, dedicated
   filesystem/quota separate from JetStream + `~/.kannaka`, hard LMDB mapsize
   cap, retention policy, a write-policy plugin that **default-denies
