@@ -65,6 +65,15 @@ use handlers_services::{handle_constellation, handle_market, handle_radio};
 mod handlers_identity;
 use handlers_identity::handle_identity;
 
+// ADR-0043 Phase 0 — Nostr membrane identity tooling (`kannaka nostr
+// keygen|profile|nip05|verify`). Pure key/event crypto in
+// `kannaka_memory::nostr`; no HRM, mirrors the identity fast path.
+#[cfg(feature = "nostr")]
+#[path = "handlers/nostr.rs"]
+mod handlers_nostr;
+#[cfg(feature = "nostr")]
+use handlers_nostr::handle_nostr;
+
 // inc-1 corroboration trust model — operator inspection of the reputation
 // ledger (`kannaka reputation show|list|hard-reject`). The seed/vouch/revoke
 // *write* verbs live under `kannaka identity` (handlers_identity) since they
@@ -1303,6 +1312,13 @@ fn main() {
         // No HRM needed — mirrors the identity fast path.
         "reputation" => {
             handle_reputation(&args[command_start..]);
+            return;
+        }
+        // ADR-0043 Nostr membrane (Phase 0): key/event tooling, config-free and
+        // HRM-free — mirrors the identity fast path.
+        #[cfg(feature = "nostr")]
+        "nostr" => {
+            handle_nostr(&args[command_start..]);
             return;
         }
         // ADR-0037 belief: `on`/`off` only persist config (no HRM needed) and

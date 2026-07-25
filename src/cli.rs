@@ -432,6 +432,24 @@ EXAMPLE:
                 )
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
+        // ── Nostr membrane identity (ADR-0043 Phase 0) ─────────────────
+        .subcommand(
+            Command::new("nostr")
+                .about("Nostr membrane identity (ADR-0043 Phase 0): keygen, kind-0 profile, NIP-05 fragment, event verify")
+                .long_about(
+                    "kannaka nostr — per-role Nostr identity tooling for the ADR-0043 membrane.\n\n\
+                     keygen [--role <name>]         mint a per-role secp256k1 key; prints nsec ONCE\n                                    \
+                     (store in a 0600 env file) + npub + hex pubkey\n  \
+                     profile --nsec <nsec> --name <n> [--about <a>] [--nip05 <id@domain>] [--picture <url>]\n                                    \
+                     emit a signed kind-0 profile event (JSON), self-verified\n  \
+                     nip05 --name <local> --pubkey <hex|npub>\n                                    \
+                     emit the .well-known/nostr.json names fragment\n  \
+                     verify [--file <path>]         verify a NIP-01 event (recomputes id + BIP-340), stdin if no --file\n\n\
+                     Keys are disposable per-role identities (bridge, labs, dvm…), never the\n\
+                     reputation-bearing voice key. The nsec is printed once and never persisted here.",
+                )
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
         // ── Constellation services (HTTP) ──────────────────────────────
         .subcommand(passthrough("radio", "Query kannaka-radio (now-playing, schedule)"))
         .subcommand(passthrough("market", "GhostSignals prediction markets"))

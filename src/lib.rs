@@ -40,6 +40,9 @@ pub mod eye;
 #[cfg(feature = "nats")]
 pub mod nats;
 
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
 pub mod collective;
 pub mod sensemaking;
 pub mod immune;
