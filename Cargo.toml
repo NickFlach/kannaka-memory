@@ -45,6 +45,13 @@ which = "7"
 # to atomically rename it into place if the digest doesn't match the
 # sidecar from the same release (ADR-0029 Phase 4a).
 sha2 = "0.10"
+# ADR-0043 Nostr membrane (Phase 0 identity): pure-Rust BIP-340 schnorr over
+# secp256k1 (k256, no C toolchain) for NIP-01 event sign/verify, plus bech32
+# for nsec/npub encoding. Gated behind the `nostr` feature; sha2 (already a
+# dep above) computes the event id. Chosen over the C-linked `secp256k1` crate
+# and the heavy `nostr` crate to keep cross-platform, lean-dep builds.
+k256 = { version = "0.13", features = ["schnorr"], optional = true }
+bech32 = { version = "0.11", optional = true }
 # rusqlite removed — sqlite-migrate paradigm deleted
 ureq = { version = "2", features = ["json"] }
 toml = "0.8"
@@ -85,8 +92,10 @@ flate2 = "1"
 # glyph is now default: the SGA glyph path (fano_line_of, classify, glyph-
 # gravity recall) is load-bearing for attention-as-gravity. Keeping it in
 # default means every build — including the autoresearch cron — ships it.
-default = ["hrm", "nats", "glyph"]
+default = ["hrm", "nats", "glyph", "nostr"]
 nats = []
+# ADR-0043: NIP-01 sign/verify + nsec/npub encoding for the Nostr membrane.
+nostr = ["k256", "bech32"]
 # mcp removed — CLI is the canonical interface
 # audio feature retained as a no-op alias so external Cargo.toml entries
 # specifying features = ["audio"] still build. Audio support is now always on.
