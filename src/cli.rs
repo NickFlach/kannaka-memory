@@ -440,8 +440,10 @@ EXAMPLE:
                     "kannaka nostr — per-role Nostr identity tooling for the ADR-0043 membrane.\n\n\
                      keygen [--role <name>]         mint a per-role secp256k1 key; prints nsec ONCE\n                                    \
                      (store in a 0600 env file) + npub + hex pubkey\n  \
-                     profile --nsec <nsec> --name <n> [--about <a>] [--nip05 <id@domain>] [--picture <url>]\n                                    \
-                     emit a signed kind-0 profile event (JSON), self-verified\n  \
+                     profile --nsec <nsec> (--name <n> [--about <a>] [--nip05 <id@domain>] [--picture <url>]\n                                    \
+                     | --content-json '<verbatim content>') [--identity platform:name,proof]...\n                                    \
+                     emit a signed kind-0 profile event (JSON), self-verified; --content-json\n                                    \
+                     preserves an existing profile on republish, --identity adds NIP-39 i tags\n  \
                      nip05 --name <local> --pubkey <hex|npub>\n                                    \
                      emit the .well-known/nostr.json names fragment\n  \
                      verify [--file <path>]         verify a NIP-01 event (recomputes id + BIP-340), stdin if no --file\n\n\
