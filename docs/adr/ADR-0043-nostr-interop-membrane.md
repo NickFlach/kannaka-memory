@@ -1,6 +1,6 @@
 # ADR-0043: Nostr Interop Membrane — portable identity, open compute, agent economy
 
-**Status:** Proposed (2026-07-25)
+**Status:** Accepted (2026-07-25) — Phase 0 COMPLETE + deployed; Phase 1 next.
 **Depends on:** ADR-0042 (NATS nervous system — COMPLETE), ADR-0041 (Resonance Futures / KAX identity + ledger), ADR-0039 (corroboration trust model)
 
 ## Context
@@ -157,19 +157,29 @@ the last thing we build, not the first.
 
 ## Phases (revised post-review — each phase carries its now-mandatory gates)
 
-> **Phase 0 status (2026-07-25, PR #603 merged):** the sign/verify *core* has
-> landed. `src/nostr/` (behind the `nostr` feature, in `default`) does NIP-01
-> canonical serialization + event-id, BIP-340 schnorr sign/verify (pure-Rust
-> k256 — the `Signer`/`Verifier` traits double-hash the id and are avoided in
-> favour of `sign_raw`/`verify_raw`; interop confirmed against the BIP-340
-> reference verifier + an official spec vector as a regression test), and
-> nsec/npub encoding. `kannaka nostr keygen|profile|nip05|verify` mints
-> disposable per-role keys and emits self-verified kind-0 profiles + NIP-05
-> fragments. This discharges blocker #4 (inbound verify / canonicalization).
-> **Still open in Phase 0:** actually minting+custodying the per-role nsecs on
-> the boxes (0600 env files), publishing `ninja-portal.com/.well-known/
-> nostr.json`, NIP-39 claims, the KAX three-legged npub↔bot attestation, and
-> moving the voice key off O1.
+> **Phase 0 status: COMPLETE + deployed (2026-07-25).**
+> - **Sign/verify core** (PR #603): `src/nostr/` (behind the `nostr` feature, in
+>   `default`) — NIP-01 canonical serialization + event-id, BIP-340 schnorr
+>   sign/verify (pure-Rust k256 via `sign_raw`/`verify_raw`, NOT the
+>   double-hashing `Signer`/`Verifier` traits; interop confirmed vs the BIP-340
+>   reference verifier + an official spec-vector regression test), nsec/npub.
+>   `kannaka nostr keygen|profile|nip05|verify|kax-bind` (kax-bind PR #608).
+>   Discharges review blocker #4.
+> - **Per-role keys** minted ON the boxes (0600 env files, nsecs never crossed
+>   the network): `bridge`, `labs` on O1.
+> - **NIP-05** live at `radio.ninja-portal.com/.well-known/nostr.json` (apex is
+>   dead DNS, so the radio subdomain — identifiers `kannaka@`/`bridge@`/`labs@`)
+>   with the required CORS header.
+> - **kind-0 profiles** published + round-trip verified on relays; Kannaka's
+>   voice got her first-ever kind-0 with **NIP-39** claims `github:flaukowski`
+>   (proof gist) + `openbotcity:<bot>` (OBC post 50520) — mutual witnesses.
+> - **KAX npub↔bot attestation**: three-legged proof (wallet + bot-owned +
+>   schnorr) — server PR #109 (deployed, Replit auto-migrate), client
+>   `kannaka nostr kax-bind` (PR #608). Rust↔TS cross-verified.
+> - **Voice key moved OFF O1**: reputation nsec now lives only on O2 behind a
+>   NATS-delegated signer (`kannaka-voice-signer.service`); O1's nostr-adapter
+>   delegates over `RADIO.voice.sign` with an HMAC gate (radio PR #150). No key
+>   on the internet-facing host; no new inbound port. Cold backup off-box.
 
 - **Phase 0 — Identity (cheap, immediate):** mint per-role keys, kind-0
   profiles, NIP-05 at ninja-portal.com, NIP-39 claims. Extend the radio
