@@ -52,6 +52,12 @@ pub mod research_planner;
 pub mod swarm_fitness;
 pub mod belief_fitness;
 pub mod hive_formation;
+
+/// Hive (kannaka-buzz) → NATS bridge: pure mapping, policy, and roster logic.
+/// Network plumbing lives in `src/bin/kannaka_hive_bridge.rs`.
+#[cfg(feature = "bridge")]
+pub mod hive_bridge;
+
 pub mod swarm_loop;
 pub mod paradox;
 pub mod queen;
