@@ -724,11 +724,11 @@ mod tests {
         let s11 = phi_span_score(11);
 
         assert_eq!(s0, 0.0, "span 0 should score 0");
-        assert!(s2 > 0.5, "span 2 near φ^1 should score high, got {}", s2);
-        assert!(s3 > 0.5, "span 3 near φ^2 should score high, got {}", s3);
-        assert!(s4 > 0.5, "span 4 near φ^3 should score high, got {}", s4);
-        assert!(s7 > 0.5, "span 7 near φ^4 should score high, got {}", s7);
-        assert!(s11 > 0.5, "span 11 near φ^5 should score high, got {}", s11);
+        assert!(s2 > 0.5, "span 2 near φ^1 should score high, got {s2}");
+        assert!(s3 > 0.5, "span 3 near φ^2 should score high, got {s3}");
+        assert!(s4 > 0.5, "span 4 near φ^3 should score high, got {s4}");
+        assert!(s7 > 0.5, "span 7 near φ^4 should score high, got {s7}");
+        assert!(s11 > 0.5, "span 11 near φ^5 should score high, got {s11}");
 
         // Spans far from any φ^k should score lower
         let s20 = phi_span_score(20);

@@ -239,14 +239,14 @@ mod tests {
         let ev = mem.effective_vector(t0);
         // At t=0, S(0) = A·cos(φ)·e^0 = 1.0·1.0·1.0 = 1.0
         for &x in &ev {
-            assert!((x - 0.5).abs() < 1e-5, "expected 0.5, got {}", x);
+            assert!((x - 0.5).abs() < 1e-5, "expected 0.5, got {x}");
         }
 
         let later = t0 + Duration::seconds(500);
         let ev2 = mem.effective_vector(later);
         let s = mem.effective_strength(later);
         for (i, &x) in ev2.iter().enumerate() {
-            assert!((x - 0.5 * s).abs() < 1e-4, "mismatch at index {}", i);
+            assert!((x - 0.5 * s).abs() < 1e-4, "mismatch at index {i}");
         }
     }
 
