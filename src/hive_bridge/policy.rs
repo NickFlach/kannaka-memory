@@ -13,6 +13,8 @@ use std::collections::HashMap;
 struct ChannelPolicy {
     name: Option<String>,
     no_bridge: bool,
+    created_at: i64,
+    event_id: String,
 }
 
 /// Channel id → policy. Rebuilt/refreshed from kind-39000 events.
@@ -27,7 +29,9 @@ impl PolicyMap {
     }
 
     /// Fold a kind-39000 group-metadata event into the map. Non-39000 events
-    /// are ignored.
+    /// are ignored. Enforces ordering: if an older event arrives after a newer
+    /// one, it is silently rejected. On a tie in created_at, lexicographically
+    /// greater event IDs win to ensure convergence across nodes.
     pub fn apply_metadata(&mut self, event: &Event) {
         if event.kind != 39000 {
             return;
@@ -51,8 +55,32 @@ impl PolicyMap {
             .tags
             .iter()
             .any(|t| t.first().map(String::as_str) == Some("no-bridge"));
-        self.channels
-            .insert(channel_id, ChannelPolicy { name, no_bridge });
+
+        // Check ordering guard: reject if we already have a channel policy
+        // for this id and the incoming event is strictly older
+        if let Some(existing) = self.channels.get(&channel_id) {
+            if event.created_at < existing.created_at {
+                // Incoming event is older, silently reject
+                return;
+            }
+            if event.created_at == existing.created_at {
+                // Tie: keep the lexicographically greater event ID.
+                // Only reject if incoming ID is strictly less than existing.
+                if event.id < existing.event_id {
+                    return;
+                }
+            }
+        }
+
+        self.channels.insert(
+            channel_id,
+            ChannelPolicy {
+                name,
+                no_bridge,
+                created_at: event.created_at,
+                event_id: event.id.clone(),
+            },
+        );
     }
 
     /// True only for channels the map has resolved AND that are not flagged.
@@ -84,6 +112,16 @@ mod tests {
     use crate::nostr::Event;
 
     fn meta(channel: &str, name: &str, no_bridge: bool) -> Event {
+        meta_with_created_at(channel, name, no_bridge, 1_800_000_000, "a")
+    }
+
+    fn meta_with_created_at(
+        channel: &str,
+        name: &str,
+        no_bridge: bool,
+        created_at: i64,
+        id_char: &str,
+    ) -> Event {
         let mut tags = vec![
             vec!["d".to_string(), channel.to_string()],
             vec!["name".to_string(), name.to_string()],
@@ -92,9 +130,9 @@ mod tests {
             tags.push(vec!["no-bridge".to_string()]);
         }
         Event {
-            id: "a".repeat(64),
+            id: id_char.repeat(64),
             pubkey: "b".repeat(64),
-            created_at: 1_800_000_000,
+            created_at,
             kind: 39000,
             tags,
             content: String::new(),
@@ -139,5 +177,29 @@ mod tests {
         e.kind = 9;
         p.apply_metadata(&e);
         assert_eq!(p.len(), 0);
+    }
+
+    #[test]
+    fn older_event_does_not_reopen_no_bridge_channel() {
+        let mut p = PolicyMap::new();
+        // Apply newer event that sets no-bridge
+        p.apply_metadata(&meta_with_created_at("chan-5", "secrets", true, 2_000_000_000, "a"));
+        assert!(!p.is_bridgeable("chan-5"));
+        // Apply older event that tries to clear no-bridge
+        p.apply_metadata(&meta_with_created_at("chan-5", "secrets", false, 1_900_000_000, "b"));
+        // Channel should still not be bridgeable (older event ignored)
+        assert!(!p.is_bridgeable("chan-5"));
+    }
+
+    #[test]
+    fn newer_event_does_unflag_no_bridge() {
+        let mut p = PolicyMap::new();
+        // Apply older event that sets no-bridge
+        p.apply_metadata(&meta_with_created_at("chan-6", "ops", true, 1_900_000_000, "a"));
+        assert!(!p.is_bridgeable("chan-6"));
+        // Apply newer event that clears no-bridge
+        p.apply_metadata(&meta_with_created_at("chan-6", "ops", false, 2_000_000_000, "b"));
+        // Channel should now be bridgeable
+        assert!(p.is_bridgeable("chan-6"));
     }
 }
