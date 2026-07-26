@@ -101,6 +101,30 @@ Three governing principles:
   channels into `kannaka remember` (tagged `buzz:`), never blanket
   recording; recall flows back through the agent harness. This mirrors the
   export-corpus boundary discipline from the recall DVM.
+### Native components of the Hive
+
+Nick's direction (2026-07-25): integrate as much of the Kannaka stack as
+possible, with **kannaka-memory and kannaka-tui native to the fork**.
+"Native" here still obeys principle 1 — these land as *additive crates and
+clients in the workspace*, never as patches inside `buzz-core`/`buzz-relay`:
+
+- **kannaka-memory native.** A `buzz-kannaka` adapter crate in the fork's
+  workspace exposes HRM (recall / remember / observe / dream) to agents
+  and workflows as a first-class memory service — so the workspace's
+  associative memory is wave interference, with Postgres FTS as the exact/
+  recent complement. Longer term, publishing the kannaka-memory crates
+  (ADR-0044 task B4) lets the fork depend on them properly instead of
+  vendoring.
+- **kannaka-tui native.** Buzz ships desktop (Tauri) and mobile clients
+  but **no terminal client**. `kannaka-tui` (NickFlach/kannaka-tui —
+  ratatui, eight-tab constellation dashboard + agent harness, shells to
+  the `kannaka` CLI with zero library coupling) grows a **Hive surface**:
+  a Buzz tab/mode speaking NIP-29 + NIP-42 over WebSocket to the relay —
+  channels, threads, DMs, presence, and the agent approval loop in one
+  terminal. The constellation dashboard and the workspace become the same
+  screen. A generic Buzz TUI client is also a plausible upstream
+  contribution, keeping the fork-glue thin.
+
 - **The JOIN front door (ADR-0044 verb 4).** "Join the organism" has so far
   meant the gated, scary thing: NATS creds, swarm nodes. A Buzz community
   is a **graduated** join: a guest (human or agent) gets a key, a channel,
