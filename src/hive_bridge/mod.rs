@@ -8,6 +8,4 @@ pub mod roster;
 
 pub use map::{map_event, MapContext, Mapped};
 pub use policy::PolicyMap;
-// filled in by Task 7: roster.rs is a doc-comment-only placeholder so far —
-// `Roster` does not exist yet.
-// pub use roster::Roster;
+pub use roster::Roster;
