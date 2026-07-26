@@ -14,6 +14,21 @@ use crate::xi_operator::{compute_xi_signature, xi_diversity_boost};
 use super::types::*;
 use super::types::DreamReport;
 
+/// Recall energy exponent (`KANNAKA_RECALL_ENERGY_EXP`, **default 1.0 =
+/// historical `similarity * energy` ranking, byte-identical**). ADR-0046
+/// energy-neutral ranking: recall ranks by `similarity * energy^exp`, so
+/// `0.0` = pure similarity (fully neutralizes the rich-get-richer
+/// recall-frequency bias) and `0.5` = `similarity * sqrt(energy)` (softens
+/// it). Ranking-only — the energy array is never written by recall scoring.
+pub fn recall_energy_exp() -> f32 {
+    std::env::var("KANNAKA_RECALL_ENERGY_EXP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|e: &f32| e.is_finite())
+        .map(|e: f32| e.clamp(0.0, 1.0))
+        .unwrap_or(1.0)
+}
+
 /// A single hemisphere of the chiral medium.
 #[derive(Debug, Clone)]
 pub struct Hemisphere {
@@ -221,6 +236,23 @@ impl Hemisphere {
     /// `xi_diversity_boost` to each candidate's score, promoting results
     /// that are semantically similar but have distinct Xi signatures.
     pub fn resonate(&self, query: &[f32], top_k: usize) -> Vec<ChiralResonance> {
+        self.resonate_with_energy_exp(query, top_k, recall_energy_exp())
+    }
+
+    /// `resonate` with an explicit energy exponent (ADR-0046 energy-neutral
+    /// ranking). `resonance = similarity * energy^exp`. `exp = 1.0` is the
+    /// historical `similarity * energy` (byte-identical fast path); `exp = 0.0`
+    /// ranks by pure similarity, neutralizing the rich-get-richer
+    /// recall-frequency bias that buries never-surfaced memories (a
+    /// frequently-recalled memory's energy climbs toward the 2.0 cap while a
+    /// cold one stays at baseline, so weaker-similarity favorites outrank it).
+    /// Ranking-only: energy is never written here.
+    pub fn resonate_with_energy_exp(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        energy_exp: f32,
+    ) -> Vec<ChiralResonance> {
         if self.count() == 0 { return vec![]; }
 
         let adapted = Self::adapt_vector(query, self.dims);
@@ -228,14 +260,20 @@ impl Hemisphere {
         let query_norm = query_arr.dot(&query_arr).sqrt();
         if query_norm < 1e-8 { return vec![]; }
 
-        // 1. Score all candidates by raw similarity * energy
+        // Energy weight for ranking. Branch keeps the default byte-identical
+        // (no powf in the historical path).
+        let eweight = |e: f32| -> f32 {
+            if energy_exp >= 1.0 { e } else if energy_exp <= 0.0 { 1.0 } else { e.powf(energy_exp) }
+        };
+
+        // 1. Score all candidates by raw similarity * energy^exp
         let mut results: Vec<(usize, f32, f32)> = (0..self.count())
             .map(|i| {
                 let wf = self.wavefronts.row(i);
                 let wf_norm = wf.dot(&wf).sqrt();
                 if wf_norm < 1e-8 { return (i, 0.0, 0.0); }
                 let similarity = wf.dot(&query_arr) / (wf_norm * query_norm);
-                let resonance = similarity * self.energy[i];
+                let resonance = similarity * eweight(self.energy[i]);
                 (i, resonance, similarity)
             })
             .collect();
@@ -270,7 +308,7 @@ impl Hemisphere {
                 let wf_vec: Vec<f32> = self.wavefronts.row(i).to_vec();
                 let wf_xi = compute_xi_signature(&wf_vec);
                 let boosted_sim = xi_diversity_boost(sim, &query_xi, &wf_xi);
-                let boosted_resonance = boosted_sim * self.energy[i];
+                let boosted_resonance = boosted_sim * eweight(self.energy[i]);
                 (i, boosted_resonance, boosted_sim)
             })
             .collect();
@@ -802,6 +840,41 @@ mod tests {
 
         assert!(energy_after < energy_before,
             "Right hemisphere should lose energy to dampening: before={}, after={}", energy_before, energy_after);
+    }
+
+    /// ADR-0046 energy-neutral ranking: a high-energy "favorite" (frequently
+    /// recalled, energy near the 2.0 cap) must NOT bury a higher-similarity
+    /// cold memory when the energy exponent is 0; and the default exponent
+    /// (1.0) must preserve today's similarity*energy ordering exactly.
+    #[test]
+    fn energy_neutral_ranking_surfaces_cold_target() {
+        let mut h = Hemisphere::new(Hand::Left, 64);
+
+        // Cold target: the query IS this vector (similarity ~1.0), baseline energy.
+        let target: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
+        let target_id = h.add_wavefront(&target, "cold target".into(), 0.5).unwrap();
+
+        // Favorite: partially similar (mix of target + noise), energy at the cap.
+        let favorite: Vec<f32> = (0..64)
+            .map(|i| 0.5 * (i as f32 * 0.37).sin() + 0.8 * (i as f32 * 1.13).cos())
+            .collect();
+        let favorite_id = h.add_wavefront(&favorite, "recalled favorite".into(), 2.0).unwrap();
+
+        // Historical ranking (exp=1.0): energy wins — favorite outranks target.
+        let default_rank = h.resonate_with_energy_exp(&target, 2, 1.0);
+        assert_eq!(default_rank[0].id, favorite_id,
+            "with similarity*energy the high-energy favorite should win (bias under test)");
+
+        // resonate() with no env override must match exp=1.0 exactly.
+        let via_env_default = h.resonate(&target, 2);
+        let ids_a: Vec<_> = default_rank.iter().map(|r| r.id).collect();
+        let ids_b: Vec<_> = via_env_default.iter().map(|r| r.id).collect();
+        assert_eq!(ids_a, ids_b, "default resonate() must equal explicit exp=1.0");
+
+        // Energy-neutral (exp=0.0): pure similarity — the cold target surfaces.
+        let neutral = h.resonate_with_energy_exp(&target, 2, 0.0);
+        assert_eq!(neutral[0].id, target_id,
+            "with pure-similarity ranking the cold exact-match target must win");
     }
 
     #[test]
