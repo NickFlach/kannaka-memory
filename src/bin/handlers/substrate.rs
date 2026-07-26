@@ -285,9 +285,9 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         // clusters, phi }, body_path, body_gz_bytes, event_id,
         // schema_version }.
         match serde_json::to_string(&sorted) {
-            Ok(s) => println!("{}", s),
+            Ok(s) => println!("{s}"),
             Err(e) => {
-                eprintln!("[list-snapshots] serialize: {}", e);
+                eprintln!("[list-snapshots] serialize: {e}");
                 process::exit(1);
             }
         }
@@ -546,7 +546,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
                     "memories": mems,
                     "contributors": contribs,
                 });
-                println!("{}", payload);
+                println!("{payload}");
             } else {
                 println!("collective substrate @ {}", ts);
                 println!("  Φ           {:.3}", phi);
@@ -566,7 +566,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
             "error": "no_phi_event",
             "wait_secs": wait_secs,
         });
-        eprintln!("{}", payload);
+        eprintln!("{payload}");
     } else {
         eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
     }

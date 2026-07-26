@@ -4774,10 +4774,10 @@ fn run_experiment_l8_session(_params: &Params) {
         // Drive the REAL default path: recall_vector -> Hemisphere::resonate,
         // which reads these env vars. This benchmarks the shipped code, not a
         // parallel reimplementation of it.
-        std::env::set_var("KANNAKA_RECALL_TEMPORAL_EXP", format!("{}", texp));
-        std::env::set_var("KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS", format!("{}", half_life));
-        std::env::set_var("KANNAKA_RECALL_TEMPORAL_FLOOR", format!("{}", floor));
-        std::env::set_var("KANNAKA_RECALL_ENERGY_EXP", format!("{}", e_exp));
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_EXP", format!("{texp}"));
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS", format!("{half_life}"));
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_FLOOR", format!("{floor}"));
+        std::env::set_var("KANNAKA_RECALL_ENERGY_EXP", format!("{e_exp}"));
 
         let mut out = L8Ranks::default();
         let mut current_rr = 0.0f32;
