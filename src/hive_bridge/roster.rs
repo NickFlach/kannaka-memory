@@ -119,4 +119,25 @@ mod tests {
         r.apply(&ev(0, &"e".repeat(64), "not json"));
         assert_eq!(r.display_name(&"e".repeat(64)), None);
     }
+
+    #[test]
+    fn empty_display_name_falls_back_to_name() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"f".repeat(64), r#"{"display_name":"","name":"scribe"}"#));
+        assert_eq!(r.display_name(&"f".repeat(64)), Some("scribe"));
+    }
+
+    #[test]
+    fn empty_display_name_without_name_field_resolves_to_none() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"a".repeat(64), r#"{"display_name":""}"#));
+        assert_eq!(r.display_name(&"a".repeat(64)), None);
+    }
+
+    #[test]
+    fn both_empty_display_name_and_name_resolves_to_none() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"b".repeat(64), r#"{"display_name":"","name":""}"#));
+        assert_eq!(r.display_name(&"b".repeat(64)), None);
+    }
 }
