@@ -1583,6 +1583,56 @@ mod tests {
         EncodingPipeline::new(encoder, codebook)
     }
 
+    /// ADR-0050 follow-up probe: can `sensemaking::detect_contradictions` see a
+    /// SUPERSESSION?
+    ///
+    /// That detector keys on PHASE OPPOSITION — same subject, phase gap near π.
+    /// But `content_born_phase` is deliberately content-SMOOTH (see its doc
+    /// comment: "identical content to identical phase"), and a superseded fact
+    /// differs from its replacement by a single value token. So the pair that
+    /// most needs detecting is the pair that looks most alike.
+    ///
+    /// This measures the gap rather than assuming it. If supersession pairs sit
+    /// far below the opposed-stance threshold, the existing detector cannot be
+    /// reused for the supersession writer and a different signal is required.
+    #[test]
+    fn supersession_pairs_are_not_phase_opposed() {
+        let pipeline = test_pipeline();
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let gap = |a: &str, b: &str| -> f32 {
+            let pa = content_born_phase(&pipeline.encode_text(a).unwrap());
+            let pb = content_born_phase(&pipeline.encode_text(b).unwrap());
+            let raw = (pa - pb).abs();
+            raw.min(two_pi - raw)
+        };
+
+        // A supersession pair: the same fact, one value token changed.
+        let supersession = gap(
+            "the harbor beacon channel is twelve",
+            "the harbor beacon channel is twentyseven",
+        );
+        // An unrelated pair, for scale.
+        let unrelated = gap(
+            "the harbor beacon channel is twelve",
+            "mycelium spreads beneath the forest floor",
+        );
+
+        eprintln!(
+            "[adr0050] phase gap — supersession={supersession:.4} rad, unrelated={unrelated:.4} rad, \
+             opposed threshold={:.4}",
+            std::f32::consts::FRAC_PI_2
+        );
+
+        // The load-bearing claim: a supersession pair is NOT phase-opposed, so
+        // `detect_contradictions(.., opposed_gap = π/2)` cannot flag it.
+        assert!(
+            supersession < std::f32::consts::FRAC_PI_2,
+            "supersession pair registered as phase-opposed ({supersession:.4} rad) — \
+             if this ever fires, the existing contradiction detector CAN see supersession \
+             and ADR-0051 should reuse it instead of building a new signal"
+        );
+    }
+
     // ── #583: the holistic hemisphere never forgets — it evolves ──
 
     #[test]
