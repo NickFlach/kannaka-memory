@@ -54,9 +54,13 @@ function get(url, redirects = 0) {
           return;
         }
         const chunks = [];
+        let done = false;
+        const settle = () => { if (!done) { done = true; resolve(Buffer.concat(chunks)); } };
+        const fail = (e) => { if (!done) { done = true; reject(e); } };
         res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks)));
-        res.on("error", reject);
+        res.on("end", settle);
+        res.on("close", settle);
+        res.on("error", fail);
       })
       .on("error", reject);
   });
