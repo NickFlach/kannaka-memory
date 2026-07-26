@@ -1260,8 +1260,8 @@ impl SwarmTransport {
         let inbox = new_inbox("js");
 
         let mut frame = Vec::with_capacity(request.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", api_subject, inbox, request.len());
         frame.extend_from_slice(request);
         frame.extend_from_slice(b"\r\n");
@@ -1437,7 +1437,7 @@ impl SwarmTransport {
     /// any JSON reply to the probe, including a "no message found" error,
     /// proves readability; a permission denial produces no reply (timeout).
     fn stream_readable(&self, stream_name: &str) -> bool {
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let req = serde_json::json!({ "seq": 1, "next_by_subj": ">" }).to_string();
         let Ok(mut conn) = self.lock_conn() else {
             return false;
@@ -2270,7 +2270,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let first_sid = self.alloc_sid();
         let mut frame = Vec::new();
-        let _ = write!(frame, "SUB QUEEN.phase.* {}\r\n", first_sid);
+        let _ = write!(frame, "SUB QUEEN.phase.* {first_sid}\r\n");
         let _ = write!(frame, "SUB QUEEN.announce {}\r\n", self.alloc_sid());
         if include_memories {
             let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
@@ -2386,11 +2386,11 @@ impl SwarmTransport {
         // SUB inbox first so we don't race the reply; UNSUB <sid> 1 lets the
         // server clean up automatically after the first delivery.
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
@@ -2464,7 +2464,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
 
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
