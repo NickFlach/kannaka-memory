@@ -1,9 +1,9 @@
-# ADR-0046: Origin-Partitioned Recall + Energy-Neutral Ranking — Reaching Autobiographical Memory
+# ADR-0048: Origin-Partitioned Recall + Energy-Neutral Ranking — Reaching Autobiographical Memory
 
 **Status:** Proposed — **v3, revised after adversarial-design-review**
 (GO_WITH_CHANGES, 2026-07-26). v1 (situated longer query) and the v2
 research-is-the-competitor premise were both corrected by measurement.
-**Relates to:** ADR-0045 (attention re-ranks *within* a result — bottom-up:
+**Relates to:** ADR-0047 (attention re-ranks *within* a result — bottom-up:
 reach → energy-neutral → awareness → attention), the `research:` ingest prefix,
 `WavefrontMeta` (types.rs:517 — note the *existing* `provenance` field is the
 entropy stamp, a name collision this ADR must avoid), and `hemisphere.rs:232-247`
@@ -53,7 +53,7 @@ Two independent mechanisms, each falsifiable on its own gate.
   (never `top_k/2` — that returns 0 for `top_k=1` liveness callers), union, and
   **reserve ≥1 configurable slot per partition** (round-robin by rank). Intent sets
   ordering *within* the quota; it can never *exclude* a partition. This preserves
-  the ADR-0045 invariant that the fix is **structural (candidate membership)**, not
+  the ADR-0047 invariant that the fix is **structural (candidate membership)**, not
   a post-truncate multiply.
 - **Intent is an explicit caller parameter**, `intent: Option<Intent>`, threaded
   through the recall path; default `Unknown → balanced`. The benchmark drives the
@@ -76,7 +76,7 @@ array left **byte-identical** (ranking-only change; no write-back).
 
 ## Two falsifiable gates (honest about composition)
 
-- **G1 — ADR-0046-owned, falsifiable in isolation (gates the partition flag):**
+- **G1 — ADR-0048-owned, falsifiable in isolation (gates the partition flag):**
   for an autobiographical-intent query the `Lived` partition contributes ≥N
   candidates to the merged pool; knowledge-query research recall is **not regressed**
   (Δrank ≤ 0); `recall(q, 1)` is non-empty for every caller. Measured on the
@@ -84,13 +84,13 @@ array left **byte-identical** (ranking-only change; no write-back).
   with zero `research:` memories partitioned recall **== today rank-for-rank**.
 - **G2 — composed, owned by the rollup:** the cold `"where is Kannaka Labs"` query
   **rank-wins** the lab. Explicitly requires **energy-neutral ranking + awareness
-  (situated intent) + ADR-0045 attention** — the ADR records up front that partition
+  (situated intent) + ADR-0047 attention** — the ADR records up front that partition
   alone cannot pass this, because the competitor is intra-episodic energy, not
   research.
 
 ## Confirmed (do not regress)
 
-- Pre-fetch partition genuinely escapes ADR-0045 post-fetch inertness by changing
+- Pre-fetch partition genuinely escapes ADR-0047 post-fetch inertness by changing
   candidate-set *membership* — preserve; a later refactor collapsing it to a
   post-truncate weight silently regresses to the Fano failure.
 - The 2-class origin axis differs from Fano's 7 content-classes **only** because it
@@ -107,7 +107,7 @@ array left **byte-identical** (ranking-only change; no write-back).
 3. **G1 benchmark** — chiral path, Δrank, no knowledge regression, `top_k=1`
    non-empty, energy byte-identical.
 4. **Energy-neutral ranking** (ranking-only, flagged).
-5. **Compose upward toward G2** — awareness (intent + situate), then ADR-0045.
+5. **Compose upward toward G2** — awareness (intent + situate), then ADR-0047.
 
 ## Alternatives considered (and discarded by the review)
 

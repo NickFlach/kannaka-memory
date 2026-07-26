@@ -1,4 +1,4 @@
-# ADR-0045: Predictive-Learning Attention as Embedding-Space Query Gravity
+# ADR-0047: Predictive-Learning Attention as Embedding-Space Query Gravity
 
 **Status:** Proposed — **v2, revised after adversarial-design-review** (2026-07-26).
 v1 ("continuous wave-field / phase" framing) was returned **RETHINK** by a
@@ -31,7 +31,7 @@ The adversarial review refuted this against the real kernel:**
 - **The buried-target problem is an *encoder* problem, not an attention problem.**
   A target the encoder buries never enters the `top_k*2` fetch pool, so it never
   co-resonates and never forms a coupling (chicken-and-egg). **No G component can
-  rescue it.** ADR-0045 re-ranks a *reachable* pool; it does not fix encoding.
+  rescue it.** ADR-0047 re-ranks a *reachable* pool; it does not fix encoding.
 
 The corrected principle: **bias the query *vector* before the scan, in the same
 `encode_text` embedding space recall already ranks on, with a hard-bounded gain —
