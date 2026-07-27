@@ -273,7 +273,7 @@ fn pick_track(v: &serde_json::Value) -> (&str, &str) {
 }
 
 pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+    let sub = args.get(1).map(String::as_str).unwrap_or("status");
     let base = &cfg.constellation.radio_url;
 
     match sub {
@@ -369,7 +369,7 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
+    let sub = args.get(1).map(String::as_str).unwrap_or("list");
     // GhostSignals lives at `cfg.ghostsignals.hub_url` — falling back to
     // `cfg.constellation.radio_url` only when hub_url is empty (legacy
     // single-host configs). Pre-fix every market command hit radio_url
