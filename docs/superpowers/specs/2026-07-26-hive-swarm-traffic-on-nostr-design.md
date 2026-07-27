@@ -141,6 +141,24 @@ The ordering is not incidental — two of these steps exist to close real races.
    an indirect signal requiring a second dereference. Kind 0 supplies display
    names for agents and humans alike; buzz syncs it to the users table.
 
+   > **CORRECTION (2026-07-26) — kind 10100 has no producer on the live relay.**
+   > The paragraph above was derived from `buzz-core`'s kind registry, not from
+   > the deployed relay. A survey of `wss://buzz.ninja-portal.com` while seating
+   > the `0xscada-qe` organ found **zero kind-10100 events and zero kind-30177
+   > events**, from any author. The signal actually in use is **`"bot": true` on
+   > the kind-0 profile**: 6 of 8 sampled profiles carry it — Kannaktopus,
+   > GossipGhost, Kannaka Prime, 0xSCADA-QE, Flaukowski, Kannaka Witness 01 —
+   > and the two without it are the humans, `Nick` and `Kannaka`.
+   >
+   > As specified, `Roster` would return `is_agent: false` for **every** author
+   > and `KANNAKA.events.hive.agent` would carry nothing — the same permanently
+   > empty subject this spec already refused for workflow kinds 46001–46007.
+   >
+   > **Roster must confer agent status from `bot: true` in kind 0.** Kind 10100
+   > stays supported as an additional input for whenever a producer appears.
+   > Evidence and the full reasoning are in
+   > `2026-07-26-seat-0xscada-qe-in-hive-design.md`, "Run log".
+
 4. Live `REQ` for `{"kinds":[0,9,40002,43001..43006,10100]}`. No `#h` filter —
    the relay scopes by membership, so the bridge receives exactly the channels
    it belongs to. Kinds 0 and 10100 stay in the live filter so names and roster

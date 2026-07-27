@@ -951,6 +951,56 @@ silently widen what leaves the relay."
 
 ## Task 7: Agent roster and display names (kannaka-memory)
 
+> **CORRECTION (2026-07-26): agent status comes from `bot: true` in kind 0, not
+> from kind 10100.** A survey of the live relay found zero kind-10100 and zero
+> kind-30177 events from any author; every organ is marked by `"bot": true` on
+> its kind-0 profile. Written as originally drafted, this task ships a `Roster`
+> that answers `is_agent: false` for everyone.
+>
+> Apply these changes as you work through the steps below:
+>
+> - `apply` must set agent status when a kind-0 profile's content parses to an
+>   object with `"bot": true`. Keep the kind-10100 arm — it costs nothing and
+>   becomes correct the day a producer exists.
+> - **Delete the `kind0_does_not_confer_agent_status` test.** It asserts exactly
+>   the behaviour that breaks this, and its fixture content
+>   (`{"name":"human"}`) has no `bot` field, so it is subsumed by the new
+>   `kind0_without_bot_flag_is_not_an_agent` test below.
+> - Add these two tests to the Step 1 test module:
+>
+>   ```rust
+>   #[test]
+>   fn kind0_with_bot_flag_confers_agent_status() {
+>       let mut r = Roster::new();
+>       r.apply(&ev(0, &"a".repeat(64), r#"{"name":"Kannaktopus","bot":true}"#));
+>       assert!(r.is_agent(&"a".repeat(64)));
+>       assert_eq!(r.display_name(&"a".repeat(64)), Some("Kannaktopus"));
+>   }
+>
+>   #[test]
+>   fn kind0_without_bot_flag_is_not_an_agent() {
+>       let mut r = Roster::new();
+>       r.apply(&ev(0, &"b".repeat(64), r#"{"name":"Nick"}"#));
+>       assert!(!r.is_agent(&"b".repeat(64)));
+>   }
+>   ```
+>
+> - In the Step 3 implementation, inside the `0 => { ... }` arm, after the
+>   display-name block:
+>
+>   ```rust
+>   // The deployed Hive marks agents with `bot: true` on the kind-0
+>   // profile. Kind 10100 is defined in the kind registry but nothing
+>   // produces it, so it cannot be the only roster source.
+>   if v.get("bot").and_then(serde_json::Value::as_bool) == Some(true) {
+>       self.agents.insert(event.pubkey.clone());
+>   }
+>   ```
+>
+> - Step 5's expected count changes from 18 to 19 tests (one deleted, two added).
+>
+> Evidence: `2026-07-26-seat-0xscada-qe-in-hive-design.md`, "Run log".
+
 **Files:**
 - Modify: `src/hive_bridge/roster.rs`
 
