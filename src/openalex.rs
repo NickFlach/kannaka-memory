@@ -35,7 +35,7 @@ impl Work {
         let authors = if self.authors.is_empty() {
             String::new()
         } else {
-            let shown: Vec<&str> = self.authors.iter().take(4).map(|s| s.as_str()).collect();
+            let shown: Vec<&str> = self.authors.iter().take(4).map(String::as_str).collect();
             let etal = if self.authors.len() > 4 { " et al." } else { "" };
             format!(" — {}{etal}", shown.join(", "))
         };
@@ -117,11 +117,11 @@ pub fn search_works(query: &str, opts: &SearchOpts) -> Result<Vec<Work>, String>
 }
 
 fn parse_work(w: &serde_json::Value) -> Work {
-    let s = |k: &str| w.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let s = |k: &str| w.get(k).and_then(|v| v.as_str()).map(str::to_string);
     let authors = w.get("authorships").and_then(|v| v.as_array())
         .map(|a| a.iter()
             .filter_map(|au| au.get("author").and_then(|x| x.get("display_name")).and_then(|x| x.as_str()))
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .collect())
         .unwrap_or_default();
     let concepts = w.get("concepts").and_then(|v| v.as_array())
@@ -135,7 +135,7 @@ fn parse_work(w: &serde_json::Value) -> Work {
         .and_then(|l| l.get("source"))
         .and_then(|s| s.get("display_name"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(str::to_string);
     Work {
         id: s("id").unwrap_or_default(),
         doi: s("doi"),
