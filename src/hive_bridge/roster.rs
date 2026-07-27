@@ -1,11 +1,18 @@
 //! Who is an agent, and what everyone is called.
 //!
-//! Agent identity comes from kind 10100 (`KIND_AGENT_PROFILE`) — "Agent
-//! metadata + owner reference (replaceable, agent-authored)" — which is keyed
-//! by the agent's own pubkey and is therefore a direct signal. Kind 30177 was
-//! considered and rejected: it is owner-authored and keyed by
-//! `(owner_pubkey, kind, d_tag)`, so it needs a second dereference to answer
-//! the same question.
+//! **Agent identity comes from `"bot": true` on the kind-0 profile.** That is
+//! what the deployed Hive actually uses: a survey of the live relay found six
+//! of eight profiles carrying the flag (Kannaktopus, GossipGhost, Kannaka
+//! Prime, 0xSCADA-QE, Flaukowski, Kannaka Witness 01), with the two humans —
+//! Nick and Kannaka — lacking it.
+//!
+//! Kind 10100 (`KIND_AGENT_PROFILE`) is also honoured, because it is the
+//! documented signal in `buzz-core`'s kind registry and is keyed by the agent's
+//! own pubkey. But **nothing on the relay produces it** — zero 10100 and zero
+//! 30177 events exist from any author — so it cannot be the only source. Making
+//! it the only source yields an empty roster and `is_agent: false` for
+//! everyone. Kind 30177 remains rejected outright: it is owner-authored and
+//! keyed by `(owner_pubkey, kind, d_tag)`, needing a second dereference.
 //!
 //! Display names come from kind 0 for agents and humans alike.
 
@@ -42,6 +49,12 @@ impl Roster {
                     .filter(|s| !s.is_empty());
                 if let Some(name) = name {
                     self.names.insert(event.pubkey.clone(), name.to_string());
+                }
+                // The deployed Hive marks agents here, not on kind 10100.
+                // Absent or non-boolean means "not an agent" — only an explicit
+                // `true` confers it.
+                if v.get("bot").and_then(serde_json::Value::as_bool) == Some(true) {
+                    self.agents.insert(event.pubkey.clone());
                 }
             }
             _ => {}
@@ -107,10 +120,34 @@ mod tests {
     }
 
     #[test]
-    fn kind0_does_not_confer_agent_status() {
+    fn kind0_with_bot_flag_confers_agent_status() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"a".repeat(64), r#"{"name":"Kannaktopus","bot":true}"#));
+        assert!(r.is_agent(&"a".repeat(64)));
+        assert_eq!(r.display_name(&"a".repeat(64)), Some("Kannaktopus"));
+        assert_eq!(r.agent_count(), 1);
+    }
+
+    #[test]
+    fn kind0_without_bot_flag_is_not_an_agent() {
         let mut r = Roster::new();
         r.apply(&ev(0, &"d".repeat(64), r#"{"name":"human"}"#));
         assert!(!r.is_agent(&"d".repeat(64)));
+    }
+
+    #[test]
+    fn kind0_with_bot_false_is_not_an_agent() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"e".repeat(64), r#"{"name":"Nick","bot":false}"#));
+        assert!(!r.is_agent(&"e".repeat(64)));
+    }
+
+    /// A non-boolean `bot` must not be coerced into agent status.
+    #[test]
+    fn kind0_with_non_boolean_bot_is_not_an_agent() {
+        let mut r = Roster::new();
+        r.apply(&ev(0, &"c".repeat(64), r#"{"name":"odd","bot":"true"}"#));
+        assert!(!r.is_agent(&"c".repeat(64)));
     }
 
     #[test]
