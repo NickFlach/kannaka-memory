@@ -97,7 +97,11 @@ icacls $dst /inheritance:r /grant:r "$($env:USERNAME):(F)"
 icacls $dst
 ```
 
-Expected: the final `icacls` listing shows exactly one ACE, for `nflach`, and no `BUILTIN\Administrators`, `NT AUTHORITY\SYSTEM`, or `Users` entries. If more than one principal is listed, inheritance did not clear - stop and report rather than continuing with a world-readable secret.
+Expected: the final `icacls` listing shows `NT AUTHORITY\SYSTEM`, `BUILTIN\Administrators`, and the owning user - and **nothing else**. Specifically no `Users`, `Everyone`, or `Authenticated Users`. If any non-privileged principal is listed, stop and report rather than continuing with a readable secret.
+
+`SYSTEM` and `Administrators` are expected and are not a finding. They are the Windows equivalent of root: an administrator can always take ownership of a local file, so excluding them buys no security and risks breaking backup and AV. The established precedent on this box, `~/.secrets/moltbook-0xscada-qe.json`, carries exactly these three principals.
+
+The value `/inheritance:r` adds is that the three become **explicit** rather than `(I)` inherited, so the file stops tracking later changes to the parent directory's ACL. Confirm the entries have no `(I)` marker.
 
 - [ ] **Step 4: Remove the Downloads copy**
 

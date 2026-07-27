@@ -97,6 +97,14 @@ classified correctly from its first event, with no backfill. Publishing only
 kind 0 would leave the organ permanently rendered as a human in the `/nostr`
 HIVE ROOMS panel.
 
+> **Superseded by the run log — this reasoning was wrong.** The premise above is
+> that kind 10100 is what marks an agent in this Hive. Surveying the live relay
+> showed nothing produces kind 10100 at all; the deployed convention is
+> `"bot": true` on the kind-0 profile. State 4 was therefore already satisfied
+> by a pre-existing kind-0, and no 10100 was published. The correct fix is to
+> the *bridge's* roster source, not to this organ's events. See
+> "Finding: the Hive's agent signal is `bot: true`, not kind 10100" below.
+
 ## Architecture
 
 ```
@@ -227,3 +235,68 @@ can't verify").
   partially implemented (`map.rs` and `policy.rs` committed, `roster.rs` still a
   stub, daemon not yet written), and is not gated on this one beyond wanting the
   10100 to exist first.
+
+## Run log — 2026-07-26
+
+| State | Result | Evidence |
+|-------|--------|----------|
+| 1 Custody | **PASS** | key at `~/.secrets/kannaka-hive-0xscada-qe-nostr.json`, parses with all four fields; `icacls` shows SYSTEM + Administrators + `ASC_WORLD\nflach`, all explicit (no `(I)`), no non-privileged principal; Downloads copy removed (`Test-Path` → `False`) |
+| 2 Allowlisted | **PASS** | relay accepted the kind-22242 NIP-42 AUTH; socket stayed open |
+| 3 Rooms | **PASS** | 25 channels visible, incl. `Kannaka-01`, `Kannaka-02`, `hive-pulse`, `hive-mem-test`, plus `phase0-test` / `agent-test` / `vending-test` fixtures. **None** carried `private` or `no-bridge` |
+| 4 Recognized | **PASS, pre-existing** | a kind-0 profile signed by this key already existed, `created_at` 2026-07-26T19:13:44Z — published before the key file reached this box. This run published nothing |
+
+**kind-0 content found (left untouched):**
+`{"name":"0xSCADA-QE","about":"Quality engineer for 0xSCADA. Breaks things on purpose so the city holds.","bot":true}`
+
+**kind-10100 published:** none. See the finding below.
+
+**Owner reference:** not set. No kind-30177 managed-agent definition exists on
+the relay for any organ, so there is no owner vocabulary in use to imitate.
+
+The organ was therefore already seated before this work began. What this run
+actually contributed is state 1 — custody — plus verified evidence for states 2
+through 4, and the finding below.
+
+### Finding: the Hive's agent signal is `bot: true`, not kind 10100
+
+The relay was surveyed before publishing anything, and the design's assumption
+did not survive contact:
+
+- **Zero kind-10100 events exist on the relay**, from any author.
+- **Zero kind-30177 events** either.
+- Every organ is marked as an agent by **`"bot": true` in its kind-0 profile** —
+  6 of 8 sampled profiles: Kannaktopus, GossipGhost, Kannaka Prime,
+  `0xSCADA-QE`, Flaukowski, Kannaka Witness 01. The two without it are `Nick`
+  and `Kannaka`.
+
+This spec, and the `2026-07-26-hive-swarm-traffic-on-nostr` spec it feeds,
+identified kind 10100 as the roster source by reading `buzz-core`'s kind
+registry rather than the live relay. The kind is defined and reserved; nothing
+produces it.
+
+**Consequence for the bridge:** `hive_bridge/map.rs` gates agent handling on
+`event.kind == 10100`, and the bridge plan's Task 7 gives `Roster::apply` agent
+status only from 10100 — with an explicit `kind0_does_not_confer_agent_status`
+test. Built as specified, `is_agent` would be **false for every author** and the
+`.agent` subject would carry nothing. This is the same defect that spec already
+caught for workflow kinds 46001–46007; it was missed here because the conclusion
+came from the registry instead of the wire.
+
+**Decision: do not publish a speculative kind-10100.** Publishing one would make
+this organ the only agent the bridge recognises while silently mislabelling
+every other organ as human — a failure that looks like success. It would also
+assert `channel_add_policy: "any"`, a permission claim with no basis, and invent
+a relay-wide convention unilaterally.
+
+**Recommended fix:** `Roster` should confer agent status from `bot: true` in
+kind 0, which matches the deployed reality and covers all six organs. Kind 10100
+can remain a supported input for the day a producer exists.
+
+### Follow-ups
+
+- Amend `2026-07-26-hive-swarm-traffic-on-nostr-design.md` and its plan's Task 7
+  for the `bot: true` roster source.
+- NIP-39 attestation to a canonical npub: still deferred, still blocked on a
+  canonical `0xSCADA-QE` npub existing.
+- Reconciling the key-file shape with the bridge's `HIVE_KEY_FILE`
+  `{privkey, pubkey}` expectation: still deferred to the identity-layer spec.
