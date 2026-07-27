@@ -1637,7 +1637,7 @@ impl SwarmTransport {
                 "subjects": ["KANNAKA.exemplar.>"],
                 "retention": "limits",
                 "max_msgs_per_subject": 1,
-                "max_age": 604800_000_000_000i64, // 7 days in nanoseconds
+                "max_age": 604_800_000_000_000_i64, // 7 days in nanoseconds
                 "storage": "file",
                 "discard": "old",
                 "num_replicas": 1
@@ -1682,7 +1682,7 @@ impl SwarmTransport {
                 "subjects": ["KANNAKA.cores.>"],
                 "retention": "limits",
                 "max_msgs_per_subject": 1,
-                "max_age": 604800_000_000_000i64, // 7 days
+                "max_age": 604_800_000_000_000_i64, // 7 days
                 "max_msg_size": 1_048_576i64, // 1 MiB — a core snapshot is ≤8 cores (~KB); bound abuse
                 "storage": "file",
                 "discard": "old",
