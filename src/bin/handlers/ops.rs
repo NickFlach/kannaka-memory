@@ -15,7 +15,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
         process::exit(1);
     }
 
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+    let sub = args.get(1).map(String::as_str).unwrap_or("status");
 
     match sub {
         "run" => {
@@ -82,7 +82,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("show");
+    let sub = args.get(1).map(String::as_str).unwrap_or("show");
 
     match sub {
         "show" => {
@@ -542,7 +542,7 @@ pub(crate) fn import_memories_from_file(
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter_map(|v| v.as_str().map(str::to_string))
                     .collect()
             })
             .unwrap_or_default();

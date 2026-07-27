@@ -498,7 +498,7 @@ pub(crate) fn handle_swarm_exemplars(
     // Usage:
     //   kannaka swarm exemplars publish [--top-k N] [--agent-id ID]
     //   kannaka swarm exemplars list [--from <agent_id>] [--top-k N]
-    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("publish");
+    let sub = args.get(2).map(String::as_str).unwrap_or("publish");
     let mut top_k: usize = 20;
     let mut agent_id_override: Option<String> = None;
     let mut from: Option<String> = None;
@@ -697,7 +697,7 @@ pub(crate) fn handle_swarm_cores(
     args: &[String],
 ) {
     const USAGE: &str = "Usage: kannaka swarm cores <publish|list|shared> [--from <agent>] [--min-cos X] [--agent-id ID] [--nats-url URL]";
-    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("shared");
+    let sub = args.get(2).map(String::as_str).unwrap_or("shared");
     let mut agent_id_override: Option<String> = None;
     let mut from: Option<String> = None;
     let mut min_cos: f32 = 0.85;
