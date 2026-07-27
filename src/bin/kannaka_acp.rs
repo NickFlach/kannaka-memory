@@ -41,6 +41,15 @@ fn main() {
                 }
                 i += 2;
             }
+            // Tolerate a bare `acp` token. ACP clients spawn goose as
+            // `goose acp`, and `buzz-acp`'s `--agent-args` defaults to "acp";
+            // its `normalize_agent_args` only strips that default for runtimes
+            // it recognizes, so an unrecognized command like this one receives
+            // the token verbatim. Rejecting it would break the default
+            // invocation for no benefit — we are always in ACP mode.
+            arg if arg.eq_ignore_ascii_case("acp") => {
+                i += 1;
+            }
             "-h" | "--help" => {
                 // stdout is the protocol stream, but --help is never used in a
                 // protocol session, so printing there is correct for a CLI.

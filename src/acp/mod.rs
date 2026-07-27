@@ -56,42 +56,75 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// A [`MemorySource`] backed by the real holographic medium, opened read-only.
+///
+/// ## The medium loads lazily, and that is load-bearing
+///
+/// Opening the HRM reads and reconstructs the whole tensor — ~16s for a 47 MB
+/// `kannaka.hrm`. ACP clients treat a silent agent as a dead one: `buzz-acp`'s
+/// helper subcommands give an adapter **10 seconds** to answer `initialize`, so
+/// an eager open makes the agent look broken before it can say hello.
+///
+/// The handshake therefore must not touch the substrate. The first
+/// `session/prompt` pays the load, which fits comfortably inside the per-turn
+/// idle timeout (60s by default) — and a client that only probes capabilities
+/// never pays it at all.
 pub struct HrmMemory {
-    sys: crate::openclaw::KannakaMemorySystem,
+    data_dir: PathBuf,
+    /// `None` until the first recall forces the open.
+    sys: Option<crate::openclaw::KannakaMemorySystem>,
 }
 
 impl HrmMemory {
-    /// Open the medium at `data_dir` and enforce read-only.
+    /// Prepare to serve from the medium at `data_dir` without opening it.
     ///
-    /// Read-only is applied twice on purpose. `KANNAKA_READONLY` covers code
-    /// paths that consult the env directly, and `set_readonly(true)` on the
-    /// store covers the HRM itself — neither alone closes the write path.
-    pub fn open(data_dir: PathBuf) -> Result<Self, String> {
-        // Set before construction so any persistence decision made during
-        // `init` already sees read-only mode.
+    /// Read-only is asserted here, before any code path can construct a store:
+    /// `KANNAKA_READONLY` covers the code that consults the env directly, and
+    /// `set_readonly(true)` in [`Self::system`] covers the HRM itself. Neither
+    /// alone closes the write path, and the HRM is single-writer.
+    pub fn new(data_dir: PathBuf) -> Self {
         std::env::set_var("KANNAKA_READONLY", "1");
-
-        let mut sys = crate::openclaw::KannakaMemorySystem::init(data_dir)
-            .map_err(|e| format!("failed to open HRM: {e}"))?;
-
-        if let Some(hrm) = sys
-            .engine
-            .store
-            .as_any_mut()
-            .downcast_mut::<crate::hrm_store::HrmStore>()
-        {
-            hrm.set_readonly(true);
+        Self {
+            data_dir,
+            sys: None,
         }
-        eprintln!("[kannaka-acp] read-only mode enforced (single-writer policy)");
+    }
 
-        Ok(Self { sys })
+    /// Borrow the medium, opening it on first use.
+    fn system(&mut self) -> Result<&mut crate::openclaw::KannakaMemorySystem, String> {
+        if self.sys.is_none() {
+            eprintln!(
+                "[kannaka-acp] opening HRM at {} (first recall)",
+                self.data_dir.display()
+            );
+            let started = std::time::Instant::now();
+
+            let mut sys = crate::openclaw::KannakaMemorySystem::init(self.data_dir.clone())
+                .map_err(|e| format!("failed to open HRM: {e}"))?;
+
+            if let Some(hrm) = sys
+                .engine
+                .store
+                .as_any_mut()
+                .downcast_mut::<crate::hrm_store::HrmStore>()
+            {
+                hrm.set_readonly(true);
+            }
+            eprintln!(
+                "[kannaka-acp] HRM open in {:.1}s — read-only enforced (single-writer policy)",
+                started.elapsed().as_secs_f32()
+            );
+
+            self.sys = Some(sys);
+        }
+        // Just assigned above when it was absent.
+        Ok(self.sys.as_mut().expect("system initialized"))
     }
 }
 
 impl MemorySource for HrmMemory {
     fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<Recollection>, String> {
         let hits = self
-            .sys
+            .system()?
             .recall(query, top_k)
             .map_err(|e| format!("recall failed: {e}"))?;
         Ok(hits
@@ -145,7 +178,9 @@ pub fn run(top_k: usize) -> Result<(), String> {
         dir.display()
     );
 
-    let memory = HrmMemory::open(dir)?;
+    // Deliberately does not open the HRM — see `HrmMemory` on why the ACP
+    // handshake must not block on loading the medium.
+    let memory = HrmMemory::new(dir);
     let mut agent = Agent::new(memory, top_k);
 
     // Attach a channel sink only if the `buzz` CLI is actually runnable.
