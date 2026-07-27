@@ -128,7 +128,7 @@ fn nats_publish(cfg: &Config, subject: &str, payload: &str) -> std::io::Result<(
 }
 
 fn send_req<S: Read + Write>(ws: &mut tungstenite::WebSocket<S>, sub: &str, filter: &str) {
-    let _ = ws.send(Message::Text(format!(r#"["REQ","{sub}",{filter}]"#).into()));
+    let _ = ws.send(Message::Text(format!(r#"["REQ","{sub}",{filter}]"#)));
 }
 
 fn main() {
@@ -180,7 +180,7 @@ fn main() {
                 };
                 let auth = build_auth_event(&kp, &cfg.relay_url, challenge);
                 let payload = serde_json::to_string(&auth).expect("serialize auth event");
-                let _ = ws.send(Message::Text(format!(r#"["AUTH",{payload}]"#).into()));
+                let _ = ws.send(Message::Text(format!(r#"["AUTH",{payload}]"#)));
                 authed = true;
                 // Resolve policy and roster BEFORE opening the content
                 // subscription: the roster is built from the same stream it
