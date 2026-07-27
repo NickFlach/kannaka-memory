@@ -4389,15 +4389,37 @@ fn main() {
                     println!("Left swarm cleanly ({})", my_agent_id);
                 }
                 "leave" => {
+                    // `--agent-id` must be honoured here for the same reason
+                    // `join` honours it (#589): an operator who started a
+                    // throwaway session with `swarm join --agent-id X` has no
+                    // other way to retire X. Announcing leave for
+                    // `cfg.agent.id` instead would both leave X advertised as
+                    // present and wrongly retire the configured default.
+                    const LEAVE_USAGE: &str =
+                        "Usage: kannaka swarm leave [--agent-id ID] [--nats-url URL]";
+                    let mut leave_agent_id = agent_id.clone();
+                    let mut i = command_start + 2;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--agent-id" => {
+                                leave_agent_id =
+                                    flag_value(&args, i, "--agent-id", LEAVE_USAGE).to_string();
+                                i += 2;
+                            }
+                            // `--nats-url` is consumed by resolve_nats_url below.
+                            "--nats-url" => i += 2,
+                            _ => i += 1,
+                        }
+                    }
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     if let Some(transport) = try_nats_connect(&nats_url) {
-                        if let Err(e) = transport.announce_leave(&agent_id) {
+                        if let Err(e) = transport.announce_leave(&leave_agent_id) {
                             eprintln!("[nats] Warning: leave announce failed: {}", e);
                         }
-                        println!("Left swarm ({})", agent_id);
+                        println!("Left swarm ({})", leave_agent_id);
                     } else {
                         eprintln!("Warning: could not connect to NATS to announce leave");
-                        println!("Left swarm locally ({})", agent_id);
+                        println!("Left swarm locally ({})", leave_agent_id);
                     }
                 }
                 "listen" => {
