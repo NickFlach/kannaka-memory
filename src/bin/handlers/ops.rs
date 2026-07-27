@@ -104,9 +104,9 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                 display.ghostsignals.kax_token = "***".to_string();
             }
             match toml::to_string_pretty(&display) {
-                Ok(text) => println!("{}", text),
+                Ok(text) => println!("{text}"),
                 Err(e) => {
-                    eprintln!("Error serializing config: {}", e);
+                    eprintln!("Error serializing config: {e}");
                     process::exit(1);
                 }
             }
@@ -428,7 +428,7 @@ pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
             }
         }
     } else {
-        println!("{}", json_str);
+        println!("{json_str}");
     }
 }
 
@@ -552,7 +552,7 @@ pub(crate) fn import_memories_from_file(
             Ok(_) => imported += 1,
             Err(e) => {
                 // Dimension mismatch — fall back to absorb (re-encodes the text)
-                let err_str = format!("{}", e);
+                let err_str = format!("{e}");
                 if err_str.contains("dimension mismatch") {
                     match sys.engine.store.absorb(&content_clone, amplitude, None) {
                         Ok(_) => {
