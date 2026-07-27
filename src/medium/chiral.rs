@@ -363,6 +363,44 @@ impl ChiralMedium {
         self.store_vector_with_category(vector, content, importance, None)
     }
 
+    /// Rewrite a right-hemisphere wavefront's canonical id — the chiral analogue
+    /// of [`Medium::update_wavefront_id`] (issue #630).
+    ///
+    /// `store_vector` mints its own id, but callers that already own a `HyperMemory`
+    /// (import, wire sync) must keep theirs: `memory_cache` is keyed on it, and
+    /// `parents`/`connections` reference it. Unlike the flat medium, the right id is
+    /// load-bearing in FOUR places — the metadata row, `id_to_index`, the `scales`
+    /// map, and both hemisphere cross-maps — so rewriting only the metadata (the
+    /// flat-path shape) would silently orphan the scale and strand the left echo.
+    pub fn update_right_id(&mut self, old_id: &Uuid, new_id: Uuid) -> Result<(), MediumError> {
+        if old_id == &new_id {
+            return Ok(());
+        }
+        if self.right.id_to_index.contains_key(&new_id) {
+            return Err(MediumError::CorruptHrm(format!(
+                "update_right_id: {new_id} already present — refusing to collide two wavefronts"
+            )));
+        }
+        let index = self
+            .right
+            .id_to_index
+            .remove(old_id)
+            .ok_or(MediumError::WavefrontNotFound(*old_id))?;
+        self.right.id_to_index.insert(new_id, index);
+        self.right.metadata[index].id = new_id;
+
+        // Chiral scale is keyed by right id.
+        if let Some(scale) = self.scales.remove(old_id) {
+            self.scales.insert(new_id, scale);
+        }
+        // Re-point the left echo, in both directions.
+        if let Some(left_id) = self.right_to_left.remove(old_id) {
+            self.right_to_left.insert(new_id, left_id);
+            self.left_to_right.insert(left_id, new_id);
+        }
+        Ok(())
+    }
+
     /// Store with explicit category for SGA classification.
     pub fn store_vector_with_category(
         &mut self,
