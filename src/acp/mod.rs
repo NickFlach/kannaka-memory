@@ -25,6 +25,7 @@
 //! stream and the client dies with a parse error.
 
 pub mod protocol;
+mod render;
 pub mod server;
 
 use protocol::{decode, decode_error_frame};
