@@ -134,6 +134,13 @@ required-features = ["bridge"]
 name = "research"
 path = "src/bin/research.rs"
 
+# ACP agent — serves memory over the Agent Client Protocol on stdio so ACP
+# clients (buzz-acp, Buzz desktop's bring-your-own-harness gallery) can prompt
+# Kannaka. Read-only against the HRM by single-writer policy.
+[[bin]]
+name = "kannaka-acp"
+path = "src/bin/kannaka_acp.rs"
+
 [[example]]
 name = "glyph_demo"
 required-features = ["glyph"]
