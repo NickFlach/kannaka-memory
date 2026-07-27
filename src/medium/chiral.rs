@@ -1631,6 +1631,19 @@ mod tests {
              if this ever fires, the existing contradiction detector CAN see supersession \
              and ADR-0051 should reuse it instead of building a new signal"
         );
+
+        // The STRONGER claim, and the one ADR-0051 actually rests on: phase is
+        // NON-MONOTONIC here — a supersession pair sits no closer than unrelated
+        // content, so no threshold on phase gap can separate them, tuned or not.
+        // v1 of this test merely PRINTED the unrelated gap, which left the claim
+        // narrated rather than guarded: a future encoder change could make phase
+        // monotonic and this test would stay green while the ADR's premise rotted.
+        assert!(
+            supersession >= unrelated,
+            "phase became MONOTONIC w.r.t. supersession (supersession={supersession:.4} < \
+             unrelated={unrelated:.4}) — the ADR-0051 premise that no phase threshold can \
+             work is no longer supported; re-open the detect_contradictions reuse question"
+        );
     }
 
     // ── #583: the holistic hemisphere never forgets — it evolves ──

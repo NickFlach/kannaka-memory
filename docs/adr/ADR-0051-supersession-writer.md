@@ -1,134 +1,319 @@
 # ADR-0051: The Supersession Writer — Recording That One Fact Replaced Another
 
-**Status:** Proposed — **pending adversarial-design-review before any build.**
+**Status:** Proposed — **v2, revised after adversarial-design-review**
+(GO_WITH_CHANGES, 2026-07-26, `wf_229ce7ea-f88`: 5 lenses + 2 skeptics + synthesis;
+58 raw findings → 19 distinct defects). The staged shape survived every lens.
+**Four factual claims v1 made about the code were refuted and are corrected below.**
 **Relates to:** ADR-0050 (temporal/confirmation-weighted recall — this ADR unblocks
-its inert half), ADR-0049 (facet encoding — the dependency that makes detection
-tractable), ADR-0035 Cap 8 (the fields being written), ADR-0036 (dream
-consolidation — the conflict), `sensemaking::detect_contradictions` (Cap 10 — the
-existing detector, measured here and rejected for this job).
+its inert half), ADR-0049 (facet encoding — the dependency, and the source of this
+ADR's biggest structural blocker), ADR-0035 Cap 8 (the fields being written),
+ADR-0036 (dream consolidation — the conflict, worse than v1 stated),
+`sensemaking::detect_contradictions` (measured and rejected for this job).
+**Blocked on:** issue #630 (`HrmStore::insert` loses memories on chiral stores) for
+any import/wire-sync path.
 
 ## Context
 
 ADR-0050 shipped temporal ranking and closed the ranking question: a superseded fact
-can now be demoted without being evicted, measured, off by default. It also moved the
-blocker rather than removing it. Code-verified there: outside tests, the only writer
-of `effective_at` / `observed_at` / `expires_at` is `HrmStore::set_temporal`, reachable
-from exactly one place — `kannaka remember --effective/--observed/--expires`. Nothing
-auto-populates them. On the live HRM `expires_at` is `None` everywhere, so **the
-supersession half of ADR-0050 is completely inert.**
-
-Something has to write supersession down. That is this ADR.
+can be demoted without being evicted, measured, off by default. It also moved the
+blocker rather than removing it. Outside tests, the only writer of
+`effective_at` / `observed_at` / `expires_at` is `HrmStore::set_temporal`
+(`hrm_store.rs:1873`), reachable from one place —
+`kannaka remember --effective/--observed/--expires` (`kannaka.rs:1557`). On the live
+HRM `expires_at` is `None` everywhere, so **the supersession half of ADR-0050 is
+completely inert.** Something has to write supersession down. That is this ADR.
 
 ## The obvious reuse does not work, and we measured it
 
-`sensemaking::detect_contradictions` (Cap 10) already finds "same subject, opposed
-stance": pairs with `sim(a,b) >= threshold` AND **phase gap near π**. It is used by
-`immune::classify_batch`. Reusing it was the first candidate.
+`sensemaking::detect_contradictions` (Cap 10, used by `immune::classify_batch`) finds
+"same subject, opposed stance": high similarity AND **phase gap near π**. It cannot do
+this job. `content_born_phase` is deliberately content-**smooth** — its doc comment
+says it maps "identical content to identical phase" — and a superseded fact differs
+from its replacement by a *single value token*. **The pair that most needs detecting
+is the pair that looks most alike.**
 
-It cannot do this job, and the reason is structural. `content_born_phase` is
-deliberately content-**smooth** — its own doc comment says it maps "identical content
-to identical phase", specifically so belief-cores cluster instead of scattering like a
-hash. A superseded fact differs from its replacement by a *single value token*. **The
-pair that most needs detecting is the pair that looks most alike.**
-
-Probe (`chiral::tests::supersession_pairs_are_not_phase_opposed`, kept as a
-regression test):
+Probe (`chiral::tests::supersession_pairs_are_not_phase_opposed`, kept as a permanent
+regression pin):
 
 | pair | phase gap |
 |---|---|
 | `"...channel is twelve"` vs `"...channel is twentyseven"` (supersession) | **0.6341 rad** |
 | `"...channel is twelve"` vs `"mycelium spreads beneath the forest floor"` (unrelated) | **0.5415 rad** |
-| opposed-stance threshold (`π/2`) | 1.5708 rad |
+| opposed threshold (`π/2`) | 1.5708 rad |
 
-Two findings, and the second is the stronger one:
+Supersession is nowhere near opposed, and **phase does not even order these
+correctly** — the supersession pair scores a *larger* gap than unrelated content.
+Non-monotonic, so no threshold on phase gap can work.
 
-1. A supersession pair is nowhere near phase-opposed (0.63 ≪ 1.57), so
-   `detect_contradictions` will **never** flag it.
-2. **Phase does not even order these correctly.** The supersession pair has a *larger*
-   phase gap than a completely unrelated pair. Phase is not merely insufficient here —
-   it is non-monotonic with respect to the distinction we need, so **no threshold on
-   phase gap can work**, tuned or otherwise.
+The review sharpened this and corrected one popular derivation. With belief phase OFF
+(the default, `chiral.rs:35-39`) every stored phase is literally `0.0`, so
+`detect_contradictions`' gap is 0 for *every* pair — the conclusion is stronger than
+the phase-gap argument, and should be stated that way. **v2 correction:** the probe
+test as committed asserts only `supersession < π/2`; it *prints* the unrelated gap
+without asserting it, so the non-monotonicity this ADR calls the stronger finding is
+narrated rather than guarded. It must gain
+`assert!(supersession >= unrelated)`, plus a case going through `ChiralMedium::store`
+with `KANNAKA_BELIEF_PHASE=1`, plus one re-read after `dream` (which rephases with the
+uncentered function, `chiral.rs:1177-1185`).
 
-This is the same shape as the ADR-0047 refutation (phase is content-born and unread by
-recall). Phase keeps being the intuitive answer and keeps not being the answer.
+This ADR does **not** retire `detect_contradictions` — it rejects reuse for this job.
 
 ## Decision
 
-Supersession is written by a **staged writer**, where each stage must earn the next by
-measurement. Detection rides on **facets**, not phase, and not on whole compound
-memories.
+A **staged writer**, each stage earning the next by measurement. Detection rides on
+facets, not phase, and not on whole compound memories.
 
-**Stage 0 — explicit declaration. No judgement, ships first.**
-`kannaka remember "<text>" --supersedes <id>` stamps `expires_at = now` on the named
-memory and `observed_at = now` on the new one, through the existing
-`HrmStore::set_temporal`. Zero inference, zero risk of a wrong call, and it makes
-ADR-0050's supersession half genuinely usable today for any caller that already knows
-the relationship (the swarm, the nostr membrane, and any tool with a source of truth
-do). This is the whole of what ships without further review.
+### Stage 0 — explicit declaration. No judgement, ships first.
 
-**Stage 1 — propose, do not apply.**
-A detector emits supersession *candidates* to an observation channel and writes
-nothing. Candidate signal, keyed on ADR-0049 facets rather than compound memories:
+`kannaka remember "<text>" --supersedes <id>`, **node-local**.
 
-> two facets whose **subject+attribute** resonate above a high threshold but whose
-> **value** differs, where the newer facet's `observed_at` is later.
+**The stamp is derived, never read from the clock:**
+`expires_at = replacement.observed_at.unwrap_or(replacement.created_at)`.
 
-Facets are the right unit precisely because the encoder arc proved compound memories
-smear — you cannot reliably read "same subject, different value" out of a blurred
-wavefront. **This makes ADR-0051 depend on ADR-0049 being built.** Stage 1 cannot be
-implemented before facets exist; attempting it on compound memories is the mistake
-this ADR exists to avoid.
+v1 said `expires_at = now`, which was wrong three ways at once. Backfilling three known
+versions in one session would stamp v1 and v2 milliseconds apart, destroying the fact
+that v1 died years before v2; re-running a declaration would move the expiry forward,
+since `set_temporal` overwrites unconditionally with no journal; and a Stage-2 writer
+calling `Utc::now()` inside dream would persist a wall clock into `WavefrontMeta`,
+breaking the #521 byte-identical-dream contract. The L8 fixture already had the right
+semantics and this ADR should have copied them: version *v* expires exactly when
+version *v+1* was observed — **that is what supersession is.**
 
-**Stage 2 — auto-apply, behind an off-by-default flag, only if Stage 1 measures well.**
-Same discipline as ADR-0050 and ADR-0048: a flag, a default that is byte-identical to
-not having the feature, and pre-registered gates.
+Skip any target already expired at or before that value (idempotent re-runs). Support
+`--observed <iso>` alongside `--supersedes` so backfill can state the real instant.
 
-## Measurement (proposed L9)
+**~~Usable today by the swarm and nostr membrane.~~ REFUTED — Stage 0 is node-local.**
+`handlers/swarm.rs:1025` absorbs peer content via `remember_with_category`, minting a
+**fresh local uuid** and discarding the peer's id, while the actual cross-node join key
+is `blake3(normalize(content))` (`absorb_gate.rs:188-193`). There is no wire path for a
+post-hoc metadata update — `KANNAKA.memory.new` is emitted once at creation — and
+`swarm sync` is Kuramoto phase reconciliation only, so two nodes that disagree never
+converge. Any swarm-replicated supersession is a **blocking prerequisite**, not a
+consequence: it would need a content-hash-keyed, signed subject routed through
+`admit()`.
 
-A new research level, gates registered before running, following L8's shape (paired
-arms, ≥10 corpus seeds, hard liveness gate not folded into fitness):
+### Stage 1 — propose, do not apply.
 
-- **G1 precision** — of the pairs the detector calls supersession, what fraction truly
-  are? This is the gate that matters. A false positive expires a *true* memory, which
-  is the one genuinely harmful outcome here.
-- **G2 recall** — of the true supersessions, what fraction are found? Deliberately
-  weighted *below* precision: missing a supersession leaves today's behaviour, calling
-  a false one degrades a true fact.
-- **G3 negative control** — near-duplicate but *compatible* facts (elaborations,
-  restatements, partial overlap) must NOT be called supersessions. This is where a
-  naive similarity threshold will fail, and it must be measured, not assumed.
-- **G4 non-contradiction control** — a corpus with no contradictions must produce zero
-  candidates. Zero, not "few".
+A detector emits supersession *candidates* and writes nothing. Candidate rule, revised:
 
-L8's lesson applies directly and is not optional: **stamp the whole fixture.** L8's
-first run failed every gate because unstamped distractors were silently dated to
-`now`. Any L9 fixture must set timestamps on every memory it creates, including
-controls.
+> two comparable units whose **subject+attribute** match but whose **value** differs,
+> where the newer unit's `observed_at.unwrap_or(created_at)` is strictly later, the
+> normalized value spans are **mutually exclusive** (neither substring nor superset of
+> the other), and their `effective_at` intervals are **not disjoint**.
 
-## Consequences and open risks
+Four amendments over v1, each from a refutation:
 
-**Dream consolidation may destroy the evidence first.** Two versions of a fact are
-near-identical, which makes them prime candidates for ADR-0036 resonance-merge. If
-dream merges them before supersession is recorded, the contradiction is not resolved —
-it is *blurred into one wavefront*, which is the worst outcome available: a memory that
-asserts both values weakly. This interaction must be settled before Stage 2, and it may
-force facets to be merge-exempt (ADR-0049 already exempts them from merge grouping for
-a different reason — that exemption may be load-bearing here too).
+- **`created_at` fallback in the rule text, not the implementation.** v1 required
+  "the newer facet's `observed_at` is later", but `observed_at` is `None` across the
+  entire live corpus and nothing ingested over the swarm ever acquires one. `None` vs
+  `None` — neither is later — so the v1 rule emits **zero candidates in production**
+  while the mandated fully-stamped fixture measures a state production never reaches.
+  This is the ADR-0047 inertness shape for the third time. The ranking side already
+  solved it: `hemisphere.rs:119` is `observed_at.unwrap_or(created_at)`.
+- **Equal timestamps emit nothing.** Never guess direction.
+- **Disjoint `effective_at` intervals are a timeline, not a supersession.**
+- **Mutual exclusivity** stops terse-stored-later from expiring a more informative
+  earlier elaboration.
 
-**Single-writer discipline is binding.** Only the writer may stamp. `attention serve`
-and every other daemon run `KANNAKA_READONLY=1`, where `save_medium` early-returns —
-a detector running there would compute candidates that silently never persist, which
-is exactly the ADR-0047 review's finding about `reinforce_link`. Stage 1's detector
-therefore *emits* candidates; only the single writer consumes them.
+**Comparable unit = facet *or* whole atomic memory.** v1 keyed Stage 1 solely on
+facets, which the review showed is unbuildable as written: ADR-0049 decomposes only
+compound, ≥2-clause lived content, but the canonical supersession shape — and every
+family in the L8 corpus — is **single-clause**, so it never becomes a facet at all.
+Facets remain the right unit for compound content and the hard dependency stands for
+that case; they are an additional source of comparable units, not the only one.
 
-**Wrongly expiring a true memory is recoverable but not free.** ADR-0050's floor is
-non-zero, so a wrongly-expired memory is demoted, not deleted, and `set_temporal` can
-clear the stamp. That is the safety margin that makes Stage 2 thinkable at all — but
-it argues for a conservative detector and for keeping the floor generous, which is
-also what L8's half-life sweep independently concluded (freshness-promotion is nearly
-free; supersession-demotion is what costs).
+**No (subject, attribute, value) structure exists yet.** ADR-0049 commits only to
+`parent_id` / `is_facet` / `decomposed` and produces *text*; similarity is whole-vector
+cosine over a whitespace bag-of-words encoder, and no API scores a sub-span. An
+implementer handed the v1 rule has nothing to key on and will silently fall back to
+whole-facet cosine. Before Stage 1 is designed, ADR-0049 must either emit persisted
+normalized S/A/V slots (three more trailing fields, deterministic extractor, own
+fallback struct) **or** Stage 1 must be restated as a lexical operation over normalized
+strings with resonance demoted to a pre-filter. ADR-0049's facet-quality gate must also
+be amended to **retain** short attribute-value assertions rather than drop them as
+low-word-count, as a named test case.
 
-**Not addressed here:** auto-refreshing `observed_at` when a fact is merely re-asserted
-without contradiction (the "confirmation" half of the original question — cheap and
-probably worth doing before any of this), partial/graded disagreement, and who is
-allowed to expire a memory that arrived over the swarm rather than locally.
+### Stage 2 — auto-apply behind an off-by-default flag, only if Stage 1 measures well.
+
+Byte-identical default, pre-registered gates, same discipline as ADR-0048/0050.
+Gate on **cardinality**: maintain a per-(subject, attribute) observed-value set and
+refuse to auto-apply for any key ever seen with ≥2 concurrently-current values; an
+unseen key defaults to "not known to be single-valued" → propose only.
+
+## The constellation is the unit of temporal truth
+
+**The single biggest structural finding, and it inverts v1's "Stage 0 ships safely
+now".** Once ADR-0049 lands, the stamp and the reader sit on opposite records:
+
+- `temporal_weight` is evaluated on `self.metadata[i]` — the **scanned** row, i.e. the
+  facet (`hemisphere.rs:402`). A **parent** stamp is invisible to ranking.
+- `swarm brief` does `store.get(&r.id)` on the already-resolved id, i.e. the **parent**
+  (`kannaka.rs:3633-3637`). A **facet** stamp is invisible to the brief.
+- `set_temporal` keys on exactly one id with no facet walk.
+
+Every stamp reaches exactly one of the two consumers, and the wrong one in each
+direction. **Stage 0 goes inert the day facets ship.**
+
+Therefore: `set_temporal` resolves a facet up to its parent and **fans the write to the
+parent and every child sharing that `parent_id`**, through one shared helper so no
+caller can stamp half a constellation. `resolve_facets` carries the most-restrictive
+temporal spec of parent+facet onto the resolved result. Facets inherit the parent's
+`created_at`/`observed_at`/`effective_at` verbatim — never the backfill instant — with
+`facet.created_at == parent.created_at` pinned in the round-trip fixture.
+
+## Prerequisites — these land before the first stamp exists
+
+**P1. A stamp must be clearable. It currently is not.**
+v1 claimed `set_temporal` can clear a stamp and called that "the safety margin that
+makes Stage 2 thinkable at all". **False.** `hrm_store.rs:1885-1888` is
+`if exp.is_some() { meta.expires_at = exp; }` — `None` means *leave untouched*,
+contractually, and the same guard repeats at all four write surfaces. The sole call
+site is itself wrapped in an `is_some()` check, `parse_ts` exits(2) on anything not
+RFC3339 so no clear sentinel is expressible, and there is no `kannaka temporal` verb,
+so `set_temporal` is unreachable for any pre-existing id. Required: a tri-state
+signature (outer `None` = leave, `Some(None)` = clear) or a sibling `clear_temporal`,
+keeping the current signature as a wrapper; plus a `kannaka temporal <id>` verb.
+Test: stamp → save → reload → clear → save → reload → `expires_at == None`.
+
+**P2. The write needs a commit point and mutual exclusion.**
+The new memory is flushed to disk *before* `set_temporal` runs, and `set_temporal` only
+`mark_dirty()`s; the id is printed and blocking NATS work happens before `impl Drop`
+saves. A kill in that window leaves the new fact live, the old un-expired, exit 0.
+Separately, the `remember` arm takes **no write lock** while every other writer does,
+and `swarm join` holds a RAM snapshot it never re-reads and flushes every 30s — which
+rewrites the whole file from stale state. The `flock` is `#[cfg(unix)]`, so **on the
+Windows seed box there is no lock at all.** Required: resolve and stamp before the
+print and before any network I/O; one dirty window so a single atomic
+`save_medium` rename commits the whole supersession; take the write lock in the
+remember arm and hard-fail when the daemon holds it; make `swarm join` reload on mtime
+change or route `--supersedes` as a request the daemon consumes.
+
+**P3. Stage 0 fails silently in four ways.** `set_temporal` returns `bool` and the call
+site discards it; a non-HRM backend drops the flags with no message; `warn_if_readonly`
+prints to stderr and still exits 0; and a cache-only match reports `found = true`
+although `sync_cache_to_medium` writes back energy only. Required: return an enum
+(`AuthoritativeWrite` / `CacheOnly` / `NotFound`); `--supersedes` exits 2 on anything
+else; reject self-supersession; hard-fail under `KANNAKA_READONLY=1`.
+
+**P4. `swarm brief` hard-drops expired memories, on the default config.**
+`kannaka.rs:3630-3639` filters on `is_current` before building consensus, with no env
+gate — while `KANNAKA_RECALL_TEMPORAL_EXP` defaults to 0.0 and skips the temporal
+factor entirely. **Net on a stock install: `--supersedes X` produces zero ranking
+demotion and total exclusion of X from the brief.** The inverse of what ADR-0050
+designed. Convert the filter to a demotion (keep the item, scale confidence by the
+floor, tag `"current": false` in `--json`) before turning ADR-0050 on anywhere.
+
+## The dream interaction — worse than v1 said, and v1 described it wrongly
+
+v1 said merge would blur two versions into "a memory that asserts both values weakly".
+**That is factually wrong.** ADR-0036's `vec_rep = normalize(Σ vec_i)` was never
+implemented. `apply_consolidation` picks a carrier by
+`argmax energy * exp(-0.001 * age_days)`, mutates only energy and tier, and
+**hard-removes every non-carrier**. Nothing temporal is read anywhere in the pass and
+`usable[]` exempts only `Tier::Pinned`. So an old, high-energy, *expired* fact can win
+the carrier vote, keep its `expires_at`, and the current replacement is **deleted
+outright**. A blur would at least read as low confidence; a deletion does not.
+
+Preconditions are stiffer than four lenses assumed — `ConsolidateOpts::default().mode`
+is `DryRun`, production is force-downgraded to dry-run under belief unless
+`KANNAKA_MERGE_UNDER_BELIEF=1`, and the cosine ≥ 0.92 gate is rarely met by short
+facts under the BoW encoder — so this is a major, not a blocker. Fix regardless: add
+the temporal triple to `Snap`, split any group whose members disagree on
+`expires_at.is_some()`, and make carrier selection lexicographic on
+`(is_current, eff_strength)`.
+
+**The eviction paths are blind too.** `lowest_value_overflow_ids` filters only on
+`Tier::Pinned` and `triage_select` retains the *highest-amplitude* member at cosine ≥
+0.95 — which is the old accessed fact, not the current one. Give both the exemption
+Pinned has, skip the redundancy check when exactly one member is expired, and prefer
+`(is_current, amplitude)` for retention, with a bounded
+`KANNAKA_EXPIRED_RETENTION_DAYS` escape hatch.
+
+## Measurement (L9), pre-registered and frozen before any detector code
+
+- **G1 precision** on **ordered** candidates `(expired_id, replacement_id)` — v1 scored
+  unordered pairs, so a detector that always expires the wrong member would post 1.0
+  on every gate and Stage 2 would then expire every *current* fact in the corpus. A
+  true positive requires pair **and** direction. Add a **direction-accuracy gate at
+  exactly 1.0**: an inverted call is strictly worse than no call.
+- **G2 recall**, weighted below precision — but a **hard floor**, stated as a number,
+  not merely deweighted.
+- **G3 negative controls, each scored separately** (pooling lets easy controls mask
+  hard ones): multi-valued attributes (the L8 vocabulary already contains one —
+  `["apiary","hive","frames"]`), scope-disjoint facts, numeric/unit/date format
+  variants, disjoint `effective_at` intervals, reversed elaboration, and negation
+  (which shares the value token, so a value-difference test never fires — a separate
+  candidate reason with independently measured precision).
+- **G4 zero candidates on a clean corpus** — adversarial, not benign: shared subjects,
+  shared attributes, shared value tokens, function-word-only differences.
+- **G5 liveness — new, hard PASS/FAIL outside fitness, per seed.** v1 had no liveness
+  metric, and a detector at threshold 1.0 passes G1 (0 FP / 0 calls), G3 and G4 while
+  posting the **best printable fitness** — three of four gates green for a dead
+  detector, with the gradient pointing at threshold → 1.0. Every one of the ≥10 seeds
+  must yield ≥1 true positive; not an OR across runs, which is how L8's own liveness
+  check was satisfiable by a single candidate in ten corpora.
+- **G6 constellation survival** — stamp the fixture, run a full `dream` with
+  `KANNAKA_CONSOLIDATE=on`, `KANNAKA_MERGE_UNDER_BELIEF=1` and `KANNAKA_MAX_MEMORIES`
+  forcing the size cap, and assert every superseded id still resolves to its original
+  content, at 1.0. **Assert inside the arm that the merge actually applied** — else the
+  dry-run downgrade makes dream a no-op and the arm passes for nothing.
+
+**Three arms the harness asserts must come out NOT_SUPPORTED**, failing the run if they
+pass: threshold = 1.0; a **timestamp-shuffled control** (identical corpus, `observed_at`
+permuted — if precision does not collapse to chance, the detector is reading text
+overlap, not time); and the **unstamped arm** (every `observed_at = None`, ordering from
+`created_at` only) which is the actual live-corpus condition.
+
+**Statistics.** Gate G1 on **MIN over seeds** plus an absolute zero-false-positive
+count, not the mean: with ~240 ordered true pairs, mean precision 0.97 is ~7 wrongly
+expired true memories, and one catastrophic seed hides behind nine clean ones. Emit one
+TSV row per seed. Adopt L8's `0.5 = no evidence` convention so 0/0 precision fails
+rather than scores. Note honestly that L8's "10 seeds" are rotations of a 16-template
+table sharing 11 of 12 families between consecutive seeds — grow the tables or say so.
+
+**Fixture hygiene.** Stamp the whole fixture — L8's first run failed every gate because
+unstamped distractors were silently dated to `now` — but **pair it with the unstamped
+arm above**, or it hides the inertness rather than exposing it. Stamp **by returned
+Uuid, never by content match** (L8 keys on `m.content == text`, and nothing dedups
+identical content), with a pre-gate self-check that aborts if versions are
+indistinguishable. Keep failed-fixture rows in `results-L9.tsv` the way `results-L8.tsv`
+kept v1-unaged vs v2-aged; the delta is what makes the lesson legible. Define truth on
+the **transitive reduction** — a true positive is `(older, nearest-newer)` only, and
+Stage 2 writes `expires_at = min(observed_at over all newer candidates)` so the value is
+order-independent. Include a 4-version family so this is exercised at all.
+
+## Consequences and remaining risks
+
+**Wrongly expiring a true memory is currently unrecoverable** (P1), **invisible** on the
+default ranking config and **fatal on the brief path** (P4), and can be made
+**permanent by deletion** (dream merge, eviction). That is why precision dominates
+recall and why Stage 2 is the last thing built, not the first.
+
+**Not addressed here:** auto-refreshing `observed_at` on non-contradicting
+re-assertion — the "confirmation" half of the original question, cheap and probably
+worth doing before any of this; graded/partial disagreement; and swarm-replicated
+supersession, now an explicit blocking prerequisite rather than a footnote.
+
+**Also folded in wherever convenient:** wire sanitization must extend `CleanFields` and
+add the temporal triple to `canonical_mem` behind a **new domain tag** (old signatures
+must fail, not silently verify a zeroed triple) — and must land *together with* any
+change that lets `insert` carry temporal fields (#630), never after, or a peer gains
+ungated control of `expires_at` on our store. The stale
+"MUST stay the LAST serialized fields" comment on `WavefrontMeta` is now wrong —
+`provenance` is the actual tail — and should become one ordered append-only invariant
+list before two ADRs edit that struct.
+
+## Revised build order
+
+0. **ADR text** — this document (done).
+1. **Enabling PR:** P1 + P2 + P3 together. One coherent change to the write path;
+   splitting it ships a half-safe writer.
+2. **Stage 0 PR:** `--supersedes` with the derived stamp, plus its `cargo test` gates.
+3. **Parallel, independent:** issue #630 and the export/import temporal round trip.
+4. **Before `KANNAKA_RECALL_TEMPORAL_EXP` is enabled anywhere:** P4, the dedup fix
+   (compute dedup at `temporal_exp = 0.0` so demotion can never widen the swarm
+   re-absorption window), and the eviction exemptions.
+5. **Before Stage 2 is thinkable:** the dream temporal exclusion + G6.
+6. **ADR-0049 amendments:** constellation-as-unit, S/A/V slots or the lexical
+   restatement, retain short assertions.
+7. **L9 pre-registration, frozen**, then Stage 1, then Stage 2 gated on its numbers.
