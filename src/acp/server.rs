@@ -11,6 +11,8 @@
 //! the memory substrate is behind [`MemorySource`], so the whole protocol
 //! surface is unit-testable against a mock with no HRM file on disk.
 
+use super::buzz_cli::{parse_context, MessageSink};
+use super::prompt::extract_query;
 use super::protocol::{error_code, Frame, Inbound};
 use super::render::render;
 use serde_json::{json, Value};
@@ -58,6 +60,10 @@ pub struct Agent<M: MemorySource> {
     next_session: u64,
     /// Version agreed during `initialize`; `None` until then.
     negotiated_version: Option<u64>,
+    /// Where to post replies so they land in a Buzz channel. `None` means
+    /// stream-only, which is correct for the desktop harness gallery — it
+    /// renders `agent_message_chunk` itself, so posting would double the answer.
+    sink: Option<Box<dyn MessageSink>>,
 }
 
 impl<M: MemorySource> Agent<M> {
@@ -68,7 +74,17 @@ impl<M: MemorySource> Agent<M> {
             top_k,
             next_session: 0,
             negotiated_version: None,
+            sink: None,
         }
+    }
+
+    /// Post replies through `sink` in addition to streaming them.
+    ///
+    /// Used when driven by `buzz-acp`, which logs `agent_message_chunk` but
+    /// never publishes it — without a sink the answer never reaches the channel.
+    pub fn with_sink(mut self, sink: Box<dyn MessageSink>) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
     /// The version agreed with the client, for diagnostics.
@@ -202,7 +218,13 @@ impl<M: MemorySource> Agent<M> {
             return vec![ok(id, json!({ "stopReason": "cancelled" }))];
         }
 
-        let query = extract_text(&params["prompt"]);
+        // Two views of the same prompt, deliberately: `full` retains the
+        // harness sections that carry the reply destination, while `query` is
+        // just the message being answered. Resonating `full` would let the
+        // `[Context]` boilerplate dominate the query vector and would echo
+        // harness internals back into the channel.
+        let full = extract_text(&params["prompt"]);
+        let query = extract_query(&full);
         if query.trim().is_empty() {
             return vec![
                 update_chunk(session_id, "No query text in prompt."),
@@ -218,10 +240,27 @@ impl<M: MemorySource> Agent<M> {
             Err(e) => format!("Recall failed: {e}"),
         };
 
-        vec![
-            update_chunk(session_id, &answer),
-            ok(id, json!({ "stopReason": "end_turn" })),
-        ]
+        let mut frames = vec![update_chunk(session_id, &answer)];
+
+        // Post to the channel when a harness supplied a reply destination. A
+        // prompt with no `[Context]` block is not channel-driven, so there is
+        // nowhere to post and streaming alone is the whole answer.
+        if let Some(sink) = self.sink.as_mut() {
+            if let Some(target) = parse_context(&full) {
+                if let Err(e) = sink.send(&target, &answer) {
+                    // Report as content, not as an RPC error: the recall
+                    // succeeded, and failing the turn would make buzz-acp treat
+                    // a transient relay problem as an agent fault.
+                    frames.push(update_chunk(
+                        session_id,
+                        &format!("(reply was not posted to the channel: {e})"),
+                    ));
+                }
+            }
+        }
+
+        frames.push(ok(id, json!({ "stopReason": "end_turn" })));
+        frames
     }
 }
 

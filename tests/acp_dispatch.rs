@@ -294,3 +294,163 @@ mod dispatch {
     }
 
 }
+
+/// Tests for channel posting: the agent must send its answer through the sink
+/// when — and only when — a harness supplied a `[Context]` reply destination.
+mod channel_posting {
+    use kannaka_memory::acp::buzz_cli::{MessageSink, ReplyTarget};
+    use kannaka_memory::acp::protocol::{Frame, Inbound};
+    use kannaka_memory::acp::server::{Agent, MemorySource, Recollection};
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+
+    /// Records what was posted; optionally fails to exercise the error path.
+    struct MockSink {
+        sent: Arc<Mutex<Vec<(ReplyTarget, String)>>>,
+        fail: Option<String>,
+    }
+
+    impl MessageSink for MockSink {
+        fn send(&mut self, target: &ReplyTarget, body: &str) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((target.clone(), body.to_string()));
+            match &self.fail {
+                Some(e) => Err(e.clone()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    struct OneHit;
+
+    impl MemorySource for OneHit {
+        fn recall(&mut self, _q: &str, _k: usize) -> Result<Vec<Recollection>, String> {
+            Ok(vec![Recollection {
+                content: "the swarm hums".to_string(),
+                similarity: 0.9,
+                age_hours: 1.0,
+            }])
+        }
+    }
+
+    const CHANNEL: &str = "8f14e45f-ceea-467a-9c1e-1b2c3d4e5f60";
+
+    fn prompt_with_context() -> String {
+        format!(
+            "[Context]\nScope: channel\nChannel: general (#{CHANNEL})\n\n[Event]\nwhat's up?"
+        )
+    }
+
+    /// Build an agent wired to a recording sink; returns the agent, the log, and
+    /// an opened session id.
+    fn wired(fail: Option<&str>) -> (Agent<OneHit>, Arc<Mutex<Vec<(ReplyTarget, String)>>>, String) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sink = MockSink {
+            sent: Arc::clone(&sent),
+            fail: fail.map(str::to_string),
+        };
+        let mut a = Agent::new(OneHit, 3).with_sink(Box::new(sink));
+        a.handle(Inbound::Request {
+            id: json!(1),
+            method: "initialize".to_string(),
+            params: json!({"protocolVersion": 2}),
+        });
+        let frames = a.handle(Inbound::Request {
+            id: json!(2),
+            method: "session/new".to_string(),
+            params: json!({"cwd": "."}),
+        });
+        let sid = match &frames[0] {
+            Frame::Result { result, .. } => result["sessionId"].as_str().unwrap().to_string(),
+            other => panic!("expected result, got {other:?}"),
+        };
+        (a, sent, sid)
+    }
+
+    fn prompt(a: &mut Agent<OneHit>, sid: &str, text: &str) -> Vec<Frame> {
+        a.handle(Inbound::Request {
+            id: json!(9),
+            method: "session/prompt".to_string(),
+            params: json!({"sessionId": sid, "prompt": [{"type": "text", "text": text}]}),
+        })
+    }
+
+    fn result_of(frame: &Frame) -> &Value {
+        match frame {
+            Frame::Result { result, .. } => result,
+            other => panic!("expected result frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn answer_is_posted_to_the_channel_from_context() {
+        let (mut a, sent, sid) = wired(None);
+        let frames = prompt(&mut a, &sid, &prompt_with_context());
+
+        let log = sent.lock().unwrap();
+        assert_eq!(log.len(), 1, "exactly one post per turn");
+        assert_eq!(log[0].0.channel, CHANNEL);
+        assert!(log[0].1.contains("the swarm hums"), "got: {}", log[0].1);
+        // Streaming still happens — the desktop and the harness log rely on it.
+        assert!(matches!(frames[0], Frame::Notification { .. }));
+        assert_eq!(result_of(frames.last().unwrap())["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn posted_body_matches_the_streamed_chunk() {
+        let (mut a, sent, sid) = wired(None);
+        let frames = prompt(&mut a, &sid, &prompt_with_context());
+        let streamed = match &frames[0] {
+            Frame::Notification { params, .. } => params["update"]["content"]["text"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            other => panic!("expected notification, got {other:?}"),
+        };
+        assert_eq!(sent.lock().unwrap()[0].1, streamed);
+    }
+
+    #[test]
+    fn nothing_is_posted_without_a_context_block() {
+        // Desktop harness gallery: it renders the chunk itself, so posting
+        // would duplicate the answer.
+        let (mut a, sent, sid) = wired(None);
+        let frames = prompt(&mut a, &sid, "just asking directly");
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(result_of(frames.last().unwrap())["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn post_failure_is_reported_as_content_and_still_ends_the_turn() {
+        let (mut a, _sent, sid) = wired(Some("relay unreachable"));
+        let frames = prompt(&mut a, &sid, &prompt_with_context());
+
+        // answer chunk, failure chunk, result
+        assert_eq!(frames.len(), 3);
+        match &frames[1] {
+            Frame::Notification { params, .. } => {
+                let text = params["update"]["content"]["text"].as_str().unwrap();
+                assert!(text.contains("relay unreachable"), "got: {text}");
+                assert!(text.contains("not posted"), "got: {text}");
+            }
+            other => panic!("expected failure notification, got {other:?}"),
+        }
+        // A failed post must not surface as an RPC error: buzz-acp would treat
+        // that as an agent fault and recycle the process.
+        assert_eq!(result_of(&frames[2])["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn cancelled_turn_posts_nothing() {
+        let (mut a, sent, sid) = wired(None);
+        a.handle(Inbound::Notification {
+            method: "session/cancel".to_string(),
+            params: json!({"sessionId": sid}),
+        });
+        let frames = prompt(&mut a, &sid, &prompt_with_context());
+        assert_eq!(result_of(&frames[0])["stopReason"], "cancelled");
+        assert!(sent.lock().unwrap().is_empty());
+    }
+}

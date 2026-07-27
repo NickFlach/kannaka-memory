@@ -24,6 +24,8 @@
 //! Every diagnostic goes to stderr. A stray `println!` corrupts the frame
 //! stream and the client dies with a parse error.
 
+pub mod buzz_cli;
+mod prompt;
 pub mod protocol;
 mod render;
 pub mod server;
@@ -145,6 +147,20 @@ pub fn run(top_k: usize) -> Result<(), String> {
 
     let memory = HrmMemory::open(dir)?;
     let mut agent = Agent::new(memory, top_k);
+
+    // Attach a channel sink only if the `buzz` CLI is actually runnable.
+    // Probing once here turns a missing CLI into one startup line instead of a
+    // failure on every turn. Without a sink the agent still answers — it just
+    // streams, which is exactly right for the desktop harness gallery.
+    let cli = buzz_cli::BuzzCli::new(
+        std::env::var("BUZZ_CLI").unwrap_or_else(|_| "buzz".to_string()),
+    );
+    if cli.is_available() {
+        eprintln!("[kannaka-acp] buzz CLI found — replies will post to the channel");
+        agent = agent.with_sink(Box::new(cli));
+    } else {
+        eprintln!("[kannaka-acp] buzz CLI not found — streaming replies only");
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
