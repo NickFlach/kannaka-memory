@@ -126,6 +126,11 @@ path = "src/bin/kannaka_nostr_bridge.rs"
 required-features = ["bridge"]
 
 [[bin]]
+name = "kannaka-hive-bridge"
+path = "src/bin/kannaka_hive_bridge.rs"
+required-features = ["bridge"]
+
+[[bin]]
 name = "research"
 path = "src/bin/research.rs"
 

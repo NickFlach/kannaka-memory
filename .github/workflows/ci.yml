@@ -62,6 +62,26 @@ jobs:
         # naming them.
         run: cargo test --lib --bins --test nats_contract_conformance --test attention_gravity_e2e
 
+      - name: Bridge feature (hive_bridge policy/map/roster + bridge daemons)
+        working-directory: kannaka-memory
+        # `bridge` is NOT in default features, so the step above compiles
+        # neither `hive_bridge` (it is `#[cfg(feature = "bridge")]` in lib.rs)
+        # nor the two bridge daemons (`required-features = ["bridge"]`, which
+        # `--bins` therefore skips). Without this step the hive_bridge unit
+        # tests never execute and the daemons are never even compile-checked.
+        #
+        # That matters most for `hive_bridge::policy`: it is the FAIL-CLOSED
+        # per-channel gate deciding what Hive traffic may leave for NATS, and
+        # its ordering guard against replayed metadata events is exactly the
+        # kind of logic that must not be able to rot silently.
+        #
+        # Scoped to the module + a compile check rather than a second full
+        # `--lib` run, so this costs one extra dependency (tungstenite) and not
+        # a duplicated test suite.
+        run: |
+          cargo test --features bridge --lib hive_bridge::
+          cargo build --features bridge --bins
+
       - name: Clippy
         working-directory: kannaka-memory
         # Scope to the lib + main bin. --all-targets pulls in the
