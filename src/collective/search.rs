@@ -171,7 +171,7 @@ pub fn collective_search(
     let query_hash = hash_query(query_vector);
     let mut results = Vec::new();
 
-    let hashes: Vec<String> = store.list_hashes().into_iter().map(|s| s.to_string()).collect();
+    let hashes: Vec<String> = store.list_hashes().into_iter().map(str::to_string).collect();
 
     for hash in &hashes {
         let stored = match store.get(hash) {
