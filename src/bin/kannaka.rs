@@ -696,6 +696,38 @@ pub(crate) fn warn_if_readonly(verb: &str) {
 /// from being lost on systemd SIGKILL (Drop doesn't always complete).
 /// Returns the published phase value.
 #[cfg(feature = "nats")]
+/// Build the swarm slice a Queen step should actually run over: the peer
+/// phases heard from NATS, plus THIS agent's own current phase (#581).
+///
+/// `queen_sync_step` derives `agent_count` from `swarm.len()` and looks up
+/// local handedness by searching `swarm` for its own `agent_id`, so peer
+/// phases alone silently exclude the local participant from its own result.
+///
+/// Replace-or-append, deliberately: this agent may ALREADY be in the peer
+/// list from an earlier publish (its own phase read back off the stream).
+/// Blindly pushing would double-count it and inflate `agent_count` — trading
+/// the reported bug for a subtler one. The freshly derived local phase wins,
+/// since the stream copy can be up to a heartbeat stale.
+#[cfg(feature = "nats")]
+fn with_local_phase(
+    peers: &[kannaka_memory::AgentPhase],
+    queen: &kannaka_memory::QueenSync,
+    sys: &kannaka_memory::openclaw::KannakaMemorySystem,
+) -> Vec<kannaka_memory::AgentPhase> {
+    let local = queen.to_agent_phase(0, sys.engine.store.count(), 0);
+    let mut swarm: Vec<kannaka_memory::AgentPhase> = peers
+        .iter()
+        .filter(|p| p.agent_id != local.agent_id)
+        .cloned()
+        .collect();
+    swarm.push(local);
+    swarm
+}
+
+/// `joined_at` is the TRUE session start, passed in by the caller rather than
+/// stamped here (#587). This function runs on every heartbeat, so stamping
+/// `Utc::now()` locally made `joined_at` identical to `last_seen` forever and
+/// presence-backed UIs could never show real session age or uptime.
 fn swarm_publish_heartbeat(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
     my_agent_id: &str,
@@ -703,6 +735,7 @@ fn swarm_publish_heartbeat(
     transport: &kannaka_memory::nats::SwarmTransport,
     label: &str,
     identity: Option<&kannaka_memory::nats::AnnounceIdentity>,
+    joined_at: &str,
 ) -> f32 {
     let mut queen =
         kannaka_memory::QueenSync::new(kannaka_memory::QueenConfig::default(), my_agent_id);
@@ -742,7 +775,7 @@ fn swarm_publish_heartbeat(
             "ask": true, "dream": true,
             "exemplar_broadcast": true, "absorb": true,
         },
-        "joined_at": chrono::Utc::now().to_rfc3339(),
+        "joined_at": joined_at,
         "last_seen": chrono::Utc::now().to_rfc3339(),
         "memory_count": sys.engine.store.count(),
         "kannaka_version": kannaka_memory::config::VERSION,
@@ -4070,6 +4103,13 @@ fn main() {
                         }
                     };
 
+                    // True session start, stamped ONCE (#587). Every heartbeat
+                    // republishes the presence record, and each one used to
+                    // restamp `joined_at` with `Utc::now()` — so `joined_at`
+                    // always equalled `last_seen` and presence-backed UIs could
+                    // never show real session age.
+                    let session_joined_at = chrono::Utc::now().to_rfc3339();
+
                     // Stored SSO identity (swarm agent identity, step 2):
                     // when the operator is logged in via `kannaka identity`,
                     // announce + presence carry an optional identity block
@@ -4085,7 +4125,37 @@ fn main() {
                     {
                         eprintln!("[nats] Warning: announce failed: {}", e);
                     }
-                    let _ = transport.ensure_presence_stream();
+                    // #572: this was `let _ = transport.ensure_presence_stream();`.
+                    // `swarm peers` reads presence ONLY from the JetStream-backed
+                    // KANNAKA_PRESENCE stream, so if creation is denied on this
+                    // broker the agent never becomes discoverable — while join
+                    // happily reported success. Not fatal (a read-only JS identity
+                    // is a legitimate deployment), but it must be LOUD, because
+                    // the symptom otherwise is a node that looks healthy in its own
+                    // logs and is invisible to every peer.
+                    if let Err(e) = transport.ensure_presence_stream() {
+                        eprintln!(
+                            "[nats] WARNING: presence stream unavailable ({e}) — this agent will \
+                             NOT appear in `swarm peers`. Presence publishes will be accepted by \
+                             the broker and dropped."
+                        );
+                    }
+
+                    // #582: register in the QUEEN_AGENTS KV bucket. `discover_peers`
+                    // reads this bucket but nothing ever wrote it, so trust-weighted
+                    // QueenSync had no registrations and stayed at default trust.
+                    let registration = serde_json::json!({
+                        "agent_id": my_agent_id,
+                        "display_name": display_name,
+                        "kannaka_version": kannaka_memory::config::VERSION,
+                        "registered_at": session_joined_at,
+                    });
+                    if let Err(e) = transport.register_agent(&my_agent_id, &registration) {
+                        eprintln!(
+                            "[nats] Warning: QUEEN_AGENTS registration failed ({e}) — peers will \
+                             fall back to default trust for this agent"
+                        );
+                    }
 
                     let initial_phase = swarm_publish_heartbeat(
                         &mut sys,
@@ -4094,6 +4164,7 @@ fn main() {
                         &transport,
                         "initial",
                         identity.as_ref(),
+                        &session_joined_at,
                     );
                     println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
                     println!(
@@ -4222,6 +4293,7 @@ fn main() {
                             &transport,
                             "heartbeat",
                             identity.as_ref(),
+                            &session_joined_at,
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
@@ -4389,15 +4461,47 @@ fn main() {
                     println!("Left swarm cleanly ({})", my_agent_id);
                 }
                 "leave" => {
+                    // `--agent-id` must be honoured here for the same reason
+                    // `join` honours it (#589): an operator who started a
+                    // throwaway session with `swarm join --agent-id X` has no
+                    // other way to retire X. Announcing leave for
+                    // `cfg.agent.id` instead would both leave X advertised as
+                    // present and wrongly retire the configured default.
+                    const LEAVE_USAGE: &str =
+                        "Usage: kannaka swarm leave [--agent-id ID] [--nats-url URL]";
+                    let mut leave_agent_id = agent_id.clone();
+                    let mut i = command_start + 2;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--agent-id" => {
+                                leave_agent_id =
+                                    flag_value(&args, i, "--agent-id", LEAVE_USAGE).to_string();
+                                i += 2;
+                            }
+                            // `--nats-url` is consumed by resolve_nats_url below.
+                            "--nats-url" => i += 2,
+                            _ => i += 1,
+                        }
+                    }
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     if let Some(transport) = try_nats_connect(&nats_url) {
-                        if let Err(e) = transport.announce_leave(&agent_id) {
+                        if let Err(e) = transport.announce_leave(&leave_agent_id) {
                             eprintln!("[nats] Warning: leave announce failed: {}", e);
                         }
-                        println!("Left swarm ({})", agent_id);
+                        // #590: the leave ANNOUNCE is an event; it does not touch
+                        // the presence record. Without an explicit retraction the
+                        // agent stayed in `swarm peers` until the presence
+                        // stream's 24h max_age expired it — a full day of ghosts.
+                        if let Err(e) = transport.publish_presence_left(&leave_agent_id) {
+                            eprintln!(
+                                "[nats] Warning: presence retraction failed ({e}) — peers may \
+                                 show this agent until the 24h presence TTL expires"
+                            );
+                        }
+                        println!("Left swarm ({})", leave_agent_id);
                     } else {
                         eprintln!("Warning: could not connect to NATS to announce leave");
-                        println!("Left swarm locally ({})", agent_id);
+                        println!("Left swarm locally ({})", leave_agent_id);
                     }
                 }
                 "listen" => {
@@ -4904,7 +5008,14 @@ fn main() {
                             .unwrap()
                         );
                     } else {
-                        let state = queen.queen_sync_step(&nats_phases);
+                        // #581: include OURSELVES in the swarm we compute over.
+                        // `queen_sync_step` takes `agent_count = swarm.len()` and
+                        // looks up local handedness by searching `swarm` for
+                        // `self.agent_id`, so passing peer phases alone silently
+                        // excluded this agent from its own Queen state — an
+                        // off-by-one on every metric, and no local handedness.
+                        let swarm = with_local_phase(&nats_phases, &queen, &sys);
+                        let state = queen.queen_sync_step(&swarm);
 
                         // Publish updated phase back to NATS
                         let updated_phase =
@@ -4954,7 +5065,9 @@ fn main() {
                         &agent_id,
                     );
                     queen.derive_local_state(&sys.engine);
-                    let state = queen.queen_sync_step(&nats_phases);
+                    // #581 — see the note at the `sync` call site.
+                    let swarm = with_local_phase(&nats_phases, &queen, &sys);
+                    let state = queen.queen_sync_step(&swarm);
                     println!("{}", serde_json::to_string_pretty(&state).unwrap());
                 }
                 "hives" => {

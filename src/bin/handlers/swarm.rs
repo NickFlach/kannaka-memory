@@ -541,7 +541,19 @@ pub(crate) fn handle_swarm_exemplars(
         "publish" => {
             // Make sure the stream exists. Best-effort — JetStream may already
             // have it from a previous run.
-            let _ = transport.ensure_exemplar_stream();
+            // #577: this was `let _ = transport.ensure_exemplar_stream();`.
+            // `publish_exemplar` is a raw subject PUB — the broker accepts it
+            // whether or not the KANNAKA_EXEMPLARS stream exists, so with the
+            // stream missing every publish "succeeds" and nothing is durable.
+            // `swarm exemplars list` and `swarm absorb` then see nothing. Not
+            // fatal (the publishes may still be consumed live), but the
+            // durability loss must be stated rather than swallowed.
+            if let Err(e) = transport.ensure_exemplar_stream() {
+                eprintln!(
+                    "[exemplars] WARNING: KANNAKA_EXEMPLARS stream unavailable ({e}) — publishes \
+                     below will NOT be durable and `swarm exemplars list` will show nothing."
+                );
+            }
 
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();

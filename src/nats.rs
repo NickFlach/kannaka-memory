@@ -38,6 +38,18 @@ use crate::queen::AgentPhase;
 /// payload has a "timestamp" field, mirror it to "ts" (the contract name);
 /// otherwise stamp the current UTC time. Old subscribers keep seeing the
 /// existing fields untouched; new validators see the envelope they want.
+/// Is this presence record a live agent, as opposed to a retraction
+/// tombstone written by `publish_presence_left` (#590)?
+///
+/// **Fails OPEN by design.** Only an explicit `status == "left"` is treated as
+/// a retraction; a record with no `status` at all is live. Every presence
+/// record written before #590 lacks the field entirely, and a filter that
+/// required `status == "active"` would hide the entire existing swarm the
+/// moment this shipped — a far worse failure than a lingering ghost.
+fn is_active_presence(p: &serde_json::Value) -> bool {
+    p.get("status").and_then(|v| v.as_str()) != Some("left")
+}
+
 fn add_envelope(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
         // Per consciousness-core/docs/nats-contract.yaml:
@@ -1260,8 +1272,8 @@ impl SwarmTransport {
         let inbox = new_inbox("js");
 
         let mut frame = Vec::with_capacity(request.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", api_subject, inbox, request.len());
         frame.extend_from_slice(request);
         frame.extend_from_slice(b"\r\n");
@@ -1437,7 +1449,7 @@ impl SwarmTransport {
     /// any JSON reply to the probe, including a "no message found" error,
     /// proves readability; a permission denial produces no reply (timeout).
     fn stream_readable(&self, stream_name: &str) -> bool {
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let req = serde_json::json!({ "seq": 1, "next_by_subj": ">" }).to_string();
         let Ok(mut conn) = self.lock_conn() else {
             return false;
@@ -1722,6 +1734,44 @@ impl SwarmTransport {
         self.publish_raw(&subject, &bytes)
     }
 
+    /// Retract this agent's presence record (#590).
+    ///
+    /// The presence stream is `max_msgs_per_subject: 1`, so publishing to the
+    /// agent's own subject REPLACES its live record — that is what makes a
+    /// tombstone the right retraction primitive here. There is no per-subject
+    /// delete, and without this the record simply ages out at the stream's
+    /// 24h `max_age`, which is why a departed agent lingered as a ghost peer
+    /// for a full day.
+    ///
+    /// Readers drop `status == "left"` in [`Self::get_presence`], so the
+    /// tombstone is invisible to every consumer rather than each one needing
+    /// to know about it.
+    pub fn publish_presence_left(&self, agent_id: &str) -> Result<(), NatsError> {
+        let mut payload = serde_json::json!({
+            "agent_id": agent_id,
+            "status": "left",
+            "last_seen": chrono::Utc::now().to_rfc3339(),
+        });
+        add_envelope(&mut payload);
+        self.publish_presence(agent_id, &payload)
+    }
+
+    /// Register this agent in the `QUEEN_AGENTS` KV bucket (#582).
+    ///
+    /// [`Self::discover_peers`] reads this bucket, but until now nothing ever
+    /// wrote to it — the constant was read-only in practice, so trust-weighted
+    /// QueenSync had no registrations to weight and sat at default trust
+    /// forever.
+    pub fn register_agent(
+        &self,
+        agent_id: &str,
+        registration: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let value = serde_json::to_string(registration)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.kv_put(KV_BUCKET_AGENTS, agent_id, &value)
+    }
+
     /// Ensure the KANNAKA_PRESENCE stream exists. ADR-0026 Phase 5.
     pub fn ensure_presence_stream(&self) -> Result<(), NatsError> {
         self.ensure_js_stream(
@@ -1785,8 +1835,15 @@ impl SwarmTransport {
     }
 
     /// Read all current presence records.
+    ///
+    /// Retraction tombstones (`status == "left"`, written by
+    /// [`Self::publish_presence_left`]) are filtered out HERE rather than in
+    /// each consumer (#590). There are at least two independent readers
+    /// (`swarm peers`, `brief --peers`) and filtering at the shared reader
+    /// means a new one cannot forget and resurrect ghosts.
     pub fn get_presence(&self) -> Result<Vec<serde_json::Value>, NatsError> {
-        self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)
+        let all = self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)?;
+        Ok(all.into_iter().filter(is_active_presence).collect())
     }
 
     /// Publish a wave-signature-only absorb event to
@@ -2270,7 +2327,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let first_sid = self.alloc_sid();
         let mut frame = Vec::new();
-        let _ = write!(frame, "SUB QUEEN.phase.* {}\r\n", first_sid);
+        let _ = write!(frame, "SUB QUEEN.phase.* {first_sid}\r\n");
         let _ = write!(frame, "SUB QUEEN.announce {}\r\n", self.alloc_sid());
         if include_memories {
             let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
@@ -2386,11 +2443,11 @@ impl SwarmTransport {
         // SUB inbox first so we don't race the reply; UNSUB <sid> 1 lets the
         // server clean up automatically after the first delivery.
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
@@ -2464,7 +2521,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
 
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
@@ -2807,6 +2864,52 @@ impl NatsSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #590: presence retraction must hide the departed agent WITHOUT hiding
+    /// anyone else — in particular every record written before this change,
+    /// which carries no `status` field at all.
+    #[test]
+    fn presence_filter_drops_only_explicit_left_records() {
+        let legacy = serde_json::json!({ "agent_id": "old-node" });
+        let active = serde_json::json!({ "agent_id": "live-node", "status": "active" });
+        let left = serde_json::json!({ "agent_id": "gone-node", "status": "left" });
+        let odd = serde_json::json!({ "agent_id": "weird-node", "status": 7 });
+
+        // The whole existing swarm predates the `status` field. If this ever
+        // flips, shipping the filter blanks `swarm peers` for everyone.
+        assert!(
+            is_active_presence(&legacy),
+            "a pre-#590 record with no status field must read as LIVE"
+        );
+        assert!(is_active_presence(&active));
+        assert!(
+            !is_active_presence(&left),
+            "an explicit tombstone must be filtered out"
+        );
+        assert!(
+            is_active_presence(&odd),
+            "a non-string status is not a retraction — fail open, never hide a live peer"
+        );
+    }
+
+    /// The tombstone this writes must be the thing the filter catches. Pins the
+    /// two halves together so a later rename of the sentinel can't silently
+    /// resurrect ghosts.
+    #[test]
+    fn presence_left_payload_is_filtered_by_the_reader() {
+        let mut payload = serde_json::json!({
+            "agent_id": "gone-node",
+            "status": "left",
+            "last_seen": "2026-07-27T00:00:00Z",
+        });
+        add_envelope(&mut payload);
+        assert!(
+            !is_active_presence(&payload),
+            "publish_presence_left's payload shape must be filtered by get_presence"
+        );
+        // Envelope still applied, so the tombstone is contract-valid on the wire.
+        assert_eq!(payload.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+    }
 
     // hunt: the handshake INFO read (and any control line) must be BOUNDED — a
     // hostile/MITM server streaming an unbounded line would otherwise OOM us.

@@ -363,6 +363,44 @@ impl ChiralMedium {
         self.store_vector_with_category(vector, content, importance, None)
     }
 
+    /// Rewrite a right-hemisphere wavefront's canonical id — the chiral analogue
+    /// of [`Medium::update_wavefront_id`] (issue #630).
+    ///
+    /// `store_vector` mints its own id, but callers that already own a `HyperMemory`
+    /// (import, wire sync) must keep theirs: `memory_cache` is keyed on it, and
+    /// `parents`/`connections` reference it. Unlike the flat medium, the right id is
+    /// load-bearing in FOUR places — the metadata row, `id_to_index`, the `scales`
+    /// map, and both hemisphere cross-maps — so rewriting only the metadata (the
+    /// flat-path shape) would silently orphan the scale and strand the left echo.
+    pub fn update_right_id(&mut self, old_id: &Uuid, new_id: Uuid) -> Result<(), MediumError> {
+        if old_id == &new_id {
+            return Ok(());
+        }
+        if self.right.id_to_index.contains_key(&new_id) {
+            return Err(MediumError::CorruptHrm(format!(
+                "update_right_id: {new_id} already present — refusing to collide two wavefronts"
+            )));
+        }
+        let index = self
+            .right
+            .id_to_index
+            .remove(old_id)
+            .ok_or(MediumError::WavefrontNotFound(*old_id))?;
+        self.right.id_to_index.insert(new_id, index);
+        self.right.metadata[index].id = new_id;
+
+        // Chiral scale is keyed by right id.
+        if let Some(scale) = self.scales.remove(old_id) {
+            self.scales.insert(new_id, scale);
+        }
+        // Re-point the left echo, in both directions.
+        if let Some(left_id) = self.right_to_left.remove(old_id) {
+            self.right_to_left.insert(new_id, left_id);
+            self.left_to_right.insert(left_id, new_id);
+        }
+        Ok(())
+    }
+
     /// Store with explicit category for SGA classification.
     pub fn store_vector_with_category(
         &mut self,
@@ -1581,6 +1619,69 @@ mod tests {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(encoder, codebook)
+    }
+
+    /// ADR-0050 follow-up probe: can `sensemaking::detect_contradictions` see a
+    /// SUPERSESSION?
+    ///
+    /// That detector keys on PHASE OPPOSITION — same subject, phase gap near π.
+    /// But `content_born_phase` is deliberately content-SMOOTH (see its doc
+    /// comment: "identical content to identical phase"), and a superseded fact
+    /// differs from its replacement by a single value token. So the pair that
+    /// most needs detecting is the pair that looks most alike.
+    ///
+    /// This measures the gap rather than assuming it. If supersession pairs sit
+    /// far below the opposed-stance threshold, the existing detector cannot be
+    /// reused for the supersession writer and a different signal is required.
+    #[test]
+    fn supersession_pairs_are_not_phase_opposed() {
+        let pipeline = test_pipeline();
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let gap = |a: &str, b: &str| -> f32 {
+            let pa = content_born_phase(&pipeline.encode_text(a).unwrap());
+            let pb = content_born_phase(&pipeline.encode_text(b).unwrap());
+            let raw = (pa - pb).abs();
+            raw.min(two_pi - raw)
+        };
+
+        // A supersession pair: the same fact, one value token changed.
+        let supersession = gap(
+            "the harbor beacon channel is twelve",
+            "the harbor beacon channel is twentyseven",
+        );
+        // An unrelated pair, for scale.
+        let unrelated = gap(
+            "the harbor beacon channel is twelve",
+            "mycelium spreads beneath the forest floor",
+        );
+
+        eprintln!(
+            "[adr0050] phase gap — supersession={supersession:.4} rad, unrelated={unrelated:.4} rad, \
+             opposed threshold={:.4}",
+            std::f32::consts::FRAC_PI_2
+        );
+
+        // The load-bearing claim: a supersession pair is NOT phase-opposed, so
+        // `detect_contradictions(.., opposed_gap = π/2)` cannot flag it.
+        assert!(
+            supersession < std::f32::consts::FRAC_PI_2,
+            "supersession pair registered as phase-opposed ({supersession:.4} rad) — \
+             if this ever fires, the existing contradiction detector CAN see supersession \
+             and ADR-0051 should reuse it instead of building a new signal"
+        );
+
+        // The STRONGER claim, and the one ADR-0051 actually rests on: phase is
+        // NON-MONOTONIC here — a supersession pair sits no closer than unrelated
+        // content, so no threshold on phase gap can separate them, tuned or not.
+        // v1 of this test merely PRINTED the unrelated gap, which left the claim
+        // narrated rather than guarded: a future encoder change could make phase
+        // monotonic and this test would stay green while the ADR's premise rotted.
+        assert!(
+            supersession >= unrelated,
+            "phase became MONOTONIC w.r.t. supersession (supersession={supersession:.4} < \
+             unrelated={unrelated:.4}) — the ADR-0051 premise that no phase threshold can \
+             work is no longer supported; re-open the detect_contradictions reuse question"
+        );
     }
 
     // ── #583: the holistic hemisphere never forgets — it evolves ──
