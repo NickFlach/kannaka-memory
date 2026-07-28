@@ -941,7 +941,7 @@ pub fn self_update() -> Result<(), String> {
     let download_url = body["assets"].as_array()
         .and_then(|assets| {
             assets.iter().find(|a| {
-                a["name"].as_str().map_or(false, |n| n == asset_name)
+                a["name"].as_str().is_some_and(|n| n == asset_name)
             })
         })
         .and_then(|a| a["browser_download_url"].as_str())

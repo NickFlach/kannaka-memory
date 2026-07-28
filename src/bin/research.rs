@@ -3086,7 +3086,7 @@ fn eval_online_retention(
                     .get(id)
                     .ok()
                     .flatten()
-                    .map_or(false, |m| m.amplitude > 0.3)
+                    .is_some_and(|m| m.amplitude > 0.3)
             })
             .count();
         let hit_rate = hits as f64 / event_ids.len() as f64;

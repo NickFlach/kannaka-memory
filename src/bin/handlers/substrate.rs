@@ -977,7 +977,7 @@ pub(crate) fn handle_substrate_backfill(
         }
     }
 
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    let _ = std::fs::write(&marker_path, chrono::Utc::now().to_rfc3339());
     eprintln!("[backfill] done — {} sent, {} failed. Marker: {}",
         sent, failed, marker_path.display());
 }
@@ -1094,7 +1094,7 @@ pub(crate) fn handle_substrate_init(
         }
     }
 
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    let _ = std::fs::write(&marker_path, chrono::Utc::now().to_rfc3339());
     eprintln!("[init] done — {} anchors seeded ({} failed). Marker: {}",
         seeded, failed, marker_path.display());
     eprintln!("[init] substrate is now class-structured; restart `kannaka substrate run` so absorbs flow into the seeded clusters");
