@@ -276,7 +276,7 @@ impl GlyphEncoder {
             
             // Find the best Fano line for this element
             let best_line = self.find_best_fano_line(coords);
-            fano_groups.entry(best_line).or_insert_with(Vec::new).push(mapping);
+            fano_groups.entry(best_line).or_default().push(mapping);
         }
         
         // Second pass: merge related groups if they share Fano relationships

@@ -183,7 +183,7 @@ fn exchange_spacechild_for_kax(cfg: &KannakaConfig) -> Option<String> {
 fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
     let tok = cfg.ghostsignals.kax_token.trim();
     if tok.is_empty() {
-        return exchange_spacechild_for_kax(cfg).or_else(|| remint_help());
+        return exchange_spacechild_for_kax(cfg).or_else(remint_help);
     }
     let exp = jwt_claims(tok).and_then(|c| c["exp"].as_i64()).unwrap_or(0);
     let now = now_epoch();
@@ -207,7 +207,7 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 }
             }
             eprintln!("  KAX token refresh returned an unexpected response.");
-            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(|| remint_help()) }
+            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(remint_help) }
         }
         Err(e) => {
             if exp > now {
@@ -218,7 +218,7 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 eprintln!("  KAX token expired and refresh failed: {}", e);
                 // Dead lineage — federation can mint a fresh one if a
                 // SpaceChild session is on disk.
-                exchange_spacechild_for_kax(cfg).or_else(|| remint_help())
+                exchange_spacechild_for_kax(cfg).or_else(remint_help)
             }
         }
     }
