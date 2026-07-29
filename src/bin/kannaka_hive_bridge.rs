@@ -10,6 +10,7 @@
 //!   HIVE_RELAY_URL            wss:// url of the buzz relay
 //!   HIVE_KEY_FILE             json {privkey,pubkey}, 0600 — an allowlisted member
 //!   HIVE_DEDUPE_FILE          crash-durable processed-id log
+//!   HIVE_CURSOR_FILE          persisted replay cursor (bounds reconnect history)
 //!   HIVE_NATS_URL/_USER/_PASS route target
 //!   HIVE_SUBJECT_PREFIX       default KANNAKA.events.hive
 //!   HIVE_POLICY_REFRESH_SECS  default 60
@@ -18,7 +19,7 @@
 use std::io::{Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kannaka_memory::hive_bridge::{Admission, OkVerdict, PolicyMap, Roster};
+use kannaka_memory::hive_bridge::{Admission, OkVerdict, PolicyMap, ReplayCursor, Roster};
 use kannaka_memory::nostr::bridge::{Dedup, RateLimiter};
 use kannaka_memory::nostr::{Event, Keypair};
 use tungstenite::Message;
@@ -27,6 +28,7 @@ struct Config {
     relay_url: String,
     privkey: String,
     dedupe_file: String,
+    cursor_file: String,
     nats_url: String,
     nats_user: String,
     nats_pass: String,
@@ -49,6 +51,8 @@ fn load_config() -> Config {
         privkey: key["privkey"].as_str().expect("privkey").to_string(),
         dedupe_file: env("HIVE_DEDUPE_FILE")
             .unwrap_or_else(|| "/var/lib/kannaka-hive-bridge/dedupe.log".into()),
+        cursor_file: env("HIVE_CURSOR_FILE")
+            .unwrap_or_else(|| "/var/lib/kannaka-hive-bridge/replay-cursor".into()),
         nats_url: env("HIVE_NATS_URL").unwrap_or_else(|| "nats://127.0.0.1:4222".into()),
         nats_user: env("HIVE_NATS_USER").unwrap_or_default(),
         nats_pass: env("HIVE_NATS_PASS").unwrap_or_default(),
@@ -105,6 +109,37 @@ const CONNECT_RETRY: Duration = Duration::from_secs(15);
 /// refresh had this latent too — it could only ever run on the back of an
 /// unrelated inbound frame.
 const WS_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How far behind the replay cursor the content REQ actually asks from.
+///
+/// Absorbs out-of-order arrival and relay clock skew; the dedupe log suppresses
+/// the resulting overlap. An hour is cheap — it bounds a reconnect to one hour
+/// of history instead of all of it — and comfortably wider than any skew worth
+/// worrying about.
+const REPLAY_SLACK_SECS: i64 = 3_600;
+
+/// Read the persisted replay cursor. A missing or unparsable file means "no
+/// cursor" — replay everything, i.e. exactly the old behaviour.
+fn load_cursor(path: &str) -> i64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+/// Persist the cursor via temp-file + rename, so a crash mid-write cannot
+/// leave a truncated file that would parse as a bogus (possibly far-future)
+/// cursor and skip real history.
+fn save_cursor(path: &str, value: i64) {
+    let tmp = format!("{path}.tmp");
+    if let Err(e) = std::fs::write(&tmp, value.to_string()) {
+        eprintln!("[hive-bridge] WARN cursor write failed ({e}) — reconnect will replay more");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        eprintln!("[hive-bridge] WARN cursor rename failed ({e}) — reconnect will replay more");
+    }
+}
 
 /// How often to reclaim refilled rate-limit buckets. Cheap (one pass over a
 /// small map) and not latency-sensitive, so it runs well below the frequency
@@ -258,6 +293,10 @@ fn main() {
     let mut policy = PolicyMap::new();
     let mut roster = Roster::new();
     let mut nats = NatsSink::new(&cfg);
+    let mut cursor = ReplayCursor::new(load_cursor(&cfg.cursor_file));
+    // Only written when it actually moves, so a quiet bridge does no disk I/O.
+    let mut persisted_cursor = cursor.persist_value();
+    eprintln!("[hive-bridge] replay cursor at {persisted_cursor}");
 
     let (mut ws, _) = tungstenite::connect(&cfg.relay_url).expect("connect to hive relay");
     eprintln!("[hive-bridge] connected to {}", cfg.relay_url);
@@ -376,10 +415,18 @@ fn main() {
             "EOSE" => {
                 let sub = frame.get(1).and_then(|v| v.as_str()).unwrap_or("");
                 if sub == "roster" && !subscribed {
+                    // `since` bounds the reconnect replay (#643). Without it
+                    // every reconnect pulled the entire history and relied on
+                    // the dedupe log, which only holds the newest 100k ids —
+                    // so past that, each reconnect republished the evicted
+                    // tail.
+                    let since = cursor.since(REPLAY_SLACK_SECS);
                     send_req(
                         &mut ws,
                         "content",
-                        r#"{"kinds":[0,9,40002,10100,43001,43002,43003,43004,43005,43006]}"#,
+                        &format!(
+                            r#"{{"kinds":[0,9,40002,10100,43001,43002,43003,43004,43005,43006],"since":{since}}}"#
+                        ),
                     );
                     subscribed = true;
                     eprintln!(
@@ -415,7 +462,12 @@ fn main() {
                     now_secs(),
                 ) {
                     Admission::Publish(m) => m,
-                    Admission::Suppressed => continue,
+                    Admission::Suppressed => {
+                        // Settled: it will never need to be seen again, so the
+                        // cursor may move past it.
+                        cursor.observe_settled(event.created_at);
+                        continue;
+                    }
                     // Previously a silent `continue`. A bridge that drops
                     // messages must say so, or the gap looks like an upstream
                     // outage.
@@ -426,6 +478,10 @@ fn main() {
                     // would silently discard a human message for good, which is
                     // the worse failure for a chat bridge.
                     Admission::RateLimited(m) => {
+                        // Pin the cursor behind it, or `since` would skip the
+                        // very event we are counting on the relay to re-offer,
+                        // turning "arrives late" into "lost".
+                        cursor.observe_rate_limited(event.created_at);
                         eprintln!(
                             "[hive-bridge] rate-limited {} (subject {}) — will retry on reconnect",
                             &event.pubkey[..event.pubkey.len().min(12)],
@@ -445,6 +501,15 @@ fn main() {
                 // published — but it must not be silent: an unwritable state
                 // dir means every event republishes on the next reconnect, and
                 // the only symptom would be mysterious duplicates on the bus.
+                // Published: settled, so the cursor may move past it. Persist
+                // only on change — a quiet bridge does no disk I/O, and the
+                // write is atomic so a crash cannot leave a bogus cursor.
+                cursor.observe_settled(event.created_at);
+                let next = cursor.persist_value();
+                if next != persisted_cursor {
+                    save_cursor(&cfg.cursor_file, next);
+                    persisted_cursor = next;
+                }
                 if let Err(e) = dedup.record(&event.id) {
                     eprintln!(
                         "[hive-bridge] WARN dedupe write failed ({e}) — {} may republish on reconnect",

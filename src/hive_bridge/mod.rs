@@ -68,6 +68,65 @@ pub fn export_decision(
     )
 }
 
+/// How far back in relay history the bridge still needs to read.
+///
+/// Without this the content REQ carried no `since`, so every reconnect
+/// replayed the channel's entire history and leaned on the dedupe log to
+/// suppress it. `Dedup::compact` keeps only the newest 100k ids, so once
+/// bridged history passed that, each reconnect republished the evicted tail —
+/// and JetStream's 2-minute duplicate window is far too short to catch it
+/// (#643).
+///
+/// The subtle part is what the cursor may skip past. Advancing it to the
+/// newest event seen would silently discard the one class of event that is
+/// SUPPOSED to come back: a rate-limited event is deliberately not recorded in
+/// dedup so the next reconnect re-offers it. If `since` moved past it, "arrives
+/// late" would quietly become "lost". So a rate-limited event pins a floor, and
+/// the persisted cursor never advances beyond it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayCursor {
+    /// Highest `created_at` whose fate is settled (published or suppressed).
+    high: i64,
+    /// Lowest `created_at` that was rate-limited and must be re-offered.
+    limited_floor: Option<i64>,
+}
+
+impl ReplayCursor {
+    pub fn new(persisted: i64) -> Self {
+        Self { high: persisted, limited_floor: None }
+    }
+
+    /// An event whose fate is settled — it will not need to be seen again.
+    pub fn observe_settled(&mut self, created_at: i64) {
+        self.high = self.high.max(created_at);
+    }
+
+    /// An event that was dropped for budget and must be re-offered later.
+    pub fn observe_rate_limited(&mut self, created_at: i64) {
+        self.limited_floor = Some(match self.limited_floor {
+            Some(f) => f.min(created_at),
+            None => created_at,
+        });
+    }
+
+    /// The value to persist: never past an event still owed a retry.
+    pub fn persist_value(&self) -> i64 {
+        match self.limited_floor {
+            Some(f) => self.high.min(f - 1),
+            None => self.high,
+        }
+    }
+
+    /// `since` for the content REQ, backed off by `slack_secs`.
+    ///
+    /// The slack absorbs out-of-order arrival and relay clock skew; the dedupe
+    /// log suppresses the resulting overlap. Clamped at 0 so a fresh bridge
+    /// with no cursor asks for everything rather than a negative timestamp.
+    pub fn since(&self, slack_secs: i64) -> i64 {
+        (self.persist_value() - slack_secs).max(0)
+    }
+}
+
 /// Outcome of offering one inbound event to the bridge.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Admission {
@@ -264,6 +323,52 @@ mod export_tests {
 
     fn human_message(channel_id: &str, body: &str) -> Event {
         ev(9, &"b".repeat(64), vec![tag(&["h", channel_id])], body)
+    }
+
+    // ── replay cursor (#643) ────────────────────────────────────
+
+    #[test]
+    fn cursor_advances_past_settled_events() {
+        let mut c = ReplayCursor::new(1_000);
+        c.observe_settled(1_500);
+        c.observe_settled(1_200); // out of order — must not move it back
+        assert_eq!(c.persist_value(), 1_500);
+    }
+
+    #[test]
+    fn a_rate_limited_event_holds_the_cursor_behind_it() {
+        // The property that keeps #675's "arrives late rather than lost"
+        // promise true: `since` must not skip an event that was deliberately
+        // left unrecorded so it would be re-offered.
+        let mut c = ReplayCursor::new(1_000);
+        c.observe_rate_limited(1_200);
+        c.observe_settled(1_500); // later events settle fine...
+        assert_eq!(
+            c.persist_value(),
+            1_199,
+            "the cursor must stay behind the earliest event still owed a retry",
+        );
+    }
+
+    #[test]
+    fn the_earliest_rate_limited_event_wins() {
+        let mut c = ReplayCursor::new(1_000);
+        // Settle something well past all of them, so the floor — not `high` —
+        // is what the assertion is actually measuring.
+        c.observe_settled(2_000);
+        c.observe_rate_limited(1_400);
+        c.observe_rate_limited(1_100);
+        c.observe_rate_limited(1_300);
+        assert_eq!(c.persist_value(), 1_099);
+    }
+
+    #[test]
+    fn since_backs_off_and_never_goes_negative() {
+        let mut c = ReplayCursor::new(0);
+        // A fresh bridge asks for everything rather than a negative timestamp.
+        assert_eq!(c.since(3_600), 0);
+        c.observe_settled(10_000);
+        assert_eq!(c.since(3_600), 6_400);
     }
 
     // ── the fail-closed `h`-tag boundary, for EVERY channel-scoped
