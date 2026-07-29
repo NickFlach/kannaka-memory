@@ -15,8 +15,6 @@
 //!   BRIDGE_ROUTE_SUBJECT    default KANNAKA.events.nostr.dm
 //!   BRIDGE_RATE_CAP/_REFILL per-sender token bucket (default 5 / 0.05 s⁻¹)
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -80,40 +78,86 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-/// Minimal raw-NATS host:port parse from nats://host:port.
-fn nats_hostport(url: &str) -> (String, u16) {
-    let s = url.strip_prefix("nats://").unwrap_or(url);
-    let mut it = s.splitn(2, ':');
-    let host = it.next().unwrap_or("127.0.0.1").to_string();
-    let port = it.next().and_then(|p| p.parse().ok()).unwrap_or(4222);
-    (host, port)
+/// Minimum spacing between initial-connect attempts, so a bridge started while
+/// NATS is down does not pay a connect timeout on every DM.
+const CONNECT_RETRY: Duration = Duration::from_secs(15);
+
+/// NATS output for the DM bridge, backed by the shared `SwarmTransport`.
+///
+/// This replaced a hand-rolled per-message client that was the same code as the
+/// hive bridge's — its comment even said "matching the DM bridge's approach" —
+/// and carried the same four drifts from `nats::handshake` (#673):
+///
+///   * **no connect timeout.** `TcpStream::connect` to an unreachable host
+///     blocks for the OS SYN timeout, and it ran per message, so an unreachable
+///     NATS host stalled this relay thread that long for every DM.
+///   * credentials escaped `"` but not `\`, so a backslash in the password
+///     produced malformed CONNECT JSON and an auth rejection with no clue why.
+///   * INFO was read into a fixed 2048-byte buffer with one `read()`.
+///   * no `tls_required` detection.
+///
+/// It was also worse than the hive bridge's in one way: it never sent PING or
+/// waited for PONG, so an `-ERR Authorization Violation` was never read. Every
+/// DM "succeeded" while the server discarded it — a silent, total routing
+/// failure that looked healthy in the log.
+///
+/// Shared across relay threads behind a mutex. Holding it across a publish
+/// serialises DMs, which is fine at DM volume and is what `SwarmTransport` does
+/// internally anyway.
+struct NatsSink {
+    url: String,
+    /// The bridge authenticates as its own principal (`BRIDGE_NATS_*`), passed
+    /// explicitly so an ambient `NATS_USER` on a box running other kannaka
+    /// units cannot silently re-identify it.
+    creds: Option<(String, String)>,
+    transport: Option<kannaka_memory::nats::SwarmTransport>,
+    last_attempt: Option<std::time::Instant>,
 }
 
-/// Fire-and-forget NATS publish (short-lived connection). DMs are infrequent,
-/// so per-message connect keeps the daemon simple and stateless.
-fn nats_publish(cfg: &Config, payload: &str) -> std::io::Result<()> {
-    let (host, port) = nats_hostport(&cfg.nats_url);
-    let mut sock = TcpStream::connect((host.as_str(), port))?;
-    sock.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let mut buf = [0u8; 2048];
-    let _ = sock.read(&mut buf)?; // INFO line
-    let connect = if !cfg.nats_user.is_empty() {
-        format!(
-            "CONNECT {{\"verbose\":false,\"pedantic\":false,\"name\":\"kannaka-nostr-bridge\",\"user\":\"{}\",\"pass\":\"{}\"}}\r\n",
-            cfg.nats_user.replace('"', "\\\""),
-            cfg.nats_pass.replace('"', "\\\"")
-        )
-    } else {
-        "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"kannaka-nostr-bridge\"}\r\n"
-            .into()
-    };
-    sock.write_all(connect.as_bytes())?;
-    let bytes = payload.as_bytes();
-    sock.write_all(format!("PUB {} {}\r\n", cfg.route_subject, bytes.len()).as_bytes())?;
-    sock.write_all(bytes)?;
-    sock.write_all(b"\r\n")?;
-    sock.flush()?;
-    Ok(())
+impl NatsSink {
+    fn new(cfg: &Config) -> Self {
+        let creds = if cfg.nats_user.is_empty() {
+            None
+        } else {
+            Some((cfg.nats_user.clone(), cfg.nats_pass.clone()))
+        };
+        Self { url: cfg.nats_url.clone(), creds, transport: None, last_attempt: None }
+    }
+
+    /// Publish, connecting lazily on first use.
+    ///
+    /// `Ok(())` means on the wire or in the transport's replay buffer. Lazy
+    /// connect keeps the relay side working when NATS is down, which the old
+    /// stateless publish gave for free and is worth preserving.
+    fn publish(&mut self, subject: &str, payload: &str) -> Result<(), String> {
+        if self.transport.is_none() {
+            if let Some(t) = self.last_attempt {
+                if t.elapsed() < CONNECT_RETRY {
+                    return Err("NATS unavailable (redial pending)".to_string());
+                }
+            }
+            self.last_attempt = Some(std::time::Instant::now());
+            match kannaka_memory::nats::SwarmTransport::connect_with_creds(
+                &self.url,
+                self.creds.clone(),
+            ) {
+                Ok(t) => {
+                    eprintln!("[bridge] NATS connected: {}", self.url);
+                    self.transport = Some(t);
+                }
+                Err(e) => return Err(format!("NATS connect failed: {e}")),
+            }
+        }
+        let transport = self.transport.as_ref().expect("connected above");
+        match transport.publish(subject, payload.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Buffered for ordered replay once the transport revives.
+                eprintln!("[bridge] buffered for replay ({e})");
+                Ok(())
+            }
+        }
+    }
 }
 
 /// One relay's connect→subscribe→process loop. Reconnects forever with backoff.
@@ -122,6 +166,7 @@ fn relay_loop(
     cfg: Arc<Config>,
     dedup: Arc<Mutex<Dedup>>,
     limiter: Arc<Mutex<RateLimiter>>,
+    nats: Arc<Mutex<NatsSink>>,
 ) {
     let sub_id = format!("kb-{}", &cfg.pubkey[..8]);
     // REQ for gift wraps p-tagged to our voice key. Relays return matching
@@ -140,7 +185,7 @@ fn relay_loop(
                 loop {
                     match socket.read() {
                         Ok(Message::Text(txt)) => {
-                            handle_relay_message(&txt, &cfg, &dedup, &limiter)
+                            handle_relay_message(&txt, &cfg, &dedup, &limiter, &nats)
                         }
                         Ok(Message::Ping(p)) => {
                             let _ = socket.send(Message::Pong(p));
@@ -162,6 +207,7 @@ fn handle_relay_message(
     cfg: &Config,
     dedup: &Arc<Mutex<Dedup>>,
     limiter: &Arc<Mutex<RateLimiter>>,
+    nats: &Arc<Mutex<NatsSink>>,
 ) {
     let msg: serde_json::Value = match serde_json::from_str(txt) {
         Ok(v) => v,
@@ -197,7 +243,11 @@ fn handle_relay_message(
                 "received_at": now_secs(),
             })
             .to_string();
-            match nats_publish(cfg, &routed) {
+            // Lock poisoning here means another relay thread panicked mid
+            // publish; the transport itself is still usable, so recover rather
+            // than propagating a panic into every remaining relay.
+            let mut sink = nats.lock().unwrap_or_else(|p| p.into_inner());
+            match sink.publish(&cfg.route_subject, &routed) {
                 Ok(()) => eprintln!(
                     "[bridge] routed DM from {} ({} chars)",
                     sender_npub,
@@ -228,9 +278,13 @@ fn main() {
         cfg.route_subject
     );
     let mut handles = Vec::new();
+    // One transport shared by every relay thread. Lazy-connected on the first
+    // DM so a bridge started while NATS is down still serves the relay side.
+    let nats = Arc::new(Mutex::new(NatsSink::new(&cfg)));
+
     for relay in cfg.relays.clone() {
-        let (c, d, l) = (cfg.clone(), dedup.clone(), limiter.clone());
-        handles.push(std::thread::spawn(move || relay_loop(relay, c, d, l)));
+        let (c, d, l, n) = (cfg.clone(), dedup.clone(), limiter.clone(), nats.clone());
+        handles.push(std::thread::spawn(move || relay_loop(relay, c, d, l, n)));
     }
     for h in handles {
         let _ = h.join();
