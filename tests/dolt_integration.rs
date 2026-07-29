@@ -1,5 +1,13 @@
 //! Integration tests for ADR-0009 Dolt persistence — Phases 2, 3 & 4.
 //!
+//! INERT since the `dolt` feature was removed from the crate. The
+//! `#![cfg(feature = "dolt")]` below compiles this whole file out, and the
+//! feature can no longer be enabled — `cargo test --features dolt` fails with
+//! "the package 'kannaka-memory' does not contain this feature: dolt". Kept as
+//! the record of what Dolt persistence was expected to guarantee, so it is
+//! here to restore from if that path ever returns; it is NOT running coverage
+//! today. (#586)
+//!
 //! ## Test organisation
 //!
 //! **Unit tests** (no DB, always run):
