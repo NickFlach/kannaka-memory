@@ -1,0 +1,97 @@
+# /etc/systemd/system/kannaka-hive-bridge.service
+#
+# Runs `kannaka-hive-bridge` — mirrors Hive (kannaka-buzz) room traffic onto
+# NATS under KANNAKA.events.hive.*, gated per channel by the `no-bridge` flag.
+#
+# This unit is checked in because it was previously only ever edited on the
+# box: it ran as root with no sandboxing, and nothing about that was reviewable
+# (#643). Treat this file as the source of truth and install it, rather than
+# editing the copy under /etc.
+#
+# Configuration lives in /etc/kannaka-hive-bridge.env (0600, root-owned):
+#
+#   HIVE_RELAY_URL=wss://…            required
+#   HIVE_KEY_FILE=/etc/kannaka/hive-key.json   required; 0600, readable by opc
+#   HIVE_NATS_URL=nats://127.0.0.1:4222
+#   HIVE_NATS_USER=… / HIVE_NATS_PASS=…        the bridge's OWN principal
+#   HIVE_SUBJECT_PREFIX=KANNAKA.events.hive
+#   HIVE_POLICY_REFRESH_SECS=60
+#   HIVE_RATE_CAP=20 / HIVE_RATE_REFILL=1.0
+#   HIVE_DEDUPE_FILE / HIVE_CURSOR_FILE        default under StateDirectory
+#
+# NOTE on WatchdogSec: deliberately NOT set. A watchdog requires Type=notify
+# and the process to send sd_notify(WATCHDOG=1) pings; this binary does
+# neither, so setting it would make systemd kill and restart a perfectly
+# healthy bridge on every interval. The hang modes a watchdog was wanted for —
+# auth silently rejected, content subscription never opening — now exit(1) on
+# their own, so Restart=always genuinely covers them.
+
+[Unit]
+Description=Kannaka Hive Bridge — buzz relay -> NATS (ADR-0045)
+Documentation=https://github.com/NickFlach/kannaka-memory
+# network-online, not just network: the relay connect at startup is a hard
+# `expect()`, so starting before DNS/routing is up just burns a restart.
+After=network-online.target nats.service
+# The bridge tolerates NATS being down (it redials lazily), so nats.service is
+# an ordering preference rather than a hard requirement.
+Wants=network-online.target nats.service
+
+# A permanently-rejected auth (wrong key, pubkey not allowlisted) now exits
+# immediately and would otherwise restart every 5s forever, burning relay
+# connections and filling the journal. Give up into `failed` after 5 attempts
+# in 5 minutes so the condition is visible instead of self-concealing.
+#
+# These belong in [Unit], not [Service] — systemd moved them in v229 and
+# silently ignores them under [Service] with an "Unknown key name" warning.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=opc
+Group=opc
+
+EnvironmentFile=/etc/kannaka-hive-bridge.env
+ExecStart=/home/opc/.local/bin/kannaka-hive-bridge
+
+# systemd creates and chowns /var/lib/kannaka-hive-bridge, which is where the
+# dedupe log and replay cursor default to.
+StateDirectory=kannaka-hive-bridge
+StateDirectoryMode=0700
+
+Restart=always
+RestartSec=5
+
+# ── sandboxing ──────────────────────────────────────────────────────────
+# It used to run as root. It needs: outbound TCP, its state directory, and
+# nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
