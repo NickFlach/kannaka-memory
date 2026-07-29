@@ -232,7 +232,14 @@ impl NatsSink {
 }
 
 fn send_req<S: Read + Write>(ws: &mut tungstenite::WebSocket<S>, sub: &str, filter: &str) {
-    let _ = ws.send(Message::Text(format!(r#"["REQ","{sub}",{filter}]"#)));
+    // The send result used to be discarded, so a REQ that never left the
+    // socket simply meant that subscription silently never opened — and for
+    // the `content` REQ that is the whole job of the daemon. The liveness
+    // deadline added in #643 now catches it within a minute, but the log is
+    // what says WHICH subscription failed.
+    if let Err(e) = ws.send(Message::Text(format!(r#"["REQ","{sub}",{filter}]"#))) {
+        eprintln!("[hive-bridge] WARN subscription \"{sub}\" not sent: {e}");
+    }
 }
 
 fn main() {
@@ -412,7 +419,16 @@ fn main() {
                     eprintln!("[hive-bridge] publish failed: {e}");
                     continue;
                 }
-                let _ = dedup.record(&event.id);
+                // A failed dedupe write is not fatal — the event HAS been
+                // published — but it must not be silent: an unwritable state
+                // dir means every event republishes on the next reconnect, and
+                // the only symptom would be mysterious duplicates on the bus.
+                if let Err(e) = dedup.record(&event.id) {
+                    eprintln!(
+                        "[hive-bridge] WARN dedupe write failed ({e}) — {} may republish on reconnect",
+                        &event.id[..event.id.len().min(12)]
+                    );
+                }
             }
             _ => {}
         }

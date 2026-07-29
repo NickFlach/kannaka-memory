@@ -266,6 +266,70 @@ mod export_tests {
         ev(9, &"b".repeat(64), vec![tag(&["h", channel_id])], body)
     }
 
+    // ── the fail-closed `h`-tag boundary, for EVERY channel-scoped
+    //    kind (#643 carried-forward test gap) ────────────────────
+    //
+    // `map_event` drops any channel-scoped event with no `h` tag via a single
+    // `tag_value(event, "h")?`. That one `?` is a privacy boundary: an event
+    // with no channel has no policy to clear, so if it ever mapped it would
+    // reach the bus ungated. It was covered only for a message kind, while the
+    // six job kinds take the same early return — and a job payload carries the
+    // same human content. Refactoring job handling to sit ABOVE that line
+    // would open the hole with every existing test still green.
+
+    /// Every kind that must resolve a channel before it can be exported.
+    const CHANNEL_SCOPED_KINDS: [u32; 7] = [9, 43001, 43002, 43003, 43004, 43005, 43006];
+
+    #[test]
+    fn no_channel_tag_is_dropped_for_every_channel_scoped_kind() {
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        // A fully bridgeable channel exists — so a leak here could not be
+        // blamed on there being no bridgeable channel at all.
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+
+        for kind in CHANNEL_SCOPED_KINDS {
+            let untagged = ev(kind, &"b".repeat(64), vec![], "no channel tag");
+            assert!(
+                export_decision(&untagged, &roster, &policy, NOW).is_none(),
+                "kind {kind} with no `h` tag must not export — it has no channel, \
+                 so no policy can gate it",
+            );
+        }
+    }
+
+    #[test]
+    fn each_channel_scoped_kind_still_exports_when_tagged() {
+        // The companion direction: the drop above must come from the missing
+        // tag, not from the kind being unmappable in the first place. Without
+        // this, deleting job support entirely would still pass the test above.
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+
+        for kind in CHANNEL_SCOPED_KINDS {
+            let tagged = ev(kind, &"b".repeat(64), vec![tag(&["h", "chan-open"])], "body");
+            assert!(
+                export_decision(&tagged, &roster, &policy, NOW).is_some(),
+                "kind {kind} should export when it carries a bridgeable channel",
+            );
+        }
+    }
+
+    #[test]
+    fn no_channel_tag_is_dropped_even_for_a_no_bridge_flagged_world() {
+        // Belt and braces on the ordering: an untagged event must be dropped
+        // by the map step, never reach the policy lookup with an empty id.
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-private", "backchannel", true));
+
+        for kind in CHANNEL_SCOPED_KINDS {
+            let untagged = ev(kind, &"b".repeat(64), vec![], "leak?");
+            assert!(export_decision(&untagged, &roster, &policy, NOW).is_none());
+        }
+    }
+
     // ── ordering: policy gate before budget (#643) ──────────────
     //
     // `allow()` takes `now_secs` explicitly, so refill is deterministic: a
