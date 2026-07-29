@@ -19,6 +19,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: kannaka-windows-x86_64.exe
+            acp_artifact: kannaka-acp-windows-x86_64.exe
           # MUSL static binaries — NO glibc dependency at all. The previous
           # glibc-gnu builds failed at runtime on any distro with an older
           # glibc than the build host (e.g. ubuntu-22.04 → GLIBC_2.35, but
@@ -28,15 +29,19 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             artifact: kannaka-linux-x86_64
+            acp_artifact: kannaka-acp-linux-x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-22.04
             artifact: kannaka-linux-aarch64
+            acp_artifact: kannaka-acp-linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: kannaka-macos-x86_64
+            acp_artifact: kannaka-acp-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: kannaka-macos-aarch64
+            acp_artifact: kannaka-acp-macos-aarch64
     # TUI binary moved to NickFlach/kannaka-tui (extracted at v0.5.12).
     # That repo has its own Release workflow producing kannaka-tui-* artifacts.
     runs-on: ${{ matrix.os }}
@@ -73,26 +78,35 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      - name: Build CLI
+      # Both binaries in one invocation so they share a dependency build.
+      # `kannaka-acp` serves the HRM as an ACP agent (ADR-0052 Tier 1); it must
+      # ship in the release or registering the Buzz harness would require every
+      # user to `cargo install` from source.
+      - name: Build CLI + ACP agent
         working-directory: kannaka-memory
-        run: cargo build --release --target ${{ matrix.target }} --bin kannaka
+        run: cargo build --release --target ${{ matrix.target }} --bin kannaka --bin kannaka-acp
 
-      - name: Rename artifact + emit SHA-256 sidecar (ADR-0029 Phase 4a)
+      - name: Rename artifacts + emit SHA-256 sidecars (ADR-0029 Phase 4a)
         shell: bash
         # The sidecar is a `<artifact>.sha256` file in the same release
         # so `kannaka update` can verify the download before atomically
         # replacing the running binary. Format matches `sha256sum`:
         #   <hex-digest>  <filename>
         run: |
-          cli="kannaka-memory/target/${{ matrix.target }}/release/kannaka"
-          [[ "${{ matrix.target }}" == *windows* ]] && cli="${cli}.exe"
-          cp "$cli" "${{ matrix.artifact }}"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
-          else
-            # macOS shipped without sha256sum until very recent versions
-            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
-          fi
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          package() {
+            src="kannaka-memory/target/${{ matrix.target }}/release/$1${ext}"
+            cp "$src" "$2"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$2" > "$2.sha256"
+            else
+              # macOS shipped without sha256sum until very recent versions
+              shasum -a 256 "$2" > "$2.sha256"
+            fi
+          }
+          package kannaka "${{ matrix.artifact }}"
+          package kannaka-acp "${{ matrix.acp_artifact }}"
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
@@ -105,6 +119,18 @@ jobs:
         with:
           name: ${{ matrix.artifact }}.sha256
           path: ${{ matrix.artifact }}.sha256
+
+      - name: Upload ACP agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.acp_artifact }}
+          path: ${{ matrix.acp_artifact }}
+
+      - name: Upload ACP SHA-256 sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.acp_artifact }}.sha256
+          path: ${{ matrix.acp_artifact }}.sha256
 
   release:
     needs: build
@@ -129,6 +155,16 @@ jobs:
             kannaka-macos-x86_64.sha256/kannaka-macos-x86_64.sha256
             kannaka-macos-aarch64/kannaka-macos-aarch64
             kannaka-macos-aarch64.sha256/kannaka-macos-aarch64.sha256
+            kannaka-acp-windows-x86_64.exe/kannaka-acp-windows-x86_64.exe
+            kannaka-acp-windows-x86_64.exe.sha256/kannaka-acp-windows-x86_64.exe.sha256
+            kannaka-acp-linux-x86_64/kannaka-acp-linux-x86_64
+            kannaka-acp-linux-x86_64.sha256/kannaka-acp-linux-x86_64.sha256
+            kannaka-acp-linux-aarch64/kannaka-acp-linux-aarch64
+            kannaka-acp-linux-aarch64.sha256/kannaka-acp-linux-aarch64.sha256
+            kannaka-acp-macos-x86_64/kannaka-acp-macos-x86_64
+            kannaka-acp-macos-x86_64.sha256/kannaka-acp-macos-x86_64.sha256
+            kannaka-acp-macos-aarch64/kannaka-acp-macos-aarch64
+            kannaka-acp-macos-aarch64.sha256/kannaka-acp-macos-aarch64.sha256
           generate_release_notes: true
 
   # Distribution channels (GHCR image + npm) consume the release assets just
