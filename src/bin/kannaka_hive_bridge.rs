@@ -16,10 +16,9 @@
 //!   HIVE_RATE_CAP/_REFILL     per-author token bucket (default 20 / 1.0)
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kannaka_memory::hive_bridge::{map_event, MapContext, PolicyMap, Roster};
+use kannaka_memory::hive_bridge::{PolicyMap, Roster};
 use kannaka_memory::nostr::bridge::{Dedup, RateLimiter};
 use kannaka_memory::nostr::{Event, Keypair};
 use tungstenite::Message;
@@ -94,37 +93,89 @@ fn build_auth_event(kp: &Keypair, relay_url: &str, challenge: &str) -> Event {
     )
 }
 
-fn nats_hostport(url: &str) -> (String, u16) {
-    let s = url.strip_prefix("nats://").unwrap_or(url);
-    let mut it = s.splitn(2, ':');
-    let host = it.next().unwrap_or("127.0.0.1").to_string();
-    let port = it.next().and_then(|p| p.parse().ok()).unwrap_or(4222);
-    (host, port)
+/// Minimum spacing between initial-connect attempts, so a bridge started
+/// while NATS is down does not pay a connect timeout on every single event.
+const CONNECT_RETRY: Duration = Duration::from_secs(15);
+
+/// NATS output for the bridge, backed by the shared `SwarmTransport`.
+///
+/// This replaced a hand-rolled per-message client (one TCP connect + INFO +
+/// CONNECT + PUB + PING for every event). That copy had drifted from
+/// `nats::handshake` in four ways that mattered:
+///
+///   * **no connect timeout** — a plain `TcpStream::connect` to an unreachable
+///     host blocks for the OS SYN timeout, and because it ran per message it
+///     stalled the whole relay event loop that long for every event. This is
+///     the liveness bug; `handshake` uses `connect_timeout`.
+///   * credentials escaped `"` but not `\`, so a backslash in the password
+///     produced malformed CONNECT JSON and an auth failure with no clue why.
+///   * INFO was read into a fixed 2048-byte buffer with a single `read()` —
+///     both truncatable and unbounded in the hostile direction.
+///   * no `tls_required` detection, so a TLS-only server failed later with a
+///     confusing protocol error instead of a clear message.
+///
+/// The shared transport also brings a persistent connection, ordered replay
+/// of anything buffered across a drop, and rate-limited in-place revival.
+struct NatsSink {
+    url: String,
+    /// The bridge authenticates as its own principal (`HIVE_NATS_*`). These are
+    /// passed explicitly rather than exported as `NATS_USER`/`NATS_PASSWORD`,
+    /// which on a box that also runs other kannaka units would connect the
+    /// bridge as the shared swarm identity with the wrong ACLs.
+    creds: Option<(String, String)>,
+    transport: Option<kannaka_memory::nats::SwarmTransport>,
+    last_attempt: Option<std::time::Instant>,
 }
 
-/// Fire-and-forget NATS publish over a short-lived connection, matching the
-/// DM bridge's approach. Hive volume is low enough that per-message connect
-/// keeps the daemon stateless; revisit if throughput demands it.
-fn nats_publish(cfg: &Config, subject: &str, payload: &str) -> std::io::Result<()> {
-    let (host, port) = nats_hostport(&cfg.nats_url);
-    let mut sock = TcpStream::connect((host.as_str(), port))?;
-    sock.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let mut buf = [0u8; 2048];
-    let _ = sock.read(&mut buf)?; // INFO line
-    let connect = if !cfg.nats_user.is_empty() {
-        format!(
-            "CONNECT {{\"verbose\":false,\"pedantic\":false,\"name\":\"kannaka-hive-bridge\",\"user\":\"{}\",\"pass\":\"{}\"}}\r\n",
-            cfg.nats_user.replace('"', "\\\""),
-            cfg.nats_pass.replace('"', "\\\"")
-        )
-    } else {
-        "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"kannaka-hive-bridge\"}\r\n".into()
-    };
-    sock.write_all(connect.as_bytes())?;
-    sock.write_all(format!("PUB {} {}\r\n{}\r\n", subject, payload.len(), payload).as_bytes())?;
-    sock.write_all(b"PING\r\n")?;
-    let _ = sock.read(&mut buf)?;
-    Ok(())
+impl NatsSink {
+    fn new(cfg: &Config) -> Self {
+        let creds = if cfg.nats_user.is_empty() {
+            None
+        } else {
+            Some((cfg.nats_user.clone(), cfg.nats_pass.clone()))
+        };
+        Self { url: cfg.nats_url.clone(), creds, transport: None, last_attempt: None }
+    }
+
+    /// Publish, connecting lazily on first use.
+    ///
+    /// `Ok(())` means the message is on the wire **or** in the transport's
+    /// replay buffer — either way it reaches NATS without the relay re-sending
+    /// it, so the caller may mark the event processed. `Err` means no
+    /// connection exists at all and the event was genuinely dropped.
+    ///
+    /// Connecting lazily (rather than at startup) keeps the bridge's Hive-side
+    /// work alive when NATS is down, which is what the old stateless publish
+    /// gave us for free and is worth preserving.
+    fn publish(&mut self, subject: &str, payload: &str) -> Result<(), String> {
+        if self.transport.is_none() {
+            if let Some(t) = self.last_attempt {
+                if t.elapsed() < CONNECT_RETRY {
+                    return Err("NATS unavailable (redial pending)".to_string());
+                }
+            }
+            self.last_attempt = Some(std::time::Instant::now());
+            match kannaka_memory::nats::SwarmTransport::connect_with_creds(
+                &self.url,
+                self.creds.clone(),
+            ) {
+                Ok(t) => {
+                    eprintln!("[hive-bridge] NATS connected: {}", self.url);
+                    self.transport = Some(t);
+                }
+                Err(e) => return Err(format!("NATS connect failed: {e}")),
+            }
+        }
+        let transport = self.transport.as_ref().expect("connected above");
+        match transport.publish(subject, payload.as_bytes()) {
+            Ok(()) => Ok(()),
+            // The transport buffered it and will replay in order once revived.
+            Err(e) => {
+                eprintln!("[hive-bridge] buffered for replay ({e})");
+                Ok(())
+            }
+        }
+    }
 }
 
 fn send_req<S: Read + Write>(ws: &mut tungstenite::WebSocket<S>, sub: &str, filter: &str) {
@@ -141,6 +192,7 @@ fn main() {
     let mut limiter = RateLimiter::new(cfg.rate_cap, cfg.rate_refill);
     let mut policy = PolicyMap::new();
     let mut roster = Roster::new();
+    let mut nats = NatsSink::new(&cfg);
 
     let (mut ws, _) = tungstenite::connect(&cfg.relay_url).expect("connect to hive relay");
     eprintln!("[hive-bridge] connected to {}", cfg.relay_url);
@@ -233,7 +285,7 @@ fn main() {
 
                 let subject = format!("{}.{}", cfg.subject_prefix, mapped.subject);
                 let payload = mapped.payload.to_string();
-                if let Err(e) = nats_publish(&cfg, &subject, &payload) {
+                if let Err(e) = nats.publish(&subject, &payload) {
                     eprintln!("[hive-bridge] publish failed: {e}");
                     continue;
                 }
