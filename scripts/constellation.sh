@@ -78,6 +78,14 @@ cmd_start() {
     # Export binary path for child services
     export KANNAKA_BIN="${BIN:-}"
 
+    # ...and the radio port, so kannaka-eye can find the radio we are about to
+    # start. eye's server.js reads `process.env.RADIO_PORT || 8888`; without
+    # this it fell back to 8888 while radio came up on $RADIO_PORT, so a
+    # non-default port started a constellation whose eye could never reach its
+    # radio. Exported rather than prefixed inline so every child inherits it,
+    # matching how KANNAKA_BIN is handled above. (#607)
+    export RADIO_PORT
+
     # Start Radio
     if [ -n "$RADIO_ROOT" ] && [ -f "$RADIO_ROOT/server.js" ]; then
         # Check if already running
