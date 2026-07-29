@@ -1168,6 +1168,8 @@ impl ConsolidationEngine {
             Err(_) => return 0,
         };
         let mut doomed: Vec<Uuid> = Vec::new();
+        // Ghosts skipped because their ghosting stamp did not survive a rebuild.
+        let mut unstamped: usize = 0;
         for mem in &all {
             if mem.amplitude != 0.0 {
                 continue; // not a ghost
@@ -1193,11 +1195,43 @@ impl ConsolidationEngine {
             // cycle gives every ghost at least one cycle of recovery regardless
             // of the retain window; for retain_days>=1 this is a no-op (the
             // horizon already excludes the current cycle).
+            // A rebuild erases the ghosting stamp: rebuild_cache sets
+            // `updated_at: Some(meta.created_at)` for every memory it restores,
+            // because the stamp is not persisted in WavefrontMeta. So after any
+            // restart — or any `absorb`, which triggers rebuild_cache — a
+            // 30-day-old memory ghosted TODAY looks like it was last active 30
+            // days ago, lands past the horizon immediately, and is hard-deleted
+            // with zero recovery window. That is precisely the 295→88 over-prune
+            // the ADR-0037 stamp exists to prevent, re-entering through the
+            // persistence layer. (#497)
+            //
+            // When `updated_at` is absent or equals `created_at` the ghosting
+            // time is unknowable, so refuse to reclaim: a ghost that lingers
+            // costs space, a ghost deleted without its recovery window is gone.
+            // Ghosts are the only candidates here (amplitude == 0.0 above), so
+            // this cannot hold live memories.
+            let stamp_unknowable = match mem.updated_at {
+                None => true,
+                Some(u) => u == mem.created_at,
+            };
+            if stamp_unknowable {
+                unstamped += 1;
+                continue;
+            }
             if last_active <= horizon && last_active < cycle_started_at {
                 doomed.push(mem.id);
             }
         }
         drop(all);
+
+        if unstamped > 0 {
+            // Visible on purpose: this is retained-but-unreclaimable space, and
+            // a growing number is the signal that the stamp needs persisting
+            // rather than that anything is wrong here. (#497)
+            eprintln!(
+                "[consolidation] {unstamped} ghost(s) retained — ghosting stamp lost to a cache rebuild, so their recovery window is unknowable"
+            );
+        }
 
         let mut reclaimed = 0;
         for id in doomed {
@@ -3174,6 +3208,84 @@ mod tests {
         let c = repulsion_phase_correction(a, b, 1.0);
         let after = angular_distance(a + c, b - c);
         assert!(after > before, "drifted pair must widen: {before} -> {after}");
+    }
+
+    // ADR-0037 / #497 — a cache rebuild erases the ghosting stamp
+    // (`rebuild_cache` sets `updated_at: Some(meta.created_at)`), so an old
+    // memory ghosted moments ago looks decades stale and was hard-deleted with
+    // ZERO recovery window on the very next deep dream. These pin that a ghost
+    // whose stamp is unknowable is retained instead of reclaimed.
+
+    /// Ghost whose `updated_at` was flattened onto `created_at` by a rebuild.
+    fn ghost_with_lost_stamp(engine: &mut ResonanceEngine, label: &str) -> Uuid {
+        let id = insert_with_phase_and_layer(engine, label, 0.0, 0);
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.0; // a ghost
+            // Old enough to be far past any retain window.
+            mem.created_at = Utc::now() - chrono::Duration::days(3650);
+            // Exactly what rebuild_cache writes back.
+            mem.updated_at = Some(mem.created_at);
+        }
+        id
+    }
+
+    #[test]
+    fn compact_ghosts_retains_a_ghost_whose_stamp_was_lost_to_rebuild() {
+        let mut engine = make_engine();
+        let ce = ConsolidationEngine::default();
+        let id = ghost_with_lost_stamp(&mut engine, "ghost with rebuilt stamp");
+
+        // Horizon = now, i.e. the most aggressive possible reclamation.
+        std::env::set_var("KANNAKA_GHOST_RETAIN_DAYS", "0");
+        let reclaimed = ce.stage_compact_ghosts(&mut engine, Utc::now());
+        std::env::remove_var("KANNAKA_GHOST_RETAIN_DAYS");
+
+        assert_eq!(reclaimed, 0, "a ghost with an unknowable stamp must not be hard-deleted");
+        assert!(
+            engine.get_memory(&id).unwrap().is_some(),
+            "the memory must survive — deleting it costs the ADR-0037 recovery window entirely"
+        );
+    }
+
+    #[test]
+    fn compact_ghosts_retains_when_updated_at_is_absent() {
+        // The other unknowable shape: no stamp at all.
+        let mut engine = make_engine();
+        let ce = ConsolidationEngine::default();
+        let id = insert_with_phase_and_layer(&mut engine, "stampless ghost", 0.0, 0);
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.0;
+            mem.created_at = Utc::now() - chrono::Duration::days(3650);
+            mem.updated_at = None;
+        }
+
+        std::env::set_var("KANNAKA_GHOST_RETAIN_DAYS", "0");
+        let reclaimed = ce.stage_compact_ghosts(&mut engine, Utc::now());
+        std::env::remove_var("KANNAKA_GHOST_RETAIN_DAYS");
+
+        assert_eq!(reclaimed, 0);
+        assert!(engine.get_memory(&id).unwrap().is_some());
+    }
+
+    #[test]
+    fn compact_ghosts_still_reclaims_a_genuinely_aged_ghost() {
+        // The over-correction guard. Retaining everything would also satisfy
+        // the tests above, and would turn ghost compaction into a no-op —
+        // ghosts must still age out when their stamp IS known.
+        let mut engine = make_engine();
+        let ce = ConsolidationEngine::default();
+        let id = insert_with_phase_and_layer(&mut engine, "properly aged ghost", 0.0, 0);
+        if let Some(mem) = engine.store.get_mut(&id).ok().flatten() {
+            mem.amplitude = 0.0;
+            mem.created_at = Utc::now() - chrono::Duration::days(90);
+            // A real ghosting stamp, distinct from created_at and well past the
+            // retain window.
+            mem.updated_at = Some(Utc::now() - chrono::Duration::days(30));
+        }
+
+        let reclaimed = ce.stage_compact_ghosts(&mut engine, Utc::now());
+        assert_eq!(reclaimed, 1, "a ghost with a known, aged stamp must still be reclaimed");
+        assert!(engine.get_memory(&id).unwrap().is_none());
     }
 
     #[test]
