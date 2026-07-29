@@ -68,6 +68,129 @@ pub fn export_decision(
     )
 }
 
+/// What an `["OK", <id>, <accepted>, <detail>]` frame means for the bridge.
+///
+/// Extracted from the relay loop for the same reason as `export_decision`:
+/// the interesting outcome kills the process, which is not reachable from a
+/// test if the decision lives inline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OkVerdict {
+    /// Our AUTH event was accepted — the connection is genuinely usable.
+    AuthAccepted,
+    /// Our AUTH event was rejected. Fatal: every later REQ silently returns
+    /// nothing, so there is nothing to degrade to.
+    AuthRejected(String),
+    /// Some other event was rejected. Worth logging, not fatal.
+    EventRejected { id: String, detail: String },
+    /// An accepted non-auth event, or a malformed frame.
+    Ignored,
+}
+
+/// Classify an OK frame. `auth_event_id` is `None` before we have sent AUTH.
+pub fn classify_ok(frame: &serde_json::Value, auth_event_id: Option<&str>) -> OkVerdict {
+    let Some(id) = frame.get(1).and_then(|v| v.as_str()) else {
+        return OkVerdict::Ignored;
+    };
+    // A missing/non-bool accepted flag is treated as rejection: this frame
+    // exists to carry a failure, and defaulting to "fine" would restore the
+    // exact silence being fixed.
+    let accepted = frame.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
+    let detail = frame.get(3).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Only match the auth id when we actually have one — `None == None` would
+    // otherwise make an id-less frame look like our auth result.
+    if auth_event_id.is_some() && auth_event_id == Some(id) {
+        return if accepted {
+            OkVerdict::AuthAccepted
+        } else {
+            OkVerdict::AuthRejected(detail)
+        };
+    }
+    if accepted {
+        OkVerdict::Ignored
+    } else {
+        OkVerdict::EventRejected { id: id.to_string(), detail }
+    }
+}
+
+/// Whether to give up on a connection that has not opened its content
+/// subscription yet.
+///
+/// Split out because the dangerous direction is the false positive: a bug that
+/// let this return true for an already-subscribed bridge would kill a healthy
+/// daemon on a timer.
+pub fn subscribe_deadline_expired(subscribed: bool, elapsed_secs: i64, deadline_secs: i64) -> bool {
+    !subscribed && elapsed_secs >= deadline_secs
+}
+
+#[cfg(test)]
+mod ok_frame_tests {
+    use super::*;
+    use serde_json::json;
+
+    const AUTH_ID: &str = "aaaa1111";
+
+    #[test]
+    fn rejected_auth_is_fatal_and_carries_the_reason() {
+        let f = json!(["OK", AUTH_ID, false, "auth-required: not an allowlisted member"]);
+        assert_eq!(
+            classify_ok(&f, Some(AUTH_ID)),
+            OkVerdict::AuthRejected("auth-required: not an allowlisted member".to_string()),
+        );
+    }
+
+    #[test]
+    fn accepted_auth_is_recognised() {
+        let f = json!(["OK", AUTH_ID, true, ""]);
+        assert_eq!(classify_ok(&f, Some(AUTH_ID)), OkVerdict::AuthAccepted);
+    }
+
+    #[test]
+    fn another_events_rejection_is_not_mistaken_for_auth() {
+        // The bug this guards: killing the bridge because some unrelated
+        // event was rejected.
+        let f = json!(["OK", "bbbb2222", false, "rate-limited"]);
+        assert_eq!(
+            classify_ok(&f, Some(AUTH_ID)),
+            OkVerdict::EventRejected {
+                id: "bbbb2222".to_string(),
+                detail: "rate-limited".to_string()
+            },
+        );
+    }
+
+    #[test]
+    fn ok_before_auth_is_never_read_as_an_auth_result() {
+        let f = json!(["OK", "bbbb2222", false, "nope"]);
+        assert!(!matches!(
+            classify_ok(&f, None),
+            OkVerdict::AuthRejected(_) | OkVerdict::AuthAccepted
+        ));
+    }
+
+    #[test]
+    fn a_missing_accepted_flag_is_not_treated_as_success() {
+        let f = json!(["OK", AUTH_ID]);
+        assert!(matches!(classify_ok(&f, Some(AUTH_ID)), OkVerdict::AuthRejected(_)));
+    }
+
+    #[test]
+    fn malformed_frames_are_ignored() {
+        assert_eq!(classify_ok(&json!(["OK"]), Some(AUTH_ID)), OkVerdict::Ignored);
+    }
+
+    #[test]
+    fn deadline_only_fires_before_the_subscription_opens() {
+        assert!(subscribe_deadline_expired(false, 60, 60), "should give up once past the deadline");
+        assert!(!subscribe_deadline_expired(false, 59, 60), "not yet");
+        // The one that matters: a live bridge must never be killed on a timer.
+        assert!(
+            !subscribe_deadline_expired(true, 100_000, 60),
+            "a subscribed bridge must survive indefinitely"
+        );
+    }
+}
+
 #[cfg(test)]
 mod export_tests {
     use super::*;
