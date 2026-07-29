@@ -15,6 +15,7 @@
 //!   BRIDGE_ROUTE_SUBJECT    default KANNAKA.events.nostr.dm
 //!   BRIDGE_RATE_CAP/_REFILL per-sender token bucket (default 5 / 0.05 s⁻¹)
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -81,6 +82,14 @@ fn now_secs() -> i64 {
 /// Minimum spacing between initial-connect attempts, so a bridge started while
 /// NATS is down does not pay a connect timeout on every DM.
 const CONNECT_RETRY: Duration = Duration::from_secs(15);
+
+/// How often to reclaim refilled rate-limit buckets (see the sweep in
+/// `handle_relay_message`). Cheap — one pass over a small map.
+const PRUNE_INTERVAL_SECS: i64 = 300;
+
+/// Unix-seconds of the last bucket prune. Shared across relay threads; the CAS
+/// keeps two threads from sweeping back-to-back.
+static LAST_PRUNE_SECS: AtomicI64 = AtomicI64::new(0);
 
 /// NATS output for the DM bridge, backed by the shared `SwarmTransport`.
 ///
@@ -225,9 +234,44 @@ fn handle_relay_message(
         Err(_) => return,
     };
     let outcome = {
-        let mut d = dedup.lock().unwrap();
-        let mut l = limiter.lock().unwrap();
-        process(&cfg.privkey, &event, &mut d, &mut l, now_secs())
+        // Recover from a poisoned lock rather than panicking. A panic in one
+        // relay thread would otherwise poison these and take down every other
+        // relay on its next DM; the guarded state is still coherent.
+        let mut d = dedup.lock().unwrap_or_else(|p| p.into_inner());
+        let mut l = limiter.lock().unwrap_or_else(|p| p.into_inner());
+        let now = now_secs();
+
+        // Reclaim refilled rate-limit buckets while we already hold the lock
+        // (#678 did this for the hive bridge; the shared `RateLimiter` grows one
+        // entry per sender ever seen and never shed any).
+        //
+        // The exposure is worse here than on the hive bridge. There, authors are
+        // allowlisted relay members. Here the senders are arbitrary nostr keys —
+        // anyone can DM the voice key, and each new stranger left a permanent
+        // bucket entry. That is unbounded memory growth reachable by an
+        // unauthenticated remote party, in a daemon meant to run indefinitely.
+        //
+        // Dropping a FULL bucket is lossless: `allow()` re-inserts exactly
+        // `(capacity, now)` on the next sighting, so nobody escapes their limit.
+        // Opportunistic rather than on a timer because this daemon is purely
+        // event-driven — the relay threads block in `ws.read()`, so there is no
+        // tick to hang a periodic sweep on.
+        let last = LAST_PRUNE_SECS.load(Ordering::Relaxed);
+        if now - last >= PRUNE_INTERVAL_SECS
+            && LAST_PRUNE_SECS
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            let dropped = l.prune(now);
+            if dropped > 0 {
+                eprintln!(
+                    "[bridge] pruned {dropped} idle rate-limit bucket(s), {} still tracked",
+                    l.tracked()
+                );
+            }
+        }
+
+        process(&cfg.privkey, &event, &mut d, &mut l, now)
     };
     match outcome {
         Outcome::Accept(dm) => {
