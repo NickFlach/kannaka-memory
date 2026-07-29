@@ -3041,6 +3041,40 @@ mod tests {
     // and no tls_required detection. Deleting it is only half a fix if the next
     // "just publish one message" patch reintroduces it, so this asserts the
     // bridge speaks NATS exclusively through SwarmTransport.
+    /// Both relay bridges, not just the hive one. The DM bridge carried the
+    /// SAME hand-rolled client — the hive bridge's comment literally said
+    /// "matching the DM bridge's approach" — so a guard on one of them leaves
+    /// the copy that was actually copied FROM unprotected. It was in fact worse:
+    /// it never sent PING or read PONG, so an `-ERR Authorization Violation`
+    /// was never seen and every DM "succeeded" while the server dropped it.
+    #[test]
+    fn dm_bridge_publishes_through_the_shared_transport() {
+        let src = include_str!("bin/kannaka_nostr_bridge.rs");
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && !l.trim_start().starts_with("///"))
+            .collect::<Vec<_>>()
+            .join("
+");
+
+        assert!(
+            code.contains("SwarmTransport::connect_with_creds"),
+            "the DM bridge should reach NATS via the shared, hardened transport"
+        );
+        assert!(
+            !code.contains("TcpStream::connect"),
+            "the DM bridge must not dial its own NATS socket again"
+        );
+        assert!(
+            !code.contains("CONNECT {"),
+            "the DM bridge must not hand-build CONNECT JSON (escaping lives in handshake)"
+        );
+        assert!(
+            !code.contains("PUB "),
+            "the DM bridge must not hand-frame PUB lines"
+        );
+    }
+
     #[test]
     fn hive_bridge_publishes_through_the_shared_transport() {
         let src = include_str!("bin/kannaka_hive_bridge.rs");
