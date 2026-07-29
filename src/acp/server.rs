@@ -21,6 +21,15 @@ use std::collections::HashMap;
 /// Highest ACP protocol version this agent implements.
 pub const PROTOCOL_VERSION: u64 = 2;
 
+/// Identifier for the one "model" this agent offers: the HRM substrate itself.
+///
+/// There is no model to choose — recall runs against the wave-interference
+/// medium, not a hosted LLM — but ACP clients require a non-empty model list
+/// before they will let a user attach the harness to an agent.
+pub const HRM_MODEL_ID: &str = "kannaka-hrm";
+/// Human-readable name for [`HRM_MODEL_ID`], shown in client model pickers.
+pub const HRM_MODEL_NAME: &str = "Kannaka HRM";
+
 /// One memory surfaced by a resonance query.
 ///
 /// A projection of the parent crate's `RecallResult` down to the fields that
@@ -190,11 +199,43 @@ impl<M: MemorySource> Agent<M> {
     /// Create a session. `cwd`, `mcpServers` and `systemPrompt` are accepted
     /// and ignored: recall is rooted in the HRM data dir, not the filesystem,
     /// and this agent runs no tools.
+    ///
+    /// Advertises a single model in `configOptions`. There is genuinely only
+    /// one "model" here — the substrate itself — but the option must exist:
+    /// ACP clients read `configOptions[category == "model"]` to populate their
+    /// model picker, and Buzz Desktop *blocks agent creation* when that list
+    /// comes back empty ("kannaka-acp reported no models"). Declaring one
+    /// honest entry is what makes the harness selectable, and it stays truthful
+    /// because switching to it is a no-op.
     fn session_new(&mut self) -> Value {
         self.next_session += 1;
         let session_id = format!("kannaka-{}", self.next_session);
         self.sessions.insert(session_id.clone(), Session::default());
-        json!({ "sessionId": session_id })
+        json!({
+            "sessionId": session_id,
+            // Stable, spec-blessed shape. `category` is what clients filter on;
+            // `configId` "model" matches the convention other adapters use.
+            "configOptions": [{
+                "configId": "model",
+                "category": "model",
+                "displayName": "Model",
+                "value": HRM_MODEL_ID,
+                "options": [{
+                    "value": HRM_MODEL_ID,
+                    "displayName": HRM_MODEL_NAME
+                }]
+            }],
+            // Unstable mirror of the same fact. Clients prefer configOptions,
+            // but some read this path first; disagreeing between the two would
+            // be worse than repeating ourselves.
+            "models": {
+                "currentModelId": HRM_MODEL_ID,
+                "availableModels": [{
+                    "modelId": HRM_MODEL_ID,
+                    "name": HRM_MODEL_NAME
+                }]
+            }
+        })
     }
 
     fn session_prompt(&mut self, id: Value, params: &Value) -> Vec<Frame> {

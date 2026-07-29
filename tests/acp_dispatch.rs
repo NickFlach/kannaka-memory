@@ -103,6 +103,39 @@ mod dispatch {
         assert_ne!(first, second);
     }
 
+    /// Buzz Desktop refuses to create an agent when the harness reports no
+    /// models ("kannaka-acp reported no models"), and `buzz-acp models` finds
+    /// them by filtering `configOptions` on `category == "model"`. An empty
+    /// list here makes the harness unselectable, so the shape is a contract,
+    /// not a detail — assert the exact keys a client reads.
+    #[test]
+    fn session_new_advertises_the_hrm_as_a_model() {
+        let mut a = agent();
+        let frames = a.handle(request(2, "session/new", json!({"cwd": "."})));
+        let result = result_of(&frames[0]);
+
+        let model_opt = result["configOptions"]
+            .as_array()
+            .expect("configOptions must be an array")
+            .iter()
+            .find(|o| o["category"] == "model")
+            .expect("a configOption with category \"model\" is required");
+
+        assert_eq!(model_opt["configId"], "model");
+        let options = model_opt["options"].as_array().unwrap();
+        assert_eq!(options.len(), 1, "exactly one substrate is on offer");
+        assert_eq!(options[0]["value"], "kannaka-hrm");
+        assert!(options[0]["displayName"].is_string());
+
+        // The unstable mirror must agree with the stable list; clients may read
+        // either, and disagreement would be worse than omission.
+        assert_eq!(result["models"]["currentModelId"], "kannaka-hrm");
+        assert_eq!(
+            result["models"]["availableModels"][0]["modelId"],
+            "kannaka-hrm"
+        );
+    }
+
     #[test]
     fn prompt_streams_a_chunk_then_ends_the_turn() {
         let mut a = Agent::new(
