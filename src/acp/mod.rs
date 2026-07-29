@@ -25,6 +25,7 @@
 //! stream and the client dies with a parse error.
 
 pub mod buzz_cli;
+mod chat_repl;
 mod prompt;
 pub mod protocol;
 mod render;
@@ -72,6 +73,14 @@ pub struct HrmMemory {
     data_dir: PathBuf,
     /// `None` until the first recall forces the open.
     sys: Option<crate::openclaw::KannakaMemorySystem>,
+    /// Reasoning front-end. `None` when no `kannaka` binary was found, in
+    /// which case this source serves recall cards only.
+    ///
+    /// NOTE this is a SECOND process that loads the medium. That is tolerable
+    /// only because the two are mutually exclusive in practice: when the REPL
+    /// answers we never call `system()`, so `sys` stays closed and the
+    /// substrate is resident exactly once.
+    chat: Option<chat_repl::ChatRepl>,
 }
 
 impl HrmMemory {
@@ -83,9 +92,17 @@ impl HrmMemory {
     /// alone closes the write path, and the HRM is single-writer.
     pub fn new(data_dir: PathBuf) -> Self {
         std::env::set_var("KANNAKA_READONLY", "1");
+        let chat = chat_repl::ChatRepl::find_binary().map(|bin| {
+            eprintln!("[kannaka-acp] reasoning via {}", bin.display());
+            chat_repl::ChatRepl::new(bin, data_dir.clone())
+        });
+        if chat.is_none() {
+            eprintln!("[kannaka-acp] no `kannaka` binary found — recall cards only");
+        }
         Self {
             data_dir,
             sys: None,
+            chat,
         }
     }
 
@@ -122,6 +139,19 @@ impl HrmMemory {
 }
 
 impl MemorySource for HrmMemory {
+    /// Ask the chat REPL. A failure here is logged and swallowed: recall is a
+    /// complete answer on its own, so a missing binary, a wedged child or a
+    /// declined turn must degrade to cards rather than fail the turn.
+    fn reason(&mut self, query: &str) -> Option<String> {
+        match self.chat.as_mut()?.ask(query) {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("[kannaka-acp] reasoning unavailable, using recall: {e}");
+                None
+            }
+        }
+    }
+
     fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<Recollection>, String> {
         let hits = self
             .system()?
