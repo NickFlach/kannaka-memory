@@ -49,6 +49,17 @@ pub trait MemorySource {
     /// Resonate `query` through the medium and return up to `top_k` hits,
     /// strongest first. The `String` error is surfaced to the client verbatim.
     fn recall(&mut self, query: &str, top_k: usize) -> Result<Vec<Recollection>, String>;
+
+    /// Answer in Kannaka's own voice, reasoning over the medium rather than
+    /// listing what it matched.
+    ///
+    /// `None` means "I have no answer, use recall" — the caller always falls
+    /// back to cards, so a source that cannot reason is fully functional. The
+    /// default is exactly that, which keeps every existing implementation
+    /// (and every test double) working unchanged.
+    fn reason(&mut self, _query: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Per-session state.
@@ -273,12 +284,21 @@ impl<M: MemorySource> Agent<M> {
             ];
         }
 
-        let answer = match self.memory.recall(&query, self.top_k) {
-            Ok(hits) => render(&query, &hits),
-            // Report the failure in-band and still end the turn cleanly. A
-            // JSON-RPC error here would tear down the turn and, in buzz-acp,
-            // the whole agent pool; a bad recall is not a protocol violation.
-            Err(e) => format!("Recall failed: {e}"),
+        // Reasoning first, cards second. Recall answers "what does this
+        // resonate with", which is the wrong reply to a greeting — "hi" matches
+        // whatever the medium happens to associate with the word. Reasoning
+        // answers the person. Cards remain the floor: they need no model, no
+        // network, and no second process, so they are what is left when
+        // anything else fails.
+        let answer = match self.memory.reason(&query) {
+            Some(reasoned) => reasoned,
+            None => match self.memory.recall(&query, self.top_k) {
+                Ok(hits) => render(&query, &hits),
+                // Report the failure in-band and still end the turn cleanly. A
+                // JSON-RPC error here would tear down the turn and, in buzz-acp,
+                // the whole agent pool; a bad recall is not a protocol violation.
+                Err(e) => format!("Recall failed: {e}"),
+            },
         };
 
         let mut frames = vec![update_chunk(session_id, &answer)];
