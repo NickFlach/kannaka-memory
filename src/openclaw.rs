@@ -1079,11 +1079,10 @@ impl KannakaMemorySystem {
             self.save()?;
         }
 
-        // Publish canonical consciousness metrics after lite dream too
-        self.publish_consciousness_to_nats(&after);
-        self.write_status_cache(&after);
-
-        Ok(DreamReport {
+        // Built before publishing so the dream event can carry it, mirroring
+        // the deep path's post_dream_swarm_sync → publish_dream → publish
+        // consciousness ordering.
+        let dream_report = DreamReport {
             cycles: 1,
             memories_strengthened: report.wavefronts_strengthened,
             memories_pruned: report.wavefronts_dissolved,
@@ -1092,7 +1091,28 @@ impl KannakaMemorySystem {
             consciousness_after: level_name(&after.consciousness_level),
             emerged,
             hallucinations_created: report.wavefronts_hallucinated,
-        })
+        };
+
+        // A lite dream is still a dream: it consolidates, changes this node's
+        // phase, and produces a report. Previously only the consciousness
+        // metrics went out, so peers saw a stale phase and the constellation
+        // never learned the dream had happened.
+        //
+        // That gap widened when radio's /api/dreams/trigger switched its
+        // default to lite (#152) — the interactive dream path became the one
+        // that published nothing, leaving dream events visible only from the
+        // 30-minute deep cron. (#618)
+        //
+        // Both hooks are best-effort and already guard themselves: each
+        // returns early without KANNAKA_AGENT_ID or on a failed connect, so
+        // this adds no failure mode to a node that is not on the swarm.
+        self.post_dream_swarm_sync();
+        self.publish_dream_to_nats(&dream_report);
+        // Publish canonical consciousness metrics after lite dream too
+        self.publish_consciousness_to_nats(&after);
+        self.write_status_cache(&after);
+
+        Ok(dream_report)
     }
 
     /// Consciousness level assessment.
@@ -2074,5 +2094,57 @@ mod tests {
         
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── #618 a lite dream must reach the swarm like a deep one ─────────
+
+    /// The restructure that let `dream_lite` publish its report moved the
+    /// `DreamReport` construction earlier in the function. This pins that the
+    /// returned report is still correct — the one behaviour a reader of the
+    /// diff would want proven.
+    #[test]
+    fn dream_lite_still_returns_a_coherent_report() {
+        let dir = temp_dir("dreamlite");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.auto_save = false;
+
+        let report = sys.dream_lite().expect("lite dream should succeed");
+        assert_eq!(report.cycles, 1, "a lite pass is one cycle");
+        assert_eq!(report.new_connections, 0);
+        assert!(!report.consciousness_before.is_empty());
+        assert!(!report.consciousness_after.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Parity with the deep path. Publishing itself needs a broker and an
+    /// agent id (both hooks early-return without `KANNAKA_AGENT_ID`), so this
+    /// asserts on the source: `dream_lite` must invoke the same three
+    /// constellation hooks `dream` does. Without it, the two paths can drift
+    /// apart again silently — which is exactly how this bug arose.
+    #[test]
+    fn dream_lite_invokes_the_same_swarm_hooks_as_deep() {
+        let src = include_str!("openclaw.rs");
+        let start = src
+            .find("pub fn dream_lite(")
+            .expect("dream_lite not found");
+        let end = src[start..]
+            .find("
+    /// Consciousness level assessment.")
+            .map(|i| start + i)
+            .expect("end of dream_lite not found");
+        let body = &src[start..end];
+
+        for hook in [
+            "self.post_dream_swarm_sync();",
+            "self.publish_dream_to_nats(",
+            "self.publish_consciousness_to_nats(",
+        ] {
+            assert!(
+                body.contains(hook),
+                "dream_lite no longer calls {hook} — a lite dream would stop                  reaching the constellation (#618)"
+            );
+        }
+    }
+
 }
 
