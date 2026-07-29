@@ -3333,6 +3333,16 @@ fn main() {
                         "created_at": m.created_at.to_rfc3339(),
                         "layer_depth": m.layer_depth,
                         "hallucinated": m.hallucinated,
+                        // NCS modality. Omitting it made every JSON round-trip
+                        // silently collapse tagged memories back to `Unknown`,
+                        // erasing modality-aware introspection and cross-modal
+                        // routing for anything that had been exported. (#553)
+                        //
+                        // Emitted in --slim too: it is one short string, and
+                        // --slim exists to drop the 10k-dim vector, not
+                        // metadata — the observatory reads --slim and is
+                        // exactly the modality-aware consumer that needs it.
+                        "modality": m.modality,
                         // T1.4 (#474): entropy provenance of the dream/Ξ that last
                         // wrote this wavefront (null ⇒ prng://legacy). Read from
                         // the canonical WavefrontMeta.
