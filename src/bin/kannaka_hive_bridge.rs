@@ -18,7 +18,7 @@
 use std::io::{Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kannaka_memory::hive_bridge::{PolicyMap, Roster};
+use kannaka_memory::hive_bridge::{OkVerdict, PolicyMap, Roster};
 use kannaka_memory::nostr::bridge::{Dedup, RateLimiter};
 use kannaka_memory::nostr::{Event, Keypair};
 use tungstenite::Message;
@@ -96,6 +96,59 @@ fn build_auth_event(kp: &Keypair, relay_url: &str, challenge: &str) -> Event {
 /// Minimum spacing between initial-connect attempts, so a bridge started
 /// while NATS is down does not pay a connect timeout on every single event.
 const CONNECT_RETRY: Duration = Duration::from_secs(15);
+
+/// Bound on a single `ws.read()`.
+///
+/// Load-bearing for every timer in the event loop, not just the liveness
+/// deadline below: `ws.read()` blocks, so on a silent socket the loop never
+/// comes back around and nothing time-based can fire. The periodic policy
+/// refresh had this latent too — it could only ever run on the back of an
+/// unrelated inbound frame.
+const WS_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long after connecting the content subscription may stay unopened
+/// before we declare the connection dead.
+///
+/// Generous because it spans AUTH plus two history queries (policy, roster)
+/// against a relay that may be paging; the failure it catches is indefinite,
+/// so precision does not matter.
+const SUBSCRIBE_DEADLINE_SECS: i64 = 60;
+
+/// Bound reads on the underlying socket so the loop's timers can run.
+fn bound_ws_reads(
+    ws: &tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+) {
+    use tungstenite::stream::MaybeTlsStream;
+    let sock = match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => Some(s),
+        MaybeTlsStream::Rustls(s) => Some(&s.sock),
+        // `MaybeTlsStream` is #[non_exhaustive]; an unknown variant just means
+        // no deadline enforcement, which is the old behaviour.
+        _ => None,
+    };
+    match sock {
+        Some(s) => {
+            if let Err(e) = s.set_read_timeout(Some(WS_READ_TIMEOUT)) {
+                eprintln!("[hive-bridge] WARN could not bound socket reads ({e}) — liveness deadline is inactive");
+            }
+        }
+        None => eprintln!(
+            "[hive-bridge] WARN unrecognised stream type — liveness deadline is inactive"
+        ),
+    }
+}
+
+/// Whether a websocket error is just "nothing arrived in time".
+fn is_read_timeout(e: &tungstenite::Error) -> bool {
+    match e {
+        tungstenite::Error::Io(io) => matches!(
+            io.kind(),
+            // WouldBlock on unix, TimedOut on windows.
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        _ => false,
+    }
+}
 
 /// NATS output for the bridge, backed by the shared `SwarmTransport`.
 ///
@@ -196,10 +249,15 @@ fn main() {
 
     let (mut ws, _) = tungstenite::connect(&cfg.relay_url).expect("connect to hive relay");
     eprintln!("[hive-bridge] connected to {}", cfg.relay_url);
+    bound_ws_reads(&ws);
 
     let mut authed = false;
     let mut subscribed = false;
     let mut last_policy_refresh = now_secs();
+    let connected_at = now_secs();
+    // Id of the auth event we sent, so its OK frame can be told from every
+    // other OK the relay emits.
+    let mut auth_event_id: Option<String> = None;
 
     loop {
         // Periodic policy refresh. buzz stores kind 39000 channel-scoped, so
@@ -210,8 +268,27 @@ fn main() {
             last_policy_refresh = now_secs();
         }
 
+        // The connection is only useful once the content subscription is open.
+        // Every way that can fail to happen — auth silently rejected, this
+        // pubkey not allowlisted, a REQ that never returns EOSE — leaves a
+        // live socket and a process that has logged nothing since "connected",
+        // so it must be caught on a clock rather than by an error.
+        if kannaka_memory::hive_bridge::subscribe_deadline_expired(
+            subscribed,
+            now_secs() - connected_at,
+            SUBSCRIBE_DEADLINE_SECS,
+        ) {
+            eprintln!(
+                "[hive-bridge] FATAL no content subscription {SUBSCRIBE_DEADLINE_SECS}s after connect \
+                 (authed={authed}) — relay never completed the handshake; exiting for restart"
+            );
+            std::process::exit(1);
+        }
+
         let msg = match ws.read() {
             Ok(m) => m,
+            // Just an idle socket: go round again so the timers above run.
+            Err(e) if is_read_timeout(&e) => continue,
             Err(e) => {
                 eprintln!("[hive-bridge] socket error: {e}");
                 break;
@@ -233,6 +310,10 @@ fn main() {
                 let auth = build_auth_event(&kp, &cfg.relay_url, challenge);
                 let payload = serde_json::to_string(&auth).expect("serialize auth event");
                 let _ = ws.send(Message::Text(format!(r#"["AUTH",{payload}]"#)));
+                auth_event_id = Some(auth.id.clone());
+                // NB: this records only that auth was SENT. Confirmation is the
+                // OK frame below; the name is kept because the policy-refresh
+                // timer keys off "we have attempted auth".
                 authed = true;
                 // Resolve policy and roster BEFORE opening the content
                 // subscription: the roster is built from the same stream it
@@ -241,6 +322,28 @@ fn main() {
                 send_req(&mut ws, "policy", r#"{"kinds":[39000]}"#);
                 send_req(&mut ws, "roster", r#"{"kinds":[0,10100]}"#);
             }
+            // ["OK", <event-id>, <accepted>, <message>]. Previously discarded,
+            // so a rejected auth ("auth-required: ...", pubkey not allowlisted)
+            // was invisible: the REQs simply returned nothing forever.
+            "OK" => match kannaka_memory::hive_bridge::classify_ok(&frame, auth_event_id.as_deref())
+            {
+                OkVerdict::AuthAccepted => {
+                    eprintln!("[hive-bridge] auth accepted by {}", cfg.relay_url)
+                }
+                OkVerdict::AuthRejected(detail) => {
+                    eprintln!(
+                        "[hive-bridge] FATAL relay rejected auth: {detail} \
+                         — check HIVE_KEY_FILE is an allowlisted member; exiting for restart"
+                    );
+                    std::process::exit(1);
+                }
+                // Not fatal, but silence here previously hid every relay-side
+                // rejection of a published event.
+                OkVerdict::EventRejected { id, detail } => {
+                    eprintln!("[hive-bridge] relay rejected event {id}: {detail}")
+                }
+                OkVerdict::Ignored => {}
+            },
             "EOSE" => {
                 let sub = frame.get(1).and_then(|v| v.as_str()).unwrap_or("");
                 if sub == "roster" && !subscribed {

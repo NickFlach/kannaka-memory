@@ -3056,9 +3056,12 @@ mod tests {
             code.contains("SwarmTransport::connect_with_creds"),
             "the bridge should reach NATS via the shared, hardened transport"
         );
+        // Narrowly: no *dialling* its own socket. The bridge legitimately
+        // touches the websocket's `TcpStream` to bound reads, so a bare
+        // "TcpStream" ban would be noise rather than a guard.
         assert!(
-            !code.contains("TcpStream"),
-            "the bridge must not open its own NATS socket again"
+            !code.contains("TcpStream::connect"),
+            "the bridge must not dial its own NATS socket again"
         );
         assert!(
             !code.contains("CONNECT {"),
