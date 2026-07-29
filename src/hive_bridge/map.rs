@@ -25,6 +25,11 @@ fn tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
         .find(|t| t.first().map(String::as_str) == Some(name))
         .and_then(|t| t.get(1))
         .map(String::as_str)
+        // An empty tag value is absence, not a value. Without this an
+        // `["h", ""]` message claimed channel id "" — which, paired with a
+        // degenerate `["d", ""]` metadata event, made every such message
+        // bridgeable and bypassed the no-bridge gate entirely. (#643)
+        .filter(|s| !s.is_empty())
 }
 
 fn job_phase(kind: u32) -> Option<&'static str> {

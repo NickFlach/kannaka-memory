@@ -36,11 +36,15 @@ impl PolicyMap {
         if event.kind != 39000 {
             return;
         }
+        // `["d", ""]` is not a channel. Registering it created an entry that
+        // every `h`-empty message would then match, so a single degenerate
+        // metadata event could make unbridgeable traffic bridgeable. (#643)
         let Some(channel_id) = event
             .tags
             .iter()
             .find(|t| t.first().map(String::as_str) == Some("d"))
             .and_then(|t| t.get(1))
+            .filter(|s| !s.is_empty())
             .cloned()
         else {
             return;
