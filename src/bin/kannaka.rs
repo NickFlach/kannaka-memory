@@ -4757,13 +4757,29 @@ fn main() {
                                                                     kannaka_memory::wire_source_trusted(source_agent, &trust.trusted_agents, trust.metrics_trusted_only)
                                                                 };
                                                                 if admit_import {
-                                                                    match sys.engine.store.insert(mem) {
+                                                                    // Bound as a local so the mutable borrow of `sys`
+                                                                    // ends here and `sys.save()` can run in the arm below.
+                                                                    let insert_result = sys.engine.store.insert(mem);
+                                                                    match insert_result {
                                                                         Ok(_) => {
                                                                             // #8: commit the pending promotion ONLY after the
                                                                             // medium insert succeeds, so the DAG ledger and the
                                                                             // live medium commit together (no-op when dormant).
                                                                             kannaka_memory::commit_promotion(pending, &mut rep_store, &mut staging, &cfg);
-                                                                            println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                                            // Persist. `insert` only puts the memory in the
+                                                                            // in-process store — every other mutating path in
+                                                                            // this binary pairs it with an explicit save (see
+                                                                            // the prune path's "Failed to persist HRM"). Without
+                                                                            // this the import survived only until restart, so a
+                                                                            // long-running `swarm listen --auto-sync` looked
+                                                                            // like it was syncing while nothing durable landed.
+                                                                            // `save()` is `store.flush()` — incremental, and a
+                                                                            // no-op when nothing is pending. (#647)
+                                                                            if let Err(e) = sys.save() {
+                                                                                eprintln!("[sync] Imported memory {} but FAILED to persist it: {} — it will be lost on restart", mem_id, e);
+                                                                            } else {
+                                                                                println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
+                                                                            }
                                                                         }
                                                                         Err(e) => {
                                                                             // #8: insert failed — DROP the pending (do not commit)
