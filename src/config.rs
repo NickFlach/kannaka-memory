@@ -505,10 +505,36 @@ impl KannakaConfig {
                 }
             }
         } else {
-            KannakaConfig::default()
+            // No config.toml. Before minting a brand-new identity, honour the
+            // legacy `~/.kannaka/agent_id` file. `persist_agent_id_compat()`
+            // writes it and install detection reads it, but the runtime never
+            // did — so a node with only that file generated a FRESH random id
+            // on every process. Presence continuity broke, and because the
+            // trusted-agents allowlist is keyed by id, such a node could never
+            // match its own roster entry. (#595)
+            let mut c = KannakaConfig::default();
+            if let Some(id) = Self::legacy_agent_id() {
+                c.agent.id = id;
+            }
+            c
         };
+        // After the file fallback, so the documented precedence holds:
+        // env var > config.toml > persisted file > generate new.
         cfg.apply_env_overrides();
         cfg
+    }
+
+    /// The id persisted by `persist_agent_id_compat()`, if usable.
+    ///
+    /// Returns `None` for a missing, unreadable, empty or whitespace-only
+    /// file so a truncated write falls through to generation rather than
+    /// yielding an empty agent id.
+    pub fn legacy_agent_id() -> Option<String> {
+        let path = Self::data_dir().join("agent_id");
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// Save config to `~/.kannaka/config.toml`.
@@ -4123,4 +4149,115 @@ mod config_field_tests {
         assert!(!version_is_newer("0.10.3-hotfix", "0.10.3"));
         assert!(version_is_newer("1.0.0", "0.99.99"));
     }
+
+    // ── #595 agent identity must survive across processes ──────────────
+
+    /// `KANNAKA_DATA_DIR` and `KANNAKA_AGENT_ID` are process-global, so these
+    /// serialise and restore prior values.
+    static ID_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct IdEnvGuard {
+        dir: Option<String>,
+        agent: Option<String>,
+    }
+
+    impl IdEnvGuard {
+        fn take() -> Self {
+            Self {
+                dir: std::env::var("KANNAKA_DATA_DIR").ok(),
+                agent: std::env::var("KANNAKA_AGENT_ID").ok(),
+            }
+        }
+    }
+
+    impl Drop for IdEnvGuard {
+        fn drop(&mut self) {
+            match &self.dir {
+                Some(v) => std::env::set_var("KANNAKA_DATA_DIR", v),
+                None => std::env::remove_var("KANNAKA_DATA_DIR"),
+            }
+            match &self.agent {
+                Some(v) => std::env::set_var("KANNAKA_AGENT_ID", v),
+                None => std::env::remove_var("KANNAKA_AGENT_ID"),
+            }
+        }
+    }
+
+    fn temp_data_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "kannaka-id-test-{}-{}",
+            tag,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&d).expect("temp data dir");
+        d
+    }
+
+    #[test]
+    fn legacy_agent_id_file_is_honoured_without_config_toml() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = IdEnvGuard::take();
+        let dir = temp_data_dir("legacy");
+        std::fs::write(dir.join("agent_id"), "kannaka-prime
+").unwrap();
+        std::env::set_var("KANNAKA_DATA_DIR", &dir);
+        std::env::remove_var("KANNAKA_AGENT_ID");
+
+        // No config.toml in this dir — previously this minted a fresh random
+        // id on every call, so a node's identity changed per process.
+        let a = KannakaConfig::load();
+        let b = KannakaConfig::load();
+        assert_eq!(a.agent.id, "kannaka-prime", "must reuse the persisted id");
+        assert_eq!(a.agent.id, b.agent.id, "identity must be stable across loads");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn env_var_still_outranks_the_legacy_file() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = IdEnvGuard::take();
+        let dir = temp_data_dir("envwins");
+        std::fs::write(dir.join("agent_id"), "from-file").unwrap();
+        std::env::set_var("KANNAKA_DATA_DIR", &dir);
+        std::env::set_var("KANNAKA_AGENT_ID", "from-env");
+
+        // Documented precedence: env > config.toml > persisted file > generate.
+        assert_eq!(KannakaConfig::load().agent.id, "from-env");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn blank_legacy_file_falls_through_to_generation() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = IdEnvGuard::take();
+        let dir = temp_data_dir("blank");
+        // A truncated write must not yield an EMPTY agent id.
+        std::fs::write(dir.join("agent_id"), "   
+").unwrap();
+        std::env::set_var("KANNAKA_DATA_DIR", &dir);
+        std::env::remove_var("KANNAKA_AGENT_ID");
+
+        let id = KannakaConfig::load().agent.id;
+        assert!(!id.trim().is_empty(), "must not produce an empty identity");
+        assert!(id.starts_with("agent-"), "should be a generated id, got {id}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_legacy_file_still_generates() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = IdEnvGuard::take();
+        let dir = temp_data_dir("none");
+        std::env::set_var("KANNAKA_DATA_DIR", &dir);
+        std::env::remove_var("KANNAKA_AGENT_ID");
+
+        assert!(KannakaConfig::legacy_agent_id().is_none());
+        assert!(KannakaConfig::load().agent.id.starts_with("agent-"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
 }
