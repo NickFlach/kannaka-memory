@@ -691,7 +691,35 @@ impl Conn {
 /// `connect()` and `reconnect()` so both send the same authenticated
 /// CONNECT payload (NATS_USER/NATS_PASSWORD env, falling back to URL
 /// credentials). ADR-0026 #73.
-fn handshake(url: &str) -> Result<Conn, NatsError> {
+/// Pick the identity to present in CONNECT: explicit > env > URL.
+///
+/// Split out of `handshake` because it is the whole of the identity decision
+/// and `handshake` itself needs a live socket to exercise.
+fn resolve_creds(
+    explicit: Option<&(String, String)>,
+    env_user: String,
+    env_pass: String,
+    url_creds: Option<(String, String)>,
+) -> Option<(String, String)> {
+    if let Some((u, p)) = explicit {
+        return Some((u.clone(), p.clone()));
+    }
+    if !env_user.is_empty() && !env_pass.is_empty() {
+        return Some((env_user, env_pass));
+    }
+    url_creds
+}
+
+/// Open an authenticated connection.
+///
+/// `explicit` is for callers that carry their OWN credential namespace and
+/// must not inherit the ambient swarm identity — the hive bridge authenticates
+/// as `HIVE_NATS_USER`, and on a box where the generic `NATS_USER` is also
+/// exported (every kannaka unit that sources `.kannaka-nats.env`) the env
+/// branch below would silently connect it as the wrong principal. Explicit
+/// creds therefore outrank env, which outranks `user:pass@` in the URL.
+/// `None` is exactly the previous behaviour.
+fn handshake(url: &str, explicit: Option<&(String, String)>) -> Result<Conn, NatsError> {
     let (host, port, url_creds) = parse_nats_url(url)?;
     let addr = format!("{host}:{port}");
     use std::net::ToSocketAddrs;
@@ -741,11 +769,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // connections get the server's anonymous permissions (read-only).
     let env_user = std::env::var("NATS_USER").unwrap_or_default();
     let env_pass = std::env::var("NATS_PASSWORD").unwrap_or_default();
-    let creds = if !env_user.is_empty() && !env_pass.is_empty() {
-        Some((env_user, env_pass))
-    } else {
-        url_creds
-    };
+    let creds = resolve_creds(explicit, env_user, env_pass, url_creds);
     let connect_payload = match &creds {
         Some((user, pass)) => {
             // Escape JSON safely. Both fields are short tokens — quotation
@@ -834,6 +858,11 @@ pub struct SwarmTransport {
     /// redials so a daemon publishing frequently against a downed server
     /// pays one connect timeout per REVIVE_INTERVAL, not per publish.
     last_revive: Arc<Mutex<Option<Instant>>>,
+    /// Credentials supplied by the caller rather than read from the ambient
+    /// environment. Held so `reconnect()` and `try_revive_locked()` re-present
+    /// the SAME identity — a redial that silently fell back to env/URL creds
+    /// would come back as a different principal with different ACLs.
+    explicit_creds: Option<(String, String)>,
 }
 
 /// Minimum spacing between in-place redial attempts from `try_revive_locked`.
@@ -1034,10 +1063,20 @@ impl<'a> EventPayload<'a> {
 impl SwarmTransport {
     /// Connect to a NATS server at the given URL.
     pub fn connect(url: &str) -> Result<Self, NatsError> {
-        let conn = handshake(url)?;
+        Self::connect_with_creds(url, None)
+    }
+
+    /// Connect presenting caller-supplied credentials instead of the ambient
+    /// `NATS_USER`/`NATS_PASSWORD`. See `handshake` for why this outranks env.
+    pub fn connect_with_creds(
+        url: &str,
+        explicit_creds: Option<(String, String)>,
+    ) -> Result<Self, NatsError> {
+        let conn = handshake(url, explicit_creds.as_ref())?;
         let mut transport = Self {
             conn: Arc::new(Mutex::new(conn)),
             url: url.to_string(),
+            explicit_creds,
             next_sid: AtomicU64::new(1),
             jetstream_ok: false,
             jetstream_writable: false,
@@ -1115,7 +1154,7 @@ impl SwarmTransport {
     /// handshake as `connect()` (NATS_USER/NATS_PASSWORD are NOT dropped
     /// on reconnect).
     pub fn reconnect(&mut self) -> Result<(), NatsError> {
-        let new_conn = handshake(&self.url)?;
+        let new_conn = handshake(&self.url, self.explicit_creds.as_ref())?;
 
         // Swap in the new connection. A poisoned lock just means a previous
         // holder panicked — the old Conn is being replaced wholesale anyway.
@@ -1564,7 +1603,7 @@ impl SwarmTransport {
             }
             *last = Some(Instant::now());
         }
-        match handshake(&self.url) {
+        match handshake(&self.url, self.explicit_creds.as_ref()) {
             Ok(fresh) => {
                 *conn = fresh;
                 *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
@@ -2930,6 +2969,105 @@ mod tests {
         let mut line = String::new();
         let n = read_control_line(&mut ok, &mut line).unwrap();
         assert!(n > 0 && line.starts_with("INFO "), "a normal INFO line reads fine");
+    }
+
+    // ── credential precedence (#643) ────────────────────────────
+    //
+    // The hive bridge authenticates as HIVE_NATS_USER, its own principal. It
+    // now reaches NATS through SwarmTransport instead of a bespoke client, and
+    // the whole point of `connect_with_creds` is that adopting the shared
+    // transport must NOT quietly re-identify it: on a box where the generic
+    // NATS_USER is also exported (any host running other kannaka units), env
+    // creds would otherwise win and the bridge would connect with the wrong
+    // ACLs — publishing under the swarm identity, or being denied outright.
+
+    fn creds(u: &str, p: &str) -> (String, String) {
+        (u.to_string(), p.to_string())
+    }
+
+    #[test]
+    fn explicit_creds_outrank_env() {
+        let got = resolve_creds(
+            Some(&creds("hive", "hive-secret")),
+            "swarm".to_string(),
+            "swarm-secret".to_string(),
+            Some(creds("urluser", "urlpass")),
+        );
+        assert_eq!(
+            got,
+            Some(creds("hive", "hive-secret")),
+            "a caller that passed its own identity must keep it even when NATS_USER is set"
+        );
+    }
+
+    #[test]
+    fn env_outranks_url_when_no_explicit_creds() {
+        // Unchanged pre-existing behaviour — the refactor must not disturb it.
+        let got = resolve_creds(
+            None,
+            "swarm".to_string(),
+            "swarm-secret".to_string(),
+            Some(creds("urluser", "urlpass")),
+        );
+        assert_eq!(got, Some(creds("swarm", "swarm-secret")));
+    }
+
+    #[test]
+    fn url_creds_used_when_env_is_absent_or_partial() {
+        let from_url = Some(creds("urluser", "urlpass"));
+        assert_eq!(
+            resolve_creds(None, String::new(), String::new(), from_url.clone()),
+            from_url,
+        );
+        // A half-set env pair is not a usable identity and must not shadow the
+        // URL — this is why the check is on BOTH fields.
+        assert_eq!(
+            resolve_creds(None, "swarm".to_string(), String::new(), from_url.clone()),
+            from_url,
+        );
+    }
+
+    #[test]
+    fn anonymous_when_nothing_is_supplied() {
+        assert_eq!(resolve_creds(None, String::new(), String::new(), None), None);
+    }
+
+    // ── the bridge must not re-grow a bespoke NATS client (#643) ──
+    //
+    // The hand-rolled copy drifted from this module in four ways at once: no
+    // connect timeout (the liveness bug — a per-message connect to an
+    // unreachable host stalled the relay loop for the OS SYN timeout on EVERY
+    // event), `"`-only credential escaping, a fixed 2048-byte single-read INFO,
+    // and no tls_required detection. Deleting it is only half a fix if the next
+    // "just publish one message" patch reintroduces it, so this asserts the
+    // bridge speaks NATS exclusively through SwarmTransport.
+    #[test]
+    fn hive_bridge_publishes_through_the_shared_transport() {
+        let src = include_str!("bin/kannaka_hive_bridge.rs");
+        // Comments in this file legitimately DESCRIBE the old client; strip
+        // them so the prose does not trip its own guard.
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            code.contains("SwarmTransport::connect_with_creds"),
+            "the bridge should reach NATS via the shared, hardened transport"
+        );
+        assert!(
+            !code.contains("TcpStream"),
+            "the bridge must not open its own NATS socket again"
+        );
+        assert!(
+            !code.contains("CONNECT {"),
+            "the bridge must not hand-build CONNECT JSON (escaping lives in handshake)"
+        );
+        assert!(
+            !code.contains("PUB "),
+            "the bridge must not hand-frame PUB lines"
+        );
     }
 
     #[test]
