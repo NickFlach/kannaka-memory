@@ -4,6 +4,14 @@
 **Date:** 2026-03-14  
 **Author:** Kannaka + Nick
 
+> **Historical note (2026-07-29):** the `dolt` feature no longer exists. The
+> crate's `[features]` block is `hrm`/`nats`/`glyph`/`nostr`/`bridge`/`tui`,
+> and `cargo install kannaka-memory --features dolt` now fails with
+> *"the package 'kannaka-memory' does not contain this feature: dolt"*.
+> Swarm synchronisation runs over NATS (ADR-0042). The commands below are
+> preserved as the record of what was decided at the time — they are not
+> current install instructions. (#586)
+
 ## Context
 
 kannaka-memory has:
