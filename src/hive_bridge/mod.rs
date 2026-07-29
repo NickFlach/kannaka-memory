@@ -195,6 +195,49 @@ mod export_tests {
         assert_eq!(mapped.subject, "agent");
     }
 
+
+    /// #643 — the degenerate-metadata bypass, end to end.
+    ///
+    /// `["d", ""]` used to register a channel whose id was the empty string,
+    /// and `["h", ""]` used to resolve to that same id. Together, ONE such
+    /// metadata event made every h-empty message clear the policy gate —
+    /// defeating the only privacy control on the bridge without any channel
+    /// ever being flagged.
+    #[test]
+    fn degenerate_empty_channel_metadata_cannot_make_traffic_bridgeable() {
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+
+        // An unflagged metadata event with an EMPTY d tag.
+        let degenerate = ev(
+            39000,
+            &"e".repeat(64),
+            vec![tag(&["d", ""]), tag(&["name", "nowhere"])],
+            "",
+        );
+        policy.apply_metadata(&degenerate);
+        assert_eq!(policy.len(), 0, "an empty channel id must not be registered");
+
+        // A message claiming the empty channel.
+        let msg = ev(9, &"b".repeat(64), vec![tag(&["h", ""])], "should not cross");
+        assert!(
+            export_decision(&msg, &roster, &policy, NOW).is_none(),
+            "an empty channel id must never be bridgeable"
+        );
+    }
+
+    /// Even with a legitimately bridgeable channel present, an h-empty message
+    /// must not borrow its clearance.
+    #[test]
+    fn empty_h_tag_does_not_inherit_another_channels_clearance() {
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+
+        let msg = ev(9, &"b".repeat(64), vec![tag(&["h", ""])], "orphan");
+        assert!(export_decision(&msg, &roster, &policy, NOW).is_none());
+    }
+
     /// An unmappable event yields nothing regardless of policy.
     #[test]
     fn unmappable_event_is_not_exported() {
