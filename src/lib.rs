@@ -6,6 +6,7 @@
 //! Memories exist as wavefronts in a high-dimensional tensor medium.
 //! Recall is resonance (constructive interference). Dreaming is annealing.
 
+pub mod acp;
 pub mod bridge;
 pub mod observe;
 pub mod openclaw;
