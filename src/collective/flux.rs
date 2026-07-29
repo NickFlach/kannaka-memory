@@ -44,8 +44,39 @@ impl FluxConfig {
         cfg
     }
 
+    /// Is Flux publishing configured?
+    ///
+    /// Requires `FLUX_URL`. It used to enable on `FLUX_AGENT_ID` alone, which
+    /// combined badly with `base_url` defaulting to `http://localhost:3000`:
+    /// setting only the agent id — the natural thing to do when identifying
+    /// this node — turned publishing ON and silently aimed every event at
+    /// localhost. Anywhere Flux is not co-located that means events vanish (or
+    /// land on whatever else answers :3000) while the node reports success,
+    /// because `publish()` is best-effort and never propagates errors. (#623)
+    ///
+    /// A destination is not something to infer. `enablement_warning()` covers
+    /// the other direction so the stricter rule cannot silently disable a
+    /// working setup either.
     pub fn is_enabled(&self) -> bool {
-        env::var("FLUX_URL").is_ok() || env::var("FLUX_AGENT_ID").is_ok()
+        env::var("FLUX_URL").is_ok()
+    }
+
+    /// Warning to emit at startup when the configuration looks half-done.
+    ///
+    /// Returns `Some(msg)` when an agent id is set without a URL — previously
+    /// that combination published to localhost, so an operator upgrading into
+    /// this change needs to be told why events stopped rather than discovering
+    /// it from a quiet dashboard.
+    pub fn enablement_warning() -> Option<String> {
+        let has_url = env::var("FLUX_URL").is_ok();
+        let has_agent = env::var("FLUX_AGENT_ID").is_ok();
+        if !has_url && has_agent {
+            return Some(
+                "[flux] FLUX_AGENT_ID is set but FLUX_URL is not — Flux publishing is DISABLED.                  Set FLUX_URL (e.g. http://localhost:3000) to enable it. Previously this                  combination published to localhost by default, which silently discarded                  events on any host where Flux is not co-located."
+                    .to_string(),
+            );
+        }
+        None
     }
 }
 
@@ -502,6 +533,103 @@ impl GlyphSubscriptionFilter {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    /// Env-var tests share one process, so they must not run concurrently.
+    /// Each takes this lock and restores the prior values before releasing.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        url: Option<String>,
+        agent: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn take() -> Self {
+            Self {
+                url: env::var("FLUX_URL").ok(),
+                agent: env::var("FLUX_AGENT_ID").ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.url {
+                Some(v) => env::set_var("FLUX_URL", v),
+                None => env::remove_var("FLUX_URL"),
+            }
+            match &self.agent {
+                Some(v) => env::set_var("FLUX_AGENT_ID", v),
+                None => env::remove_var("FLUX_AGENT_ID"),
+            }
+        }
+    }
+
+    /// #623 — the agent id alone must NOT enable publishing. It used to, while
+    /// base_url defaulted to localhost:3000, so identifying this node silently
+    /// aimed every event at localhost and `publish()` swallowed the failure.
+    #[test]
+    fn agent_id_alone_does_not_enable_flux() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvGuard::take();
+        env::remove_var("FLUX_URL");
+        env::set_var("FLUX_AGENT_ID", "kannaka-prime");
+
+        let cfg = FluxConfig::from_env();
+        assert!(!cfg.is_enabled(), "FLUX_AGENT_ID alone must not enable publishing");
+        assert_eq!(
+            cfg.base_url, "http://localhost:3000",
+            "the localhost default is what made this dangerous — it is still the default,              which is exactly why enabling now requires an explicit URL"
+        );
+        assert!(
+            FluxConfig::enablement_warning().is_some(),
+            "a half-configured setup must say so rather than going quiet"
+        );
+    }
+
+    #[test]
+    fn explicit_url_enables_flux() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvGuard::take();
+        env::set_var("FLUX_URL", "http://flux.internal:3000");
+        env::remove_var("FLUX_AGENT_ID");
+
+        let cfg = FluxConfig::from_env();
+        assert!(cfg.is_enabled());
+        assert_eq!(cfg.base_url, "http://flux.internal:3000");
+        assert!(
+            FluxConfig::enablement_warning().is_none(),
+            "a complete configuration should not warn"
+        );
+    }
+
+    /// A genuinely local deployment still works — it just has to say so.
+    #[test]
+    fn explicit_localhost_url_is_honoured() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvGuard::take();
+        env::set_var("FLUX_URL", "http://localhost:3000");
+        env::set_var("FLUX_AGENT_ID", "kannaka-prime");
+
+        let cfg = FluxConfig::from_env();
+        assert!(cfg.is_enabled());
+        assert_eq!(cfg.agent_id, "kannaka-prime");
+        assert!(FluxConfig::enablement_warning().is_none());
+    }
+
+    #[test]
+    fn neither_var_set_is_silent_and_disabled() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvGuard::take();
+        env::remove_var("FLUX_URL");
+        env::remove_var("FLUX_AGENT_ID");
+
+        assert!(!FluxConfig::from_env().is_enabled());
+        assert!(
+            FluxConfig::enablement_warning().is_none(),
+            "an unconfigured node is not misconfigured — no warning"
+        );
+    }
 
     #[test]
     fn pull_decision_high_trust_high_amplitude() {
