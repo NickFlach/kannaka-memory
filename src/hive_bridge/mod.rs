@@ -68,6 +68,45 @@ pub fn export_decision(
     )
 }
 
+/// Outcome of offering one inbound event to the bridge.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Admission {
+    /// Cleared policy and budget — publish it.
+    Publish(map::Mapped),
+    /// Unmappable, or its channel is not bridgeable. Never metered.
+    Suppressed,
+    /// Would have been published, but the author is over budget. Carries the
+    /// mapped form so the caller can name the subject when logging.
+    RateLimited(map::Mapped),
+}
+
+/// Decide what happens to one inbound event: policy first, budget second.
+///
+/// The order is the point (#643). Rate limiting used to run BEFORE the policy
+/// gate, so events that were never going to be bridged — unresolved channels,
+/// and `no-bridge` ones especially — still spent the author's tokens. An agent
+/// chatty in a private room got its messages dropped in a room that IS bridged.
+///
+/// Keeping the sequence here rather than in the daemon's event loop makes it
+/// structural instead of conventional: the loop cannot reorder these by
+/// accident, and the property is testable without a relay.
+pub fn admit_event(
+    event: &crate::nostr::Event,
+    roster: &roster::Roster,
+    policy: &policy::PolicyMap,
+    limiter: &mut crate::nostr::bridge::RateLimiter,
+    now_ms: i64,
+    now_secs: i64,
+) -> Admission {
+    let Some(mapped) = export_decision(event, roster, policy, now_ms) else {
+        return Admission::Suppressed;
+    };
+    if !limiter.allow(&event.pubkey, now_secs) {
+        return Admission::RateLimited(mapped);
+    }
+    Admission::Publish(mapped)
+}
+
 /// What an `["OK", <id>, <accepted>, <detail>]` frame means for the bridge.
 ///
 /// Extracted from the relay loop for the same reason as `export_decision`:
@@ -225,6 +264,86 @@ mod export_tests {
 
     fn human_message(channel_id: &str, body: &str) -> Event {
         ev(9, &"b".repeat(64), vec![tag(&["h", channel_id])], body)
+    }
+
+    // ── ordering: policy gate before budget (#643) ──────────────
+    //
+    // `allow()` takes `now_secs` explicitly, so refill is deterministic: a
+    // refill rate of 0 means the bucket never recovers within a test and the
+    // token accounting is exactly "how many were spent".
+
+    const SECS: i64 = 1_800_000_000;
+
+    #[test]
+    fn private_channel_traffic_does_not_spend_the_budget() {
+        // The reported symptom: an agent chatty in a private room gets its
+        // messages dropped in a room that IS bridged.
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-private", "backchannel", true));
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+        let mut limiter = crate::nostr::bridge::RateLimiter::new(2.0, 0.0);
+
+        // Three messages in the no-bridge room. Each must be suppressed
+        // WITHOUT being metered — under the old ordering these three spent the
+        // author's entire budget.
+        for i in 0..3 {
+            let msg = human_message("chan-private", &format!("private {i}"));
+            assert_eq!(
+                admit_event(&msg, &roster, &policy, &mut limiter, NOW, SECS),
+                Admission::Suppressed,
+            );
+        }
+
+        // Same author, bridged room, full budget still available.
+        let msg = human_message("chan-open", "hello");
+        match admit_event(&msg, &roster, &policy, &mut limiter, NOW, SECS) {
+            Admission::Publish(m) => assert_eq!(m.payload["channel_id"], "chan-open"),
+            other => panic!(
+                "private-room traffic consumed the budget for a bridged room: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn budget_still_limits_bridged_traffic() {
+        // The over-correction guard: moving the check must not disable it.
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+        let mut limiter = crate::nostr::bridge::RateLimiter::new(2.0, 0.0);
+
+        for i in 0..2 {
+            let msg = human_message("chan-open", &format!("ok {i}"));
+            assert!(matches!(
+                admit_event(&msg, &roster, &policy, &mut limiter, NOW, SECS),
+                Admission::Publish(_)
+            ));
+        }
+        let msg = human_message("chan-open", "over");
+        assert!(
+            matches!(
+                admit_event(&msg, &roster, &policy, &mut limiter, NOW, SECS),
+                Admission::RateLimited(_)
+            ),
+            "the budget must still cap bridged traffic"
+        );
+    }
+
+    #[test]
+    fn a_rate_limited_event_still_reports_its_subject() {
+        // The daemon logs the subject on a drop; a RateLimited variant that
+        // carried nothing would leave the operator with no idea what was lost.
+        let roster = Roster::default();
+        let mut policy = PolicyMap::new();
+        policy.apply_metadata(&channel_meta("chan-open", "ops", false));
+        let mut limiter = crate::nostr::bridge::RateLimiter::new(0.0, 0.0);
+
+        let msg = human_message("chan-open", "dropped");
+        match admit_event(&msg, &roster, &policy, &mut limiter, NOW, SECS) {
+            Admission::RateLimited(m) => assert_eq!(m.subject, "msg"),
+            other => panic!("expected a rate-limited admission, got {other:?}"),
+        }
     }
 
     /// #636 — the risky half. A channel flagged `no-bridge` must produce NO

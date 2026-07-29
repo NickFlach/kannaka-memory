@@ -18,7 +18,7 @@
 use std::io::{Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kannaka_memory::hive_bridge::{OkVerdict, PolicyMap, Roster};
+use kannaka_memory::hive_bridge::{Admission, OkVerdict, PolicyMap, Roster};
 use kannaka_memory::nostr::bridge::{Dedup, RateLimiter};
 use kannaka_memory::nostr::{Event, Keypair};
 use tungstenite::Message;
@@ -373,17 +373,37 @@ fn main() {
                 if dedup.contains(&event.id) {
                     continue;
                 }
-                if !limiter.allow(&event.pubkey, now_secs()) {
-                    continue;
-                }
-
-                // map + policy gate + channel-name re-map, as one decision.
-                // Lives in hive_bridge::export_decision so the suppression path
-                // is testable rather than only reachable from this loop (#636).
-                let Some(mapped) =
-                    kannaka_memory::hive_bridge::export_decision(&event, &roster, &policy, now_ms())
-                else {
-                    continue;
+                // map + policy gate + budget, as one decision, in that order
+                // (#636, #643). Lives in hive_bridge::admit_event so neither
+                // the suppression path nor the ordering is reachable only from
+                // this loop.
+                let mapped = match kannaka_memory::hive_bridge::admit_event(
+                    &event,
+                    &roster,
+                    &policy,
+                    &mut limiter,
+                    now_ms(),
+                    now_secs(),
+                ) {
+                    Admission::Publish(m) => m,
+                    Admission::Suppressed => continue,
+                    // Previously a silent `continue`. A bridge that drops
+                    // messages must say so, or the gap looks like an upstream
+                    // outage.
+                    //
+                    // Deliberately NOT recorded in dedup: a limited event stays
+                    // unprocessed and is re-offered on the next reconnect, so it
+                    // arrives late rather than being lost. Recording it here
+                    // would silently discard a human message for good, which is
+                    // the worse failure for a chat bridge.
+                    Admission::RateLimited(m) => {
+                        eprintln!(
+                            "[hive-bridge] rate-limited {} (subject {}) — will retry on reconnect",
+                            &event.pubkey[..event.pubkey.len().min(12)],
+                            m.subject
+                        );
+                        continue;
+                    }
                 };
 
                 let subject = format!("{}.{}", cfg.subject_prefix, mapped.subject);

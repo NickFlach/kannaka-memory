@@ -13,6 +13,9 @@ pub struct MapContext<'a> {
 
 /// A mapped event: the subject suffix (appended to the configured prefix)
 /// and the JSON payload to publish.
+// No `Eq`: the payload is a serde_json::Value, whose float variant has no
+// total equality.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Mapped {
     pub subject: &'static str,
     pub payload: Value,
