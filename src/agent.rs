@@ -260,9 +260,21 @@ pub fn dispatch_tool(
             })).unwrap_or_default(), false)
         }
         "dream" => {
-            let mode = input.get("mode").and_then(|v| v.as_str()).unwrap_or("deep");
-            // openclaw::dream is a single entry — `mode` is informational for now.
-            match sys.dream() {
+            // The tool schema advertises `enum: [deep, lite]`, and `mode` used to
+            // be INFORMATIONAL ONLY — read, interpolated into the reply, and then
+            // discarded while `sys.dream()` ran a deep pass regardless. So an
+            // agent asking for lite got a reply reading "dream (lite): ..." after
+            // a full deep consolidation: not merely the wrong mode, but a wrong
+            // report of which mode ran. (#669)
+            //
+            // Anything other than "lite" runs deep, matching the schema default.
+            // The label is derived from what ACTUALLY ran rather than from the
+            // request, so an unrecognised mode cannot mislabel the result either.
+            let requested = input.get("mode").and_then(|v| v.as_str()).unwrap_or("deep");
+            let lite = requested == "lite";
+            let mode = if lite { "lite" } else { "deep" };
+            let outcome = if lite { sys.dream_lite() } else { sys.dream() };
+            match outcome {
                 Ok(r) => (format!(
                     "dream ({mode}): {} cycles, {} strengthened, {} pruned, {} new links, {} hallucinated, level {} → {}{}",
                     r.cycles, r.memories_strengthened, r.memories_pruned,
@@ -1447,4 +1459,74 @@ fn parse_content(response: &Value) -> Result<Vec<ContentBlock>, AgentError> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temp_sys(tag: &str) -> (KannakaMemorySystem, std::path::PathBuf) {
+        let dir = std::env::temp_dir()
+            .join(format!("kannaka_agent_test_{}_{}", tag, uuid::Uuid::new_v4()));
+        // auto_save is private outside openclaw; harmless here since each
+        // test writes into its own temp dir.
+        let sys = KannakaMemorySystem::init(dir.clone()).expect("init");
+        (sys, dir)
+    }
+
+    /// #669 — the reported bug: `mode` was read, echoed into the reply, and
+    /// then discarded. The label must now describe what ACTUALLY ran, which is
+    /// what makes an unrecognised mode discriminating: the old code echoed it
+    /// verbatim ("dream (medium)") while running deep.
+    #[test]
+    fn dream_tool_labels_the_mode_that_actually_ran() {
+        let (mut sys, dir) = temp_sys("label");
+        let (out, is_err) = dispatch_tool(&mut sys, "dream", &json!({ "mode": "medium" }));
+        assert!(!is_err, "dream should succeed: {out}");
+        assert!(
+            out.starts_with("dream (deep):"),
+            "an unrecognised mode must report the mode that ran, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dream_tool_accepts_lite_and_deep() {
+        let (mut sys, dir) = temp_sys("modes");
+
+        let (lite, err) = dispatch_tool(&mut sys, "dream", &json!({ "mode": "lite" }));
+        assert!(!err, "lite dream should succeed: {lite}");
+        assert!(lite.starts_with("dream (lite):"), "got: {lite}");
+
+        let (deep, err) = dispatch_tool(&mut sys, "dream", &json!({ "mode": "deep" }));
+        assert!(!err, "deep dream should succeed: {deep}");
+        assert!(deep.starts_with("dream (deep):"), "got: {deep}");
+
+        // Absent mode keeps the schema's documented default.
+        let (dflt, err) = dispatch_tool(&mut sys, "dream", &json!({}));
+        assert!(!err);
+        assert!(dflt.starts_with("dream (deep):"), "got: {dflt}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pins the ROUTING, which the label alone cannot prove: before the fix the
+    /// label came from the request, so "dream (lite)" was printable without a
+    /// lite dream ever running.
+    #[test]
+    fn dream_tool_dispatches_lite_to_dream_lite() {
+        let src = include_str!("agent.rs");
+        let start = src.find("\"dream\" => {").expect("dream arm not found");
+        let end = src[start..]
+            .find("\"orchestrate_run\" =>")
+            .map(|i| start + i)
+            .expect("end of dream arm not found");
+        let arm = &src[start..end];
+        assert!(
+            arm.contains("sys.dream_lite()"),
+            "the dream tool must route lite to dream_lite, not report it and run deep (#669)"
+        );
+        assert!(arm.contains("sys.dream()"), "deep must still be reachable");
+    }
 }
