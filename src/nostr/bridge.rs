@@ -141,6 +141,33 @@ impl RateLimiter {
             false
         }
     }
+
+    /// Drop buckets that have refilled to capacity. Returns how many went.
+    ///
+    /// This is LOSSLESS, which is what makes it safe to run on a timer: a
+    /// bucket at full capacity is indistinguishable from a sender that has
+    /// never been seen, because `allow()` re-inserts exactly
+    /// `(capacity, now_secs)` on the next sighting. Nothing is forgotten that
+    /// could have denied a request.
+    ///
+    /// Without this the map held one entry per sender ever seen, for the
+    /// lifetime of a daemon meant to run indefinitely (#643).
+    pub fn prune(&mut self, now_secs: i64) -> usize {
+        let (capacity, refill) = (self.capacity, self.refill_per_sec);
+        let before = self.buckets.len();
+        self.buckets.retain(|_, (tokens, last)| {
+            // Same refill arithmetic as `allow`, so a bucket is only dropped
+            // when `allow` would have found it full anyway.
+            let elapsed = (now_secs - *last).max(0) as f64;
+            (*tokens + elapsed * refill) < capacity
+        });
+        before - self.buckets.len()
+    }
+
+    /// Number of senders currently being tracked.
+    pub fn tracked(&self) -> usize {
+        self.buckets.len()
+    }
 }
 
 /// Process one inbound gift wrap. `our_secret_hex` is the key DMs are addressed
@@ -266,6 +293,54 @@ mod tests {
             Outcome::Invalid
         ));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_reclaims_only_fully_refilled_buckets() {
+        // 2 tokens, 1/sec refill.
+        let mut rl = RateLimiter::new(2.0, 1.0);
+        assert!(rl.allow("alice", 100)); // alice: 1 token left
+        assert!(rl.allow("bob", 100));
+        assert!(rl.allow("bob", 100)); // bob: 0 tokens left
+        assert_eq!(rl.tracked(), 2);
+
+        // One second later alice is back to full (1 + 1); bob is not (0 + 1).
+        assert_eq!(rl.prune(101), 1, "only the refilled bucket should go");
+        assert_eq!(rl.tracked(), 1, "a partially-drained bucket must be kept");
+
+        // Two more seconds and bob is full too.
+        assert_eq!(rl.prune(103), 1);
+        assert_eq!(rl.tracked(), 0);
+    }
+
+    #[test]
+    fn pruning_cannot_let_a_sender_escape_the_limit() {
+        // The safety property behind running this on a timer: dropping a FULL
+        // bucket is lossless, so a pruned sender is in exactly the state it
+        // would have been in anyway. Same sequence, with and without a prune
+        // in the middle, must reach the same verdict.
+        let run = |prune_at: Option<i64>| {
+            let mut rl = RateLimiter::new(2.0, 0.0); // no refill
+            assert!(rl.allow("carol", 100));
+            if let Some(t) = prune_at {
+                rl.prune(t);
+            }
+            // Second is fine, third must be denied either way.
+            (rl.allow("carol", 100), rl.allow("carol", 100))
+        };
+        assert_eq!(run(None), (true, false));
+        assert_eq!(
+            run(Some(100)),
+            (true, false),
+            "a mid-sequence prune must not hand a drained sender a fresh budget"
+        );
+    }
+
+    #[test]
+    fn prune_on_an_empty_limiter_is_a_no_op() {
+        let mut rl = RateLimiter::new(2.0, 1.0);
+        assert_eq!(rl.prune(0), 0);
+        assert_eq!(rl.tracked(), 0);
     }
 
     #[test]

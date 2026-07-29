@@ -106,6 +106,11 @@ const CONNECT_RETRY: Duration = Duration::from_secs(15);
 /// unrelated inbound frame.
 const WS_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How often to reclaim refilled rate-limit buckets. Cheap (one pass over a
+/// small map) and not latency-sensitive, so it runs well below the frequency
+/// at which the map could grow to any interesting size.
+const BUCKET_PRUNE_SECS: i64 = 300;
+
 /// How long after connecting the content subscription may stay unopened
 /// before we declare the connection dead.
 ///
@@ -261,6 +266,7 @@ fn main() {
     let mut authed = false;
     let mut subscribed = false;
     let mut last_policy_refresh = now_secs();
+    let mut last_bucket_prune = now_secs();
     let connected_at = now_secs();
     // Id of the auth event we sent, so its OK frame can be told from every
     // other OK the relay emits.
@@ -273,6 +279,22 @@ fn main() {
         if authed && now_secs() - last_policy_refresh >= cfg.policy_refresh_secs as i64 {
             send_req(&mut ws, "policy", r#"{"kinds":[39000]}"#);
             last_policy_refresh = now_secs();
+        }
+
+        // Reclaim rate-limit buckets that have refilled to capacity (#643).
+        // The map otherwise held one entry per sender ever seen, forever, in a
+        // daemon meant to run indefinitely. Dropping a FULL bucket is lossless
+        // — `allow()` re-inserts exactly that state on the next sighting — so
+        // this cannot cause a sender to escape the limit.
+        if now_secs() - last_bucket_prune >= BUCKET_PRUNE_SECS {
+            let dropped = limiter.prune(now_secs());
+            if dropped > 0 {
+                eprintln!(
+                    "[hive-bridge] pruned {dropped} idle rate-limit bucket(s), {} still tracked",
+                    limiter.tracked()
+                );
+            }
+            last_bucket_prune = now_secs();
         }
 
         // The connection is only useful once the content subscription is open.
