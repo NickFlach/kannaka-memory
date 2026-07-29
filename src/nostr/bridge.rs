@@ -337,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn pruning_preserves_a_throttled_sender_across_a_sweep() {
+        // The DM bridge sweeps buckets opportunistically while handling an
+        // event, so a prune can land BETWEEN two messages from the same sender.
+        // An arbitrary nostr key can DM the voice key, so this is the path a
+        // stranger would take to reset their own limit if prune were lossy.
+        let mut rl = RateLimiter::new(2.0, 0.0); // no refill
+        let sender = "npub-stranger";
+        assert!(rl.allow(sender, 100));
+        assert!(rl.allow(sender, 100)); // budget now exhausted
+
+        // Sweep. The bucket is drained, so it must be RETAINED.
+        rl.prune(100);
+        assert_eq!(rl.tracked(), 1, "a drained bucket must survive a sweep");
+
+        assert!(
+            !rl.allow(sender, 100),
+            "a sweep must not hand a throttled sender a fresh budget"
+        );
+    }
+
+    #[test]
     fn prune_on_an_empty_limiter_is_a_no_op() {
         let mut rl = RateLimiter::new(2.0, 1.0);
         assert_eq!(rl.prune(0), 0);
