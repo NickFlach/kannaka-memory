@@ -222,35 +222,12 @@ fn main() {
                     continue;
                 }
 
-                let ctx = MapContext {
-                    channel_name: None,
-                    author_name: roster.display_name(&event.pubkey),
-                    is_agent: roster.is_agent(&event.pubkey),
-                    now_ms: now_ms(),
-                };
-                let Some(mapped) = map_event(&event, &ctx) else {
-                    continue;
-                };
-
-                // Policy gate: everything except the agent roster is
-                // channel-scoped and must clear its channel's policy.
-                if mapped.subject != "agent" {
-                    let channel_id = mapped.payload["channel_id"].as_str().unwrap_or("");
-                    if !policy.is_bridgeable(channel_id) {
-                        continue;
-                    }
-                }
-
-                // Re-map with the resolved channel name now that policy has
-                // confirmed the channel is known.
-                let channel_id = mapped.payload["channel_id"].as_str().unwrap_or("");
-                let ctx = MapContext {
-                    channel_name: policy.channel_name(channel_id),
-                    author_name: roster.display_name(&event.pubkey),
-                    is_agent: roster.is_agent(&event.pubkey),
-                    now_ms: now_ms(),
-                };
-                let Some(mapped) = map_event(&event, &ctx) else {
+                // map + policy gate + channel-name re-map, as one decision.
+                // Lives in hive_bridge::export_decision so the suppression path
+                // is testable rather than only reachable from this loop (#636).
+                let Some(mapped) =
+                    kannaka_memory::hive_bridge::export_decision(&event, &roster, &policy, now_ms())
+                else {
                     continue;
                 };
 
