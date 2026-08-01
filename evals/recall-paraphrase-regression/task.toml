@@ -1,0 +1,34 @@
+schema_version = "1.3"
+artifacts = []
+
+[task]
+name = "kannaka/recall-paraphrase-regression"
+description = "Frozen-corpus paraphrase recall regression: 50 UUID-pinned paraphrase probes against a hash-pinned 609-memory HRM snapshot via the real `kannaka recall` CLI at production knob settings. Reward = recall@10."
+keywords = ["retrieval", "regression", "kannaka", "recall"]
+[[task.authors]]
+name = "Nick Flach"
+
+[metadata]
+snapshot_sha256 = "339e7ad90bda2d035d05ab72342e6c73a6bdf5d9f2079f1241d759fcdf466d7a"
+binary_release = "v0.13.0 kannaka-linux-x86_64"
+probes = "scripts/probes/probes-v2.json (queries only; expectations verifier-side)"
+gate = "0.20, calibrated 2026-08-01: first frozen run scored 0.24 (12/50); gate = baseline minus two probes"
+
+[verifier]
+timeout_sec = 900.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+network_mode = "no-network"
+build_timeout_sec = 1800.0
+os = "linux"
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]
