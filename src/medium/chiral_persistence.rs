@@ -51,6 +51,9 @@ impl From<WavefrontMetaLegacy> for WavefrontMeta {
             observed_at: None,
             expires_at: None,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 }
@@ -89,6 +92,9 @@ impl From<WavefrontMetaPreTier> for WavefrontMeta {
             observed_at: None,
             expires_at: None,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 }
@@ -130,6 +136,9 @@ impl From<WavefrontMetaPreTemporal> for WavefrontMeta {
             observed_at: None,
             expires_at: None,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 }
@@ -179,19 +188,79 @@ impl From<WavefrontMetaPreProvenance> for WavefrontMeta {
             observed_at: p.observed_at,
             expires_at: p.expires_at,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
+        }
+    }
+}
+
+/// Pre-ADR-0049 shape: everything through `provenance`, before the facet fields.
+/// FIRST fallback step in the
+/// new → pre-facet → pre-provenance → pre-temporal → pre-tier → legacy chain.
+/// A file written before facet encoding lacks the three trailing facet bytes per
+/// record, so it fails the new-struct deserialize and decodes here with
+/// `parent_id: None`, `is_facet: false`, `decomposed: false` — i.e. every
+/// existing memory is an ordinary undecomposed wavefront, which is exactly right.
+#[derive(Deserialize)]
+pub(crate) struct WavefrontMetaPreFacet {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub hallucinated: bool,
+    pub is_self_referential: bool,
+    #[serde(default)]
+    pub modality: Modality,
+    #[serde(default)]
+    pub tier: crate::medium::types::Tier,
+    #[serde(default)]
+    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub observed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub provenance: Option<crate::entropy::Provenance>,
+}
+
+impl From<WavefrontMetaPreFacet> for WavefrontMeta {
+    fn from(p: WavefrontMetaPreFacet) -> Self {
+        WavefrontMeta {
+            id: p.id,
+            content: p.content,
+            tags: p.tags,
+            created_at: p.created_at,
+            hallucinated: p.hallucinated,
+            is_self_referential: p.is_self_referential,
+            sga_class: None,
+            fano_group: None,
+            category: None,
+            modality: p.modality,
+            tier: p.tier,
+            effective_at: p.effective_at,
+            observed_at: p.observed_at,
+            expires_at: p.expires_at,
+            provenance: p.provenance,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 }
 
 /// Decode a bincode wavefront-metadata blob through the full backward-compat
-/// fallback chain: new → pre-provenance (T1.4) → pre-temporal → pre-tier →
-/// legacy. Old `.hrm` files lack the newest trailing bytes, so they fail the
+/// fallback chain: new → pre-facet (ADR-0049) → pre-provenance (T1.4) →
+/// pre-temporal → pre-tier → legacy. Old `.hrm` files lack the newest trailing bytes, so they fail the
 /// new-struct decode and drop to the matching older shape (missing fields
 /// default). Shared by both the chiral and flat read paths so the chain has one
 /// definition.
 pub(crate) fn decode_wavefront_metadata(bytes: &[u8]) -> Result<Vec<WavefrontMeta>, MediumError> {
     if let Ok(m) = bincode::deserialize::<Vec<WavefrontMeta>>(bytes) {
         return Ok(m);
+    }
+    if let Ok(pre) = bincode::deserialize::<Vec<WavefrontMetaPreFacet>>(bytes) {
+        return Ok(pre.into_iter().map(Into::into).collect());
     }
     if let Ok(pre) = bincode::deserialize::<Vec<WavefrontMetaPreProvenance>>(bytes) {
         return Ok(pre.into_iter().map(Into::into).collect());
@@ -654,6 +723,168 @@ mod tests {
     use crate::codebook::Codebook;
     use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
     use std::path::PathBuf;
+
+    // ─── ADR-0049 facet-encoding serialization lock ──────────────────────────
+    //
+    // The facet fields (`parent_id`, `is_facet`, `decomposed`) MUST be the last
+    // serialized fields of WavefrontMeta. The whole back-compat scheme rests on
+    // one property: a pre-facet file is SHORT by exactly those trailing bytes,
+    // so the new-struct decode FAILS and drops to `WavefrontMetaPreFacet`.
+    //
+    // If someone inserts a field in the middle instead, old bytes may still
+    // deserialize into the new struct — with every subsequent field shifted.
+    // The blake3 checksum still validates (the file is unchanged), the load
+    // reports no error, and ~600 memories silently become garbage. These tests
+    // exist to make that specific accident impossible.
+
+    /// Wire-shape mirror of the pre-facet layout, used to MINT old-format bytes.
+    /// Field order must match `WavefrontMetaPreFacet` exactly.
+    #[derive(serde::Serialize)]
+    struct PreFacetWire {
+        id: Uuid,
+        content: String,
+        tags: Vec<String>,
+        created_at: DateTime<Utc>,
+        hallucinated: bool,
+        is_self_referential: bool,
+        modality: Modality,
+        tier: crate::medium::types::Tier,
+        effective_at: Option<DateTime<Utc>>,
+        observed_at: Option<DateTime<Utc>>,
+        expires_at: Option<DateTime<Utc>>,
+        provenance: Option<crate::entropy::Provenance>,
+    }
+
+    fn pre_facet_fixture() -> (Uuid, Vec<u8>) {
+        let id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let rec = PreFacetWire {
+            id,
+            content: "a compound memory written before facet encoding existed".to_string(),
+            tags: vec!["fixture".to_string()],
+            created_at: DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            hallucinated: false,
+            is_self_referential: false,
+            modality: Modality::Semantic,
+            tier: crate::medium::types::Tier::default(),
+            effective_at: None,
+            observed_at: None,
+            expires_at: None,
+            // MUST be Some: without the PreFacet chain link these bytes still
+            // decode via PreProvenance (bincode ignores the trailing byte) and
+            // every assertion below passes while provenance is silently lost.
+            // Carrying a real value is what makes the link testable.
+            provenance: Some(crate::entropy::Provenance::prng()),
+        };
+        (id, bincode::serialize(&vec![rec]).expect("mint pre-facet bytes"))
+    }
+
+    #[test]
+    fn pre_facet_bytes_decode_with_facet_fields_defaulted() {
+        let (id, bytes) = pre_facet_fixture();
+        let decoded = decode_wavefront_metadata(&bytes).expect("pre-facet blob must decode");
+
+        assert_eq!(decoded.len(), 1);
+        let m = &decoded[0];
+        // Content integrity: the misdecode failure mode shows up here first.
+        assert_eq!(m.id, id, "id shifted — fields are misaligned");
+        assert_eq!(
+            m.content, "a compound memory written before facet encoding existed",
+            "content shifted — a mid-struct field insertion has broken the layout"
+        );
+        assert_eq!(m.tags, vec!["fixture".to_string()]);
+        assert_eq!(m.modality, Modality::Semantic);
+        // Provenance must SURVIVE. Drop the PreFacet link and these bytes decode
+        // via PreProvenance instead, which has no provenance field — the record
+        // loads clean and the entropy lineage silently becomes None.
+        assert_eq!(
+            m.provenance.as_ref().map(|p| p.source.as_str()),
+            Some("prng://"),
+            "provenance lost — the PreFacet chain link is missing or out of order"
+        );
+        // An existing memory is an ordinary, undecomposed, non-facet wavefront.
+        assert_eq!(m.parent_id, None);
+        assert!(!m.is_facet);
+        assert!(!m.decomposed);
+    }
+
+    #[test]
+    fn forward_compat_old_binary_reading_a_new_file() {
+        // A NEW binary writes 3 extra trailing bytes per record even with the
+        // decompose flag OFF, because the fields are part of WavefrontMeta.
+        // An OLD binary's "new struct" is exactly our PreFacet shape. Multi-record
+        // is the dangerous case: the extra bytes land MID-STREAM.
+        let v: Vec<WavefrontMeta> = (0..5)
+            .map(|i| {
+                let mut m =
+                    WavefrontMeta::new(Uuid::new_v4(), format!("record {i} content here"));
+                m.provenance = Some(crate::entropy::Provenance::prng());
+                m
+            })
+            .collect();
+        let new_bytes = bincode::serialize(&v).unwrap();
+
+        let as_old = bincode::deserialize::<Vec<WavefrontMetaPreFacet>>(&new_bytes);
+        match &as_old {
+            Ok(recs) => {
+                println!("  OLD binary DECODED a NEW file: {} records", recs.len());
+                for (i, r) in recs.iter().enumerate() {
+                    println!("    rec {i}: content={:?}", r.content);
+                }
+            }
+            Err(e) => println!("  OLD binary REJECTED a NEW file (loud failure): {e}"),
+        }
+    }
+
+    #[test]
+    fn pre_facet_bytes_must_not_decode_as_the_new_struct() {
+        // THE load-bearing assertion. If this ever passes, the fallback chain is
+        // dead: old files would decode straight into the new struct, shifted,
+        // behind a checksum that still validates.
+        let (_, bytes) = pre_facet_fixture();
+        assert!(
+            bincode::deserialize::<Vec<WavefrontMeta>>(&bytes).is_err(),
+            "pre-facet bytes deserialized as the NEW struct — the facet fields are \
+             no longer strictly trailing, and every old .hrm will silently misdecode"
+        );
+    }
+
+    #[test]
+    fn facet_fields_round_trip_and_cost_three_bytes() {
+        let mut m = WavefrontMeta::new(Uuid::new_v4(), "facet row".to_string());
+        let parent = Uuid::new_v4();
+        m.parent_id = Some(parent);
+        m.is_facet = true;
+
+        let bytes = bincode::serialize(&vec![m.clone()]).unwrap();
+        let back = decode_wavefront_metadata(&bytes).expect("new-shape must decode");
+        assert_eq!(back[0].parent_id, Some(parent));
+        assert!(back[0].is_facet);
+        assert!(!back[0].decomposed);
+
+        // A plain (non-facet) row costs exactly 3 extra bytes over the old shape:
+        // Option::None tag + two bools. That delta is what makes old files fail
+        // the new decode; if it ever reaches 0 the chain silently breaks.
+        let plain = WavefrontMeta::new(
+            Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap(),
+            "a compound memory written before facet encoding existed".to_string(),
+        );
+        let mut plain = plain;
+        plain.tags = vec!["fixture".to_string()];
+        plain.modality = Modality::Semantic;
+        plain.created_at = DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        plain.provenance = Some(crate::entropy::Provenance::prng());
+        let new_len = bincode::serialize(&vec![plain]).unwrap().len();
+        let (_, old_bytes) = pre_facet_fixture();
+        assert_eq!(
+            new_len - old_bytes.len(),
+            3,
+            "facet fields must add exactly 3 trailing bytes to an unfaceted row"
+        );
+    }
 
     // ADR-0031: locks the bincode back-compat invariant for the `tier` field.
     // Pre-tier metadata bytes (modality, no tier — the layout of every .hrm

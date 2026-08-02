@@ -335,6 +335,108 @@ impl ChiralMedium {
         self.store_with_category(content, importance, pipeline, None)
     }
 
+
+    /// ADR-0049 step 5 — store `content` and, when decomposition is enabled and
+    /// the content is compound, also mint atomic facet wavefronts linked to it.
+    ///
+    /// Returns the **parent** id, so every existing caller keeps its contract:
+    /// `remember` still hands back one id for one memory. The facets are an
+    /// internal reach mechanism, not a change to what a memory *is*.
+    ///
+    /// Off by default (`KANNAKA_FACET_DECOMPOSE`). With the flag unset this is
+    /// exactly `store_with_category` — no extra rows, no metadata writes.
+    pub fn store_with_facets(
+        &mut self,
+        content: &str,
+        importance: f32,
+        pipeline: &EncodingPipeline,
+        category: Option<&str>,
+    ) -> Result<Uuid, MediumError> {
+        let parent = self.store_with_category(content, importance, pipeline, category)?;
+        if !crate::facet::decompose_enabled() {
+            return Ok(parent);
+        }
+        let facets = crate::facet::decompose(content);
+        if facets.len() < 2 {
+            return Ok(parent);
+        }
+        // Facets are stored via the PLAIN store: a facet must never itself be
+        // decomposed, and `store` cannot recurse back into this function.
+        let mut facet_ids = Vec::with_capacity(facets.len());
+        for f in &facets {
+            facet_ids.push(self.store(f, importance, pipeline)?);
+        }
+        self.link_facets(parent, &facet_ids);
+        Ok(parent)
+    }
+
+    /// Mark a decomposed constellation: parent resolve-only, facets linked back.
+    ///
+    /// Idempotent by construction — re-running sets the same flags to the same
+    /// values. The `decomposed` flag is also the once-only guard for backfill.
+    pub(crate) fn link_facets(&mut self, parent: Uuid, facet_ids: &[Uuid]) {
+        for m in self
+            .right
+            .metadata
+            .iter_mut()
+            .chain(self.left.metadata.iter_mut())
+        {
+            if m.id == parent {
+                m.decomposed = true;
+            } else if facet_ids.contains(&m.id) {
+                m.is_facet = true;
+                m.parent_id = Some(parent);
+            }
+        }
+    }
+
+    /// Has this memory already been decomposed? The backfill watermark.
+    pub(crate) fn is_decomposed(&self, id: Uuid) -> bool {
+        self.right
+            .metadata
+            .iter()
+            .chain(self.left.metadata.iter())
+            .any(|m| m.id == id && m.decomposed)
+    }
+
+    /// Backfill: decompose one already-stored memory. Returns the number of
+    /// facets minted (0 = skipped).
+    ///
+    /// **Once-only and idempotent.** Skips anything already `decomposed`, and
+    /// never decomposes a row that is itself a facet — without both guards a
+    /// resumed backfill would mint duplicate facet sets on every pass, and each
+    /// duplicate is another wavefront competing in the scan forever.
+    pub fn backfill_facets(
+        &mut self,
+        id: Uuid,
+        pipeline: &EncodingPipeline,
+    ) -> Result<usize, MediumError> {
+        let meta = self
+            .right
+            .metadata
+            .iter()
+            .chain(self.left.metadata.iter())
+            .find(|m| m.id == id);
+        let Some(meta) = meta else { return Ok(0) };
+        if meta.decomposed || meta.is_facet {
+            return Ok(0);
+        }
+        let content = meta.content.clone();
+        let importance = 0.9;
+
+        let facets = crate::facet::decompose(&content);
+        if facets.len() < 2 {
+            return Ok(0);
+        }
+        let mut facet_ids = Vec::with_capacity(facets.len());
+        for f in &facets {
+            facet_ids.push(self.store(f, importance, pipeline)?);
+        }
+        let n = facet_ids.len();
+        self.link_facets(id, &facet_ids);
+        Ok(n)
+    }
+
     /// Store with explicit category for SGA classification.
     pub fn store_with_category(
         &mut self,
@@ -645,8 +747,48 @@ impl ChiralMedium {
             }
         }
         results.sort_by(&by_strength);
-        results.truncate(top_k);
-        results
+
+        // ADR-0049 facet resolution. This is the path CLI recall actually takes,
+        // so it is the one that matters most. Over-fetch only when the medium
+        // holds facets — otherwise this is byte-identical to the pre-facet
+        // truncate-to-top_k, and an undecomposed corpus pays nothing.
+        //
+        // Resolution happens AFTER the intuition pass so a right-hemisphere
+        // intuition and its left-hemisphere sibling still collapse to one parent
+        // rather than surfacing the same memory twice under different hands.
+        if !self.has_facets() {
+            results.truncate(top_k);
+            return results;
+        }
+        results.truncate(crate::facet::overfetch_pool(top_k));
+        crate::facet::resolve(results, top_k, |id| self.parent_of_facet(id))
+    }
+
+    /// Does either hemisphere hold facet rows? Cheap guard so an undecomposed
+    /// corpus never pays for resolution or over-fetch.
+    pub(crate) fn has_facets(&self) -> bool {
+        self.right.metadata.iter().any(|m| m.is_facet)
+            || self.left.metadata.iter().any(|m| m.is_facet)
+    }
+
+    /// Facet → parent `(id, content)`, searched right-hemisphere-first (the
+    /// authoritative side). `None` when `id` is not a facet or its parent is
+    /// absent — the caller then surfaces the facet itself rather than dropping it
+    /// or attributing it to a parent that is not there.
+    pub(crate) fn parent_of_facet(&self, id: uuid::Uuid) -> Option<(uuid::Uuid, String)> {
+        let find = |target: uuid::Uuid| {
+            self.right
+                .metadata
+                .iter()
+                .find(|m| m.id == target)
+                .or_else(|| self.left.metadata.iter().find(|m| m.id == target))
+        };
+        let m = find(id)?;
+        if !m.is_facet {
+            return None;
+        }
+        let parent = find(m.parent_id?)?;
+        Some((parent.id, parent.content.clone()))
     }
 
     /// Re-encode every stored memory's content through `pipeline`, replacing the
@@ -3009,5 +3151,328 @@ mod tests {
             assert!(diag.iter().all(|&c| (-1.01..=1.01).contains(&c)));
         }
         eprintln!("[trackD] peer_cores={} moved={moved} target-align {a0:.3}->{a1:.3}", peer_cores.len());
+    }
+}
+
+#[cfg(test)]
+mod facet_benchmark {
+    //! ADR-0049 step 4 — the falsifiable benchmark.
+    //!
+    //! Runs through `ChiralMedium::recall`, the same path the daemon and CLI
+    //! take. The flat readonly mirror is deliberately NOT used: it does not
+    //! re-sync from chiral, so a result there would prove nothing about the live
+    //! medium. Everything here is built and queried in one process.
+    //!
+    //! A zero-result recall is a FAILURE, not a pass — an assertion that only
+    //! holds because nothing came back is the vacuous-gate trap.
+
+    use super::*;
+    use crate::codebook::Codebook;
+    use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+
+    fn pipeline() -> EncodingPipeline {
+        EncodingPipeline::new(Box::new(SimpleHashEncoder::new(384, 42)), Codebook::new(384, 10_000, 42))
+    }
+
+    /// The compound shape ADR-0049 measured: identity + place + building id +
+    /// market + note, all superposed into one wavefront.
+    const COMPOUND: &str = "Kannaka Labs sits in the Deal District of the city. \
+The building identifier is six three eight on the northern side. \
+The market square opens for trading at nine each morning. \
+The escrow vault shares the same block as the trading hall.";
+
+    /// Distractors that share vocabulary with the compound's OTHER clauses.
+    /// This is what makes the test meaningful: a compound wavefront is the
+    /// superposition of every clause, so unrelated-but-overlapping neighbours
+    /// pull it away from any single-clause query.
+    const DISTRACTORS: &[&str] = &[
+        "The trading hall opens for business each morning in the city",
+        "The northern side of the city holds the residential buildings",
+        "The escrow vault was audited on the same block last season",
+        "The market square was resurfaced during the summer works",
+        "The building identifier scheme was revised for the whole district",
+    ];
+
+    fn seed_distractors(cm: &mut ChiralMedium, p: &EncodingPipeline) {
+        for d in DISTRACTORS {
+            cm.store(d, 0.8, p).unwrap();
+        }
+    }
+
+    /// Control: the compound stored whole, undecomposed.
+    fn control_medium(p: &EncodingPipeline) -> (ChiralMedium, Uuid) {
+        let mut cm = ChiralMedium::new();
+        let id = cm.store(COMPOUND, 0.9, p).unwrap();
+        seed_distractors(&mut cm, p);
+        (cm, id)
+    }
+
+    /// Decomposed: parent retained resolve-only, plus one facet per clause.
+    fn faceted_medium(p: &EncodingPipeline) -> (ChiralMedium, Uuid, usize) {
+        let mut cm = ChiralMedium::new();
+        let parent = cm.store(COMPOUND, 0.9, p).unwrap();
+        let facets = crate::facet::decompose(COMPOUND);
+        assert!(facets.len() >= 3, "fixture must actually decompose: {facets:?}");
+
+        let mut facet_ids = Vec::new();
+        for f in &facets {
+            facet_ids.push(cm.store(f, 0.9, p).unwrap());
+        }
+        seed_distractors(&mut cm, p);
+
+        // Mark the constellation. Once `remember` is wired (step 5) this is what
+        // the write path will do; here we do it directly so the read path can be
+        // benchmarked independently of the writer.
+        for m in cm.right.metadata.iter_mut().chain(cm.left.metadata.iter_mut()) {
+            if m.id == parent {
+                m.decomposed = true;
+            } else if facet_ids.contains(&m.id) {
+                m.is_facet = true;
+                m.parent_id = Some(parent);
+            }
+        }
+        let n = facets.len();
+        (cm, parent, n)
+    }
+
+    fn rank_of(results: &[ChiralResonance], id: Uuid) -> Option<usize> {
+        results.iter().position(|r| r.id == id).map(|i| i + 1)
+    }
+
+    #[test]
+    fn specific_facet_query_rank_wins_over_the_compound() {
+        let p = pipeline();
+        let (control, c_id) = control_medium(&p);
+        let (faceted, f_id, _) = faceted_medium(&p);
+
+        // A query for ONE clause of the compound.
+        let q = "where is Kannaka Labs located";
+        let c_res = control.recall(q, 5, &p).unwrap();
+        let f_res = faceted.recall(q, 5, &p).unwrap();
+
+        assert!(!c_res.is_empty(), "control returned 0 results — benchmark is vacuous");
+        assert!(!f_res.is_empty(), "faceted returned 0 results — benchmark is vacuous");
+
+        let c_rank = rank_of(&c_res, c_id);
+        let f_rank = rank_of(&f_res, f_id);
+        println!("  compound rank={c_rank:?}  faceted rank={f_rank:?}");
+
+        // The faceted medium must never rank the memory WORSE than the compound
+        // one. Δrank in our favour is the win; parity is acceptable on a small
+        // fixture; regression is a failure.
+        match (c_rank, f_rank) {
+            (Some(c), Some(f)) => assert!(f <= c, "faceting made reach worse: {f} vs {c}"),
+            (None, Some(_)) => { /* unreachable -> reachable: the ADR's result */ }
+            (Some(c), None) => panic!("faceting lost a memory the compound found at rank {c}"),
+            (None, None) => panic!("neither medium surfaced the memory — fixture too weak"),
+        }
+    }
+
+    #[test]
+    fn whole_memory_query_still_surfaces_the_parent() {
+        // Facets must not fragment holistic recall: a query about the memory as
+        // a whole still has to return the parent, with the parent's full text.
+        let p = pipeline();
+        let (faceted, parent, _) = faceted_medium(&p);
+        let res = faceted
+            .recall("Kannaka Labs Deal District market escrow vault building", 5, &p)
+            .unwrap();
+
+        assert!(!res.is_empty(), "0 results — benchmark is vacuous");
+        let hit = res.iter().find(|r| r.id == parent);
+        assert!(hit.is_some(), "holistic query lost the parent entirely: {res:#?}");
+        assert_eq!(
+            hit.unwrap().content,
+            COMPOUND,
+            "parent surfaced without its full context — resolution did not restore content"
+        );
+    }
+
+    #[test]
+    fn parent_appears_exactly_once_however_many_facets_match() {
+        // Parent-dedup. Without it, a query matching several clauses returns the
+        // same memory N times and buries everything else.
+        let p = pipeline();
+        let (faceted, parent, n_facets) = faceted_medium(&p);
+        assert!(n_facets >= 3);
+
+        let res = faceted
+            .recall("Kannaka Labs building market escrow trading district", 10, &p)
+            .unwrap();
+        assert!(!res.is_empty(), "0 results — benchmark is vacuous");
+
+        let occurrences = res.iter().filter(|r| r.id == parent).count();
+        assert!(
+            occurrences <= 1,
+            "parent surfaced {occurrences} times from {n_facets} facets — dedup failed"
+        );
+        // And no raw facet id should ever reach a caller.
+        for r in &res {
+            let meta = faceted
+                .right
+                .metadata
+                .iter()
+                .chain(faceted.left.metadata.iter())
+                .find(|m| m.id == r.id);
+            if let Some(m) = meta {
+                assert!(!m.is_facet, "a raw facet leaked to the caller: {:?}", r.content);
+            }
+        }
+    }
+
+    #[test]
+    fn observation_list_injects_into_the_parent_at_most_once() {
+        // ADR-0049 step 4, assertion 3 — the mutating-path energy property.
+        //
+        // ChiralMedium has no observe method of its own: `hrm_store::resonate_query`
+        // builds the observation list by iterating exactly what `chiral.recall`
+        // returns, then calls `observe_wavefronts`. So the property to assert is
+        // that the RETURNED list carries a parent at most once — that is what
+        // bounds the injections. Reconstruct that list the way hrm_store does.
+        let p = pipeline();
+        let (faceted, parent, n_facets) = faceted_medium(&p);
+
+        for _ in 0..5 {
+            let results = faceted
+                .recall("Kannaka Labs building market escrow trading district", 5, &p)
+                .unwrap();
+            assert!(!results.is_empty(), "0 results — assertion would be vacuous");
+
+            // Mirror of hrm_store.rs: one (index, intensity) per RESULT.
+            let observation_targets: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+            let parent_injections =
+                observation_targets.iter().filter(|id| **id == parent).count();
+            assert!(
+                parent_injections <= 1,
+                "parent would take {parent_injections} injections in ONE recall from                  {n_facets} facets — this is the ADR-0048 rich-get-richer bias returning"
+            );
+        }
+    }
+
+    #[test]
+    fn unfaceted_medium_is_byte_identical_to_pre_facet_behaviour() {
+        // The guard that makes shipping steps 1-3 before the backfill safe.
+        let p = pipeline();
+        let (control, _) = control_medium(&p);
+        assert!(!control.has_facets(), "control must hold no facets");
+        let a = control.recall("trading hall morning city", 5, &p).unwrap();
+        let b = control.recall("trading hall morning city", 5, &p).unwrap();
+        assert!(!a.is_empty(), "0 results — benchmark is vacuous");
+        let ids_a: Vec<Uuid> = a.iter().map(|r| r.id).collect();
+        let ids_b: Vec<Uuid> = b.iter().map(|r| r.id).collect();
+        assert_eq!(ids_a, ids_b, "recall is not deterministic on an unfaceted medium");
+    }
+}
+
+#[cfg(test)]
+mod facet_write_path {
+    //! ADR-0049 step 5 — write path and backfill.
+    //!
+    //! Env vars are process-global, so these tests must not run concurrently
+    //! with each other. They share one `#[test]` for that reason rather than
+    //! relying on test-runner ordering.
+
+    use super::*;
+    use crate::codebook::Codebook;
+    use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+
+    fn pipeline() -> EncodingPipeline {
+        EncodingPipeline::new(
+            Box::new(SimpleHashEncoder::new(384, 42)),
+            Codebook::new(384, 10_000, 42),
+        )
+    }
+
+    const COMPOUND: &str = "Kannaka Labs sits in the Deal District of the city. \
+The building identifier is six three eight on the northern side. \
+The market square opens for trading at nine each morning.";
+
+    fn facet_count(cm: &ChiralMedium) -> usize {
+        cm.right.metadata.iter().filter(|m| m.is_facet).count()
+    }
+
+    #[test]
+    fn write_path_flag_default_off_then_on_then_idempotent_backfill() {
+        let p = pipeline();
+
+        // ── flag OFF (the default): storing a compound mints nothing extra ──
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
+        let mut off = ChiralMedium::new();
+        let before = off.right.metadata.len();
+        let id_off = off.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        assert_eq!(
+            off.right.metadata.len() - before,
+            1,
+            "flag off must store exactly one wavefront"
+        );
+        assert_eq!(facet_count(&off), 0, "flag off minted facets");
+        assert!(!off.is_decomposed(id_off), "flag off marked a parent decomposed");
+        assert!(!off.has_facets(), "flag off left the medium claiming facets");
+
+        // ── flag ON: the same content mints a linked constellation ──
+        std::env::set_var("KANNAKA_FACET_DECOMPOSE", "1");
+        let mut on = ChiralMedium::new();
+        let parent = on.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        let minted = facet_count(&on);
+        assert!(minted >= 2, "flag on minted {minted} facets");
+        assert!(on.is_decomposed(parent), "parent not marked decomposed");
+        assert!(on.has_facets());
+        // Every facet points at this parent, and no facet is itself decomposed.
+        for m in on.right.metadata.iter().filter(|m| m.is_facet) {
+            assert_eq!(m.parent_id, Some(parent), "facet linked to the wrong parent");
+            assert!(!m.decomposed, "a facet was itself marked decomposed");
+        }
+        // The parent keeps its full content — retention is an ADR invariant.
+        let pmeta = on.right.metadata.iter().find(|m| m.id == parent).unwrap();
+        assert_eq!(pmeta.content, COMPOUND, "parent content was mutated");
+
+        // ── backfill is once-only: decompose-twice == decompose-once ──
+        let mut bf = ChiralMedium::new();
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE"); // backfill ignores the write flag
+        let target = bf.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        assert_eq!(facet_count(&bf), 0, "setup should be undecomposed");
+
+        let first = bf.backfill_facets(target, &p).unwrap();
+        assert!(first >= 2, "backfill minted {first} facets");
+        let after_first = bf.right.metadata.len();
+        let facets_after_first = facet_count(&bf);
+
+        let second = bf.backfill_facets(target, &p).unwrap();
+        assert_eq!(second, 0, "backfill was not once-only — it re-minted {second} facets");
+        assert_eq!(
+            bf.right.metadata.len(),
+            after_first,
+            "a second backfill pass added wavefronts"
+        );
+        assert_eq!(facet_count(&bf), facets_after_first, "facet count drifted on re-run");
+
+        // ── a facet is never itself decomposed ──
+        let a_facet = bf
+            .right
+            .metadata
+            .iter()
+            .find(|m| m.is_facet)
+            .map(|m| m.id)
+            .unwrap();
+        assert_eq!(
+            bf.backfill_facets(a_facet, &p).unwrap(),
+            0,
+            "backfill decomposed a facet — facets of facets would fragment forever"
+        );
+
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
+    }
+
+    #[test]
+    fn single_clause_content_is_never_decomposed_even_with_the_flag_on() {
+        let p = pipeline();
+        std::env::set_var("KANNAKA_FACET_DECOMPOSE", "1");
+        let mut cm = ChiralMedium::new();
+        let id = cm
+            .store_with_facets("Kannaka Labs sits in the Deal District", 0.9, &p, None)
+            .unwrap();
+        assert_eq!(facet_count(&cm), 0, "an atomic memory was decomposed");
+        assert!(!cm.is_decomposed(id));
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
     }
 }

@@ -515,6 +515,31 @@ pub struct WavefrontMeta {
     /// drop to `WavefrontMetaPreProvenance`.
     #[serde(default)]
     pub provenance: Option<crate::entropy::Provenance>,
+    /// ADR-0049 facet encoding. These MUST stay the LAST serialized fields,
+    /// appended after `provenance`: the bincode fallback chain relies on `.hrm`
+    /// files written before this change lacking these trailing bytes, so they
+    /// fail the new-struct deserialize and drop to `WavefrontMetaPreFacet`.
+    /// Get this ordering wrong and every record misdecodes behind a checksum
+    /// that still validates — see the round-trip fixture that locks it.
+    ///
+    /// Parent this row is a facet of. `Some` ⇒ this is an atomic facet
+    /// wavefront; recall resolves it back to the parent for holistic context.
+    /// Deliberately NOT `HyperMemory.parents`, which is hallucination lineage
+    /// exported in the glyph spec — facet linkage is a distinct named field.
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+    /// This row is a facet (scanned for recall, excluded from merge grouping
+    /// and user-facing counts).
+    #[serde(default)]
+    pub is_facet: bool,
+    /// This row is a parent that has already been decomposed into facets.
+    /// Retained resolve-only: excluded from the resonance scan, resonance-merge
+    /// grouping, the coherence eigendecomp, energy prune/ghost, and every
+    /// user-facing count. Parent retention is an invariant — never delete one to
+    /// save space; that dangles every facet link. Also the idempotence flag: a
+    /// decomposition pass skips any parent already marked.
+    #[serde(default)]
+    pub decomposed: bool,
 }
 
 impl WavefrontMeta {
@@ -535,6 +560,9 @@ impl WavefrontMeta {
             observed_at: None,
             expires_at: None,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 

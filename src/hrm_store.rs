@@ -2293,7 +2293,11 @@ impl MediumBackend for HrmStore {
 
     fn absorb(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
         if let Some(ref mut chiral) = self.chiral {
-            let id = chiral.store_with_category(content, importance, &self.pipeline, category)
+            // ADR-0049: mints atomic facets alongside the parent when
+            // KANNAKA_FACET_DECOMPOSE is set. Flag unset (the default) makes this
+            // exactly the previous `store_with_category` call. Returns the PARENT
+            // id either way, so `remember`'s contract is unchanged.
+            let id = chiral.store_with_facets(content, importance, &self.pipeline, category)
                 .map_err(|e| StoreError::Other(format!("chiral store failed: {}", e)))?;
             self.rebuild_cache().ok();
             self.mark_dirty();

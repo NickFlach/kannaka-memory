@@ -11,6 +11,8 @@ pub mod bridge;
 pub mod observe;
 pub mod openclaw;
 pub mod codebook;
+/// ADR-0049 facet decomposition — pure, deterministic compound→atomic split.
+pub mod facet;
 pub mod consolidation;
 pub mod kannaktopus;
 pub mod rhythm;
