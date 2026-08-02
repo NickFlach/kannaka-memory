@@ -175,7 +175,7 @@ const SUBJECT_TERMINATORS: &[&str] = &[
     // frequent predicate verbs in this corpus
     "holds", "runs", "sits", "added", "shipped", "fixed", "landed", "reached",
     "became", "made", "gets", "got", "degrades", "sharpens", "produces", "means",
-    "gives", "takes", "gets", "gave", "gone", "gets",
+    "gives", "takes", "gave", "gone",
     // determiners / prepositions — a subject never continues through these
     "the", "a", "an", "of", "in", "on", "at", "to", "for", "with", "from", "by",
     "that", "which", "and", "or",
