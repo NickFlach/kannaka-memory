@@ -1,5 +1,35 @@
 # ADR-0049: Facet Encoding — Atomic Wavefronts, Resolve-Only Parents
 
+> ## ⚠️ IMPLEMENTED 2026-08-01 — READ BEFORE UPGRADING ANY NODE
+>
+> Shipped in `277c9ba` (all five build steps, 952 tests green). It ships **dark**:
+> `KANNAKA_FACET_DECOMPOSE` defaults OFF and nothing mints facets until it is set.
+>
+> **But the `.hrm` format change is ONE-WAY, and it applies even with the flag off**,
+> because `parent_id` / `is_facet` / `decomposed` serialize into every
+> `WavefrontMeta` regardless — 3 extra trailing bytes per record.
+>
+> Measured, not assumed:
+> - **New binary reads an old `.hrm`** → fine, via the `WavefrontMetaPreFacet` chain link.
+> - **Old binary reads a new `.hrm`** → **rejects it with a loud `io error`.** It does
+>   not silently misdecode, but it does not load either.
+>
+> **Therefore: upgrade is safe, rollback is not.**
+>
+> Rollout rule where one node writes and the rest run `KANNAKA_READONLY=1`
+> (the Oracle topology, per ADR/oracle-hrm-single-writer):
+> 1. **Upgrade every READER first.**
+> 2. **Upgrade the WRITER last.**
+> 3. **Snapshot each `.hrm` before that node's first write on the new binary.**
+> 4. Do not roll a node back once it has written.
+>
+> Not yet done and required before enabling the flag: the cost discipline in this
+> ADR (parent/facet rows are still counted in the coherence eigendecomp and in
+> `apply_belief_coupling`'s `n`; `.hrm` size and scan wall-time are unmeasured
+> against the 1-core/6GB hub). `parent_of_facet` is O(n) per lookup. Parents are
+> marked `decomposed` but not yet excluded from the resonance scan.
+
+
 **Status:** Proposed — **v2, revised after adversarial-design-review**
 (GO_WITH_CHANGES, 2026-07-26). The encoding fix is *proven*; v2 resolves how
 facet+parent coexists with six live subsystems.
