@@ -9,7 +9,9 @@ COPY data/config.toml /environment/data/config.toml
 COPY data/SNAPSHOT.sha256 /environment/data/SNAPSHOT.sha256
 COPY probes.json /environment/probes.json
 COPY run_probes.py /environment/run_probes.py
-RUN chmod +x /environment/kannaka \
+# Eval-side backfill driver for the facet-on arm (inert unless FACET_BACKFILL=1).
+COPY data/facet-backfill /environment/facet-backfill
+RUN chmod +x /environment/kannaka /environment/facet-backfill \
     # Guard from the stale-binary incident: refuse to build an image whose binary
     # does not contain the knobs this eval sets.
     && grep -aq KANNAKA_RECALL_ENERGY_EXP /environment/kannaka \

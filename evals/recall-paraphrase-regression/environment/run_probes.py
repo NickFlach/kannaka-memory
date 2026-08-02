@@ -57,6 +57,20 @@ def main():
         "results": [],
     }
 
+    # Optional facet-on arm: FACET_BACKFILL=1 decomposes the per-trial store COPY
+    # via the eval-side driver (public backfill_facets API; no CLI exists yet).
+    # Runs after the copy hash is recorded — the pristine snapshot is never touched.
+    if os.environ.get("FACET_BACKFILL") == "1":
+        bf = subprocess.run(
+            ["/environment/facet-backfill"],
+            capture_output=True, text=True, timeout=600, env=env,
+        )
+        if bf.returncode != 0:
+            print(f"BACKFILL FAILED: {bf.stderr[-500:]}", file=sys.stderr)
+            sys.exit(1)
+        rollout["backfill"] = json.loads(bf.stdout.strip().splitlines()[-1])
+        print(f"backfill: {rollout['backfill']}", file=sys.stderr)
+
     for p in probes:
         rec = {"id": p["id"], "query": p["query"]}
         try:
