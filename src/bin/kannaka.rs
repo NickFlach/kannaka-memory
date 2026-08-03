@@ -417,13 +417,73 @@ fn handle_belief_cores(args: &[String]) {
     );
 }
 
+/// Build the encoding pipeline from env > config > default, with the
+/// `.encoder` sidecar guard.
+///
+/// The sidecar exists because a store's vectors are encoder-specific: querying
+/// a hash-encoded store through a semantic encoder degrades to noise with NO
+/// error — the same silent-corruption class as the stale-binary trap. First use
+/// stamps `<data_dir>/.encoder`; later runs refuse a mismatch and point at the
+/// re-encode recipe. `KANNAKA_ENCODER_FORCE=1` overrides (eval arms rebuild
+/// stores in place and own the consequences).
+fn build_encoding_pipeline(data_dir: &std::path::Path, quiet: bool, cfg: &KannakaConfig) -> EncodingPipeline {
+    let kind = std::env::var("KANNAKA_ENCODER").unwrap_or_else(|_| cfg.encoder.kind.clone());
+    let (encoder, desc, in_dim): (Box<dyn kannaka_memory::TextEncoder>, String, usize) = match kind.as_str() {
+        "hash" | "" => (
+            Box::new(SimpleHashEncoder::new(384, 42)),
+            "hash:384:42".to_string(),
+            384,
+        ),
+        "ollama" => {
+            let url = std::env::var("KANNAKA_ENCODER_URL").unwrap_or_else(|_| cfg.encoder.base_url.clone());
+            let model = std::env::var("KANNAKA_ENCODER_MODEL").unwrap_or_else(|_| cfg.encoder.model.clone());
+            let dim: usize = std::env::var("KANNAKA_ENCODER_DIM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(cfg.encoder.dim as usize);
+            let desc = format!("ollama:{model}:{dim}");
+            (Box::new(kannaka_memory::encoding::OllamaEncoder::new(url, model, dim)), desc, dim)
+        }
+        other => {
+            eprintln!("[config] unknown encoder kind '{other}' (expected hash|ollama)");
+            process::exit(2);
+        }
+    };
+
+    let sidecar = data_dir.join(".encoder");
+    let force = std::env::var("KANNAKA_ENCODER_FORCE").map(|v| v == "1").unwrap_or(false);
+    match std::fs::read_to_string(&sidecar) {
+        Ok(stamped) => {
+            let stamped = stamped.trim();
+            if stamped != desc && !force {
+                eprintln!("[encoder] store was written with '{stamped}' but this run selects '{desc}'.");
+                eprintln!("[encoder] mixed-encoder recall is silent corruption — refusing.");
+                eprintln!("[encoder] either select the stamped encoder, re-encode the store");
+                eprintln!("[encoder] (id-preserving recipe: evals/semantic-encoder/semantic-eval.rs),");
+                eprintln!("[encoder] or set KANNAKA_ENCODER_FORCE=1 if you know what you are doing.");
+                process::exit(2);
+            }
+        }
+        Err(_) => {
+            // First use (or unreadable sidecar): stamp best-effort. Read-only
+            // mounts and races are fine to ignore — the guard is advisory
+            // defense-in-depth, not a lock.
+            let _ = std::fs::write(&sidecar, &desc);
+        }
+    }
+    if !quiet && kind == "ollama" {
+        eprintln!("[encoder] {desc} via {}", std::env::var("KANNAKA_ENCODER_URL").unwrap_or_else(|_| cfg.encoder.base_url.clone()));
+    }
+
+    let codebook = Codebook::new(in_dim, 10_000, 42);
+    EncodingPipeline::new(encoder, codebook)
+}
+
 fn init_with_hrm(
     data_dir: PathBuf,
     quiet: bool,
     cfg: &KannakaConfig,
 ) -> Result<KannakaMemorySystem, Box<dyn std::error::Error>> {
-    // Setup encoding pipeline for HRM
-    let encoder = SimpleHashEncoder::new(384, 42);
     // wavefront_dim is currently hardcoded to 10_000 — the Codebook +
     // HRM file format share the dimension, so changing it on a populated
     // HRM would require re-encoding every wavefront (destructive).
@@ -436,8 +496,8 @@ fn init_with_hrm(
             cfg.hrm.wavefront_dim,
         );
     }
-    let codebook = Codebook::new(384, 10_000, 42);
-    let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+    // Encoder selection (env > [encoder] config > hash default) + sidecar guard.
+    let pipeline = build_encoding_pipeline(&data_dir, quiet, cfg);
 
     // HRM file path. Honor `cfg.hrm.path` when it's set — full path with
     // filename is used verbatim; relative paths resolve against

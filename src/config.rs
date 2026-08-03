@@ -40,6 +40,53 @@ pub struct KannakaConfig {
     pub entropy: EntropyConfig,
     #[serde(default = "SwarmTrustConfig::default")]
     pub swarm_trust: SwarmTrustConfig,
+    #[serde(default = "EncoderConfig::default")]
+    pub encoder: EncoderConfig,
+}
+
+/// Text-encoder selection for the HRM pipeline.
+///
+/// Measured 2026-08-02 (evals/semantic-encoder): a semantic encoder through the
+/// production chiral path scores 2.6x-4.4x the hash encoder's recall@10. Default
+/// stays `hash` — byte-identical to the pre-config behavior — per the ship-dark
+/// discipline; enable `ollama` on measured evidence per deployment.
+///
+/// A store's vectors are ENCODER-SPECIFIC: recalling a hash-encoded store with a
+/// semantic query vector (or vice versa) degrades to noise with no error. The
+/// runtime therefore stamps `<data_dir>/.encoder` on first use and refuses a
+/// mismatched encoder on later runs (see `build_encoding_pipeline`). Switching
+/// encoders on a populated store requires a one-time re-encode (id-preserving
+/// recipe: evals/semantic-encoder/semantic-eval.rs).
+///
+/// Env overrides (highest precedence, for eval arms and one-off runs):
+/// `KANNAKA_ENCODER` (hash|ollama), `KANNAKA_ENCODER_URL`,
+/// `KANNAKA_ENCODER_MODEL`, `KANNAKA_ENCODER_DIM`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncoderConfig {
+    #[serde(default = "default_encoder_kind")]
+    pub kind: String,
+    #[serde(default = "default_encoder_url")]
+    pub base_url: String,
+    #[serde(default = "default_encoder_model")]
+    pub model: String,
+    #[serde(default = "default_encoder_dim")]
+    pub dim: u32,
+}
+
+fn default_encoder_kind() -> String { "hash".to_string() }
+fn default_encoder_url() -> String { "http://localhost:11434".to_string() }
+fn default_encoder_model() -> String { "all-minilm".to_string() }
+fn default_encoder_dim() -> u32 { 384 }
+
+impl Default for EncoderConfig {
+    fn default() -> Self {
+        Self {
+            kind: default_encoder_kind(),
+            base_url: default_encoder_url(),
+            model: default_encoder_model(),
+            dim: default_encoder_dim(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4258,6 +4305,30 @@ mod config_field_tests {
         assert!(KannakaConfig::load().agent.id.starts_with("agent-"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn encoder_section_defaults_to_hash() {
+        // A config with no [encoder] section must behave exactly as before the
+        // section existed — hash encoder, byte-identical (ship-dark contract).
+        let cfg: KannakaConfig = toml::from_str("").expect("empty config parses");
+        assert_eq!(cfg.encoder.kind, "hash");
+        assert_eq!(cfg.encoder.dim, 384);
+        assert_eq!(cfg.encoder.model, "all-minilm");
+        assert_eq!(cfg.encoder.base_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn encoder_section_parses_ollama() {
+        let cfg: KannakaConfig = toml::from_str(
+            "[encoder]\nkind = \"ollama\"\nmodel = \"mxbai-embed-large\"\ndim = 1024\n",
+        )
+        .expect("encoder section parses");
+        assert_eq!(cfg.encoder.kind, "ollama");
+        assert_eq!(cfg.encoder.model, "mxbai-embed-large");
+        assert_eq!(cfg.encoder.dim, 1024);
+        // unspecified field falls back to its default
+        assert_eq!(cfg.encoder.base_url, "http://localhost:11434");
     }
 
 }
