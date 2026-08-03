@@ -45,12 +45,15 @@ def main():
 
     if not os.path.exists(args.rollout):
         infra_fail(f"rollout missing: {args.rollout}")
-    rollout = json.load(open(args.rollout))
-    expected = json.load(open(args.expected))
+    with open(args.rollout) as f:
+        rollout = json.load(f)
+    with open(args.expected) as f:
+        expected = json.load(f)
 
     # ── infrastructure guards ────────────────────────────────────────────────
     if not args.skip_store_check:
-        pinned = open(args.pinned_sha).read().split()[0].strip()
+        with open(args.pinned_sha) as f:
+            pinned = f.read().split()[0].strip()
         actual = sha256(args.store)
         if actual != pinned:
             infra_fail(f"pristine snapshot hash mismatch: {actual} != pinned {pinned} — different corpus, different eval")

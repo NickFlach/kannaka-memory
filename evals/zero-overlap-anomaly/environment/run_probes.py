@@ -31,14 +31,16 @@ def sha256(path):
 
 
 def main():
-    probes = json.load(open(PROBES))
+    with open(PROBES) as f:
+        probes = json.load(f)
 
     # Per-trial store copy: recall's record_retrieval() may persist, so the pristine
     # snapshot under /environment is never opened by the CLI.
     work = tempfile.mkdtemp(prefix="kannaka-eval-")
     hrm_copy = os.path.join(work, "kannaka.hrm")
     shutil.copy(os.path.join(DATA_SRC, "kannaka.hrm"), hrm_copy)
-    cfg = open(os.path.join(DATA_SRC, "config.toml")).read().replace("__HRM_PATH__", hrm_copy)
+    with open(os.path.join(DATA_SRC, "config.toml")) as f:
+        cfg = f.read().replace("__HRM_PATH__", hrm_copy)
     with open(os.path.join(work, "config.toml"), "w") as f:
         f.write(cfg)
 
