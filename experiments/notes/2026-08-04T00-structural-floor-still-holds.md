@@ -1,0 +1,1 @@
+No new research targets: encoder/facet commits post-Aug-03 do not affect the L5 path (research.rs uses SimpleHashEncoder hardcoded; facet ships dark); structural floor (~0.017 fitness) confirmed across the last three fires; all levers exhausted per 2026-08-01T14.
