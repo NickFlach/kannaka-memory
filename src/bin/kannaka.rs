@@ -1650,6 +1650,16 @@ fn main() {
                             hrm.set_temporal(&id, effective_at, observed_at, expires_at);
                         }
                     }
+                    // The stamps above mutate in-memory metadata only, and the
+                    // store's internal save ran during remember — BEFORE them.
+                    // Persist again so an explicit --modality / --effective /
+                    // --observed / --expires survives process exit, and do it
+                    // before announcing the id: a caller that reads the id may
+                    // reasonably believe everything it asked for is durable.
+                    if let Err(e) = sys.save() {
+                        eprintln!("remember: stored {id} but failed to persist its stamps: {e}");
+                        process::exit(1);
+                    }
                     println!("{id}");
 
                     // Best-effort: publish new memory to NATS for swarm sync.
