@@ -30,6 +30,11 @@ pub struct KannakaConfig {
     pub updates: UpdatesConfig,
     #[serde(default = "TriageConfig::default")]
     pub triage: TriageConfig,
+    /// ADR-0054 retention policy: content-prefix → cap/TTL rules enforced by
+    /// the dream cycle's `stage_retention_triage` (gated by KANNAKA_TRIAGE=1).
+    /// Empty (the default) = the stage is a no-op.
+    #[serde(default)]
+    pub retention: std::collections::HashMap<String, RetentionRule>,
     #[serde(default = "BeliefConfig::default")]
     pub belief: BeliefConfig,
     #[serde(default = "ClusterConfig::default")]
@@ -163,6 +168,29 @@ pub struct UpdatesConfig {
     pub channel: String,
     #[serde(default)]
     pub last_checked: String,
+}
+
+/// ADR-0054 per-prefix retention rule. Matches on CONTENT prefix (the only
+/// key that persists across restarts — categories are runtime-only) — the
+/// same key the retired radio prune-cron counted on ("audio:" rows).
+///
+/// ```toml
+/// [retention]
+/// "audio:" = { cap = 200, ttl_days = 14 }
+/// ```
+///
+/// `cap`: beyond this many live matching rows, the excess is GHOSTED
+/// (ADR-0037 two-phase — never hard-deleted here), lowest
+/// `(retrieval_count, amplitude)` first so replayed memories survive.
+/// `ttl_days`: matching rows older than this ghost regardless of cap.
+/// Pinned rows and rows at/above KANNAKA_PROMOTE_HITS retrievals are
+/// never touched (ADR-0054 acceptance #3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionRule {
+    #[serde(default)]
+    pub cap: Option<usize>,
+    #[serde(default)]
+    pub ttl_days: Option<f32>,
 }
 
 /// ADR-0031 memory triage policy. Per-agent tunable — the witness, substrate,
