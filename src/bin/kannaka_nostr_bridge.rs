@@ -28,6 +28,7 @@ struct Config {
     pubkey: String,
     relays: Vec<String>,
     dedupe_file: String,
+    dedupe_cap: usize,
     nats_url: String,
     nats_user: String,
     nats_pass: String,
@@ -58,6 +59,15 @@ fn load_config() -> Config {
         relays,
         dedupe_file: env("BRIDGE_DEDUPE_FILE")
             .unwrap_or_else(|| "/var/lib/kannaka-bridge/dedupe.log".into()),
+        // #687: the dedupe cap is the bridge's correctness horizon — every
+        // reconnect replays ALL gift-wrap history (a NIP-59 `since` cursor
+        // would silently drop DMs; randomized created_at is adversary-
+        // influenced), so ids past the cap get re-processed AND re-published.
+        // Configurable so a deployment can buy headroom (~250B of RSS per id)
+        // ahead of its lifetime DM volume.
+        dedupe_cap: env("BRIDGE_DEDUPE_CAP")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100_000),
         nats_url: env("BRIDGE_NATS_URL").unwrap_or_else(|| "nats://127.0.0.1:4222".into()),
         nats_user: env("BRIDGE_NATS_USER").unwrap_or_default(),
         nats_pass: env("BRIDGE_NATS_PASS").unwrap_or_default(),
@@ -312,7 +322,7 @@ fn main() {
         let _ = std::fs::create_dir_all(dir);
     }
     let dedup = Arc::new(Mutex::new(
-        Dedup::open(&cfg.dedupe_file, 100_000).expect("open dedupe log"),
+        Dedup::open(&cfg.dedupe_file, cfg.dedupe_cap).expect("open dedupe log"),
     ));
     let limiter = Arc::new(Mutex::new(RateLimiter::new(cfg.rate_cap, cfg.rate_refill)));
     eprintln!(
