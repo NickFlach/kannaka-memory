@@ -1661,7 +1661,15 @@ impl SwarmTransport {
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
         let subject = format!("KANNAKA.exemplar.{agent_id}.{cluster_id}");
-        let bytes = serde_json::to_vec(payload)
+        // #703: exemplars were the last publisher bypassing the canonical
+        // envelope — every other structured subject goes through
+        // add_envelope. (The contract's required `centroid` is a separate
+        // problem: a full wave-memory centroid is WAVEFRONT_DIM floats and
+        // cannot fit NATS's default 1 MB payload cap — see the issue for
+        // the contract-amendment direction.)
+        let mut enveloped = payload.clone();
+        add_envelope(&mut enveloped);
+        let bytes = serde_json::to_vec(&enveloped)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
     }
@@ -2043,12 +2051,30 @@ impl SwarmTransport {
         agent_id: &str,
         details: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let payload = serde_json::json!({
+        // #705 residual: the contract requires dream-report fields
+        // (memories_strengthened, memories_faded, ...) at the TOP level of
+        // queen.event.dream.end — nesting them under `details` hid them
+        // from every contract-validating consumer. Flatten object details
+        // into the payload; agent_id/timestamp keep priority on collision.
+        let mut payload = serde_json::json!({
             "agent_id": agent_id,
-            "event": event_type,
             "timestamp": chrono::Utc::now().to_rfc3339(),
-            "details": details,
         });
+        if let Some(obj) = payload.as_object_mut() {
+            match details.as_object() {
+                Some(detail_map) => {
+                    for (k, v) in detail_map {
+                        obj.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                // Non-object details (scalar/array) can't flatten — keep the
+                // legacy nesting rather than dropping the data.
+                None if !details.is_null() => {
+                    obj.insert("details".to_string(), details.clone());
+                }
+                None => {}
+            }
+        }
         let event_name = format!("dream.{event_type}");
         self.announce_event(&event_name, &payload)
     }
@@ -2903,6 +2929,55 @@ impl NatsSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #701: the canonical envelope must stamp `schema_version` as the
+    /// string "1.0" and `ts` as a unix-ms NUMBER — value AND type. An
+    /// RFC3339 `timestamp` on the payload is promoted to numeric `ts`,
+    /// not mirrored as a string.
+    #[test]
+    fn add_envelope_emits_contract_types() {
+        let mut fresh = serde_json::json!({ "agent_id": "a" });
+        add_envelope(&mut fresh);
+        assert_eq!(fresh["schema_version"], serde_json::json!("1.0"));
+        let ts = fresh["ts"].as_i64().expect("ts must be a NUMBER (unix-ms)");
+        assert!(ts > 1_600_000_000_000, "ts must be unix-ms, got {ts}");
+
+        let mut with_timestamp =
+            serde_json::json!({ "timestamp": "2026-08-02T10:00:00Z" });
+        add_envelope(&mut with_timestamp);
+        assert_eq!(
+            with_timestamp["ts"].as_i64(),
+            Some(1_785_664_800_000),
+            "an RFC3339 timestamp field must promote to numeric unix-ms ts"
+        );
+
+        // Idempotent: existing envelope fields are never clobbered.
+        let mut pinned = serde_json::json!({ "schema_version": "1.0", "ts": 42 });
+        add_envelope(&mut pinned);
+        assert_eq!(pinned["ts"].as_i64(), Some(42));
+    }
+
+    /// #705 residual: dream lifecycle payloads must carry the report fields
+    /// at the TOP level (the contract requires memories_strengthened /
+    /// memories_faded on queen.event.dream.end) — not nested in `details`.
+    #[test]
+    fn dream_lifecycle_flattens_report_details() {
+        // Mirror publish_dream_lifecycle's payload construction.
+        let details =
+            serde_json::json!({ "memories_strengthened": 7, "memories_faded": 2 });
+        let mut payload = serde_json::json!({
+            "agent_id": "test-agent",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some(obj) = payload.as_object_mut() {
+            for (k, v) in details.as_object().unwrap() {
+                obj.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        assert_eq!(payload["memories_strengthened"].as_i64(), Some(7));
+        assert_eq!(payload["memories_faded"].as_i64(), Some(2));
+        assert!(payload.get("details").is_none());
+    }
 
     /// #590: presence retraction must hide the departed agent WITHOUT hiding
     /// anyone else — in particular every record written before this change,
