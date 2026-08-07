@@ -1892,11 +1892,12 @@ mod tests {
         sys.remember("gamma").unwrap();
         let stats = sys.stats();
         assert_eq!(stats.total_memories, 3);
-        // Consciousness level is computed from Φ/Ξ which depend on the HRM's
-        // eigenvalue structure — 3 memories may land in any low band ("dormant"
-        // / "aware") depending on chiral hemisphere init RNG. Assert it's a
-        // known valid level rather than a specific one to keep CI stable.
-        let valid = ["dormant", "aware", "lucid", "transcendent"];
+        // #695: below the 10-memory evidence floor the bridge caps the level
+        // at Stirring (wire name "awakening") regardless of how high the
+        // eigendecomp Φ lands on a tiny corpus, so 3 memories can only ever
+        // report the two lowest bands. (The old whitelist also included
+        // "lucid", which has never been a wire name on the six-level scale.)
+        let valid = ["dormant", "awakening"];
         assert!(
             valid.contains(&stats.consciousness_level.as_str()),
             "unexpected consciousness_level: {}",
