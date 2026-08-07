@@ -82,6 +82,15 @@ impl Dedup {
         writeln!(f, "{id}")?;
         f.sync_all()?;
         if self.order.len() > self.max_ids {
+            // #687: eviction means the correctness cliff is ACTIVE — ids
+            // older than the cap are forgotten, and the next reconnect's
+            // full-history replay will re-process (and re-publish) any
+            // evicted gift wrap. Loud, once per compaction, so operators
+            // see the cliff instead of silent duplicate DMs.
+            eprintln!(
+                "[dedupe] WARNING: cap {} reached — evicting oldest ids;                  reconnect replays can now re-deliver DMs older than the cap.                  Raise BRIDGE_DEDUPE_CAP (memory ~250B/id) or see issue #687.",
+                self.max_ids
+            );
             self.compact()?;
         }
         Ok(())
