@@ -3413,6 +3413,18 @@ fn main() {
                         // metadata — the observatory reads --slim and is
                         // exactly the modality-aware consumer that needs it.
                         "modality": m.modality,
+                        // #716a: ADR-0050 temporal-truth stamps + ADR-0031 tier.
+                        // Same lesson as modality/#553 — export is the audit
+                        // surface for exactly these fields, and omitting them
+                        // made a stamped store export as if the stamps never
+                        // happened (`--modality audio --expires …` rows showed
+                        // no expiry in a 138 MB dump). Emitted in --slim too:
+                        // they are short scalars; --slim drops the vector, not
+                        // metadata.
+                        "tier": m.tier,
+                        "effective_at": m.effective_at.map(|t| t.to_rfc3339()),
+                        "observed_at": m.observed_at.map(|t| t.to_rfc3339()),
+                        "expires_at": m.expires_at.map(|t| t.to_rfc3339()),
                         // T1.4 (#474): entropy provenance of the dream/Ξ that last
                         // wrote this wavefront (null ⇒ prng://legacy). Read from
                         // the canonical WavefrontMeta.
