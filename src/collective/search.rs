@@ -271,12 +271,38 @@ pub fn process_proof_response(
 ) -> bool {
     match response {
         ProofExchangeEvent::ProofResponse { glyph_hash, proof, responder } => {
+            // #698: the proof object names the glyph it was generated for.
+            // A response whose outer envelope names a DIFFERENT glyph is
+            // malformed or malicious (valid proof for A, envelope naming B)
+            // — drop it entirely. No trust mutation either way: crediting a
+            // failure to the envelope's `responder` would let a relay frame
+            // an arbitrary peer with someone else's mismatched proof.
+            if proof.glyph_hash != *glyph_hash {
+                return false;
+            }
+            // #698: the glyph receiving the attachment must exist and belong
+            // to the responder the envelope credits — otherwise trust accrues
+            // to an identity with no relationship to the proof.
+            match store.get(glyph_hash) {
+                Some(stored) if stored.glyph.agent_id == *responder => {}
+                _ => return false,
+            }
+
             let verified = verify_similarity(proof);
 
-            // Record the proof result for trust scoring
-            store.record_proof_result(responder, verified);
+            // #700: a "verified" SimilarityProof only proves the responder
+            // knows an opening for the vector commitment — the similarity
+            // SCORE is self-reported and not bound to the query or the
+            // committed vector, so it must stay advisory. Successes
+            // therefore earn NO trust (a fabricated in-range score verifies
+            // just as well); failed proofs still count against the
+            // responder, since a bad existence proof is real evidence of
+            // misbehavior.
+            if !verified {
+                store.record_proof_result(responder, false);
+            }
 
-            // Attach the proof to the glyph
+            // Attach the proof to the glyph (advisory annotation).
             store.attach_proof(
                 glyph_hash,
                 ProofType::Similarity {
@@ -343,6 +369,119 @@ mod tests {
         }
 
         (store, hashes)
+    }
+
+    /// #696 (fixed by the #369 own_vectors wiring, previously untested): a
+    /// glyph the caller owns must be discoverable from its raw vector alone
+    /// — no previously-attached proof required.
+    #[test]
+    fn test_own_glyph_discoverable_without_prior_proof() {
+        let mut store = GlyphStore::new();
+        let mem = test_memory("my own sealed note");
+        let result = seal_with_commitments(&mem, 0, "me");
+        let hash = result.glyph.glyph_hash.clone();
+        store.insert(result);
+
+        let query = vec![0.1; 100];
+        let request = SearchRequest {
+            query_hash: hash_query(&query),
+            min_similarity: 0.5,
+            requester: "me".to_string(),
+            target_agents: None,
+            max_results: None,
+        };
+
+        let mut own_vectors = std::collections::HashMap::new();
+        own_vectors.insert(hash.clone(), vec![0.1; 100]);
+        let results = collective_search(&store, &query, &request, &own_vectors);
+        assert_eq!(results.len(), 1, "owned glyph with no attached proof must be found");
+        assert!((results[0].similarity - 1.0).abs() < 1e-9);
+
+        // Without the vector (and no proof) it stays invisible — the
+        // remote-path fallback needs an attached proof.
+        let none = collective_search(&store, &query, &request, &std::collections::HashMap::new());
+        assert_eq!(none.len(), 0);
+    }
+
+    /// #698: a valid proof for glyph A wrapped in an envelope naming glyph B
+    /// must be dropped outright — no attach, no trust mutation.
+    #[test]
+    fn test_proof_response_rejects_glyph_hash_mismatch() {
+        let mut store = GlyphStore::new();
+        let a = seal_with_commitments(&test_memory("glyph a"), 0, "alice");
+        let b = seal_with_commitments(&test_memory("glyph b"), 0, "alice");
+        let b_hash = b.glyph.glyph_hash.clone();
+        let commitments = a.glyph.commitments.clone().unwrap();
+        let proof = prove_similarity(
+            &a.glyph, &commitments, &a.openings, hash_query(&[0.1; 100]), 0.9,
+        );
+        store.insert(a);
+        store.insert(b);
+
+        let before = store.proof_trust_bonus("alice");
+        let event = ProofExchangeEvent::ProofResponse {
+            glyph_hash: b_hash, // envelope names B, proof is for A
+            proof,
+            responder: "alice".to_string(),
+        };
+        assert!(!process_proof_response(&mut store, &event));
+        assert_eq!(
+            store.proof_trust_bonus("alice"),
+            before,
+            "a mismatched envelope must not mutate trust in either direction"
+        );
+    }
+
+    /// #698: the envelope's responder must own the glyph receiving the
+    /// attachment — otherwise trust/attachment accrues to an identity with
+    /// no relationship to the proof.
+    #[test]
+    fn test_proof_response_rejects_wrong_responder() {
+        let mut store = GlyphStore::new();
+        let a = seal_with_commitments(&test_memory("glyph a"), 0, "alice");
+        let hash = a.glyph.glyph_hash.clone();
+        let commitments = a.glyph.commitments.clone().unwrap();
+        let proof = prove_similarity(
+            &a.glyph, &commitments, &a.openings, hash_query(&[0.1; 100]), 0.9,
+        );
+        store.insert(a);
+
+        let event = ProofExchangeEvent::ProofResponse {
+            glyph_hash: hash,
+            proof,
+            responder: "mallory".to_string(), // not the glyph's owner
+        };
+        assert!(!process_proof_response(&mut store, &event));
+    }
+
+    /// #700 (short-term hardening): a verified SimilarityProof only proves
+    /// opening knowledge — the score is self-reported — so success must earn
+    /// NO trust. A fabricated similarity=1.0 verifies exactly as well as an
+    /// honest score.
+    #[test]
+    fn test_verified_similarity_earns_no_trust() {
+        let mut store = GlyphStore::new();
+        let a = seal_with_commitments(&test_memory("glyph a"), 0, "alice");
+        let hash = a.glyph.glyph_hash.clone();
+        let commitments = a.glyph.commitments.clone().unwrap();
+        // Fabricated perfect score — verifies identically to an honest one.
+        let proof = prove_similarity(
+            &a.glyph, &commitments, &a.openings, hash_query(&[0.9; 100]), 1.0,
+        );
+        store.insert(a);
+
+        let before = store.proof_trust_bonus("alice");
+        let event = ProofExchangeEvent::ProofResponse {
+            glyph_hash: hash,
+            proof,
+            responder: "alice".to_string(),
+        };
+        assert!(process_proof_response(&mut store, &event), "well-formed proof still verifies");
+        assert_eq!(
+            store.proof_trust_bonus("alice"),
+            before,
+            "verified similarity must be advisory: no trust credit (#700)"
+        );
     }
 
     #[test]
@@ -523,7 +662,11 @@ mod tests {
 
         let verified = process_proof_response(&mut store, &event);
         assert!(verified);
-        assert!(store.proof_trust_bonus("alice") > 0.0);
+        // #700 flipped this contract: a verified SimilarityProof no longer
+        // EARNS trust (the score is self-reported and unbound to the query
+        // or committed vector, so a fabricated one verifies identically).
+        // Verification succeeds; trust stays untouched.
+        assert_eq!(store.proof_trust_bonus("alice"), 0.0);
     }
 
     #[test]
