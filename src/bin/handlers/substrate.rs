@@ -525,7 +525,14 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
             };
             let phi = v.get("phi").and_then(|x| x.as_f64()).unwrap_or(0.0);
             let xi = v.get("xi").and_then(|x| x.as_f64()).unwrap_or(0.0);
-            let order = v.get("mean_order").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            // #468: canonical contract field first (`order`); `mean_order` is
+            // the legacy alias the publisher still mirrors during the
+            // migration window.
+            let order = v
+                .get("order")
+                .or_else(|| v.get("mean_order"))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
             let clusters = v.get("num_clusters").and_then(|x| x.as_u64()).unwrap_or(0);
             let mems = v.get("total_memories").and_then(|x| x.as_u64()).unwrap_or(0);
             let contribs: Vec<String> = v.get("contributors")
