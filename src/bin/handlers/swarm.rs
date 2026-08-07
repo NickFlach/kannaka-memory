@@ -548,12 +548,16 @@ pub(crate) fn handle_swarm_exemplars(
             // `swarm exemplars list` and `swarm absorb` then see nothing. Not
             // fatal (the publishes may still be consumed live), but the
             // durability loss must be stated rather than swallowed.
-            if let Err(e) = transport.ensure_exemplar_stream() {
-                eprintln!(
-                    "[exemplars] WARNING: KANNAKA_EXEMPLARS stream unavailable ({e}) — publishes \
-                     below will NOT be durable and `swarm exemplars list` will show nothing."
-                );
-            }
+            let durable = match transport.ensure_exemplar_stream() {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "[exemplars] WARNING: KANNAKA_EXEMPLARS stream unavailable ({e}) — publishes \
+                         below will NOT be durable and `swarm exemplars list` will show nothing."
+                    );
+                    false
+                }
+            };
 
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();
@@ -618,9 +622,20 @@ pub(crate) fn handle_swarm_exemplars(
                     Err(e) => eprintln!("[exemplars] cluster {} publish failed: {e}", c.cluster_id),
                 }
             }
+            // #689: the summary must not read as success when nothing was
+            // durable — live subscribers may have seen the PUBs, but list/
+            // absorb/autoabsorb read only the JetStream history.
             println!(
-                "Published {} exemplars from {} (top-{} by amplitude)",
-                published, agent_id, top_k
+                "Published {} exemplars from {} (top-{} by amplitude){}",
+                published,
+                agent_id,
+                top_k,
+                if durable {
+                    ""
+                } else {
+                    " — NOT DURABLE: KANNAKA_EXEMPLARS stream unavailable; \
+                     list/absorb/autoabsorb will not see these"
+                }
             );
         }
         "list" => {
@@ -1419,14 +1434,20 @@ pub(crate) fn handle_swarm_autoabsorb(
                 }
             }
         } else {
+            // #688: a rehearsal counts what WOULD absorb but must not burn
+            // the per-source daily quota — record_absorb here made a
+            // --dry-run sweep change later autonomous behavior.
             absorbed += 1;
-            state.record_absorb(&today_key, &source);
         }
     }
 
-    state.last_phi = Some(current_phi);
-    if let Err(e) = state.save(&state_path) {
-        eprintln!("[autoabsorb] state save failed: {e}");
+    // #688: state mutations (quota counters, last_phi) persist only for a
+    // real sweep. A dry run leaves autoabsorb-state.json untouched.
+    if !dry_run {
+        state.last_phi = Some(current_phi);
+        if let Err(e) = state.save(&state_path) {
+            eprintln!("[autoabsorb] state save failed: {e}");
+        }
     }
 
     eprintln!(

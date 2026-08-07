@@ -414,9 +414,39 @@ impl Medium {
             }));
         }
 
-        // 3. Sort by raw resonance strength and take top 2*K for xi re-ranking
+        // 3. Sort by raw resonance strength and take top 2*K for xi re-ranking.
+        //
+        // #699: on a facet-bearing corpus the raw pool is dominated by facet
+        // clusters of a few strongly-resonating parents — a 2k pool collapsed
+        // to ~10 distinct constellations for k=20, and lost parents were
+        // absent from the pool entirely. Scale the rerank pool by the facet
+        // over-fetch factor AND cap how many rows one constellation may
+        // occupy, so pool slots buy distinct parents rather than sibling
+        // facets. Both changes are gated on has_facets: an undecomposed
+        // corpus keeps the byte-identical 2k pool.
         resonances.sort_by(|a, b| b.1.resonance_strength.total_cmp(&a.1.resonance_strength));
-        let rerank_pool = top_k.saturating_mul(2).max(top_k);
+        let has_facets = self.has_facets();
+        let rerank_pool = if has_facets {
+            crate::facet::overfetch_pool(top_k).saturating_mul(2).max(top_k)
+        } else {
+            top_k.saturating_mul(2).max(top_k)
+        };
+        if has_facets {
+            // Per-constellation cap: keep at most 2 rows per canonical id
+            // (best + one spare for the xi re-rank to shuffle) before the
+            // pool truncate. facet::resolve dedups to one later anyway.
+            let mut per_parent: std::collections::HashMap<Uuid, usize> =
+                std::collections::HashMap::new();
+            resonances.retain(|(_, r)| {
+                let canonical = self
+                    .parent_of_facet(r.id)
+                    .map(|(pid, _)| pid)
+                    .unwrap_or(r.id);
+                let n = per_parent.entry(canonical).or_insert(0);
+                *n += 1;
+                *n <= 2
+            });
+        }
         resonances.truncate(rerank_pool);
         if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
             for (i, r) in resonances.iter().take(6) {
@@ -457,7 +487,6 @@ impl Medium {
         // `top_k` distinct memories after resolution. Over-fetch in that case —
         // and ONLY in that case, so a corpus with no facets is byte-identical to
         // the pre-facet behaviour.
-        let has_facets = self.has_facets();
         let pool = if has_facets { crate::facet::overfetch_pool(top_k) } else { top_k };
         let mut sorted = initial_results;
         sorted.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
