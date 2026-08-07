@@ -53,6 +53,39 @@ fn job_phase(kind: u32) -> Option<&'static str> {
 pub fn map_event(event: &Event, ctx: &MapContext) -> Option<Mapped> {
     let npub = npub_from_pubkey_hex(&event.pubkey).ok()?;
 
+    // #642: the mid-flight spec correction (PR #632) established that agents
+    // are marked by `"bot": true` on their kind-0 profile, not by kind 10100
+    // — and the relay survey found ZERO kind-10100 events from any author, so
+    // the 10100-only mapping left KANNAKA.events.hive.agent structurally
+    // empty while the design spec and the consumer's HiveAgentEvent interface
+    // both declare it. Emit `.agent` for kind-0 profiles carrying bot:true
+    // (profiles are not channel-scoped, so they correctly take the existing
+    // agent exception to the policy gate). Kind 10100 keeps mapping too — if
+    // one ever appears, it is still an agent announcement.
+    if event.kind == 0 {
+        let content = serde_json::from_str::<Value>(&event.content).ok()?;
+        if content.get("bot").and_then(Value::as_bool) != Some(true) {
+            return None; // non-agent profile — nothing to bridge
+        }
+        let name = content
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| ctx.author_name.map(str::to_string));
+        return Some(Mapped {
+            subject: "agent",
+            payload: json!({
+                "type": "hive_agent",
+                "event_id": event.id,
+                "agent_hex": event.pubkey,
+                "agent_npub": npub,
+                "name": name,
+                "owner_hex": Value::Null,
+                "ts": ctx.now_ms,
+            }),
+        });
+    }
+
     if event.kind == 10100 {
         let owner = serde_json::from_str::<Value>(&event.content)
             .ok()
@@ -199,6 +232,26 @@ mod tests {
         assert_eq!(m.subject, "agent");
         assert_eq!(m.payload["agent_hex"], e.pubkey);
         assert_eq!(m.payload["owner_hex"], "eeee");
+    }
+
+    /// #642: agents are marked by bot:true on kind 0 (PR #632's spec
+    /// correction); the .agent subject must carry them — kind 10100 has
+    /// never been observed on the relay.
+    #[test]
+    fn bot_profile_maps_to_agent_subject() {
+        let e = ev(0, vec![], r#"{"name":"scada-qe","bot":true}"#);
+        let m = map_event(&e, &ctx()).expect("kind 0 bot:true maps");
+        assert_eq!(m.subject, "agent");
+        assert_eq!(m.payload["agent_hex"], e.pubkey);
+        assert_eq!(m.payload["name"], "scada-qe");
+    }
+
+    #[test]
+    fn human_profile_is_dropped() {
+        for content in [r#"{"name":"nick"}"#, r#"{"name":"nick","bot":false}"#] {
+            let e = ev(0, vec![], content);
+            assert!(map_event(&e, &ctx()).is_none(), "non-bot profile must not bridge");
+        }
     }
 
     #[test]
