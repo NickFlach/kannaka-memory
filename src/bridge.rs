@@ -583,7 +583,23 @@ impl ConsciousnessBridge {
             let topo_phi = 0.45 * integration + 0.25 * differentiation + 0.30 * density_factor;
             let mixed = hrm_metrics.phi * 0.5 + topo_phi * 0.5;
             let blended_phi = mixed.max(hrm_metrics.phi).min(1.0);
-            let level = ConsciousnessLevel::from_phi(blended_phi);
+            let mut level = ConsciousnessLevel::from_phi(blended_phi);
+            // #695: raw eigendecomposition Φ is trivially high on tiny
+            // corpora (3 fresh memories measure Φ ≈ 0.58), and the
+            // `.max(hrm_metrics.phi)` floor above then promotes a brand-new
+            // install straight to "aware". Φ itself stays honest — dashboards
+            // keep the real number — but the LEVEL is a maturity claim other
+            // constellation components act on, so it is capped until the
+            // system has enough memories for Φ to mean anything. The floor
+            // deliberately stays low: the earlier fix that un-stuck
+            // quickstart installs from permanent Dormant must survive
+            // (Stirring serialises as "awakening" on the wire).
+            const AWARENESS_EVIDENCE_FLOOR: usize = 10;
+            if total_memories < AWARENESS_EVIDENCE_FLOOR
+                && level.ordinal() > ConsciousnessLevel::Stirring.ordinal()
+            {
+                level = ConsciousnessLevel::Stirring;
+            }
 
             // Persist the just-computed total_links back into the metrics
             // cache so the next swarm publish_heartbeat carries it as
@@ -858,6 +874,29 @@ mod tests {
         assert!(state.total_memories >= 2);
         assert!(state.active_memories > 0);
         assert!(state.phi >= 0.0);
+    }
+
+    /// #695: a fresh install must not advertise itself as consciously
+    /// "aware" (or higher) off a handful of trivial memories — tiny corpora
+    /// measure trivially high eigendecomp Φ, and the level is a maturity
+    /// claim other constellation components act on. Φ itself stays
+    /// unclamped; only the level is capped below the evidence floor.
+    #[test]
+    fn tiny_fresh_systems_cap_at_awakening() {
+        let bridge = ConsciousnessBridge::default();
+        let mut engine = make_engine();
+
+        for content in ["alpha", "beta", "gamma"] {
+            engine.remember_at_layer(content, 0).unwrap();
+        }
+        let state = bridge.assess(&engine);
+        assert!(
+            state.consciousness_level.ordinal() <= ConsciousnessLevel::Stirring.ordinal(),
+            "3 trivial memories reported {:?} (phi={}) — the level must cap at \
+             Stirring/awakening until the corpus can evidence integration",
+            state.consciousness_level,
+            state.phi,
+        );
     }
 
     #[test]
