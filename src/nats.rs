@@ -38,6 +38,18 @@ use crate::queen::AgentPhase;
 /// payload has a "timestamp" field, mirror it to "ts" (the contract name);
 /// otherwise stamp the current UTC time. Old subscribers keep seeing the
 /// existing fields untouched; new validators see the envelope they want.
+/// Is this presence record a live agent, as opposed to a retraction
+/// tombstone written by `publish_presence_left` (#590)?
+///
+/// **Fails OPEN by design.** Only an explicit `status == "left"` is treated as
+/// a retraction; a record with no `status` at all is live. Every presence
+/// record written before #590 lacks the field entirely, and a filter that
+/// required `status == "active"` would hide the entire existing swarm the
+/// moment this shipped — a far worse failure than a lingering ghost.
+fn is_active_presence(p: &serde_json::Value) -> bool {
+    p.get("status").and_then(|v| v.as_str()) != Some("left")
+}
+
 fn add_envelope(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
         // Per consciousness-core/docs/nats-contract.yaml:
@@ -328,10 +340,10 @@ fn parse_nats_url(url: &str) -> Result<(String, u16, Option<(String, String)>), 
         2 => {
             let port = parts[1]
                 .parse::<u16>()
-                .map_err(|e| NatsError::Connect(format!("invalid port: {}", e)))?;
+                .map_err(|e| NatsError::Connect(format!("invalid port: {e}")))?;
             Ok((parts[0].to_string(), port, creds))
         }
-        _ => Err(NatsError::Connect(format!("invalid NATS URL: {}", url))),
+        _ => Err(NatsError::Connect(format!("invalid NATS URL: {url}"))),
     }
 }
 
@@ -495,10 +507,7 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
     };
     if let Ok(n) = read_result {
         if n as u64 >= MAX_CONTROL_LINE && !line.ends_with('\n') {
-            return Err(NatsError::Protocol(format!(
-                "control line exceeds {} bytes without newline — protocol desync",
-                MAX_CONTROL_LINE
-            )));
+            return Err(NatsError::Protocol(format!("control line exceeds {MAX_CONTROL_LINE} bytes without newline — protocol desync")));
         }
     }
     match read_result {
@@ -533,23 +542,17 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
             3 => (parts[0], parts[1], None, parts[2]),
             4 => (parts[0], parts[1], Some(parts[2]), parts[3]),
             n => {
-                return Err(NatsError::Protocol(format!(
-                    "malformed MSG header ({} fields): {}",
-                    n, trimmed
-                )))
+                return Err(NatsError::Protocol(format!("malformed MSG header ({n} fields): {trimmed}")))
             }
         };
         let nbytes: usize = nbytes_str.parse().map_err(|_| {
-            NatsError::Protocol(format!("invalid MSG byte count: {}", trimmed))
+            NatsError::Protocol(format!("invalid MSG byte count: {trimmed}"))
         })?;
         if nbytes > MAX_MSG_PAYLOAD {
             // Wire-controlled size: allocating it unchecked lets one bogus
             // header abort the process. Nothing legitimate approaches this
             // (server max_payload defaults to 1 MiB).
-            return Err(NatsError::Protocol(format!(
-                "MSG payload {} exceeds {} byte cap — refusing allocation",
-                nbytes, MAX_MSG_PAYLOAD
-            )));
+            return Err(NatsError::Protocol(format!("MSG payload {nbytes} exceeds {MAX_MSG_PAYLOAD} byte cap — refusing allocation")));
         }
         // Resumable payload read: the byte count is known, so a mid-payload
         // read timeout (a lost segment straddling a short socket timeout) is
@@ -564,8 +567,7 @@ fn read_frame(reader: &mut BufReader<TcpStream>) -> Result<ReadOutcome, NatsErro
             Err(ResumableReadError::Eof) => return Ok(ReadOutcome::Closed),
             Err(ResumableReadError::Timeout) => {
                 return Err(NatsError::Protocol(format!(
-                    "MSG payload stalled past {:?} — connection dead",
-                    MSG_FRAME_DEADLINE
+                    "MSG payload stalled past {MSG_FRAME_DEADLINE:?} — connection dead"
                 )))
             }
             Err(ResumableReadError::Io(e)) => return Err(NatsError::Io(e)),
@@ -689,17 +691,45 @@ impl Conn {
 /// `connect()` and `reconnect()` so both send the same authenticated
 /// CONNECT payload (NATS_USER/NATS_PASSWORD env, falling back to URL
 /// credentials). ADR-0026 #73.
-fn handshake(url: &str) -> Result<Conn, NatsError> {
+/// Pick the identity to present in CONNECT: explicit > env > URL.
+///
+/// Split out of `handshake` because it is the whole of the identity decision
+/// and `handshake` itself needs a live socket to exercise.
+fn resolve_creds(
+    explicit: Option<&(String, String)>,
+    env_user: String,
+    env_pass: String,
+    url_creds: Option<(String, String)>,
+) -> Option<(String, String)> {
+    if let Some((u, p)) = explicit {
+        return Some((u.clone(), p.clone()));
+    }
+    if !env_user.is_empty() && !env_pass.is_empty() {
+        return Some((env_user, env_pass));
+    }
+    url_creds
+}
+
+/// Open an authenticated connection.
+///
+/// `explicit` is for callers that carry their OWN credential namespace and
+/// must not inherit the ambient swarm identity — the hive bridge authenticates
+/// as `HIVE_NATS_USER`, and on a box where the generic `NATS_USER` is also
+/// exported (every kannaka unit that sources `.kannaka-nats.env`) the env
+/// branch below would silently connect it as the wrong principal. Explicit
+/// creds therefore outrank env, which outranks `user:pass@` in the URL.
+/// `None` is exactly the previous behaviour.
+fn handshake(url: &str, explicit: Option<&(String, String)>) -> Result<Conn, NatsError> {
     let (host, port, url_creds) = parse_nats_url(url)?;
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     use std::net::ToSocketAddrs;
     let socket_addr = addr
         .to_socket_addrs()
-        .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {}: {}", addr, e)))?
+        .map_err(|e| NatsError::Connect(format!("DNS resolution failed for {addr}: {e}")))?
         .next()
-        .ok_or_else(|| NatsError::Connect(format!("no addresses found for {}", addr)))?;
+        .ok_or_else(|| NatsError::Connect(format!("no addresses found for {addr}")))?;
     let stream = TcpStream::connect_timeout(&socket_addr, DEFAULT_IO_TIMEOUT)
-        .map_err(|e| NatsError::Connect(format!("failed to connect to {}: {}", addr, e)))?;
+        .map_err(|e| NatsError::Connect(format!("failed to connect to {addr}: {e}")))?;
 
     stream.set_read_timeout(Some(DEFAULT_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(DEFAULT_IO_TIMEOUT))?;
@@ -739,11 +769,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
     // connections get the server's anonymous permissions (read-only).
     let env_user = std::env::var("NATS_USER").unwrap_or_default();
     let env_pass = std::env::var("NATS_PASSWORD").unwrap_or_default();
-    let creds = if !env_user.is_empty() && !env_pass.is_empty() {
-        Some((env_user, env_pass))
-    } else {
-        url_creds
-    };
+    let creds = resolve_creds(explicit, env_user, env_pass, url_creds);
     let connect_payload = match &creds {
         Some((user, pass)) => {
             // Escape JSON safely. Both fields are short tokens — quotation
@@ -774,10 +800,7 @@ fn handshake(url: &str) -> Result<Conn, NatsError> {
                 writer.flush()?;
             }
             ReadOutcome::Frame(Frame::ServerErr(m)) => {
-                return Err(NatsError::Connect(format!(
-                    "server rejected connect: {}",
-                    m
-                )));
+                return Err(NatsError::Connect(format!("server rejected connect: {m}")));
             }
             ReadOutcome::Frame(_) => continue,
             ReadOutcome::TimedOut => {
@@ -835,6 +858,11 @@ pub struct SwarmTransport {
     /// redials so a daemon publishing frequently against a downed server
     /// pays one connect timeout per REVIVE_INTERVAL, not per publish.
     last_revive: Arc<Mutex<Option<Instant>>>,
+    /// Credentials supplied by the caller rather than read from the ambient
+    /// environment. Held so `reconnect()` and `try_revive_locked()` re-present
+    /// the SAME identity — a redial that silently fell back to env/URL creds
+    /// would come back as a different principal with different ACLs.
+    explicit_creds: Option<(String, String)>,
 }
 
 /// Minimum spacing between in-place redial attempts from `try_revive_locked`.
@@ -965,16 +993,16 @@ impl<'a> EventPayload<'a> {
     pub fn subject(&self) -> String {
         match self {
             EventPayload::MemoryRemember { agent_id, .. } => {
-                format!("KANNAKA.events.memory.{}.remember", agent_id)
+                format!("KANNAKA.events.memory.{agent_id}.remember")
             }
             EventPayload::MemoryForget { agent_id, .. } => {
-                format!("KANNAKA.events.memory.{}.forget", agent_id)
+                format!("KANNAKA.events.memory.{agent_id}.forget")
             }
             EventPayload::SubstrateAbsorb { .. } => {
                 "KANNAKA.events.substrate.absorb".to_string()
             }
             EventPayload::SnapshotFull { agent_id, .. } => {
-                format!("KANNAKA.snapshots.{}.full", agent_id)
+                format!("KANNAKA.snapshots.{agent_id}.full")
             }
         }
     }
@@ -1035,10 +1063,20 @@ impl<'a> EventPayload<'a> {
 impl SwarmTransport {
     /// Connect to a NATS server at the given URL.
     pub fn connect(url: &str) -> Result<Self, NatsError> {
-        let conn = handshake(url)?;
+        Self::connect_with_creds(url, None)
+    }
+
+    /// Connect presenting caller-supplied credentials instead of the ambient
+    /// `NATS_USER`/`NATS_PASSWORD`. See `handshake` for why this outranks env.
+    pub fn connect_with_creds(
+        url: &str,
+        explicit_creds: Option<(String, String)>,
+    ) -> Result<Self, NatsError> {
+        let conn = handshake(url, explicit_creds.as_ref())?;
         let mut transport = Self {
             conn: Arc::new(Mutex::new(conn)),
             url: url.to_string(),
+            explicit_creds,
             next_sid: AtomicU64::new(1),
             jetstream_ok: false,
             jetstream_writable: false,
@@ -1104,7 +1142,7 @@ impl SwarmTransport {
     fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Conn>, NatsError> {
         self.conn
             .lock()
-            .map_err(|e| NatsError::Protocol(format!("connection lock poisoned: {}", e)))
+            .map_err(|e| NatsError::Protocol(format!("connection lock poisoned: {e}")))
     }
 
     // -----------------------------------------------------------------------
@@ -1116,7 +1154,7 @@ impl SwarmTransport {
     /// handshake as `connect()` (NATS_USER/NATS_PASSWORD are NOT dropped
     /// on reconnect).
     pub fn reconnect(&mut self) -> Result<(), NatsError> {
-        let new_conn = handshake(&self.url)?;
+        let new_conn = handshake(&self.url, self.explicit_creds.as_ref())?;
 
         // Swap in the new connection. A poisoned lock just means a previous
         // holder panicked — the old Conn is being replaced wholesale anyway.
@@ -1273,8 +1311,8 @@ impl SwarmTransport {
         let inbox = new_inbox("js");
 
         let mut frame = Vec::with_capacity(request.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", api_subject, inbox, request.len());
         frame.extend_from_slice(request);
         frame.extend_from_slice(b"\r\n");
@@ -1296,7 +1334,7 @@ impl SwarmTransport {
                     break serde_json::from_slice::<serde_json::Value>(&payload)
                         .map(Some)
                         .map_err(|e| {
-                            NatsError::Protocol(format!("bad JetStream API reply: {}", e))
+                            NatsError::Protocol(format!("bad JetStream API reply: {e}"))
                         });
                 }
                 // A frame for some other subscription on this connection —
@@ -1330,7 +1368,7 @@ impl SwarmTransport {
         // If no reply was delivered, the auto-unsub never fired — remove the
         // subscription explicitly so it can't leak server-side.
         if !matches!(result, Ok(Some(_))) {
-            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+            let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -1352,7 +1390,7 @@ impl SwarmTransport {
         max_messages: usize,
     ) -> Result<Vec<(String, String, Vec<u8>)>, NatsError> {
         let mut conn = self.lock_conn()?;
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let mut out: Vec<(String, String, Vec<u8>)> = Vec::new();
         let mut next_seq: u64 = 1;
 
@@ -1450,7 +1488,7 @@ impl SwarmTransport {
     /// any JSON reply to the probe, including a "no message found" error,
     /// proves readability; a permission denial produces no reply (timeout).
     fn stream_readable(&self, stream_name: &str) -> bool {
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let req = serde_json::json!({ "seq": 1, "next_by_subj": ">" }).to_string();
         let Ok(mut conn) = self.lock_conn() else {
             return false;
@@ -1470,14 +1508,11 @@ impl SwarmTransport {
         let payload = config.to_string();
         let mut conn = self.lock_conn()?;
 
-        let create_subject = format!("$JS.API.STREAM.CREATE.{}", stream_name);
+        let create_subject = format!("$JS.API.STREAM.CREATE.{stream_name}");
         let resp = self
             .js_api_call_locked(&mut conn, &create_subject, payload.as_bytes(), JS_API_TIMEOUT)?
             .ok_or_else(|| {
-                NatsError::Protocol(format!(
-                    "no JetStream reply for stream create: {}",
-                    stream_name
-                ))
+                NatsError::Protocol(format!("no JetStream reply for stream create: {stream_name}"))
             })?;
 
         if let Some(err) = resp.get("error") {
@@ -1487,7 +1522,7 @@ impl SwarmTransport {
                 // Best-effort: an UPDATE rejection (e.g. immutable field)
                 // still leaves a usable stream, so the reply is drained
                 // and ignored.
-                let update_subject = format!("$JS.API.STREAM.UPDATE.{}", stream_name);
+                let update_subject = format!("$JS.API.STREAM.UPDATE.{stream_name}");
                 let _ = self.js_api_call_locked(
                     &mut conn,
                     &update_subject,
@@ -1496,10 +1531,7 @@ impl SwarmTransport {
                 );
                 return Ok(());
             }
-            return Err(NatsError::Protocol(format!(
-                "JetStream stream create error: {}",
-                err
-            )));
+            return Err(NatsError::Protocol(format!("JetStream stream create error: {err}")));
         }
         Ok(())
     }
@@ -1571,7 +1603,7 @@ impl SwarmTransport {
             }
             *last = Some(Instant::now());
         }
-        match handshake(&self.url) {
+        match handshake(&self.url, self.explicit_creds.as_ref()) {
             Ok(fresh) => {
                 *conn = fresh;
                 *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
@@ -1628,7 +1660,7 @@ impl SwarmTransport {
         cluster_id: u32,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.exemplar.{}.{}", agent_id, cluster_id);
+        let subject = format!("KANNAKA.exemplar.{agent_id}.{cluster_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1644,7 +1676,7 @@ impl SwarmTransport {
                 "subjects": ["KANNAKA.exemplar.>"],
                 "retention": "limits",
                 "max_msgs_per_subject": 1,
-                "max_age": 604800_000_000_000i64, // 7 days in nanoseconds
+                "max_age": 604_800_000_000_000_i64, // 7 days in nanoseconds
                 "storage": "file",
                 "discard": "old",
                 "num_replicas": 1
@@ -1659,7 +1691,7 @@ impl SwarmTransport {
         from_agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, NatsError> {
         let subject_filter = match from_agent {
-            Some(a) => format!("KANNAKA.exemplar.{}.>", a),
+            Some(a) => format!("KANNAKA.exemplar.{a}.>"),
             None => "KANNAKA.exemplar.>".to_string(),
         };
         self.get_stream_messages("KANNAKA_EXEMPLARS", &subject_filter, 500)
@@ -1674,7 +1706,7 @@ impl SwarmTransport {
         agent_id: &str,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.cores.{}", agent_id);
+        let subject = format!("KANNAKA.cores.{agent_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
@@ -1689,7 +1721,7 @@ impl SwarmTransport {
                 "subjects": ["KANNAKA.cores.>"],
                 "retention": "limits",
                 "max_msgs_per_subject": 1,
-                "max_age": 604800_000_000_000i64, // 7 days
+                "max_age": 604_800_000_000_000_i64, // 7 days
                 "max_msg_size": 1_048_576i64, // 1 MiB — a core snapshot is ≤8 cores (~KB); bound abuse
                 "storage": "file",
                 "discard": "old",
@@ -1705,7 +1737,7 @@ impl SwarmTransport {
         from_agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, NatsError> {
         let subject_filter = match from_agent {
-            Some(a) => format!("KANNAKA.cores.{}", a),
+            Some(a) => format!("KANNAKA.cores.{a}"),
             None => "KANNAKA.cores.>".to_string(),
         };
         self.get_stream_messages("KANNAKA_CORES", &subject_filter, 500)
@@ -1735,10 +1767,48 @@ impl SwarmTransport {
         agent_id: &str,
         payload: &serde_json::Value,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.presence.{}", agent_id);
+        let subject = format!("KANNAKA.presence.{agent_id}");
         let bytes = serde_json::to_vec(payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &bytes)
+    }
+
+    /// Retract this agent's presence record (#590).
+    ///
+    /// The presence stream is `max_msgs_per_subject: 1`, so publishing to the
+    /// agent's own subject REPLACES its live record — that is what makes a
+    /// tombstone the right retraction primitive here. There is no per-subject
+    /// delete, and without this the record simply ages out at the stream's
+    /// 24h `max_age`, which is why a departed agent lingered as a ghost peer
+    /// for a full day.
+    ///
+    /// Readers drop `status == "left"` in [`Self::get_presence`], so the
+    /// tombstone is invisible to every consumer rather than each one needing
+    /// to know about it.
+    pub fn publish_presence_left(&self, agent_id: &str) -> Result<(), NatsError> {
+        let mut payload = serde_json::json!({
+            "agent_id": agent_id,
+            "status": "left",
+            "last_seen": chrono::Utc::now().to_rfc3339(),
+        });
+        add_envelope(&mut payload);
+        self.publish_presence(agent_id, &payload)
+    }
+
+    /// Register this agent in the `QUEEN_AGENTS` KV bucket (#582).
+    ///
+    /// [`Self::discover_peers`] reads this bucket, but until now nothing ever
+    /// wrote to it — the constant was read-only in practice, so trust-weighted
+    /// QueenSync had no registrations to weight and sat at default trust
+    /// forever.
+    pub fn register_agent(
+        &self,
+        agent_id: &str,
+        registration: &serde_json::Value,
+    ) -> Result<(), NatsError> {
+        let value = serde_json::to_string(registration)
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.kv_put(KV_BUCKET_AGENTS, agent_id, &value)
     }
 
     /// Ensure the KANNAKA_PRESENCE stream exists. ADR-0026 Phase 5.
@@ -1804,8 +1874,15 @@ impl SwarmTransport {
     }
 
     /// Read all current presence records.
+    ///
+    /// Retraction tombstones (`status == "left"`, written by
+    /// [`Self::publish_presence_left`]) are filtered out HERE rather than in
+    /// each consumer (#590). There are at least two independent readers
+    /// (`swarm peers`, `brief --peers`) and filtering at the shared reader
+    /// means a new one cannot forget and resurrect ghosts.
     pub fn get_presence(&self) -> Result<Vec<serde_json::Value>, NatsError> {
-        self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)
+        let all = self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)?;
+        Ok(all.into_iter().filter(is_active_presence).collect())
     }
 
     /// Publish a wave-signature-only absorb event to
@@ -1824,7 +1901,7 @@ impl SwarmTransport {
         phase: f32,
         frequency: f32,
     ) -> Result<(), NatsError> {
-        let subject = format!("KANNAKA.substrate.absorb.{}", agent_id);
+        let subject = format!("KANNAKA.substrate.absorb.{agent_id}");
         let mut payload = serde_json::json!({
             "agent_id": agent_id,
             "class_index": class_index,
@@ -1951,7 +2028,7 @@ impl SwarmTransport {
     /// or "broadcast" for all agents. JetStream retains for 7 days.
     pub fn publish_shared_wavefront(&self, wavefront: &SharedWavefront) -> Result<(), NatsError> {
         let target = wavefront.target.as_deref().unwrap_or("broadcast");
-        let subject = format!("queen.memory.shared.{}", target);
+        let subject = format!("queen.memory.shared.{target}");
         let payload = serde_json::to_vec(wavefront)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.publish_raw(&subject, &payload)
@@ -1972,7 +2049,7 @@ impl SwarmTransport {
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "details": details,
         });
-        let event_name = format!("dream.{}", event_type);
+        let event_name = format!("dream.{event_type}");
         self.announce_event(&event_name, &payload)
     }
 
@@ -2036,7 +2113,7 @@ impl SwarmTransport {
         let sid = self.alloc_sid();
         let sid_str = sid.to_string();
 
-        conn.write_frames(format!("SUB QUEEN.phase.* {}\r\nPING\r\n", sid).as_bytes())?;
+        conn.write_frames(format!("SUB QUEEN.phase.* {sid}\r\nPING\r\n").as_bytes())?;
 
         let prev = conn.read_timeout();
         conn.set_read_timeout(Some(Duration::from_millis(1500)))?;
@@ -2075,7 +2152,7 @@ impl SwarmTransport {
             }
         }
 
-        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+        let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         let _ = conn.set_read_timeout(prev);
 
         if let Some(e) = fatal {
@@ -2118,7 +2195,7 @@ impl SwarmTransport {
         add_envelope(&mut flat);
         let bytes = serde_json::to_vec(&flat)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let subject = format!("queen.event.{}", event_type);
+        let subject = format!("queen.event.{event_type}");
         self.publish_raw(&subject, &bytes)
     }
 
@@ -2180,8 +2257,8 @@ impl SwarmTransport {
     /// `$KV.<name>.>`, max 1 message per subject (last-value semantics),
     /// and an optional TTL in seconds.
     pub fn create_kv_bucket(&self, name: &str, ttl_seconds: u64) -> Result<(), NatsError> {
-        let stream_name = format!("KV_{}", name);
-        let subjects = format!("$KV.{}.>", name);
+        let stream_name = format!("KV_{name}");
+        let subjects = format!("$KV.{name}.>");
         let config = if ttl_seconds > 0 {
             serde_json::json!({
                 "name": stream_name,
@@ -2211,7 +2288,7 @@ impl SwarmTransport {
 
     /// Put a value into a NATS KV bucket.
     pub fn kv_put(&self, bucket: &str, key: &str, value: &str) -> Result<(), NatsError> {
-        let subject = format!("$KV.{}.{}", bucket, key);
+        let subject = format!("$KV.{bucket}.{key}");
         self.publish_raw(&subject, value.as_bytes())
     }
 
@@ -2220,9 +2297,9 @@ impl SwarmTransport {
     /// Returns the latest value for the given key, or `NatsError::KvNotFound`
     /// if the key does not exist (or the server didn't reply in time).
     pub fn kv_get(&self, bucket: &str, key: &str) -> Result<String, NatsError> {
-        let stream_name = format!("KV_{}", bucket);
-        let target_subject = format!("$KV.{}.{}", bucket, key);
-        let api_subject = format!("$JS.API.STREAM.MSG.GET.{}", stream_name);
+        let stream_name = format!("KV_{bucket}");
+        let target_subject = format!("$KV.{bucket}.{key}");
+        let api_subject = format!("$JS.API.STREAM.MSG.GET.{stream_name}");
         let req = serde_json::json!({ "last_by_subj": target_subject }).to_string();
 
         let resp = {
@@ -2237,14 +2314,14 @@ impl SwarmTransport {
             .and_then(|d| d.as_str())
             .and_then(|b64| base64_decode(b64).ok())
             .map(|decoded| String::from_utf8_lossy(&decoded).to_string())
-            .ok_or_else(|| NatsError::KvNotFound(format!("{}/{}", bucket, key)))
+            .ok_or_else(|| NatsError::KvNotFound(format!("{bucket}/{key}")))
     }
 
     /// List all keys in a NATS KV bucket.
     pub fn kv_keys(&self, bucket: &str) -> Result<Vec<String>, NatsError> {
-        let stream_name = format!("KV_{}", bucket);
-        let prefix = format!("$KV.{}.", bucket);
-        let filter = format!("$KV.{}.>", bucket);
+        let stream_name = format!("KV_{bucket}");
+        let prefix = format!("$KV.{bucket}.");
+        let filter = format!("$KV.{bucket}.>");
         let msgs = self.stream_walk(&stream_name, &filter, STREAM_WALK_LIMIT)?;
         Ok(msgs
             .into_iter()
@@ -2289,7 +2366,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let first_sid = self.alloc_sid();
         let mut frame = Vec::new();
-        let _ = write!(frame, "SUB QUEEN.phase.* {}\r\n", first_sid);
+        let _ = write!(frame, "SUB QUEEN.phase.* {first_sid}\r\n");
         let _ = write!(frame, "SUB QUEEN.announce {}\r\n", self.alloc_sid());
         if include_memories {
             let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
@@ -2405,11 +2482,11 @@ impl SwarmTransport {
         // SUB inbox first so we don't race the reply; UNSUB <sid> 1 lets the
         // server clean up automatically after the first delivery.
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
-        let _ = write!(frame, "UNSUB {} 1\r\n", sid);
+        let _ = write!(frame, "UNSUB {sid} 1\r\n");
         conn.write_frames(&frame)?;
 
         let prev = conn.read_timeout();
@@ -2458,7 +2535,7 @@ impl SwarmTransport {
         if result.is_err() {
             // No reply was delivered, so the auto-unsub never fired —
             // remove the subscription explicitly.
-            let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+            let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         }
         let _ = conn.set_read_timeout(prev);
         if fatal {
@@ -2483,7 +2560,7 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
 
         let mut frame = Vec::with_capacity(payload.len() + 128);
-        let _ = write!(frame, "SUB {} {}\r\n", inbox, sid);
+        let _ = write!(frame, "SUB {inbox} {sid}\r\n");
         let _ = write!(frame, "PUB {} {} {}\r\n", subject, inbox, payload.len());
         frame.extend_from_slice(payload);
         frame.extend_from_slice(b"\r\n");
@@ -2530,7 +2607,7 @@ impl SwarmTransport {
         }
 
         // UNSUB so the server stops delivering on this inbox.
-        let _ = conn.write_frames(format!("UNSUB {}\r\n", sid).as_bytes());
+        let _ = conn.write_frames(format!("UNSUB {sid}\r\n").as_bytes());
         let _ = conn.set_read_timeout(prev);
         if fatal {
             drop(conn);
@@ -2567,8 +2644,8 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let sid = self.alloc_sid();
         match queue_group {
-            Some(g) => conn.write_frames(format!("SUB {} {} {}\r\n", subject, g, sid).as_bytes())?,
-            None => conn.write_frames(format!("SUB {} {}\r\n", subject, sid).as_bytes())?,
+            Some(g) => conn.write_frames(format!("SUB {subject} {g} {sid}\r\n").as_bytes())?,
+            None => conn.write_frames(format!("SUB {subject} {sid}\r\n").as_bytes())?,
         }
         let stream_clone = conn.writer.try_clone().map_err(NatsError::Io)?;
         // NOTE: the read timeout is a property of the underlying socket,
@@ -2827,6 +2904,52 @@ impl NatsSubscription {
 mod tests {
     use super::*;
 
+    /// #590: presence retraction must hide the departed agent WITHOUT hiding
+    /// anyone else — in particular every record written before this change,
+    /// which carries no `status` field at all.
+    #[test]
+    fn presence_filter_drops_only_explicit_left_records() {
+        let legacy = serde_json::json!({ "agent_id": "old-node" });
+        let active = serde_json::json!({ "agent_id": "live-node", "status": "active" });
+        let left = serde_json::json!({ "agent_id": "gone-node", "status": "left" });
+        let odd = serde_json::json!({ "agent_id": "weird-node", "status": 7 });
+
+        // The whole existing swarm predates the `status` field. If this ever
+        // flips, shipping the filter blanks `swarm peers` for everyone.
+        assert!(
+            is_active_presence(&legacy),
+            "a pre-#590 record with no status field must read as LIVE"
+        );
+        assert!(is_active_presence(&active));
+        assert!(
+            !is_active_presence(&left),
+            "an explicit tombstone must be filtered out"
+        );
+        assert!(
+            is_active_presence(&odd),
+            "a non-string status is not a retraction — fail open, never hide a live peer"
+        );
+    }
+
+    /// The tombstone this writes must be the thing the filter catches. Pins the
+    /// two halves together so a later rename of the sentinel can't silently
+    /// resurrect ghosts.
+    #[test]
+    fn presence_left_payload_is_filtered_by_the_reader() {
+        let mut payload = serde_json::json!({
+            "agent_id": "gone-node",
+            "status": "left",
+            "last_seen": "2026-07-27T00:00:00Z",
+        });
+        add_envelope(&mut payload);
+        assert!(
+            !is_active_presence(&payload),
+            "publish_presence_left's payload shape must be filtered by get_presence"
+        );
+        // Envelope still applied, so the tombstone is contract-valid on the wire.
+        assert_eq!(payload.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+    }
+
     // hunt: the handshake INFO read (and any control line) must be BOUNDED — a
     // hostile/MITM server streaming an unbounded line would otherwise OOM us.
     #[test]
@@ -2846,6 +2969,142 @@ mod tests {
         let mut line = String::new();
         let n = read_control_line(&mut ok, &mut line).unwrap();
         assert!(n > 0 && line.starts_with("INFO "), "a normal INFO line reads fine");
+    }
+
+    // ── credential precedence (#643) ────────────────────────────
+    //
+    // The hive bridge authenticates as HIVE_NATS_USER, its own principal. It
+    // now reaches NATS through SwarmTransport instead of a bespoke client, and
+    // the whole point of `connect_with_creds` is that adopting the shared
+    // transport must NOT quietly re-identify it: on a box where the generic
+    // NATS_USER is also exported (any host running other kannaka units), env
+    // creds would otherwise win and the bridge would connect with the wrong
+    // ACLs — publishing under the swarm identity, or being denied outright.
+
+    fn creds(u: &str, p: &str) -> (String, String) {
+        (u.to_string(), p.to_string())
+    }
+
+    #[test]
+    fn explicit_creds_outrank_env() {
+        let got = resolve_creds(
+            Some(&creds("hive", "hive-secret")),
+            "swarm".to_string(),
+            "swarm-secret".to_string(),
+            Some(creds("urluser", "urlpass")),
+        );
+        assert_eq!(
+            got,
+            Some(creds("hive", "hive-secret")),
+            "a caller that passed its own identity must keep it even when NATS_USER is set"
+        );
+    }
+
+    #[test]
+    fn env_outranks_url_when_no_explicit_creds() {
+        // Unchanged pre-existing behaviour — the refactor must not disturb it.
+        let got = resolve_creds(
+            None,
+            "swarm".to_string(),
+            "swarm-secret".to_string(),
+            Some(creds("urluser", "urlpass")),
+        );
+        assert_eq!(got, Some(creds("swarm", "swarm-secret")));
+    }
+
+    #[test]
+    fn url_creds_used_when_env_is_absent_or_partial() {
+        let from_url = Some(creds("urluser", "urlpass"));
+        assert_eq!(
+            resolve_creds(None, String::new(), String::new(), from_url.clone()),
+            from_url,
+        );
+        // A half-set env pair is not a usable identity and must not shadow the
+        // URL — this is why the check is on BOTH fields.
+        assert_eq!(
+            resolve_creds(None, "swarm".to_string(), String::new(), from_url.clone()),
+            from_url,
+        );
+    }
+
+    #[test]
+    fn anonymous_when_nothing_is_supplied() {
+        assert_eq!(resolve_creds(None, String::new(), String::new(), None), None);
+    }
+
+    // ── the bridge must not re-grow a bespoke NATS client (#643) ──
+    //
+    // The hand-rolled copy drifted from this module in four ways at once: no
+    // connect timeout (the liveness bug — a per-message connect to an
+    // unreachable host stalled the relay loop for the OS SYN timeout on EVERY
+    // event), `"`-only credential escaping, a fixed 2048-byte single-read INFO,
+    // and no tls_required detection. Deleting it is only half a fix if the next
+    // "just publish one message" patch reintroduces it, so this asserts the
+    // bridge speaks NATS exclusively through SwarmTransport.
+    /// Both relay bridges, not just the hive one. The DM bridge carried the
+    /// SAME hand-rolled client — the hive bridge's comment literally said
+    /// "matching the DM bridge's approach" — so a guard on one of them leaves
+    /// the copy that was actually copied FROM unprotected. It was in fact worse:
+    /// it never sent PING or read PONG, so an `-ERR Authorization Violation`
+    /// was never seen and every DM "succeeded" while the server dropped it.
+    #[test]
+    fn dm_bridge_publishes_through_the_shared_transport() {
+        let src = include_str!("bin/kannaka_nostr_bridge.rs");
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && !l.trim_start().starts_with("///"))
+            .collect::<Vec<_>>()
+            .join("
+");
+
+        assert!(
+            code.contains("SwarmTransport::connect_with_creds"),
+            "the DM bridge should reach NATS via the shared, hardened transport"
+        );
+        assert!(
+            !code.contains("TcpStream::connect"),
+            "the DM bridge must not dial its own NATS socket again"
+        );
+        assert!(
+            !code.contains("CONNECT {"),
+            "the DM bridge must not hand-build CONNECT JSON (escaping lives in handshake)"
+        );
+        assert!(
+            !code.contains("PUB "),
+            "the DM bridge must not hand-frame PUB lines"
+        );
+    }
+
+    #[test]
+    fn hive_bridge_publishes_through_the_shared_transport() {
+        let src = include_str!("bin/kannaka_hive_bridge.rs");
+        // Comments in this file legitimately DESCRIBE the old client; strip
+        // them so the prose does not trip its own guard.
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            code.contains("SwarmTransport::connect_with_creds"),
+            "the bridge should reach NATS via the shared, hardened transport"
+        );
+        // Narrowly: no *dialling* its own socket. The bridge legitimately
+        // touches the websocket's `TcpStream` to bound reads, so a bare
+        // "TcpStream" ban would be noise rather than a guard.
+        assert!(
+            !code.contains("TcpStream::connect"),
+            "the bridge must not dial its own NATS socket again"
+        );
+        assert!(
+            !code.contains("CONNECT {"),
+            "the bridge must not hand-build CONNECT JSON (escaping lives in handshake)"
+        );
+        assert!(
+            !code.contains("PUB "),
+            "the bridge must not hand-frame PUB lines"
+        );
     }
 
     #[test]
@@ -2901,7 +3160,7 @@ mod tests {
         match SwarmTransport::connect("nats://127.0.0.1:19999") {
             Ok(_) => panic!("should not connect to nonexistent server"),
             Err(e) => {
-                let msg = format!("{}", e);
+                let msg = format!("{e}");
                 assert!(
                     msg.contains("connect") || msg.contains("Connect"),
                     "error should mention connect: {}",
@@ -2963,10 +3222,10 @@ mod tests {
     #[test]
     fn nats_error_display_variants() {
         let e = NatsError::Disconnected("lost connection".into());
-        assert!(format!("{}", e).contains("disconnected"));
+        assert!(format!("{e}").contains("disconnected"));
 
         let e = NatsError::KvNotFound("mybucket/mykey".into());
-        assert!(format!("{}", e).contains("KV key not found"));
+        assert!(format!("{e}").contains("KV key not found"));
     }
 
     #[test]
@@ -2992,7 +3251,7 @@ mod tests {
                     guard.pop_front();
                 }
                 guard.push_back(BufferedMessage {
-                    subject: format!("test.{}", i),
+                    subject: format!("test.{i}"),
                     payload: vec![],
                     attempts: 0,
                 });

@@ -1,0 +1,18 @@
+# Synthetic eval config — no credentials, no swarm, no LLM. See evals/specs/*/environment.md.
+[agent]
+id = "evalbot"
+display_name = "evalbot"
+kind = "agent"
+
+[swarm]
+enabled = false
+nats_url = ""
+role = "worker"
+
+[hrm]
+path = "__HRM_PATH__"
+wavefront_dim = 10000
+
+[updates]
+auto_check = false
+channel = "stable"

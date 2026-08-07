@@ -24,3 +24,8 @@ consciousness-core/
 
 # understand-anything knowledge-graph artifacts (local analysis cache)
 .understand-anything/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo

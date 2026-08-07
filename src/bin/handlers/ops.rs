@@ -15,7 +15,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
         process::exit(1);
     }
 
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+    let sub = args.get(1).map(String::as_str).unwrap_or("status");
 
     match sub {
         "run" => {
@@ -82,7 +82,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("show");
+    let sub = args.get(1).map(String::as_str).unwrap_or("show");
 
     match sub {
         "show" => {
@@ -104,9 +104,9 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                 display.ghostsignals.kax_token = "***".to_string();
             }
             match toml::to_string_pretty(&display) {
-                Ok(text) => println!("{}", text),
+                Ok(text) => println!("{text}"),
                 Err(e) => {
-                    eprintln!("Error serializing config: {}", e);
+                    eprintln!("Error serializing config: {e}");
                     process::exit(1);
                 }
             }
@@ -428,7 +428,7 @@ pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
             }
         }
     } else {
-        println!("{}", json_str);
+        println!("{json_str}");
     }
 }
 
@@ -492,6 +492,15 @@ pub(crate) fn import_memories_from_file(
             .unwrap_or_else(chrono::Utc::now);
         let hallucinated = val["hallucinated"].as_bool().unwrap_or(false);
 
+        // Applied AFTER insert, never through it. `HrmStore::insert` drops
+        // `modality` on purpose — see its #630 / ADR-0051 note: carrying it
+        // across the wire boundary is only safe once `absorb_gate` sanitizes
+        // those fields, or a peer gains ungated control of `tier`/`expires_at`.
+        // `import-json` reads a local file the operator chose, so it opts in
+        // here explicitly rather than loosening the shared insert path. (#553)
+        let want_modality: kannaka_memory::medium::types::Modality =
+            serde_json::from_value(val["modality"].clone()).unwrap_or_default();
+
         // Reconstruct vector from JSON array if present, otherwise re-encode
         let vector: Option<Vec<f32>> = val["vector"].as_array().map(|arr| {
             arr.iter()
@@ -504,7 +513,30 @@ pub(crate) fn import_memories_from_file(
             _ => {
                 // No vector in JSON — use absorb which encodes internally
                 match sys.engine.store.absorb(&content, amplitude, None) {
-                    Ok(_new_id) => {
+                    Ok(new_id) => {
+                        // This is the path a `--slim` export takes — no vector,
+                        // so it is re-encoded here. Modality has to be applied
+                        // after absorb or it is lost on exactly the exports the
+                        // observatory consumes, which is the modality-aware
+                        // reader this fix exists for. (#553)
+                        //
+                        // `set_modality` and not `get_mut(..).modality = ..`:
+                        // modality is owned by the wavefront METADATA (flat
+                        // medium + both chiral hemispheres), and the cached
+                        // HyperMemory is rebuilt from that metadata. Mutating
+                        // the cache alone reads as working and is discarded by
+                        // the next rebuild — the round-trip still came back
+                        // `Unknown`.
+                        if want_modality != kannaka_memory::medium::types::Modality::default() {
+                            if let Some(hrm) = sys
+                                .engine
+                                .store
+                                .as_any_mut()
+                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                            {
+                                hrm.set_modality(&new_id, want_modality);
+                            }
+                        }
                         imported += 1;
                         continue;
                     }
@@ -538,24 +570,51 @@ pub(crate) fn import_memories_from_file(
         mem.created_at = created_at;
         mem.layer_depth = val["layer_depth"].as_u64().unwrap_or(0) as u8;
         mem.hallucinated = hallucinated;
+        // Restore NCS modality when the export carried it. Absent or
+        // unrecognised ⇒ leave the `Modality::default()` (Unknown) that
+        // HyperMemory::new already set: older exports predate the field, and
+        // must keep importing rather than failing. (#553)
+        mem.modality = serde_json::from_value(val["modality"].clone()).unwrap_or_default();
         mem.parents = val["parents"]
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter_map(|v| v.as_str().map(str::to_string))
                     .collect()
             })
             .unwrap_or_default();
         mem.xi_signature = xi_sig;
 
         match sys.engine.store.insert(mem) {
-            Ok(_) => imported += 1,
+            Ok(new_id) => {
+                if want_modality != kannaka_memory::medium::types::Modality::default() {
+                    if let Some(hrm) = sys
+                                .engine
+                                .store
+                                .as_any_mut()
+                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                            {
+                                hrm.set_modality(&new_id, want_modality);
+                            }
+                }
+                imported += 1
+            }
             Err(e) => {
                 // Dimension mismatch — fall back to absorb (re-encodes the text)
-                let err_str = format!("{}", e);
+                let err_str = format!("{e}");
                 if err_str.contains("dimension mismatch") {
                     match sys.engine.store.absorb(&content_clone, amplitude, None) {
-                        Ok(_) => {
+                        Ok(new_id) => {
+                            if want_modality != kannaka_memory::medium::types::Modality::default() {
+                                if let Some(hrm) = sys
+                                .engine
+                                .store
+                                .as_any_mut()
+                                .downcast_mut::<kannaka_memory::hrm_store::HrmStore>()
+                            {
+                                hrm.set_modality(&new_id, want_modality);
+                            }
+                            }
                             imported += 1;
                         }
                         Err(e2) => {

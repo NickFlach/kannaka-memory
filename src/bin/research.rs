@@ -3086,7 +3086,7 @@ fn eval_online_retention(
                     .get(id)
                     .ok()
                     .flatten()
-                    .map_or(false, |m| m.amplitude > 0.3)
+                    .is_some_and(|m| m.amplitude > 0.3)
             })
             .count();
         let hit_rate = hits as f64 / event_ids.len() as f64;
@@ -3363,7 +3363,8 @@ fn run_l5_dream_chain(
                     None => continue,
                 };
                 let raw = (phase0 - gravity_query_phase).abs();
-                let dphi = raw.min(two_pi - raw); // 0..pi
+                let raw_norm = raw % two_pi; // normalize to [0, 2π) before circular distance
+                let dphi = raw_norm.min(two_pi - raw_norm); // 0..pi
                 // align: 1.0 at the attractor phase, 0.0 anti-phase, 0.5 a quarter turn.
                 let align = 1.0 - dphi / std::f32::consts::PI;
                 // neighbors (align>0.5) grow, phase-distant (align<0.5) shrink.
@@ -4600,6 +4601,433 @@ fn parse_usize_flag(args: &[String], name: &str) -> Option<usize> {
     parse_string_flag(args, name).and_then(|s| s.parse::<usize>().ok())
 }
 
+// ============================================================================
+// LEVEL 8 — TEMPORAL / CONFIRMATION-WEIGHTED RECALL
+// ============================================================================
+//
+// The question (raised by @aiappsapi on Mastodon, 2026-07-26): does recall
+// strength depend on how recently a memory was CONFIRMED, or only on how
+// strongly it RESONATES? "Those two come apart quickly once stored facts start
+// contradicting each other."
+//
+// Measured answer before this level existed: resonance only. Ranking is
+// `similarity * energy^e` and reads no timestamp; the ADR-0035 temporal-truth
+// bounds are written but only ever read as a post-recall filter in
+// `swarm brief`. So the two axes are collapsed into one.
+//
+// L8 is the falsification harness for un-collapsing them. It builds a corpus
+// that makes the two axes come apart on purpose — FACT FAMILIES whose versions
+// are near-identical text differing in one value token, so similarity cannot
+// separate them and only confirmation time can — and asks whether
+// `KANNAKA_RECALL_TEMPORAL_EXP` buys retrieval of the currently-true version
+// WITHOUT (a) harming uncontradicted memories or (b) making the superseded past
+// unreachable. (b) is the one that matters: recency weighting that "wins" by
+// forgetting is not a win, it is amnesia with a flag.
+//
+// Predictions, scored in [0,1] (1 = prediction holds, 0.5 = no evidence,
+// matching `belief_fitness`'s convention):
+//   P1  current-fact retrieval improves      (the claimed win)
+//   P2  uncontradicted facts do not degrade  (negative control)
+//   P3  superseded facts stay reachable      (anti-amnesia control)
+//   P4  instrument liveness + default byte-identity (anti-vacuous gate)
+//
+// P4 is a hard PASS/FAIL printed separately, not folded into fitness: a dead
+// instrument must fail loudly rather than score well. Fitness follows the
+// ladder convention — weighted `1 - score`, LOWER IS BETTER.
+//
+// Every arm is measured PAIRED against its own baseline on the SAME corpus,
+// and averaged over `L8_RUNS` independent corpus seeds (default 10 — 5 is not
+// enough to separate arms here).
+
+/// One corpus instance's measurements for a single arm.
+#[derive(Default, Clone, Copy)]
+struct L8Ranks {
+    /// Mean reciprocal rank of the currently-true version of each fact family.
+    current_mrr: f32,
+    /// Mean reciprocal rank of each uncontradicted (stable) fact.
+    stable_mrr: f32,
+    /// Fraction of superseded versions still present in the returned top-k.
+    superseded_recall: f32,
+    /// Sum of stable-fact ranks (for the paired non-degradation count).
+    stable_ranks: [usize; L8_MAX_STABLE],
+    n_stable: usize,
+}
+
+const L8_MAX_STABLE: usize = 32;
+
+/// Deterministic LCG so each run's corpus is a different but reproducible
+/// instance (no `rand` dependency in this binary).
+fn l8_lcg(state: &mut u64) -> u64 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state >> 33
+}
+
+fn run_experiment_l8_session(_params: &Params) {
+    use chrono::{Duration, Utc};
+    use kannaka_memory::medium::chiral::ChiralMedium;
+
+    let envf = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let envu = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+
+    let runs = envu("L8_RUNS", 10).max(1);
+    let n_families = envu("L8_FAMILIES", 12).clamp(1, 16);
+    let n_versions = envu("L8_VERSIONS", 3).clamp(2, 6);
+    let n_stable = envu("L8_STABLE", 12).clamp(1, L8_MAX_STABLE);
+    let n_distract = envu("L8_DISTRACTORS", 40);
+    let top_k = envu("L8_TOP_K", 8).max(2);
+    let spacing_days = envf("L8_SPACING_DAYS", 180.0);
+    let fresh_days = envf("L8_FRESH_DAYS", 3.0);
+    let t_exp = envf("L8_TEMPORAL_EXP", 1.0).clamp(0.0, 1.0);
+    let half_life = envf("L8_HALFLIFE_DAYS", 180.0);
+    let e_exp = envf("L8_ENERGY_EXP", 1.0).clamp(0.0, 1.0);
+    let floor = envf("L8_FLOOR", 0.25).clamp(0.05, 1.0);
+
+    println!("=== L8 temporal-recall session (confirmation vs resonance) ===");
+    println!("l8_runs:              {}", runs);
+    println!("l8_families:          {}", n_families);
+    println!("l8_versions:          {}", n_versions);
+    println!("l8_stable:            {}", n_stable);
+    println!("l8_distractors:       {}", n_distract);
+    println!("l8_top_k:             {}", top_k);
+    println!("l8_temporal_exp:      {:.2}", t_exp);
+    println!("l8_halflife_days:     {:.1}", half_life);
+    println!("l8_energy_exp:        {:.2}", e_exp);
+    println!("l8_floor:             {:.2}", floor);
+    println!("l8_spacing_days:      {:.1}", spacing_days);
+
+    // Fact families: [subject_a, subject_b, attribute]. Disjoint vocabulary
+    // across families so families cannot contaminate each other's queries —
+    // the only competition we want is BETWEEN VERSIONS of the same fact.
+    const FAMILY: [[&str; 3]; 16] = [
+        ["harbor", "beacon", "channel"],
+        ["glacier", "station", "altitude"],
+        ["foundry", "kiln", "temperature"],
+        ["orchard", "grafting", "rootstock"],
+        ["telescope", "mirror", "coating"],
+        ["ferry", "terminal", "berth"],
+        ["aquifer", "wellhead", "depth"],
+        ["printworks", "press", "cadence"],
+        ["vineyard", "trellis", "spacing"],
+        ["observatory", "dome", "aperture"],
+        ["saltworks", "evaporator", "salinity"],
+        ["cablehouse", "winch", "tension"],
+        ["apiary", "hive", "frames"],
+        ["tannery", "vat", "liquor"],
+        ["windfarm", "turbine", "pitch"],
+        ["seedbank", "vault", "humidity"],
+    ];
+    const VALUES: [&str; 6] = [
+        "twelve", "nineteen", "twentyseven", "forty", "fiftythree", "sixtyone",
+    ];
+    // Uncontradicted facts — one version, never superseded. These are the
+    // control set: whatever temporal weighting does, it must not push these
+    // down. Vocabulary disjoint from FAMILY.
+    const STABLE: [[&str; 3]; 32] = [
+        ["basalt", "quarry", "hardness"], ["lantern", "wick", "trim"],
+        ["cooperage", "stave", "girth"], ["millrace", "sluice", "head"],
+        ["ropewalk", "hemp", "lay"], ["forge", "bellows", "blast"],
+        ["dovecote", "nest", "count"], ["saltmarsh", "creek", "tide"],
+        ["limekiln", "charge", "burn"], ["boatyard", "slip", "draft"],
+        ["smokehouse", "flue", "draw"], ["weaveshed", "loom", "reed"],
+        ["icehouse", "pit", "packing"], ["brewhouse", "mash", "strike"],
+        ["tollgate", "pike", "levy"], ["dryDock", "caisson", "seal"],
+        ["charcoal", "clamp", "yield"], ["fishweir", "trap", "mesh"],
+        ["signalbox", "lever", "throw"], ["packhouse", "crate", "tare"],
+        ["reedbed", "sluicegate", "flow"], ["stonebridge", "arch", "span"],
+        ["pumphouse", "beam", "stroke"], ["sailloft", "canvas", "bolt"],
+        ["copperworks", "crucible", "pour"], ["gristmill", "runner", "gap"],
+        ["oasthouse", "cowl", "turn"], ["chandlery", "tallow", "grade"],
+        ["ferrypier", "pontoon", "rise"], ["glassworks", "annealer", "ramp"],
+        ["turnery", "chisel", "bevel"], ["saltpan", "brine", "density"],
+    ];
+
+    let fact_text = |w: &[&str; 3], value: &str| -> String {
+        format!("the {} {} {} is {}", w[0], w[1], w[2], value)
+    };
+    let cue = |w: &[&str; 3]| -> String { format!("{} {} {}", w[0], w[1], w[2]) };
+
+    let pipeline = {
+        let encoder = Box::new(SimpleHashEncoder::new(384, 42));
+        let codebook = Codebook::new(384, kannaka_memory::WAVEFRONT_DIM, 42);
+        EncodingPipeline::new(encoder, codebook)
+    };
+
+    // Rank of `needle` in a recall result list, deduplicated by content (a
+    // memory can surface from both hemispheres; the caller-visible ordering is
+    // what we score, but a duplicate must not consume a rank slot twice).
+    let rank_of = |results: &[kannaka_memory::medium::types::ChiralResonance],
+                   needle: &str,
+                   miss: usize| -> usize {
+        let mut seen: Vec<&str> = Vec::with_capacity(results.len());
+        for r in results {
+            if seen.iter().any(|c| *c == r.content.as_str()) { continue; }
+            if r.content == needle { return seen.len(); }
+            seen.push(r.content.as_str());
+        }
+        miss
+    };
+
+    // ── One corpus instance, measured under one temporal exponent ──
+    let measure = |cm: &ChiralMedium,
+                   fam_idx: &[usize],
+                   stable_idx: &[usize],
+                   texp: f32| -> L8Ranks {
+        // Drive the REAL default path: recall_vector -> Hemisphere::resonate,
+        // which reads these env vars. This benchmarks the shipped code, not a
+        // parallel reimplementation of it.
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_EXP", format!("{texp}"));
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS", format!("{half_life}"));
+        std::env::set_var("KANNAKA_RECALL_TEMPORAL_FLOOR", format!("{floor}"));
+        std::env::set_var("KANNAKA_RECALL_ENERGY_EXP", format!("{e_exp}"));
+
+        let mut out = L8Ranks::default();
+        let mut current_rr = 0.0f32;
+        let mut superseded_hits = 0usize;
+        let mut superseded_total = 0usize;
+
+        for &f in fam_idx {
+            let w = &FAMILY[f];
+            let q = pipeline.encode_text(&cue(w)).expect("encode cue");
+            let res = cm.recall_vector(&q, top_k);
+            // Currently-true version = the last one stored.
+            let latest = fact_text(w, VALUES[(n_versions - 1) % VALUES.len()]);
+            let r = rank_of(&res, &latest, top_k);
+            if r < top_k { current_rr += 1.0 / (r as f32 + 1.0); }
+            // Superseded versions must remain REACHABLE (P3).
+            for v in 0..(n_versions - 1) {
+                superseded_total += 1;
+                let old = fact_text(w, VALUES[v % VALUES.len()]);
+                if rank_of(&res, &old, top_k) < top_k { superseded_hits += 1; }
+            }
+        }
+        out.current_mrr = current_rr / fam_idx.len().max(1) as f32;
+        out.superseded_recall = if superseded_total == 0 {
+            1.0
+        } else {
+            superseded_hits as f32 / superseded_total as f32
+        };
+
+        let mut stable_rr = 0.0f32;
+        for (slot, &s) in stable_idx.iter().enumerate() {
+            let w = &STABLE[s];
+            let q = pipeline.encode_text(&cue(w)).expect("encode cue");
+            let res = cm.recall_vector(&q, top_k);
+            let target = fact_text(w, VALUES[s % VALUES.len()]);
+            let r = rank_of(&res, &target, top_k);
+            if r < top_k { stable_rr += 1.0 / (r as f32 + 1.0); }
+            if slot < L8_MAX_STABLE { out.stable_ranks[slot] = r; }
+        }
+        out.n_stable = stable_idx.len().min(L8_MAX_STABLE);
+        out.stable_mrr = stable_rr / stable_idx.len().max(1) as f32;
+        out
+    };
+
+    let now = Utc::now();
+    let mut sum_off = L8Ranks::default();
+    let mut sum_on = L8Ranks::default();
+    let mut stable_no_harm = 0usize;
+    let mut stable_compared = 0usize;
+    let mut liveness_observed = false;
+    let mut identity_holds = true;
+
+    for run in 0..runs {
+        let mut rng = 0x5eed_0000_0000_0000u64 ^ (run as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+        // Rotate which families/stable facts this instance uses so the runs are
+        // genuinely different corpora, not the same corpus re-measured.
+        let fam_idx: Vec<usize> =
+            (0..n_families).map(|i| (i + run) % FAMILY.len()).collect();
+        let stable_idx: Vec<usize> =
+            (0..n_stable).map(|i| (i + run * 3) % STABLE.len()).collect();
+
+        let mut cm = ChiralMedium::new();
+
+        // ── Fact families: versions in chronological order. Version v expires
+        //    exactly when version v+1 was observed — that is what supersession
+        //    IS, and it is the only signal distinguishing them (the text is
+        //    near-identical by construction).
+        for &f in &fam_idx {
+            let w = &FAMILY[f];
+            for v in 0..n_versions {
+                let text = fact_text(w, VALUES[v % VALUES.len()]);
+                let age = (n_versions - 1 - v) as f32 * spacing_days + fresh_days;
+                let observed = now - Duration::seconds((age * 86_400.0) as i64);
+                let expires = if v + 1 < n_versions {
+                    let next_age = (n_versions - 2 - v) as f32 * spacing_days + fresh_days;
+                    Some(now - Duration::seconds((next_age * 86_400.0) as i64))
+                } else {
+                    None
+                };
+                let _ = cm.store(&text, 0.8, &pipeline);
+                for m in cm.right.metadata.iter_mut().chain(cm.left.metadata.iter_mut()) {
+                    if m.content == text {
+                        m.observed_at = Some(observed);
+                        m.expires_at = expires;
+                    }
+                }
+            }
+        }
+
+        // ── Uncontradicted facts: no temporal bounds, ages spread across the
+        //    same window so the recency term genuinely acts on them too. If
+        //    recency weighting is going to hurt anything, it hurts these.
+        for &s in &stable_idx {
+            let w = &STABLE[s];
+            let text = fact_text(w, VALUES[s % VALUES.len()]);
+            let age_days = (l8_lcg(&mut rng) % 600) as f32;
+            let observed = now - Duration::seconds((age_days * 86_400.0) as i64);
+            let _ = cm.store(&text, 0.8, &pipeline);
+            for m in cm.right.metadata.iter_mut().chain(cm.left.metadata.iter_mut()) {
+                if m.content == text {
+                    m.observed_at = Some(observed);
+                }
+            }
+        }
+
+        // ── Distractors: unrelated traffic so top-k is genuinely contested.
+        //    Their ages are spread over the SAME window as everything else.
+        //    Leaving them unstamped (the first cut of this fixture) silently
+        //    dated them all to `now`, handing every distractor the maximum
+        //    recency weight and making the past-reachability gate fail for a
+        //    reason that was an artifact of the fixture rather than a property
+        //    of the mechanism. Stamping them removes that systematic bias.
+        for d in 0..n_distract {
+            let a = FAMILY[(l8_lcg(&mut rng) as usize) % FAMILY.len()][0];
+            let b = STABLE[(l8_lcg(&mut rng) as usize) % STABLE.len()][1];
+            let text = format!("note {} concerning {} and {} logistics", d, a, b);
+            let age_days = (l8_lcg(&mut rng) % 600) as f32;
+            let observed = now - Duration::seconds((age_days * 86_400.0) as i64);
+            let _ = cm.store(&text, 0.4, &pipeline);
+            for m in cm.right.metadata.iter_mut().chain(cm.left.metadata.iter_mut()) {
+                if m.content == text {
+                    m.observed_at = Some(observed);
+                }
+            }
+        }
+
+        let off = measure(&cm, &fam_idx, &stable_idx, 0.0);
+        let on = measure(&cm, &fam_idx, &stable_idx, t_exp);
+
+        // P4a — default byte-identity: an UNSET flag must reproduce exp=0.0
+        // exactly. Checked on the first run only (it is a property of the code
+        // path, not of the corpus).
+        if run == 0 {
+            std::env::remove_var("KANNAKA_RECALL_TEMPORAL_EXP");
+            let w = &FAMILY[fam_idx[0]];
+            let q = pipeline.encode_text(&cue(w)).expect("encode cue");
+            let unset: Vec<(String, f32)> = cm
+                .recall_vector(&q, top_k)
+                .into_iter()
+                .map(|r| (r.content, r.resonance_strength))
+                .collect();
+            std::env::set_var("KANNAKA_RECALL_TEMPORAL_EXP", "0.0");
+            let zero: Vec<(String, f32)> = cm
+                .recall_vector(&q, top_k)
+                .into_iter()
+                .map(|r| (r.content, r.resonance_strength))
+                .collect();
+            if unset.len() != zero.len()
+                || unset.iter().zip(zero.iter()).any(|(a, b)| a.0 != b.0 || a.1.to_bits() != b.1.to_bits())
+            {
+                identity_holds = false;
+            }
+        }
+
+        // P4b — liveness: the mechanism must actually move SOMETHING.
+        if (on.current_mrr - off.current_mrr).abs() > 1e-9
+            || (on.stable_mrr - off.stable_mrr).abs() > 1e-9
+            || (on.superseded_recall - off.superseded_recall).abs() > 1e-9
+        {
+            liveness_observed = true;
+        }
+
+        // P2 — paired, per-fact non-degradation on the uncontradicted set.
+        for i in 0..off.n_stable.min(on.n_stable) {
+            stable_compared += 1;
+            if on.stable_ranks[i] <= off.stable_ranks[i] { stable_no_harm += 1; }
+        }
+
+        sum_off.current_mrr += off.current_mrr;
+        sum_off.stable_mrr += off.stable_mrr;
+        sum_off.superseded_recall += off.superseded_recall;
+        sum_on.current_mrr += on.current_mrr;
+        sum_on.stable_mrr += on.stable_mrr;
+        sum_on.superseded_recall += on.superseded_recall;
+    }
+
+    let n = runs as f32;
+    let off_current = sum_off.current_mrr / n;
+    let on_current = sum_on.current_mrr / n;
+    let off_stable = sum_off.stable_mrr / n;
+    let on_stable = sum_on.stable_mrr / n;
+    let off_sup = sum_off.superseded_recall / n;
+    let on_sup = sum_on.superseded_recall / n;
+
+    // ── Scores in [0,1]: 1 = prediction holds, 0.5 = no evidence ──
+    // P1: fraction of the AVAILABLE headroom captured. If the baseline already
+    // retrieves perfectly there is no headroom and therefore no evidence.
+    let headroom = 1.0 - off_current;
+    let p1 = if headroom <= 1e-6 {
+        0.5
+    } else {
+        ((on_current - off_current) / headroom).clamp(0.0, 1.0)
+    };
+    // P2: paired fraction of uncontradicted facts that did not lose rank.
+    let p2 = if stable_compared == 0 {
+        0.5
+    } else {
+        stable_no_harm as f32 / stable_compared as f32
+    };
+    // P3: superseded reachability retained, relative to baseline.
+    let p3 = if off_sup <= 1e-6 { 0.5 } else { (on_sup / off_sup).clamp(0.0, 1.0) };
+
+    println!("--- paired measurements (temporal OFF -> ON) ---");
+    println!("l8_current_mrr_off:   {:.4}", off_current);
+    println!("l8_current_mrr_on:    {:.4}", on_current);
+    println!("l8_current_delta:     {:+.4}", on_current - off_current);
+    println!("l8_stable_mrr_off:    {:.4}", off_stable);
+    println!("l8_stable_mrr_on:     {:.4}", on_stable);
+    println!("l8_stable_delta:      {:+.4}", on_stable - off_stable);
+    println!("l8_superseded_off:    {:.4}", off_sup);
+    println!("l8_superseded_on:     {:.4}", on_sup);
+    println!("l8_stable_no_harm:    {}/{}", stable_no_harm, stable_compared);
+    println!("--- prediction scores (1 = holds, 0.5 = no evidence) ---");
+    println!("l8_p1_current:        {:.4}", p1);
+    println!("l8_p2_no_harm:        {:.4}", p2);
+    println!("l8_p3_past_reachable: {:.4}", p3);
+
+    // P4 is a GATE, not a score. A mechanism that changes nothing must not be
+    // able to post a good fitness — that is exactly the vacuous-gate failure
+    // mode this ladder has been bitten by before.
+    let live = liveness_observed || t_exp == 0.0;
+    println!("l8_p4_liveness:       {}", if live { "PASS" } else { "FAIL" });
+    println!("l8_p4_default_identity: {}", if identity_holds { "PASS" } else { "FAIL" });
+
+    let fitness = 0.50 * (1.0 - p1) + 0.25 * (1.0 - p2) + 0.25 * (1.0 - p3);
+    println!("l8_fitness:           {:.6}", fitness);
+
+    let verdict = identity_holds && live && p1 > 0.5 && p2 >= 0.95 && p3 >= 0.99;
+    println!(
+        "l8_verdict:           {}",
+        if t_exp == 0.0 {
+            "BASELINE"
+        } else if verdict {
+            "SUPPORTED"
+        } else {
+            "NOT_SUPPORTED"
+        }
+    );
+    println!(
+        "L8 {}",
+        if identity_holds && live { "PASSED" } else { "INSTRUMENT_FAILED" }
+    );
+
+    std::env::remove_var("KANNAKA_RECALL_TEMPORAL_EXP");
+    std::env::remove_var("KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS");
+    std::env::remove_var("KANNAKA_RECALL_TEMPORAL_FLOOR");
+    std::env::remove_var("KANNAKA_RECALL_ENERGY_EXP");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let level = parse_usize_flag(&args, "--level").unwrap_or(2);
@@ -4626,6 +5054,7 @@ fn main() {
     };
 
     match level {
+        8 => run_experiment_l8_session(&params),
         7 => run_experiment_l7_session(&params),
         6 => run_experiment_l6_session(&params),
         5 => run_experiment_l5_session(&params),

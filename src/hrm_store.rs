@@ -2058,28 +2058,67 @@ impl MediumBackend for HrmStore {
             memory.phase = 0.0;
         }
 
-        // Add to medium using the vector directly to preserve the memory's UUID
-        let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
-            .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;
-        
-        // Update the wavefront ID to match the memory's UUID
-        self.medium.update_wavefront_id(&wavefront_id, id)
-            .map_err(|e| StoreError::Other(format!("Failed to update wavefront ID: {}", e)))?;
-        
-        // Update wave parameters
-        if let Some(index) = self.medium.get_wavefront_index(&id) {
-            self.medium.store.energy[index] = memory.amplitude;
-            self.medium.store.frequency[index] = memory.frequency;
-            self.medium.store.phase[index] = memory.phase;
-            self.medium.store.timestamps[index] = memory.created_at.timestamp_millis();
-            self.medium.store.metadata[index].created_at = memory.created_at;
-            self.medium.store.metadata[index].hallucinated = memory.hallucinated;
+        // Route through the CHIRAL medium when chiral mode is active (issue #630).
+        //
+        // `save_medium` serializes `self.chiral` whenever it is present and never
+        // touches `self.medium`, and `rebuild_cache` reconstructs the cache from
+        // `chiral.right.metadata`. So writing only the flat medium — which is what
+        // this function used to do — meant an inserted memory was absent from the
+        // `.hrm` and gone at the next load: silent data loss on the `import`
+        // (handlers/ops.rs) and wire-sync (bin/kannaka.rs) paths, with `import`
+        // being the documented recovery path for a corrupted store.
+        //
+        // `insert_raw_wavefront` already carries this exact warning and routes
+        // correctly; this is the same fix applied to its sibling. Unlike that
+        // function, the caller's `memory.id` is load-bearing here (the cache keys on
+        // it, and `parents`/`connections` reference it), so the minted id is
+        // rewritten to it.
+        if self.chiral.is_some() {
+            let chiral = self.chiral.as_mut().expect("chiral checked present");
+            let minted = chiral
+                .store_vector(&memory.vector, memory.content.clone(), memory.amplitude)
+                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {}", e)))?;
+            chiral
+                .update_right_id(&minted, id)
+                .map_err(|e| StoreError::Other(format!("chiral id rewrite failed: {}", e)))?;
+            if let Some(&index) = chiral.right.id_to_index.get(&id) {
+                chiral.right.energy[index] = memory.amplitude;
+                chiral.right.frequency[index] = memory.frequency;
+                chiral.right.phase[index] = memory.phase;
+                chiral.right.timestamps[index] = memory.created_at.timestamp_millis();
+                chiral.right.metadata[index].created_at = memory.created_at;
+                chiral.right.metadata[index].hallucinated = memory.hallucinated;
+            }
+            // NOTE (#630, deliberately NOT fixed here): the temporal triple
+            // (`effective_at`/`observed_at`/`expires_at`), `tier` and `modality` are
+            // still dropped. Carrying them is only safe once the wire boundary
+            // sanitizes them — `absorb_gate::CleanFields` covers four fields and
+            // `provenance::canonical_mem` signs nothing temporal, so a peer would
+            // otherwise gain ungated control of `expires_at` (floor any memory of
+            // ours) and `tier` (pin memories in our store). That change lands WITH
+            // the sanitization, not before it. See ADR-0051.
+        } else {
+            // Flat-medium path, unchanged.
+            let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
+                .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;
+
+            self.medium.update_wavefront_id(&wavefront_id, id)
+                .map_err(|e| StoreError::Other(format!("Failed to update wavefront ID: {}", e)))?;
+
+            if let Some(index) = self.medium.get_wavefront_index(&id) {
+                self.medium.store.energy[index] = memory.amplitude;
+                self.medium.store.frequency[index] = memory.frequency;
+                self.medium.store.phase[index] = memory.phase;
+                self.medium.store.timestamps[index] = memory.created_at.timestamp_millis();
+                self.medium.store.metadata[index].created_at = memory.created_at;
+                self.medium.store.metadata[index].hallucinated = memory.hallucinated;
+            }
         }
-        
+
         // Add to cache
         self.memory_cache.insert(id, memory);
         self.mark_dirty();
-        
+
         Ok(id)
     }
 
@@ -2254,7 +2293,11 @@ impl MediumBackend for HrmStore {
 
     fn absorb(&mut self, content: &str, importance: f32, category: Option<&str>) -> Result<Uuid, StoreError> {
         if let Some(ref mut chiral) = self.chiral {
-            let id = chiral.store_with_category(content, importance, &self.pipeline, category)
+            // ADR-0049: mints atomic facets alongside the parent when
+            // KANNAKA_FACET_DECOMPOSE is set. Flag unset (the default) makes this
+            // exactly the previous `store_with_category` call. Returns the PARENT
+            // id either way, so `remember`'s contract is unchanged.
+            let id = chiral.store_with_facets(content, importance, &self.pipeline, category)
                 .map_err(|e| StoreError::Other(format!("chiral store failed: {}", e)))?;
             self.rebuild_cache().ok();
             self.mark_dirty();
@@ -2291,6 +2334,10 @@ impl MediumBackend for HrmStore {
             }
         }
 
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            eprintln!("[recall-trace] resonate_query top_k={} path={}",
+                top_k, if self.chiral.is_some() { "chiral" } else { "flat" });
+        }
         if let Some(ref chiral) = self.chiral {
             // Chiral bilateral resonance — TODO: fold cluster prefilter
             // into the chiral path; for v1 chiral users skip the prefilter
@@ -2498,6 +2545,78 @@ mod tests {
         let got = cm.right.wavefronts.row(idx).to_vec();
         let cos = crate::wave::cosine_similarity(&got, &want);
         assert!(cos > 0.999, "recompute_encoding fixed the right vector (cos={cos})");
+    }
+
+    /// Issue #630 regression: `insert` must write the CHIRAL hemisphere.
+    ///
+    /// `save_medium` serializes `self.chiral` whenever it is present and never
+    /// touches `self.medium`, and `rebuild_cache` reconstructs from
+    /// `chiral.right.metadata`. `insert` used to write only the flat medium and the
+    /// cache, so an inserted memory was absent from the `.hrm` and gone at the next
+    /// load — silent data loss on the `import` and wire-sync paths, `import` being
+    /// the documented recovery path for a corrupted store.
+    ///
+    /// There was no insert-then-reload test on a chiral store, which is why this
+    /// survived. Before the fix this test fails at the `is_some()` assertion.
+    #[test]
+    fn insert_survives_save_and_reload_on_a_chiral_store() {
+        const CONTENT: &str = "the harbor beacon channel is twentyseven";
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+
+        let id = {
+            let mut store = HrmStore::new(make_test_pipeline(), path.clone());
+            store.upgrade_to_chiral();
+            assert!(
+                store.chiral_medium().is_some(),
+                "fixture must be chiral or the bug cannot reproduce"
+            );
+
+            let vector = make_test_pipeline().encode_text(CONTENT).unwrap();
+            let mut memory = HyperMemory::new(vector, CONTENT.to_string());
+            memory.amplitude = 0.77;
+            let id = memory.id;
+
+            assert_eq!(
+                store.insert(memory).unwrap(),
+                id,
+                "insert must preserve the caller's id — the cache keys on it"
+            );
+
+            // The id rewrite must leave the chiral bookkeeping coherent, not just
+            // the metadata row: a half-rewrite orphans the scale and strands the
+            // left echo.
+            {
+                let cm = store.chiral_medium().unwrap();
+                assert!(
+                    cm.right.id_to_index.contains_key(&id),
+                    "right hemisphere must be keyed by the caller's id"
+                );
+                assert!(
+                    cm.scales.contains_key(&id),
+                    "chiral scale must follow the id rewrite"
+                );
+                if let Some(left_id) = cm.right_to_left.get(&id) {
+                    assert_eq!(
+                        cm.left_to_right.get(left_id),
+                        Some(&id),
+                        "both hemisphere cross-maps must agree after the rewrite"
+                    );
+                }
+            }
+
+            store.flush().unwrap();
+            id
+        };
+
+        // Reload from disk — this is where the memory used to disappear.
+        let reloaded = HrmStore::load(make_test_pipeline(), path).unwrap();
+        let got = reloaded.get(&id).unwrap();
+        assert!(
+            got.is_some(),
+            "#630: inserted memory must survive save+reload on a chiral store"
+        );
+        assert_eq!(got.unwrap().content, CONTENT);
     }
 
     #[test]

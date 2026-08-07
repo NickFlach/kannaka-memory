@@ -498,7 +498,7 @@ pub(crate) fn handle_swarm_exemplars(
     // Usage:
     //   kannaka swarm exemplars publish [--top-k N] [--agent-id ID]
     //   kannaka swarm exemplars list [--from <agent_id>] [--top-k N]
-    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("publish");
+    let sub = args.get(2).map(String::as_str).unwrap_or("publish");
     let mut top_k: usize = 20;
     let mut agent_id_override: Option<String> = None;
     let mut from: Option<String> = None;
@@ -541,7 +541,19 @@ pub(crate) fn handle_swarm_exemplars(
         "publish" => {
             // Make sure the stream exists. Best-effort — JetStream may already
             // have it from a previous run.
-            let _ = transport.ensure_exemplar_stream();
+            // #577: this was `let _ = transport.ensure_exemplar_stream();`.
+            // `publish_exemplar` is a raw subject PUB — the broker accepts it
+            // whether or not the KANNAKA_EXEMPLARS stream exists, so with the
+            // stream missing every publish "succeeds" and nothing is durable.
+            // `swarm exemplars list` and `swarm absorb` then see nothing. Not
+            // fatal (the publishes may still be consumed live), but the
+            // durability loss must be stated rather than swallowed.
+            if let Err(e) = transport.ensure_exemplar_stream() {
+                eprintln!(
+                    "[exemplars] WARNING: KANNAKA_EXEMPLARS stream unavailable ({e}) — publishes \
+                     below will NOT be durable and `swarm exemplars list` will show nothing."
+                );
+            }
 
             let report = sys.observe();
             let mut clusters = report.clusters.clusters.clone();
@@ -685,7 +697,7 @@ pub(crate) fn handle_swarm_cores(
     args: &[String],
 ) {
     const USAGE: &str = "Usage: kannaka swarm cores <publish|list|shared> [--from <agent>] [--min-cos X] [--agent-id ID] [--nats-url URL]";
-    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("shared");
+    let sub = args.get(2).map(String::as_str).unwrap_or("shared");
     let mut agent_id_override: Option<String> = None;
     let mut from: Option<String> = None;
     let mut min_cos: f32 = 0.85;

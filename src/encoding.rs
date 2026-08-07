@@ -136,16 +136,16 @@ impl TextEncoder for HttpEmbeddingEncoder {
 
         let mut req = ureq::post(&url).set("Content-Type", "application/json");
         if let Some(ref key) = self.api_key {
-            req = req.set("Authorization", &format!("Bearer {}", key));
+            req = req.set("Authorization", &format!("Bearer {key}"));
         }
 
         let resp = req
             .send_json(body)
-            .map_err(|e| EncodingError::Other(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| EncodingError::Other(format!("HTTP request failed: {e}")))?;
 
         let json: serde_json::Value = resp
             .into_json()
-            .map_err(|e| EncodingError::Other(format!("failed to parse response: {}", e)))?;
+            .map_err(|e| EncodingError::Other(format!("failed to parse response: {e}")))?;
 
         let embedding = json["data"][0]["embedding"]
             .as_array()
@@ -206,11 +206,11 @@ impl TextEncoder for OllamaEncoder {
         let resp = ureq::post(&url)
             .set("Content-Type", "application/json")
             .send_json(body)
-            .map_err(|e| EncodingError::Other(format!("Ollama request failed: {}", e)))?;
+            .map_err(|e| EncodingError::Other(format!("Ollama request failed: {e}")))?;
 
         let json: serde_json::Value = resp
             .into_json()
-            .map_err(|e| EncodingError::Other(format!("Failed to parse Ollama response: {}", e)))?;
+            .map_err(|e| EncodingError::Other(format!("Failed to parse Ollama response: {e}")))?;
 
         // Ollama returns { "embeddings": [[...]] }
         let embedding = json["embeddings"][0]
@@ -396,7 +396,7 @@ mod tests {
         let v1 = enc.embed("hello world").unwrap();
         let v2 = enc.embed("goodbye moon").unwrap();
         let sim = cosine_similarity(&v1, &v2);
-        assert!(sim < 0.9, "different texts should produce different vectors, sim={}", sim);
+        assert!(sim < 0.9, "different texts should produce different vectors, sim={sim}");
     }
 
     #[test]
@@ -412,7 +412,7 @@ mod tests {
         let hv = pipeline.encode_text("the quick brown fox").unwrap();
         assert_eq!(hv.len(), 10_000);
         let norm: f32 = hv.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-4, "norm was {}", norm);
+        assert!((norm - 1.0).abs() < 1e-4, "norm was {norm}");
     }
 
     #[test]
@@ -425,7 +425,7 @@ mod tests {
         let recovered = pipeline.bind(&bound, &a);
         let sim = cosine_similarity(&recovered, &b);
         // For random-ish unit vectors, binding then unbinding recovers positive similarity
-        assert!(sim > 0.1, "expected positive similarity after unbind, got {}", sim);
+        assert!(sim > 0.1, "expected positive similarity after unbind, got {sim}");
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
         let v = pipeline.encode_text("sequence test").unwrap();
         let pv = pipeline.permute(&v, 1);
         let sim = cosine_similarity(&v, &pv);
-        assert!(sim < 0.5, "permuted vector should be dissimilar, sim={}", sim);
+        assert!(sim < 0.5, "permuted vector should be dissimilar, sim={sim}");
     }
 
     // --- Mock encoder that counts calls ---

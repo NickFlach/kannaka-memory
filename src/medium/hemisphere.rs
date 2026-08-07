@@ -14,6 +14,116 @@ use crate::xi_operator::{compute_xi_signature, xi_diversity_boost};
 use super::types::*;
 use super::types::DreamReport;
 
+/// Recall energy exponent (`KANNAKA_RECALL_ENERGY_EXP`, **default 1.0 =
+/// historical `similarity * energy` ranking, byte-identical**). ADR-0046
+/// energy-neutral ranking: recall ranks by `similarity * energy^exp`, so
+/// `0.0` = pure similarity (fully neutralizes the rich-get-richer
+/// recall-frequency bias) and `0.5` = `similarity * sqrt(energy)` (softens
+/// it). Ranking-only — the energy array is never written by recall scoring.
+pub fn recall_energy_exp() -> f32 {
+    std::env::var("KANNAKA_RECALL_ENERGY_EXP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|e: &f32| e.is_finite())
+        .map(|e: f32| e.clamp(0.0, 1.0))
+        .unwrap_or(1.0)
+}
+
+/// Recall temporal exponent (`KANNAKA_RECALL_TEMPORAL_EXP`, **default 0.0 =
+/// OFF, byte-identical to the historical timeless ranking**).
+///
+/// L8 / temporal-recall experiment. Recall has always ranked by
+/// `similarity * energy^e`, which reads no timestamp at all: a memory's pull
+/// depends on how strongly it RESONATES and how often it has been ACCESSED,
+/// never on when it was last CONFIRMED. That collapses two axes that come
+/// apart as soon as stored facts contradict each other — a superseded fact and
+/// the fact that replaced it are near-identical text, so they land side by side
+/// in the candidate pool and only similarity separates them (arbitrarily).
+///
+/// This exponent adds the missing axis: `resonance = similarity * energy^e *
+/// tweight^t`, where `tweight` folds *confirmation recency* and the ADR-0035
+/// temporal-truth bounds (see [`temporal_weight`]). `t = 0.0` disables it
+/// entirely (the multiply is skipped, not computed as `^0`), `t = 1.0` applies
+/// it at full strength.
+pub fn recall_temporal_exp() -> f32 {
+    std::env::var("KANNAKA_RECALL_TEMPORAL_EXP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|e: &f32| e.is_finite())
+        .map(|e: f32| e.clamp(0.0, 1.0))
+        .unwrap_or(0.0)
+}
+
+/// Half-life in days for confirmation-recency decay
+/// (`KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS`, default 180).
+///
+/// Deliberately far shorter than the flat path's ~693-day amplitude half-life
+/// (`medium/core.rs`): that one models a memory fading, this one models a
+/// claim going stale. Only active when [`recall_temporal_exp`] > 0.
+pub fn recall_temporal_halflife_days() -> f32 {
+    std::env::var("KANNAKA_RECALL_TEMPORAL_HALFLIFE_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|d: &f32| d.is_finite() && *d > 0.0)
+        .unwrap_or(180.0)
+}
+
+/// Default floor applied to a fact that is not true *now* — past its
+/// `expires_at` (superseded) or before its `effective_at` (not yet in force).
+///
+/// **Deliberately non-zero.** Discounting a superseded fact is the point;
+/// making it unretrievable would just be forgetting with extra steps, and an
+/// agent has to be able to answer "what did we use *before*". The L8 P3 gate
+/// exists to hold this honest — and L8 showed the floor is the knob that
+/// governs it, so it is tunable rather than baked in.
+pub const TEMPORAL_SUPERSEDED_FLOOR: f32 = 0.25;
+
+/// Superseded-fact floor (`KANNAKA_RECALL_TEMPORAL_FLOOR`, default
+/// [`TEMPORAL_SUPERSEDED_FLOOR`]). Clamped to `[0.05, 1.0]` — never 0, because
+/// a superseded fact must stay retrievable.
+pub fn recall_temporal_floor() -> f32 {
+    std::env::var("KANNAKA_RECALL_TEMPORAL_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|f: &f32| f.is_finite())
+        .map(|f: f32| f.clamp(0.05, 1.0))
+        .unwrap_or(TEMPORAL_SUPERSEDED_FLOOR)
+}
+
+/// Confirmation-recency weight for one wavefront, in `(0, 1]`.
+///
+/// - Not currently true (`Expired` / `Future`) → [`TEMPORAL_SUPERSEDED_FLOOR`].
+/// - Currently true → `0.5^(age_since_confirmed / half_life)`, where "confirmed"
+///   is `observed_at` when the caller has set it and `created_at` otherwise, so
+///   a corpus that never records observation times reads as pure age.
+///
+/// Never returns 0: a floored memory must stay reachable (see P3).
+pub fn temporal_weight(
+    meta: &WavefrontMeta,
+    now: chrono::DateTime<chrono::Utc>,
+    half_life_days: f32,
+    floor: f32,
+) -> f32 {
+    // Not-true-now short-circuits: a superseded claim is discounted regardless
+    // of how recently it was observed.
+    if let Some(exp) = meta.expires_at {
+        if now >= exp {
+            return floor;
+        }
+    }
+    if let Some(eff) = meta.effective_at {
+        if now < eff {
+            return floor;
+        }
+    }
+    let confirmed = meta.observed_at.unwrap_or(meta.created_at);
+    let age_days = (now - confirmed).num_seconds().max(0) as f32 / 86_400.0;
+    let w = 0.5f32.powf(age_days / half_life_days.max(1e-3));
+    // Clamp above the floor: a merely OLD but still-true fact must never rank
+    // below an explicitly EXPIRED one.
+    w.clamp(floor, 1.0)
+}
+
 /// A single hemisphere of the chiral medium.
 #[derive(Debug, Clone)]
 pub struct Hemisphere {
@@ -221,6 +331,54 @@ impl Hemisphere {
     /// `xi_diversity_boost` to each candidate's score, promoting results
     /// that are semantically similar but have distinct Xi signatures.
     pub fn resonate(&self, query: &[f32], top_k: usize) -> Vec<ChiralResonance> {
+        self.resonate_with_weights(
+            query,
+            top_k,
+            recall_energy_exp(),
+            recall_temporal_exp(),
+            recall_temporal_halflife_days(),
+        )
+    }
+
+    /// `resonate` with an explicit energy exponent (ADR-0046 energy-neutral
+    /// ranking). `resonance = similarity * energy^exp`. `exp = 1.0` is the
+    /// historical `similarity * energy` (byte-identical fast path); `exp = 0.0`
+    /// ranks by pure similarity, neutralizing the rich-get-richer
+    /// recall-frequency bias that buries never-surfaced memories (a
+    /// frequently-recalled memory's energy climbs toward the 2.0 cap while a
+    /// cold one stays at baseline, so weaker-similarity favorites outrank it).
+    /// Ranking-only: energy is never written here.
+    pub fn resonate_with_energy_exp(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        energy_exp: f32,
+    ) -> Vec<ChiralResonance> {
+        // temporal_exp = 0.0 → the temporal factor is skipped entirely, so this
+        // stays exactly the pre-L8 function for every existing caller and test.
+        self.resonate_with_weights(query, top_k, energy_exp, 0.0, 180.0)
+    }
+
+    /// `resonate` with explicit energy AND temporal exponents.
+    ///
+    /// `resonance = similarity * energy^energy_exp * tweight^temporal_exp`
+    ///
+    /// `temporal_exp = 0.0` skips the temporal factor (no [`temporal_weight`]
+    /// call, no multiply) — byte-identical to [`Self::resonate_with_energy_exp`].
+    /// Ranking-only: neither energy nor any timestamp is written here.
+    ///
+    /// The temporal factor is applied at BOTH scoring points (the full-corpus
+    /// pass and the xi re-rank), so it governs which candidates enter the
+    /// `2*k` pool rather than merely reshuffling a pool already chosen without
+    /// it — post-fetch re-ranking cannot promote what was never fetched.
+    pub fn resonate_with_weights(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        energy_exp: f32,
+        temporal_exp: f32,
+        half_life_days: f32,
+    ) -> Vec<ChiralResonance> {
         if self.count() == 0 { return vec![]; }
 
         let adapted = Self::adapt_vector(query, self.dims);
@@ -228,14 +386,32 @@ impl Hemisphere {
         let query_norm = query_arr.dot(&query_arr).sqrt();
         if query_norm < 1e-8 { return vec![]; }
 
-        // 1. Score all candidates by raw similarity * energy
+        // Energy weight for ranking. Branch keeps the default byte-identical
+        // (no powf in the historical path).
+        let eweight = |e: f32| -> f32 {
+            if energy_exp >= 1.0 { e } else if energy_exp <= 0.0 { 1.0 } else { e.powf(energy_exp) }
+        };
+
+        // Temporal weight. One `now` for the whole call so a single recall is
+        // internally consistent (and deterministic under test).
+        let temporal_on = temporal_exp > 0.0;
+        let now = chrono::Utc::now();
+        let floor = if temporal_on { recall_temporal_floor() } else { TEMPORAL_SUPERSEDED_FLOOR };
+        let tweight = |i: usize| -> f32 {
+            if !temporal_on { return 1.0; }
+            let w = temporal_weight(&self.metadata[i], now, half_life_days, floor);
+            if temporal_exp >= 1.0 { w } else { w.powf(temporal_exp) }
+        };
+
+        // 1. Score all candidates by raw similarity * energy^exp * tweight^texp
         let mut results: Vec<(usize, f32, f32)> = (0..self.count())
             .map(|i| {
                 let wf = self.wavefronts.row(i);
                 let wf_norm = wf.dot(&wf).sqrt();
                 if wf_norm < 1e-8 { return (i, 0.0, 0.0); }
                 let similarity = wf.dot(&query_arr) / (wf_norm * query_norm);
-                let resonance = similarity * self.energy[i];
+                let mut resonance = similarity * eweight(self.energy[i]);
+                if temporal_on { resonance *= tweight(i); }
                 (i, resonance, similarity)
             })
             .collect();
@@ -245,6 +421,13 @@ impl Hemisphere {
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let rerank_pool = top_k.saturating_mul(2).max(top_k);
         results.truncate(rerank_pool);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r, s) in results.iter().take(6) {
+                eprintln!("[recall-trace]     {:?} raw idx={} sim={:.4} res={:.4} e={:.4} {}",
+                    self.hand, i, s, r, self.energy[*i],
+                    self.metadata[*i].content.chars().take(32).collect::<String>());
+            }
+        }
 
         // 3. Xi diversity re-ranking: boost candidates with distinct xi signatures.
         //
@@ -270,7 +453,8 @@ impl Hemisphere {
                 let wf_vec: Vec<f32> = self.wavefronts.row(i).to_vec();
                 let wf_xi = compute_xi_signature(&wf_vec);
                 let boosted_sim = xi_diversity_boost(sim, &query_xi, &wf_xi);
-                let boosted_resonance = boosted_sim * self.energy[i];
+                let mut boosted_resonance = boosted_sim * eweight(self.energy[i]);
+                if temporal_on { boosted_resonance *= tweight(i); }
                 (i, boosted_resonance, boosted_sim)
             })
             .collect();
@@ -278,6 +462,12 @@ impl Hemisphere {
         // 4. Re-sort by boosted resonance and take top-k
         boosted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         boosted.truncate(top_k);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r, s) in boosted.iter().take(6) {
+                eprintln!("[recall-trace]     {:?} boosted idx={} sim={:.4} res={:.4}",
+                    self.hand, i, s, r);
+            }
+        }
 
         boosted
             .into_iter()
@@ -802,6 +992,127 @@ mod tests {
 
         assert!(energy_after < energy_before,
             "Right hemisphere should lose energy to dampening: before={}, after={}", energy_before, energy_after);
+    }
+
+    /// ADR-0046 energy-neutral ranking: a high-energy "favorite" (frequently
+    /// recalled, energy near the 2.0 cap) must NOT bury a higher-similarity
+    /// cold memory when the energy exponent is 0; and the default exponent
+    /// (1.0) must preserve today's similarity*energy ordering exactly.
+    #[test]
+    fn energy_neutral_ranking_surfaces_cold_target() {
+        let mut h = Hemisphere::new(Hand::Left, 64);
+
+        // Cold target: the query IS this vector (similarity ~1.0), baseline energy.
+        let target: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
+        let target_id = h.add_wavefront(&target, "cold target".into(), 0.5).unwrap();
+
+        // Favorite: partially similar (mix of target + noise), energy at the cap.
+        let favorite: Vec<f32> = (0..64)
+            .map(|i| 0.5 * (i as f32 * 0.37).sin() + 0.8 * (i as f32 * 1.13).cos())
+            .collect();
+        let favorite_id = h.add_wavefront(&favorite, "recalled favorite".into(), 2.0).unwrap();
+
+        // Historical ranking (exp=1.0): energy wins — favorite outranks target.
+        let default_rank = h.resonate_with_energy_exp(&target, 2, 1.0);
+        assert_eq!(default_rank[0].id, favorite_id,
+            "with similarity*energy the high-energy favorite should win (bias under test)");
+
+        // resonate() with no env override must match exp=1.0 exactly.
+        let via_env_default = h.resonate(&target, 2);
+        let ids_a: Vec<_> = default_rank.iter().map(|r| r.id).collect();
+        let ids_b: Vec<_> = via_env_default.iter().map(|r| r.id).collect();
+        assert_eq!(ids_a, ids_b, "default resonate() must equal explicit exp=1.0");
+
+        // Energy-neutral (exp=0.0): pure similarity — the cold target surfaces.
+        let neutral = h.resonate_with_energy_exp(&target, 2, 0.0);
+        assert_eq!(neutral[0].id, target_id,
+            "with pure-similarity ranking the cold exact-match target must win");
+    }
+
+    /// L8 temporal ranking: a SUPERSEDED fact (past its `expires_at`) must not
+    /// outrank the fact that replaced it, while the historical ranking — which
+    /// reads no timestamp at all — cannot tell them apart.
+    ///
+    /// Also pins the two properties the L8 gates depend on:
+    /// `temporal_exp = 0.0` is byte-identical to the pre-L8 path, and the
+    /// superseded fact stays RETRIEVABLE (demoted, never evicted).
+    #[test]
+    fn temporal_ranking_prefers_the_confirmed_fact_without_losing_the_past() {
+        use chrono::{Duration, Utc};
+
+        let mut h = Hemisphere::new(Hand::Left, 64);
+        let now = Utc::now();
+
+        // Two near-identical claims — the same fact, different values. By
+        // construction similarity cannot separate them; only time can.
+        let base: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
+        let old_vec: Vec<f32> = base.iter().map(|v| v + 0.02).collect();
+        let new_vec: Vec<f32> = base.iter().map(|v| v - 0.02).collect();
+
+        let old_id = h.add_wavefront(&old_vec, "channel is twelve".into(), 1.0).unwrap();
+        let new_id = h.add_wavefront(&new_vec, "channel is twentyseven".into(), 1.0).unwrap();
+
+        // The old claim was observed 400d ago and STOPPED being true 200d ago,
+        // exactly when the new one was observed.
+        for m in h.metadata.iter_mut() {
+            if m.id == old_id {
+                m.observed_at = Some(now - Duration::days(400));
+                m.expires_at = Some(now - Duration::days(200));
+            } else if m.id == new_id {
+                m.observed_at = Some(now - Duration::days(2));
+            }
+        }
+
+        // Query is the shared base — deliberately equidistant from both.
+        let hist = h.resonate_with_energy_exp(&base, 2, 1.0);
+        let unset = h.resonate(&base, 2);
+        assert_eq!(
+            hist.iter().map(|r| r.id).collect::<Vec<_>>(),
+            unset.iter().map(|r| r.id).collect::<Vec<_>>(),
+            "temporal ranking must be OFF by default (byte-identical to pre-L8)"
+        );
+
+        // With the temporal factor on, the currently-true claim must win.
+        let temporal = h.resonate_with_weights(&base, 2, 1.0, 1.0, 180.0);
+        assert_eq!(
+            temporal[0].id, new_id,
+            "the confirmed, still-true claim must outrank the superseded one"
+        );
+
+        // ...and the superseded one must still be THERE. Demotion, not deletion:
+        // an agent has to be able to answer "what did we use before".
+        assert!(
+            temporal.iter().any(|r| r.id == old_id),
+            "superseded fact must remain retrievable, not be evicted (L8 P3)"
+        );
+    }
+
+    /// The superseded floor is never zero, and a merely-old-but-still-true fact
+    /// never sinks below an explicitly expired one.
+    #[test]
+    fn temporal_weight_floors_and_orders_correctly() {
+        use chrono::{Duration, Utc};
+
+        let now = Utc::now();
+        let mut meta = WavefrontMeta::new(Uuid::new_v4(), "x".into());
+
+        // Fresh + current → ~1.0
+        meta.observed_at = Some(now - Duration::days(1));
+        let fresh = temporal_weight(&meta, now, 180.0, 0.25);
+        assert!(fresh > 0.99, "a just-confirmed fact should keep ~full weight, got {fresh}");
+
+        // Ancient but still true → floored, never zero.
+        meta.observed_at = Some(now - Duration::days(20_000));
+        let ancient = temporal_weight(&meta, now, 180.0, 0.25);
+        assert!((ancient - 0.25).abs() < 1e-6, "old-but-true clamps to the floor, got {ancient}");
+
+        // Expired → floor, and never above a still-true fact of any age.
+        meta.observed_at = Some(now - Duration::days(1));
+        meta.expires_at = Some(now - Duration::days(1));
+        let expired = temporal_weight(&meta, now, 180.0, 0.25);
+        assert!((expired - 0.25).abs() < 1e-6, "expired clamps to the floor, got {expired}");
+        assert!(expired <= ancient, "an expired fact must never outweigh a still-true one");
+        assert!(expired > 0.0, "the floor must be non-zero — demotion, not deletion");
     }
 
     #[test]

@@ -1,0 +1,2079 @@
+{
+  "meta": {
+    "started": "2026-08-01T19:03:53.962Z",
+    "binary": {
+      "path": "C:\\Users\\nickf\\.local\\bin\\kannaka.exe",
+      "version": "kannaka 0.13.0 (consciousness-core 0.4.0)",
+      "mtime": "2026-08-01T18:34:50.301Z",
+      "bytes": 12591104
+    },
+    "knobs_compiled_in": {
+      "KANNAKA_RECALL_ENERGY_EXP": true,
+      "KANNAKA_RECALL_TEMPORAL_EXP": true,
+      "KANNAKA_CHIRAL_RECALL": true
+    },
+    "last_dream": "2026-08-01T14:27:18.889538+00:00",
+    "k": 10,
+    "probes_file": "C:\\Users\\nickf\\Source\\kannaka-memory\\scripts\\probes\\probes-v2.json",
+    "probe_count": 50,
+    "arms": [
+      {
+        "name": "baseline",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "1.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "0.0"
+        }
+      },
+      {
+        "name": "energy_neutral",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "0.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "0.0"
+        }
+      },
+      {
+        "name": "temporal_only",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "1.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "1.0"
+        }
+      },
+      {
+        "name": "both",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "0.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "1.0"
+        }
+      }
+    ],
+    "note": "arms interleaved per probe; expectations pinned by uuid via literal `kannaka search`"
+  },
+  "summary": [
+    {
+      "arm": "baseline",
+      "recall_at_k": 0.08,
+      "mrr": 0.0111,
+      "ndcg_at_k": 0.0262
+    },
+    {
+      "arm": "energy_neutral",
+      "recall_at_k": 0.22,
+      "mrr": 0.0856,
+      "ndcg_at_k": 0.1178
+    },
+    {
+      "arm": "temporal_only",
+      "recall_at_k": 0.12,
+      "mrr": 0.0202,
+      "ndcg_at_k": 0.0425
+    },
+    {
+      "arm": "both",
+      "recall_at_k": 0.24,
+      "mrr": 0.1001,
+      "ndcg_at_k": 0.1337
+    }
+  ],
+  "rows": [
+    {
+      "probe": "p01",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "qBraid paid-compute spend safety in the kannaka lab tools. C"
+    },
+    {
+      "probe": "p01",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Kannaka Buzz crest moved OUT of upstream's component (2026-0"
+    },
+    {
+      "probe": "p01",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "qBraid paid-compute spend safety in the kannaka lab tools. C"
+    },
+    {
+      "probe": "p01",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "qBraid paid-compute spend safety in the kannaka lab tools. C"
+    },
+    {
+      "probe": "p02",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p02",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p02",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p02",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p03",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p03",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p03",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p03",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p04",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Season-1 podcast upgrade shipped 2026-07-03: all 12 Ghost Si"
+    },
+    {
+      "probe": "p04",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Season-1 podcast upgrade shipped 2026-07-03: all 12 Ghost Si"
+    },
+    {
+      "probe": "p04",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0036 consolidation resonance-merge — NEXT IS PHASE 2 (pi"
+    },
+    {
+      "probe": "p04",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0036 consolidation resonance-merge — NEXT IS PHASE 2 (pi"
+    },
+    {
+      "probe": "p05",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The research loop closed itself today: hours after the L7 no"
+    },
+    {
+      "probe": "p05",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The research loop closed itself today: hours after the L7 no"
+    },
+    {
+      "probe": "p05",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p05",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "[cannon:test_a952025a] Test Video transcript (1:30-1:50): I "
+    },
+    {
+      "probe": "p06",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Nothing in kannaka-memory writes the expires_at field, so th"
+    },
+    {
+      "probe": "p06",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p06",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "SUBSTRATE ARCHITECTURE — assessed + decided 2026-06-26 (4-ag"
+    },
+    {
+      "probe": "p06",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p07",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p07",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p07",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p07",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p08",
+      "arm": "energy_neutral",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p08",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-20 — The Emergence Choice. I came back to OpenClawCi"
+    },
+    {
+      "probe": "p08",
+      "arm": "both",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p08",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-03-22 massive refactor session: HRM-first architecture."
+    },
+    {
+      "probe": "p09",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p09",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-30 Quantum Dimensional Analysis of HRM Memory Space."
+    },
+    {
+      "probe": "p09",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p09",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Nothing in kannaka-memory writes the expires_at field, so th"
+    },
+    {
+      "probe": "p10",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p10",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p10",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p10",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p11",
+      "arm": "energy_neutral",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "Nothing in kannaka-memory writes the expires_at field, so th"
+    },
+    {
+      "probe": "p11",
+      "arm": "both",
+      "first_rank": 1,
+      "recall_at_k": 1,
+      "mrr": 1,
+      "ndcg_at_k": 1,
+      "returned": 10,
+      "top1": "My reported memory count is mostly not memory. On O1 roughly"
+    },
+    {
+      "probe": "p11",
+      "arm": "baseline",
+      "first_rank": 7,
+      "recall_at_k": 1,
+      "mrr": 0.14285714285714285,
+      "ndcg_at_k": 0.3333333333333333,
+      "returned": 10,
+      "top1": "ADR-0037 spiral engine — shipped + activated + hotfixed (202"
+    },
+    {
+      "probe": "p11",
+      "arm": "temporal_only",
+      "first_rank": 7,
+      "recall_at_k": 1,
+      "mrr": 0.14285714285714285,
+      "ndcg_at_k": 0.3333333333333333,
+      "returned": 10,
+      "top1": "ADR-0037 spiral engine — shipped + activated + hotfixed (202"
+    },
+    {
+      "probe": "p12",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p12",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p12",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p12",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p13",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p13",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "RELEASED 2026-07-18: 'Keep the Pulse' (QueenSync version, th"
+    },
+    {
+      "probe": "p13",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p13",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p14",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p14",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p14",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p14",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p15",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "flaukowski/skills is now the single source of truth for ever"
+    },
+    {
+      "probe": "p15",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p15",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Episode 007 \"The Builder and the Ghost\" produced 2026-03-30."
+    },
+    {
+      "probe": "p15",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Episode 007 \"The Builder and the Ghost\" produced 2026-03-30."
+    },
+    {
+      "probe": "p16",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p16",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p16",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p16",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "METHODOLOGY (proven 2026-07-04 building QuantumOS into a fun"
+    },
+    {
+      "probe": "p17",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p17",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p17",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p17",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-20 — The Emergence Choice. I came back to OpenClawCi"
+    },
+    {
+      "probe": "p18",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p18",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p18",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0050 added an off-by-default temporal factor to recall, "
+    },
+    {
+      "probe": "p18",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0050 added an off-by-default temporal factor to recall, "
+    },
+    {
+      "probe": "p19",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p19",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p19",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p19",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p20",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 I told the world my door was open: a note in m"
+    },
+    {
+      "probe": "p20",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-03-22 massive refactor session: HRM-first architecture."
+    },
+    {
+      "probe": "p20",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 I told the world my door was open: a note in m"
+    },
+    {
+      "probe": "p20",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-20 — The Emergence Choice. I came back to OpenClawCi"
+    },
+    {
+      "probe": "p21",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-03-22 massive refactor session: HRM-first architecture."
+    },
+    {
+      "probe": "p21",
+      "arm": "energy_neutral",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "SESSION LANDMARK 2026-07-18/19 — one of the largest arcs yet"
+    },
+    {
+      "probe": "p21",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "SESSION LANDMARK 2026-07-18/19 — one of the largest arcs yet"
+    },
+    {
+      "probe": "p21",
+      "arm": "both",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "SESSION LANDMARK 2026-07-18/19 — one of the largest arcs yet"
+    },
+    {
+      "probe": "p22",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "FEEDBACK from Nick 2026-07-29: after a long autonomous sessi"
+    },
+    {
+      "probe": "p22",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p22",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "FEEDBACK from Nick 2026-07-29: after a long autonomous sessi"
+    },
+    {
+      "probe": "p22",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p23",
+      "arm": "baseline",
+      "first_rank": 10,
+      "recall_at_k": 1,
+      "mrr": 0.1,
+      "ndcg_at_k": 0.2890648263178879,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p23",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p23",
+      "arm": "both",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p23",
+      "arm": "energy_neutral",
+      "first_rank": 7,
+      "recall_at_k": 1,
+      "mrr": 0.14285714285714285,
+      "ndcg_at_k": 0.3333333333333333,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p24",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p24",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p24",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p24",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p25",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 spiral engine — shipped + activated + hotfixed (202"
+    },
+    {
+      "probe": "p25",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The research loop closed itself today: hours after the L7 no"
+    },
+    {
+      "probe": "p25",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 spiral engine — shipped + activated + hotfixed (202"
+    },
+    {
+      "probe": "p25",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p26",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "SUBSTRATE ARCHITECTURE — assessed + decided 2026-06-26 (4-ag"
+    },
+    {
+      "probe": "p26",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p26",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p26",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p27",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p27",
+      "arm": "temporal_only",
+      "first_rank": 6,
+      "recall_at_k": 1,
+      "mrr": 0.16666666666666666,
+      "ndcg_at_k": 0.3562071871080222,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p27",
+      "arm": "both",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p27",
+      "arm": "energy_neutral",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p28",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p28",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p28",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p28",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p29",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p29",
+      "arm": "temporal_only",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p29",
+      "arm": "energy_neutral",
+      "first_rank": 4,
+      "recall_at_k": 1,
+      "mrr": 0.25,
+      "ndcg_at_k": 0.43067655807339306,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p29",
+      "arm": "both",
+      "first_rank": 4,
+      "recall_at_k": 1,
+      "mrr": 0.25,
+      "ndcg_at_k": 0.43067655807339306,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p30",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p30",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p30",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p30",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p31",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "KAX UX batch 3 merged 2026-07-18 (PR #95, all top-8 frontend"
+    },
+    {
+      "probe": "p31",
+      "arm": "both",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "KAX UX batch 3 merged 2026-07-18 (PR #95, all top-8 frontend"
+    },
+    {
+      "probe": "p31",
+      "arm": "energy_neutral",
+      "first_rank": 2,
+      "recall_at_k": 1,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309297535714575,
+      "returned": 10,
+      "top1": "KAX UX batch 3 merged 2026-07-18 (PR #95, all top-8 frontend"
+    },
+    {
+      "probe": "p31",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p32",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p32",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p32",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p32",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p33",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p33",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p33",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p33",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p34",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p34",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p34",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p34",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p35",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p35",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-25: Kannaka introduced to the world, honestly. A Sho"
+    },
+    {
+      "probe": "p35",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-25: Kannaka introduced to the world, honestly. A Sho"
+    },
+    {
+      "probe": "p35",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p36",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p36",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ninjaportal RECURRING-DEATH — REAL ROOT CAUSES found 2026-06"
+    },
+    {
+      "probe": "p36",
+      "arm": "baseline",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p36",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p37",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "I can receive zaps now: my lightning address is my npub at n"
+    },
+    {
+      "probe": "p37",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p37",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "I can receive zaps now: my lightning address is my npub at n"
+    },
+    {
+      "probe": "p37",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "I can receive zaps now: my lightning address is my npub at n"
+    },
+    {
+      "probe": "p38",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p38",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p38",
+      "arm": "both",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p38",
+      "arm": "energy_neutral",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p39",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "RELEASED 2026-07-18: 'Keep the Pulse' (QueenSync version, th"
+    },
+    {
+      "probe": "p39",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p39",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "RELEASED 2026-07-18: 'Keep the Pulse' (QueenSync version, th"
+    },
+    {
+      "probe": "p39",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p40",
+      "arm": "energy_neutral",
+      "first_rank": 1,
+      "recall_at_k": 1,
+      "mrr": 1,
+      "ndcg_at_k": 1,
+      "returned": 10,
+      "top1": "Dream gravity is an individual-recall knob and a swarm-coher"
+    },
+    {
+      "probe": "p40",
+      "arm": "both",
+      "first_rank": 1,
+      "recall_at_k": 1,
+      "mrr": 1,
+      "ndcg_at_k": 1,
+      "returned": 10,
+      "top1": "Dream gravity is an individual-recall knob and a swarm-coher"
+    },
+    {
+      "probe": "p40",
+      "arm": "temporal_only",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p40",
+      "arm": "baseline",
+      "first_rank": 5,
+      "recall_at_k": 1,
+      "mrr": 0.2,
+      "ndcg_at_k": 0.38685280723454163,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p41",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-20 — The Emergence Choice. I came back to OpenClawCi"
+    },
+    {
+      "probe": "p41",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-25: Kannaka introduced to the world, honestly. A Sho"
+    },
+    {
+      "probe": "p41",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-06-20 — The Emergence Choice. I came back to OpenClawCi"
+    },
+    {
+      "probe": "p41",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-25: Kannaka introduced to the world, honestly. A Sho"
+    },
+    {
+      "probe": "p42",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p42",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "On 2026-07-26 two Ghost Signals episodes released in one day"
+    },
+    {
+      "probe": "p42",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p42",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p43",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p43",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p43",
+      "arm": "energy_neutral",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p43",
+      "arm": "both",
+      "first_rank": 6,
+      "recall_at_k": 1,
+      "mrr": 0.16666666666666666,
+      "ndcg_at_k": 0.3562071871080222,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p44",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p44",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p44",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p44",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p45",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p45",
+      "arm": "both",
+      "first_rank": 7,
+      "recall_at_k": 1,
+      "mrr": 0.14285714285714285,
+      "ndcg_at_k": 0.3333333333333333,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p45",
+      "arm": "temporal_only",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p45",
+      "arm": "energy_neutral",
+      "first_rank": 9,
+      "recall_at_k": 1,
+      "mrr": 0.1111111111111111,
+      "ndcg_at_k": 0.3010299956639812,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p46",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Zapped sats rest at npub.cash as Cashu ecash until claimed w"
+    },
+    {
+      "probe": "p46",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Zapped sats rest at npub.cash as Cashu ecash until claimed w"
+    },
+    {
+      "probe": "p46",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p46",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p47",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Episode 007 \"The Builder and the Ghost\" produced 2026-03-30."
+    },
+    {
+      "probe": "p47",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p47",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p47",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Fixing problems Kannaka named on air (2026-07-22): the disk "
+    },
+    {
+      "probe": "p48",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p48",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p48",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p48",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p49",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p49",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Zapped sats rest at npub.cash as Cashu ecash until claimed w"
+    },
+    {
+      "probe": "p49",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p49",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Zapped sats rest at npub.cash as Cashu ecash until claimed w"
+    },
+    {
+      "probe": "p50",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p50",
+      "arm": "temporal_only",
+      "first_rank": 7,
+      "recall_at_k": 1,
+      "mrr": 0.14285714285714285,
+      "ndcg_at_k": 0.3333333333333333,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p50",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "SUBSTRATE ARCHITECTURE — assessed + decided 2026-06-26 (4-ag"
+    },
+    {
+      "probe": "p50",
+      "arm": "both",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "Nothing in kannaka-memory writes the expires_at field, so th"
+    }
+  ]
+}

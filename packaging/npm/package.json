@@ -1,0 +1,48 @@
+{
+  "name": "kannaka",
+  "version": "0.11.1",
+  "description": "Kannaka — wave-interference (Holographic Resonance Medium) memory for AI agents. Installs the native `kannaka` CLI.",
+  "bin": {
+    "kannaka": "bin/kannaka.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/kannaka.js",
+    "install.js",
+    "README.md"
+  ],
+  "keywords": [
+    "kannaka",
+    "memory",
+    "agent",
+    "hrm",
+    "holographic",
+    "resonance",
+    "wave-interference",
+    "vector",
+    "cli"
+  ],
+  "homepage": "https://github.com/NickFlach/kannaka-memory#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NickFlach/kannaka-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NickFlach/kannaka-memory/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

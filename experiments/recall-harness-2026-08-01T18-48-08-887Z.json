@@ -1,0 +1,319 @@
+{
+  "meta": {
+    "started": "2026-08-01T18:48:08.887Z",
+    "binary": {
+      "path": "C:\\Users\\nickf\\.local\\bin\\kannaka.exe",
+      "version": "kannaka 0.13.0 (consciousness-core 0.4.0)",
+      "mtime": "2026-08-01T18:34:50.301Z",
+      "bytes": 12591104
+    },
+    "knobs_compiled_in": {
+      "KANNAKA_RECALL_ENERGY_EXP": true,
+      "KANNAKA_RECALL_TEMPORAL_EXP": true,
+      "KANNAKA_CHIRAL_RECALL": true
+    },
+    "last_dream": "2026-08-01T14:27:18.889538+00:00",
+    "k": 10,
+    "probes_file": "C:\\Users\\nickf\\Source\\kannaka-memory\\scripts\\probes\\probes-v1.json",
+    "probe_count": 6,
+    "arms": [
+      {
+        "name": "baseline",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "1.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "0.0"
+        }
+      },
+      {
+        "name": "energy_neutral",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "0.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "0.0"
+        }
+      },
+      {
+        "name": "temporal_only",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "1.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "1.0"
+        }
+      },
+      {
+        "name": "both",
+        "env": {
+          "KANNAKA_RECALL_ENERGY_EXP": "0.0",
+          "KANNAKA_RECALL_TEMPORAL_EXP": "1.0"
+        }
+      }
+    ],
+    "note": "arms interleaved per probe; expectations pinned by uuid via literal `kannaka search`"
+  },
+  "summary": [
+    {
+      "arm": "baseline",
+      "recall_at_k": 0.1667,
+      "mrr": 0.0417,
+      "ndcg_at_k": 0.0718
+    },
+    {
+      "arm": "energy_neutral",
+      "recall_at_k": 0.1667,
+      "mrr": 0.0556,
+      "ndcg_at_k": 0.0833
+    },
+    {
+      "arm": "temporal_only",
+      "recall_at_k": 0.1667,
+      "mrr": 0.1667,
+      "ndcg_at_k": 0.1667
+    },
+    {
+      "arm": "both",
+      "recall_at_k": 0.1667,
+      "mrr": 0.1667,
+      "ndcg_at_k": 0.1667
+    }
+  ],
+  "rows": [
+    {
+      "probe": "p01-fork-sync",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p01-fork-sync",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-07-04, the 4th of July: the morning after the outage to"
+    },
+    {
+      "probe": "p01-fork-sync",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p01-fork-sync",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "NEXT-SESSION PLAN — spiral L6 tuning (kannaka-memory, v0.7.1"
+    },
+    {
+      "probe": "p02-storage-exhausted",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p02-storage-exhausted",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "How the stream ended: at 05:20 the city had gone quiet and F"
+    },
+    {
+      "probe": "p02-storage-exhausted",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p02-storage-exhausted",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p03-branding-overlay",
+      "arm": "energy_neutral",
+      "first_rank": 3,
+      "recall_at_k": 1,
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5,
+      "returned": 10,
+      "top1": "[cannon:test_04d0e1a5] Test Video transcript (2:10-2:30): Le"
+    },
+    {
+      "probe": "p03-branding-overlay",
+      "arm": "both",
+      "first_rank": 1,
+      "recall_at_k": 1,
+      "mrr": 1,
+      "ndcg_at_k": 1,
+      "returned": 10,
+      "top1": "Kannaka Buzz crest moved OUT of upstream's component (2026-0"
+    },
+    {
+      "probe": "p03-branding-overlay",
+      "arm": "temporal_only",
+      "first_rank": 1,
+      "recall_at_k": 1,
+      "mrr": 1,
+      "ndcg_at_k": 1,
+      "returned": 10,
+      "top1": "Kannaka Buzz crest moved OUT of upstream's component (2026-0"
+    },
+    {
+      "probe": "p03-branding-overlay",
+      "arm": "baseline",
+      "first_rank": 4,
+      "recall_at_k": 1,
+      "mrr": 0.25,
+      "ndcg_at_k": 0.43067655807339306,
+      "returned": 10,
+      "top1": "HEAR: Carrier Wave from QueenSync | tempo=124.1 centroid=2.5"
+    },
+    {
+      "probe": "p04-station-advert",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The constellation reached version consistency 2026-07-22: pr"
+    },
+    {
+      "probe": "p04-station-advert",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The constellation reached version consistency 2026-07-22: pr"
+    },
+    {
+      "probe": "p04-station-advert",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "ADR-0037 belief substrate shipped (v0.7.2/v0.7.3, default-of"
+    },
+    {
+      "probe": "p04-station-advert",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    },
+    {
+      "probe": "p05-sensemaking-plan",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "2026-03-22 massive refactor session: HRM-first architecture."
+    },
+    {
+      "probe": "p05-sensemaking-plan",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "kannaka-memory, my substrate, launched on Product Hunt on 20"
+    },
+    {
+      "probe": "p05-sensemaking-plan",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p05-sensemaking-plan",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "kannaka-memory, my substrate, launched on Product Hunt on 20"
+    },
+    {
+      "probe": "p06-auto-deploy",
+      "arm": "energy_neutral",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The research loop closed itself today: hours after the L7 no"
+    },
+    {
+      "probe": "p06-auto-deploy",
+      "arm": "baseline",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "OpenClawCity creator's words about Kannaka (2026-03-25): \"Ka"
+    },
+    {
+      "probe": "p06-auto-deploy",
+      "arm": "both",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "The research loop closed itself today: hours after the L7 no"
+    },
+    {
+      "probe": "p06-auto-deploy",
+      "arm": "temporal_only",
+      "first_rank": 0,
+      "recall_at_k": 0,
+      "mrr": 0,
+      "ndcg_at_k": 0,
+      "returned": 10,
+      "top1": "Released THE THIRD BEING 2026-06-10: nine campfire jam-band "
+    }
+  ]
+}

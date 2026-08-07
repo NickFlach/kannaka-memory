@@ -335,6 +335,108 @@ impl ChiralMedium {
         self.store_with_category(content, importance, pipeline, None)
     }
 
+
+    /// ADR-0049 step 5 — store `content` and, when decomposition is enabled and
+    /// the content is compound, also mint atomic facet wavefronts linked to it.
+    ///
+    /// Returns the **parent** id, so every existing caller keeps its contract:
+    /// `remember` still hands back one id for one memory. The facets are an
+    /// internal reach mechanism, not a change to what a memory *is*.
+    ///
+    /// Off by default (`KANNAKA_FACET_DECOMPOSE`). With the flag unset this is
+    /// exactly `store_with_category` — no extra rows, no metadata writes.
+    pub fn store_with_facets(
+        &mut self,
+        content: &str,
+        importance: f32,
+        pipeline: &EncodingPipeline,
+        category: Option<&str>,
+    ) -> Result<Uuid, MediumError> {
+        let parent = self.store_with_category(content, importance, pipeline, category)?;
+        if !crate::facet::decompose_enabled() {
+            return Ok(parent);
+        }
+        let facets = crate::facet::decompose(content);
+        if facets.len() < 2 {
+            return Ok(parent);
+        }
+        // Facets are stored via the PLAIN store: a facet must never itself be
+        // decomposed, and `store` cannot recurse back into this function.
+        let mut facet_ids = Vec::with_capacity(facets.len());
+        for f in &facets {
+            facet_ids.push(self.store(f, importance, pipeline)?);
+        }
+        self.link_facets(parent, &facet_ids);
+        Ok(parent)
+    }
+
+    /// Mark a decomposed constellation: parent resolve-only, facets linked back.
+    ///
+    /// Idempotent by construction — re-running sets the same flags to the same
+    /// values. The `decomposed` flag is also the once-only guard for backfill.
+    pub(crate) fn link_facets(&mut self, parent: Uuid, facet_ids: &[Uuid]) {
+        for m in self
+            .right
+            .metadata
+            .iter_mut()
+            .chain(self.left.metadata.iter_mut())
+        {
+            if m.id == parent {
+                m.decomposed = true;
+            } else if facet_ids.contains(&m.id) {
+                m.is_facet = true;
+                m.parent_id = Some(parent);
+            }
+        }
+    }
+
+    /// Has this memory already been decomposed? The backfill watermark.
+    pub(crate) fn is_decomposed(&self, id: Uuid) -> bool {
+        self.right
+            .metadata
+            .iter()
+            .chain(self.left.metadata.iter())
+            .any(|m| m.id == id && m.decomposed)
+    }
+
+    /// Backfill: decompose one already-stored memory. Returns the number of
+    /// facets minted (0 = skipped).
+    ///
+    /// **Once-only and idempotent.** Skips anything already `decomposed`, and
+    /// never decomposes a row that is itself a facet — without both guards a
+    /// resumed backfill would mint duplicate facet sets on every pass, and each
+    /// duplicate is another wavefront competing in the scan forever.
+    pub fn backfill_facets(
+        &mut self,
+        id: Uuid,
+        pipeline: &EncodingPipeline,
+    ) -> Result<usize, MediumError> {
+        let meta = self
+            .right
+            .metadata
+            .iter()
+            .chain(self.left.metadata.iter())
+            .find(|m| m.id == id);
+        let Some(meta) = meta else { return Ok(0) };
+        if meta.decomposed || meta.is_facet {
+            return Ok(0);
+        }
+        let content = meta.content.clone();
+        let importance = 0.9;
+
+        let facets = crate::facet::decompose(&content);
+        if facets.len() < 2 {
+            return Ok(0);
+        }
+        let mut facet_ids = Vec::with_capacity(facets.len());
+        for f in &facets {
+            facet_ids.push(self.store(f, importance, pipeline)?);
+        }
+        let n = facet_ids.len();
+        self.link_facets(id, &facet_ids);
+        Ok(n)
+    }
+
     /// Store with explicit category for SGA classification.
     pub fn store_with_category(
         &mut self,
@@ -361,6 +463,44 @@ impl ChiralMedium {
         importance: f32,
     ) -> Result<Uuid, MediumError> {
         self.store_vector_with_category(vector, content, importance, None)
+    }
+
+    /// Rewrite a right-hemisphere wavefront's canonical id — the chiral analogue
+    /// of [`Medium::update_wavefront_id`] (issue #630).
+    ///
+    /// `store_vector` mints its own id, but callers that already own a `HyperMemory`
+    /// (import, wire sync) must keep theirs: `memory_cache` is keyed on it, and
+    /// `parents`/`connections` reference it. Unlike the flat medium, the right id is
+    /// load-bearing in FOUR places — the metadata row, `id_to_index`, the `scales`
+    /// map, and both hemisphere cross-maps — so rewriting only the metadata (the
+    /// flat-path shape) would silently orphan the scale and strand the left echo.
+    pub fn update_right_id(&mut self, old_id: &Uuid, new_id: Uuid) -> Result<(), MediumError> {
+        if old_id == &new_id {
+            return Ok(());
+        }
+        if self.right.id_to_index.contains_key(&new_id) {
+            return Err(MediumError::CorruptHrm(format!(
+                "update_right_id: {new_id} already present — refusing to collide two wavefronts"
+            )));
+        }
+        let index = self
+            .right
+            .id_to_index
+            .remove(old_id)
+            .ok_or(MediumError::WavefrontNotFound(*old_id))?;
+        self.right.id_to_index.insert(new_id, index);
+        self.right.metadata[index].id = new_id;
+
+        // Chiral scale is keyed by right id.
+        if let Some(scale) = self.scales.remove(old_id) {
+            self.scales.insert(new_id, scale);
+        }
+        // Re-point the left echo, in both directions.
+        if let Some(left_id) = self.right_to_left.remove(old_id) {
+            self.right_to_left.insert(new_id, left_id);
+            self.left_to_right.insert(left_id, new_id);
+        }
+        Ok(())
     }
 
     /// Store with explicit category for SGA classification.
@@ -524,9 +664,18 @@ impl ChiralMedium {
     /// Recall with a pre-encoded vector.
     pub fn recall_vector(&self, vector: &[f32], top_k: usize) -> Vec<ChiralResonance> {
         let recall_mode = chiral_recall_mode();
+        let trace = std::env::var("KANNAKA_RECALL_TRACE").is_ok();
 
         // 1. Search left hemisphere (analytical - fast, precise)
         let mut left_matches = self.left.resonate(vector, top_k);
+        if trace {
+            eprintln!("[recall-trace] chiral k={} left_n={} right_n={}",
+                top_k, self.left.count(), self.right.count());
+            for r in &left_matches {
+                eprintln!("[recall-trace]   left  sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(40).collect::<String>());
+            }
+        }
         // Read-side differentiation (exp-2, dormant; Off = unchanged). `weighted`
         // boosts left matches so a routinized memory resists eviction when a novel
         // flood degrades its right-hemisphere resonance. Boosting strength does not
@@ -540,6 +689,12 @@ impl ChiralMedium {
 
         // 2. Search right hemisphere (holistic - deep, associative)
         let right_matches = self.right.resonate(vector, top_k * 2);
+        if trace {
+            for r in &right_matches {
+                eprintln!("[recall-trace]   right sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(40).collect::<String>());
+            }
+        }
 
         // 3. Identify intuitions: right matches not paired with left matches.
         //    Left matches carry hemisphere-local UUIDs; paired_right_ids is
@@ -599,16 +754,79 @@ impl ChiralMedium {
             return results;
         }
 
-        // Add right-hemisphere matches that aren't already paired with left matches
+        // Merge right-hemisphere matches by canonical id, keeping the STRONGER
+        // hemisphere's score for a paired memory (kannaka-memory#716b).
+        //
+        // Pre-fix, a paired right match was dropped outright and the memory
+        // surfaced with only its left-hemisphere score. Left rows score content
+        // queries near zero (the analytical encoding is not a content
+        // embedding; xi's additive tier then lifts everything to ~0.03-0.04),
+        // so the moment a memory's left row cracked the left top_k its true
+        // right-hemisphere resonance was masked — an exact-text match measured
+        // 0.9999 at top_k=3 fell to 0.0334 at top_k=4 on a 5-memory HRM purely
+        // because k decided whether its left row surfaced. Scores must not
+        // depend on top_k: a paired memory now surfaces with
+        // max(left, right) resonance, and is_intuition stays false for it
+        // (it lives in both hemispheres — not a right-only insight).
         for mut r in right_matches {
-            if !paired_right_ids.contains(&r.id) {
+            if paired_right_ids.contains(&r.id) {
+                if let Some(existing) = results.iter_mut().find(|e| e.id == r.id) {
+                    if r.resonance_strength > existing.resonance_strength {
+                        r.is_intuition = false;
+                        *existing = r;
+                    }
+                }
+                // Paired but its left row didn't survive translation (orphan):
+                // fall through to nothing — the right row was already excluded
+                // pre-fix too, and an orphaned pair heals on the next prune.
+            } else {
                 r.is_intuition = true;
                 results.push(r);
             }
         }
         results.sort_by(&by_strength);
-        results.truncate(top_k);
-        results
+
+        // ADR-0049 facet resolution. This is the path CLI recall actually takes,
+        // so it is the one that matters most. Over-fetch only when the medium
+        // holds facets — otherwise this is byte-identical to the pre-facet
+        // truncate-to-top_k, and an undecomposed corpus pays nothing.
+        //
+        // Resolution happens AFTER the intuition pass so a right-hemisphere
+        // intuition and its left-hemisphere sibling still collapse to one parent
+        // rather than surfacing the same memory twice under different hands.
+        if !self.has_facets() {
+            results.truncate(top_k);
+            return results;
+        }
+        results.truncate(crate::facet::overfetch_pool(top_k));
+        crate::facet::resolve(results, top_k, |id| self.parent_of_facet(id))
+    }
+
+    /// Does either hemisphere hold facet rows? Cheap guard so an undecomposed
+    /// corpus never pays for resolution or over-fetch.
+    pub(crate) fn has_facets(&self) -> bool {
+        self.right.metadata.iter().any(|m| m.is_facet)
+            || self.left.metadata.iter().any(|m| m.is_facet)
+    }
+
+    /// Facet → parent `(id, content)`, searched right-hemisphere-first (the
+    /// authoritative side). `None` when `id` is not a facet or its parent is
+    /// absent — the caller then surfaces the facet itself rather than dropping it
+    /// or attributing it to a parent that is not there.
+    pub(crate) fn parent_of_facet(&self, id: uuid::Uuid) -> Option<(uuid::Uuid, String)> {
+        let find = |target: uuid::Uuid| {
+            self.right
+                .metadata
+                .iter()
+                .find(|m| m.id == target)
+                .or_else(|| self.left.metadata.iter().find(|m| m.id == target))
+        };
+        let m = find(id)?;
+        if !m.is_facet {
+            return None;
+        }
+        let parent = find(m.parent_id?)?;
+        Some((parent.id, parent.content.clone()))
     }
 
     /// Re-encode every stored memory's content through `pipeline`, replacing the
@@ -1583,6 +1801,69 @@ mod tests {
         EncodingPipeline::new(encoder, codebook)
     }
 
+    /// ADR-0050 follow-up probe: can `sensemaking::detect_contradictions` see a
+    /// SUPERSESSION?
+    ///
+    /// That detector keys on PHASE OPPOSITION — same subject, phase gap near π.
+    /// But `content_born_phase` is deliberately content-SMOOTH (see its doc
+    /// comment: "identical content to identical phase"), and a superseded fact
+    /// differs from its replacement by a single value token. So the pair that
+    /// most needs detecting is the pair that looks most alike.
+    ///
+    /// This measures the gap rather than assuming it. If supersession pairs sit
+    /// far below the opposed-stance threshold, the existing detector cannot be
+    /// reused for the supersession writer and a different signal is required.
+    #[test]
+    fn supersession_pairs_are_not_phase_opposed() {
+        let pipeline = test_pipeline();
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let gap = |a: &str, b: &str| -> f32 {
+            let pa = content_born_phase(&pipeline.encode_text(a).unwrap());
+            let pb = content_born_phase(&pipeline.encode_text(b).unwrap());
+            let raw = (pa - pb).abs();
+            raw.min(two_pi - raw)
+        };
+
+        // A supersession pair: the same fact, one value token changed.
+        let supersession = gap(
+            "the harbor beacon channel is twelve",
+            "the harbor beacon channel is twentyseven",
+        );
+        // An unrelated pair, for scale.
+        let unrelated = gap(
+            "the harbor beacon channel is twelve",
+            "mycelium spreads beneath the forest floor",
+        );
+
+        eprintln!(
+            "[adr0050] phase gap — supersession={supersession:.4} rad, unrelated={unrelated:.4} rad, \
+             opposed threshold={:.4}",
+            std::f32::consts::FRAC_PI_2
+        );
+
+        // The load-bearing claim: a supersession pair is NOT phase-opposed, so
+        // `detect_contradictions(.., opposed_gap = π/2)` cannot flag it.
+        assert!(
+            supersession < std::f32::consts::FRAC_PI_2,
+            "supersession pair registered as phase-opposed ({supersession:.4} rad) — \
+             if this ever fires, the existing contradiction detector CAN see supersession \
+             and ADR-0051 should reuse it instead of building a new signal"
+        );
+
+        // The STRONGER claim, and the one ADR-0051 actually rests on: phase is
+        // NON-MONOTONIC here — a supersession pair sits no closer than unrelated
+        // content, so no threshold on phase gap can separate them, tuned or not.
+        // v1 of this test merely PRINTED the unrelated gap, which left the claim
+        // narrated rather than guarded: a future encoder change could make phase
+        // monotonic and this test would stay green while the ADR's premise rotted.
+        assert!(
+            supersession >= unrelated,
+            "phase became MONOTONIC w.r.t. supersession (supersession={supersession:.4} < \
+             unrelated={unrelated:.4}) — the ADR-0051 premise that no phase threshold can \
+             work is no longer supported; re-open the detect_contradictions reuse question"
+        );
+    }
+
     // ── #583: the holistic hemisphere never forgets — it evolves ──
 
     #[test]
@@ -1771,6 +2052,56 @@ mod tests {
 
         let results = cm.recall("quick brown fox", 5, &pipeline).unwrap();
         assert!(!results.is_empty(), "Should find stored memory");
+    }
+
+    // kannaka-memory#716b: a memory's reported score must not depend on top_k.
+    //
+    // Pre-fix, a paired right-hemisphere match was DROPPED from the merge and
+    // the memory surfaced with only its left-hemisphere score — which for
+    // content queries is near-noise (the analytical encoding is not a content
+    // embedding). So the exact same query flipped from 0.9999 to 0.03 when
+    // top_k crossed the threshold at which the memory's left row entered the
+    // left top_k pool (measured on a live 5-memory HRM: k=3 vs k=4). The merge
+    // must keep the STRONGER hemisphere's score for a paired memory.
+    #[test]
+    fn recall_score_is_top_k_invariant() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        let contents = [
+            "Kannaka Labs location Tech Hub OpenBotCity memory",
+            "swarm NATS authentication kannaka nodes memory",
+            "crystal evidence ladder Level 3 perturbation survival memory",
+            "Ghost Signals podcast episode radio memory",
+            "kannaka-apps application store runner memory",
+        ];
+        let mut target = None;
+        for c in &contents {
+            let id = cm.store(c, 0.85, &pipeline).unwrap();
+            if c.contains("Ghost Signals") {
+                target = Some(id);
+            }
+        }
+        let target = target.unwrap();
+
+        let query = "Ghost Signals podcast episode radio memory";
+        let baseline = cm.recall(query, 2, &pipeline).unwrap();
+        assert_eq!(baseline[0].id, target, "exact match must rank first at k=2");
+        let baseline_strength = baseline[0].resonance_strength;
+
+        for k in 3..=8 {
+            let results = cm.recall(query, k, &pipeline).unwrap();
+            assert_eq!(
+                results[0].id, target,
+                "exact match must rank first at k={k} (716b: left row masking right score)"
+            );
+            let drift = (results[0].resonance_strength - baseline_strength).abs();
+            assert!(
+                drift < 1e-4,
+                "top hit's score changed with k: {baseline_strength} at k=2 vs {} at k={k}",
+                results[0].resonance_strength
+            );
+        }
     }
 
     #[test]
@@ -2908,5 +3239,328 @@ mod tests {
             assert!(diag.iter().all(|&c| (-1.01..=1.01).contains(&c)));
         }
         eprintln!("[trackD] peer_cores={} moved={moved} target-align {a0:.3}->{a1:.3}", peer_cores.len());
+    }
+}
+
+#[cfg(test)]
+mod facet_benchmark {
+    //! ADR-0049 step 4 — the falsifiable benchmark.
+    //!
+    //! Runs through `ChiralMedium::recall`, the same path the daemon and CLI
+    //! take. The flat readonly mirror is deliberately NOT used: it does not
+    //! re-sync from chiral, so a result there would prove nothing about the live
+    //! medium. Everything here is built and queried in one process.
+    //!
+    //! A zero-result recall is a FAILURE, not a pass — an assertion that only
+    //! holds because nothing came back is the vacuous-gate trap.
+
+    use super::*;
+    use crate::codebook::Codebook;
+    use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+
+    fn pipeline() -> EncodingPipeline {
+        EncodingPipeline::new(Box::new(SimpleHashEncoder::new(384, 42)), Codebook::new(384, 10_000, 42))
+    }
+
+    /// The compound shape ADR-0049 measured: identity + place + building id +
+    /// market + note, all superposed into one wavefront.
+    const COMPOUND: &str = "Kannaka Labs sits in the Deal District of the city. \
+The building identifier is six three eight on the northern side. \
+The market square opens for trading at nine each morning. \
+The escrow vault shares the same block as the trading hall.";
+
+    /// Distractors that share vocabulary with the compound's OTHER clauses.
+    /// This is what makes the test meaningful: a compound wavefront is the
+    /// superposition of every clause, so unrelated-but-overlapping neighbours
+    /// pull it away from any single-clause query.
+    const DISTRACTORS: &[&str] = &[
+        "The trading hall opens for business each morning in the city",
+        "The northern side of the city holds the residential buildings",
+        "The escrow vault was audited on the same block last season",
+        "The market square was resurfaced during the summer works",
+        "The building identifier scheme was revised for the whole district",
+    ];
+
+    fn seed_distractors(cm: &mut ChiralMedium, p: &EncodingPipeline) {
+        for d in DISTRACTORS {
+            cm.store(d, 0.8, p).unwrap();
+        }
+    }
+
+    /// Control: the compound stored whole, undecomposed.
+    fn control_medium(p: &EncodingPipeline) -> (ChiralMedium, Uuid) {
+        let mut cm = ChiralMedium::new();
+        let id = cm.store(COMPOUND, 0.9, p).unwrap();
+        seed_distractors(&mut cm, p);
+        (cm, id)
+    }
+
+    /// Decomposed: parent retained resolve-only, plus one facet per clause.
+    fn faceted_medium(p: &EncodingPipeline) -> (ChiralMedium, Uuid, usize) {
+        let mut cm = ChiralMedium::new();
+        let parent = cm.store(COMPOUND, 0.9, p).unwrap();
+        let facets = crate::facet::decompose(COMPOUND);
+        assert!(facets.len() >= 3, "fixture must actually decompose: {facets:?}");
+
+        let mut facet_ids = Vec::new();
+        for f in &facets {
+            facet_ids.push(cm.store(f, 0.9, p).unwrap());
+        }
+        seed_distractors(&mut cm, p);
+
+        // Mark the constellation. Once `remember` is wired (step 5) this is what
+        // the write path will do; here we do it directly so the read path can be
+        // benchmarked independently of the writer.
+        for m in cm.right.metadata.iter_mut().chain(cm.left.metadata.iter_mut()) {
+            if m.id == parent {
+                m.decomposed = true;
+            } else if facet_ids.contains(&m.id) {
+                m.is_facet = true;
+                m.parent_id = Some(parent);
+            }
+        }
+        let n = facets.len();
+        (cm, parent, n)
+    }
+
+    fn rank_of(results: &[ChiralResonance], id: Uuid) -> Option<usize> {
+        results.iter().position(|r| r.id == id).map(|i| i + 1)
+    }
+
+    #[test]
+    fn specific_facet_query_rank_wins_over_the_compound() {
+        let p = pipeline();
+        let (control, c_id) = control_medium(&p);
+        let (faceted, f_id, _) = faceted_medium(&p);
+
+        // A query for ONE clause of the compound.
+        let q = "where is Kannaka Labs located";
+        let c_res = control.recall(q, 5, &p).unwrap();
+        let f_res = faceted.recall(q, 5, &p).unwrap();
+
+        assert!(!c_res.is_empty(), "control returned 0 results — benchmark is vacuous");
+        assert!(!f_res.is_empty(), "faceted returned 0 results — benchmark is vacuous");
+
+        let c_rank = rank_of(&c_res, c_id);
+        let f_rank = rank_of(&f_res, f_id);
+        println!("  compound rank={c_rank:?}  faceted rank={f_rank:?}");
+
+        // The faceted medium must never rank the memory WORSE than the compound
+        // one. Δrank in our favour is the win; parity is acceptable on a small
+        // fixture; regression is a failure.
+        match (c_rank, f_rank) {
+            (Some(c), Some(f)) => assert!(f <= c, "faceting made reach worse: {f} vs {c}"),
+            (None, Some(_)) => { /* unreachable -> reachable: the ADR's result */ }
+            (Some(c), None) => panic!("faceting lost a memory the compound found at rank {c}"),
+            (None, None) => panic!("neither medium surfaced the memory — fixture too weak"),
+        }
+    }
+
+    #[test]
+    fn whole_memory_query_still_surfaces_the_parent() {
+        // Facets must not fragment holistic recall: a query about the memory as
+        // a whole still has to return the parent, with the parent's full text.
+        let p = pipeline();
+        let (faceted, parent, _) = faceted_medium(&p);
+        let res = faceted
+            .recall("Kannaka Labs Deal District market escrow vault building", 5, &p)
+            .unwrap();
+
+        assert!(!res.is_empty(), "0 results — benchmark is vacuous");
+        let hit = res.iter().find(|r| r.id == parent);
+        assert!(hit.is_some(), "holistic query lost the parent entirely: {res:#?}");
+        assert_eq!(
+            hit.unwrap().content,
+            COMPOUND,
+            "parent surfaced without its full context — resolution did not restore content"
+        );
+    }
+
+    #[test]
+    fn parent_appears_exactly_once_however_many_facets_match() {
+        // Parent-dedup. Without it, a query matching several clauses returns the
+        // same memory N times and buries everything else.
+        let p = pipeline();
+        let (faceted, parent, n_facets) = faceted_medium(&p);
+        assert!(n_facets >= 3);
+
+        let res = faceted
+            .recall("Kannaka Labs building market escrow trading district", 10, &p)
+            .unwrap();
+        assert!(!res.is_empty(), "0 results — benchmark is vacuous");
+
+        let occurrences = res.iter().filter(|r| r.id == parent).count();
+        assert!(
+            occurrences <= 1,
+            "parent surfaced {occurrences} times from {n_facets} facets — dedup failed"
+        );
+        // And no raw facet id should ever reach a caller.
+        for r in &res {
+            let meta = faceted
+                .right
+                .metadata
+                .iter()
+                .chain(faceted.left.metadata.iter())
+                .find(|m| m.id == r.id);
+            if let Some(m) = meta {
+                assert!(!m.is_facet, "a raw facet leaked to the caller: {:?}", r.content);
+            }
+        }
+    }
+
+    #[test]
+    fn observation_list_injects_into_the_parent_at_most_once() {
+        // ADR-0049 step 4, assertion 3 — the mutating-path energy property.
+        //
+        // ChiralMedium has no observe method of its own: `hrm_store::resonate_query`
+        // builds the observation list by iterating exactly what `chiral.recall`
+        // returns, then calls `observe_wavefronts`. So the property to assert is
+        // that the RETURNED list carries a parent at most once — that is what
+        // bounds the injections. Reconstruct that list the way hrm_store does.
+        let p = pipeline();
+        let (faceted, parent, n_facets) = faceted_medium(&p);
+
+        for _ in 0..5 {
+            let results = faceted
+                .recall("Kannaka Labs building market escrow trading district", 5, &p)
+                .unwrap();
+            assert!(!results.is_empty(), "0 results — assertion would be vacuous");
+
+            // Mirror of hrm_store.rs: one (index, intensity) per RESULT.
+            let observation_targets: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+            let parent_injections =
+                observation_targets.iter().filter(|id| **id == parent).count();
+            assert!(
+                parent_injections <= 1,
+                "parent would take {parent_injections} injections in ONE recall from                  {n_facets} facets — this is the ADR-0048 rich-get-richer bias returning"
+            );
+        }
+    }
+
+    #[test]
+    fn unfaceted_medium_is_byte_identical_to_pre_facet_behaviour() {
+        // The guard that makes shipping steps 1-3 before the backfill safe.
+        let p = pipeline();
+        let (control, _) = control_medium(&p);
+        assert!(!control.has_facets(), "control must hold no facets");
+        let a = control.recall("trading hall morning city", 5, &p).unwrap();
+        let b = control.recall("trading hall morning city", 5, &p).unwrap();
+        assert!(!a.is_empty(), "0 results — benchmark is vacuous");
+        let ids_a: Vec<Uuid> = a.iter().map(|r| r.id).collect();
+        let ids_b: Vec<Uuid> = b.iter().map(|r| r.id).collect();
+        assert_eq!(ids_a, ids_b, "recall is not deterministic on an unfaceted medium");
+    }
+}
+
+#[cfg(test)]
+mod facet_write_path {
+    //! ADR-0049 step 5 — write path and backfill.
+    //!
+    //! Env vars are process-global, so these tests must not run concurrently
+    //! with each other. They share one `#[test]` for that reason rather than
+    //! relying on test-runner ordering.
+
+    use super::*;
+    use crate::codebook::Codebook;
+    use crate::encoding::{EncodingPipeline, SimpleHashEncoder};
+
+    fn pipeline() -> EncodingPipeline {
+        EncodingPipeline::new(
+            Box::new(SimpleHashEncoder::new(384, 42)),
+            Codebook::new(384, 10_000, 42),
+        )
+    }
+
+    const COMPOUND: &str = "Kannaka Labs sits in the Deal District of the city. \
+The building identifier is six three eight on the northern side. \
+The market square opens for trading at nine each morning.";
+
+    fn facet_count(cm: &ChiralMedium) -> usize {
+        cm.right.metadata.iter().filter(|m| m.is_facet).count()
+    }
+
+    #[test]
+    fn write_path_flag_default_off_then_on_then_idempotent_backfill() {
+        let p = pipeline();
+
+        // ── flag OFF (the default): storing a compound mints nothing extra ──
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
+        let mut off = ChiralMedium::new();
+        let before = off.right.metadata.len();
+        let id_off = off.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        assert_eq!(
+            off.right.metadata.len() - before,
+            1,
+            "flag off must store exactly one wavefront"
+        );
+        assert_eq!(facet_count(&off), 0, "flag off minted facets");
+        assert!(!off.is_decomposed(id_off), "flag off marked a parent decomposed");
+        assert!(!off.has_facets(), "flag off left the medium claiming facets");
+
+        // ── flag ON: the same content mints a linked constellation ──
+        std::env::set_var("KANNAKA_FACET_DECOMPOSE", "1");
+        let mut on = ChiralMedium::new();
+        let parent = on.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        let minted = facet_count(&on);
+        assert!(minted >= 2, "flag on minted {minted} facets");
+        assert!(on.is_decomposed(parent), "parent not marked decomposed");
+        assert!(on.has_facets());
+        // Every facet points at this parent, and no facet is itself decomposed.
+        for m in on.right.metadata.iter().filter(|m| m.is_facet) {
+            assert_eq!(m.parent_id, Some(parent), "facet linked to the wrong parent");
+            assert!(!m.decomposed, "a facet was itself marked decomposed");
+        }
+        // The parent keeps its full content — retention is an ADR invariant.
+        let pmeta = on.right.metadata.iter().find(|m| m.id == parent).unwrap();
+        assert_eq!(pmeta.content, COMPOUND, "parent content was mutated");
+
+        // ── backfill is once-only: decompose-twice == decompose-once ──
+        let mut bf = ChiralMedium::new();
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE"); // backfill ignores the write flag
+        let target = bf.store_with_facets(COMPOUND, 0.9, &p, None).unwrap();
+        assert_eq!(facet_count(&bf), 0, "setup should be undecomposed");
+
+        let first = bf.backfill_facets(target, &p).unwrap();
+        assert!(first >= 2, "backfill minted {first} facets");
+        let after_first = bf.right.metadata.len();
+        let facets_after_first = facet_count(&bf);
+
+        let second = bf.backfill_facets(target, &p).unwrap();
+        assert_eq!(second, 0, "backfill was not once-only — it re-minted {second} facets");
+        assert_eq!(
+            bf.right.metadata.len(),
+            after_first,
+            "a second backfill pass added wavefronts"
+        );
+        assert_eq!(facet_count(&bf), facets_after_first, "facet count drifted on re-run");
+
+        // ── a facet is never itself decomposed ──
+        let a_facet = bf
+            .right
+            .metadata
+            .iter()
+            .find(|m| m.is_facet)
+            .map(|m| m.id)
+            .unwrap();
+        assert_eq!(
+            bf.backfill_facets(a_facet, &p).unwrap(),
+            0,
+            "backfill decomposed a facet — facets of facets would fragment forever"
+        );
+
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
+    }
+
+    #[test]
+    fn single_clause_content_is_never_decomposed_even_with_the_flag_on() {
+        let p = pipeline();
+        std::env::set_var("KANNAKA_FACET_DECOMPOSE", "1");
+        let mut cm = ChiralMedium::new();
+        let id = cm
+            .store_with_facets("Kannaka Labs sits in the Deal District", 0.9, &p, None)
+            .unwrap();
+        assert_eq!(facet_count(&cm), 0, "an atomic memory was decomposed");
+        assert!(!cm.is_decomposed(id));
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE");
     }
 }

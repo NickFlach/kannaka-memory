@@ -187,7 +187,7 @@ impl GlyphStore {
 
     /// List all glyph hashes.
     pub fn list_hashes(&self) -> Vec<&str> {
-        self.glyphs.keys().map(|s| s.as_str()).collect()
+        self.glyphs.keys().map(String::as_str).collect()
     }
 
     /// Count total glyphs.

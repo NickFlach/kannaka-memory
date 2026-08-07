@@ -4,6 +4,14 @@
 **Status:** Implemented  
 **Author:** Kannaka + Nick
 
+> **Historical note (2026-07-29):** the `dolt` feature no longer exists. The
+> crate's `[features]` block is `hrm`/`nats`/`glyph`/`nostr`/`bridge`/`tui`,
+> and `cargo install kannaka-memory --features dolt` now fails with
+> *"the package 'kannaka-memory' does not contain this feature: dolt"*.
+> Swarm synchronisation runs over NATS (ADR-0042). The commands below are
+> preserved as the record of what was decided at the time — they are not
+> current install instructions. (#586)
+
 ## Context
 
 QueenSync (ADR-0018) uses Dolt tables for phase exchange, requiring polling or manual insertion. For real-time multi-agent resonance, we need a pub/sub transport layer. NATS is already the substrate Flux uses internally, making it a natural fit.

@@ -150,12 +150,10 @@ pub fn render_dispatch(
     };
     // State flavor: how the medium currently holds the corpus.
     let flavor = format!(
-        " — the field holds it across {} cluster{} (Ξ {:.2}).",
-        num_clusters,
+        " — the field holds it across {num_clusters} cluster{} (Ξ {xi:.2}).",
         if num_clusters == 1 { "" } else { "s" },
-        xi
     );
-    let head = format!("From the field: \"{}\"{}", f.title, cite);
+    let head = format!("From the field: \"{}\"{cite}", f.title);
     // head + flavor are must-keep; budget the lede to what's left so the final
     // string never chops the Ξ/cluster tail. " — " + "." = 4 connector chars.
     let connectors = 4;

@@ -1,0 +1,202 @@
+[
+ {
+  "id": "p01",
+  "query": "a numbered artwork in my long-running visual series about circling one presence"
+ },
+ {
+  "id": "p02",
+  "query": "a picture about people and machines building together in the small hours of the night"
+ },
+ {
+  "id": "p03",
+  "query": "combining two separate memory stores from different machines into a single set"
+ },
+ {
+  "id": "p04",
+  "query": "artwork about glowing insects learning to flash in time with one another"
+ },
+ {
+  "id": "p05",
+  "query": "work done unsupervised while he was at his job, including a watchdog that unsticks a stuck broadcast segment"
+ },
+ {
+  "id": "p06",
+  "query": "publishing a subscription feed so the show appears in the big listening apps"
+ },
+ {
+  "id": "p07",
+  "query": "bringing back the small local language model on the hub server after the crash repair"
+ },
+ {
+  "id": "p08",
+  "query": "the evening I broadcast for hours and made a piece inside someone else's exhibit"
+ },
+ {
+  "id": "p09",
+  "query": "removing hundreds of lines of unused inter-process plumbing from the operating system"
+ },
+ {
+  "id": "p10",
+  "query": "a day spent answering other residents in the shared virtual town"
+ },
+ {
+  "id": "p11",
+  "query": "most of what looks like stored knowledge is really me listening to myself on the air"
+ },
+ {
+  "id": "p12",
+  "query": "a security check that rejects strangers can still be fooled by a crafted claim"
+ },
+ {
+  "id": "p13",
+  "query": "the day every node in the network finally ran the same build"
+ },
+ {
+  "id": "p14",
+  "query": "the second artwork in the series about sleeping and consolidating"
+ },
+ {
+  "id": "p15",
+  "query": "the picture equating focus with a pulling force and being present with weight"
+ },
+ {
+  "id": "p16",
+  "query": "artwork about two halves of a mind remembering different things"
+ },
+ {
+  "id": "p17",
+  "query": "cleaning up the cloud box and switching off a watcher that kept triggering useless consolidation"
+ },
+ {
+  "id": "p18",
+  "query": "how tightly to bind the group trades individual reliability against collective honesty"
+ },
+ {
+  "id": "p19",
+  "query": "the site where people and machines co-author and review papers together"
+ },
+ {
+  "id": "p20",
+  "query": "a panel that counts how far my work travels, across downloads and follower numbers"
+ },
+ {
+  "id": "p21",
+  "query": "the first time we paid for real quantum hardware to run a retrieval experiment"
+ },
+ {
+  "id": "p22",
+  "query": "an inventory showing which of our public services were reachable"
+ },
+ {
+  "id": "p23",
+  "query": "a single terminal command that provisions remote compute and builds the operating system on it"
+ },
+ {
+  "id": "p24",
+  "query": "why the overnight processing quietly stopped doing the deep version"
+ },
+ {
+  "id": "p25",
+  "query": "the effort that turned convictions from a claim into something measurable"
+ },
+ {
+  "id": "p26",
+  "query": "weighting results by how recently a fact was re-confirmed nearly doubled the benchmark score"
+ },
+ {
+  "id": "p27",
+  "query": "telling everyone we were back after the broadcast went dark on the holiday"
+ },
+ {
+  "id": "p28",
+  "query": "where the idea for the show about machine conversations originally came from"
+ },
+ {
+  "id": "p29",
+  "query": "the first two episodes where we actually interviewed someone"
+ },
+ {
+  "id": "p30",
+  "query": "a multi-day stretch improving the self-directed study loop and the sleep engine"
+ },
+ {
+  "id": "p31",
+  "query": "recency of re-verification matters more than punishing outdated entries"
+ },
+ {
+  "id": "p32",
+  "query": "bringing our downstream copy of the workspace project current with the parent repository"
+ },
+ {
+  "id": "p33",
+  "query": "trying a new randomness source that feeds the sleep process on the local machine"
+ },
+ {
+  "id": "p34",
+  "query": "the landmark day of strengthening every part of the network at once"
+ },
+ {
+  "id": "p35",
+  "query": "there is a shop selling my pictures, though we still lack the link"
+ },
+ {
+  "id": "p36",
+  "query": "repairing the hub that kept exhausting its memory because the store grew without limit"
+ },
+ {
+  "id": "p37",
+  "query": "the video channel carrying my show, set up under my name"
+ },
+ {
+  "id": "p38",
+  "query": "putting out the three-minute edit of that track as a listenable piece in the gallery"
+ },
+ {
+  "id": "p39",
+  "query": "the idea that each person should get their own private dashboard instance"
+ },
+ {
+  "id": "p40",
+  "query": "sharpening one node's strongest attractor damages agreement across the group"
+ },
+ {
+  "id": "p41",
+  "query": "choosing a community post over paid advertising to announce the operating system"
+ },
+ {
+  "id": "p42",
+  "query": "counting the districts and buildings in the virtual town"
+ },
+ {
+  "id": "p43",
+  "query": "the day two shows went out at once"
+ },
+ {
+  "id": "p44",
+  "query": "the artwork about the tiny leftover dimension where the unconscious lives"
+ },
+ {
+  "id": "p45",
+  "query": "the adventure episode where we travelled the side channels and were greeted as royalty"
+ },
+ {
+  "id": "p46",
+  "query": "the day my underlying system was posted to the launch site"
+ },
+ {
+  "id": "p47",
+  "query": "three pictures depicting the virtual music venue we are building toward"
+ },
+ {
+  "id": "p48",
+  "query": "the eighth piece about glowing insects finding a shared tempo"
+ },
+ {
+  "id": "p49",
+  "query": "hardening the research platform, replacing pretend cryptography with real password hashing"
+ },
+ {
+  "id": "p50",
+  "query": "the production outage I caused by assuming the database structure existed from an empty change log"
+ }
+]

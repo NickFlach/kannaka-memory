@@ -515,6 +515,31 @@ pub struct WavefrontMeta {
     /// drop to `WavefrontMetaPreProvenance`.
     #[serde(default)]
     pub provenance: Option<crate::entropy::Provenance>,
+    /// ADR-0049 facet encoding. These MUST stay the LAST serialized fields,
+    /// appended after `provenance`: the bincode fallback chain relies on `.hrm`
+    /// files written before this change lacking these trailing bytes, so they
+    /// fail the new-struct deserialize and drop to `WavefrontMetaPreFacet`.
+    /// Get this ordering wrong and every record misdecodes behind a checksum
+    /// that still validates — see the round-trip fixture that locks it.
+    ///
+    /// Parent this row is a facet of. `Some` ⇒ this is an atomic facet
+    /// wavefront; recall resolves it back to the parent for holistic context.
+    /// Deliberately NOT `HyperMemory.parents`, which is hallucination lineage
+    /// exported in the glyph spec — facet linkage is a distinct named field.
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+    /// This row is a facet (scanned for recall, excluded from merge grouping
+    /// and user-facing counts).
+    #[serde(default)]
+    pub is_facet: bool,
+    /// This row is a parent that has already been decomposed into facets.
+    /// Retained resolve-only: excluded from the resonance scan, resonance-merge
+    /// grouping, the coherence eigendecomp, energy prune/ghost, and every
+    /// user-facing count. Parent retention is an invariant — never delete one to
+    /// save space; that dangles every facet link. Also the idempotence flag: a
+    /// decomposition pass skips any parent already marked.
+    #[serde(default)]
+    pub decomposed: bool,
 }
 
 impl WavefrontMeta {
@@ -535,6 +560,9 @@ impl WavefrontMeta {
             observed_at: None,
             expires_at: None,
             provenance: None,
+            parent_id: None,
+            is_facet: false,
+            decomposed: false,
         }
     }
 
@@ -984,5 +1012,86 @@ mod chiral_tests {
                     FANO_LINES[i], FANO_LINES[j], shared);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod modality_roundtrip_tests {
+    use super::Modality;
+    use serde_json::json;
+
+    // #553 — `export-json` emitted no `modality` and `import-json` never read
+    // one, so every JSON round-trip silently collapsed NCS-tagged memories back
+    // to `Unknown`. These pin the serde contract both sides now depend on, plus
+    // source guards so the field cannot quietly disappear from either end again.
+
+    #[test]
+    fn modality_survives_a_json_value_round_trip() {
+        for m in [
+            Modality::Audio,
+            Modality::Visual,
+            Modality::Semantic,
+            Modality::Network,
+            Modality::Mixed,
+            Modality::Unknown,
+        ] {
+            let v = serde_json::to_value(m).expect("serialize");
+            let back: Modality = serde_json::from_value(v).expect("deserialize");
+            assert_eq!(back, m, "{m:?} must survive a Value round-trip");
+        }
+    }
+
+    #[test]
+    fn an_absent_modality_falls_back_to_unknown_rather_than_failing() {
+        // Exports predating #553 have no `modality` key at all. `val["modality"]`
+        // yields Null for those, and the importer must keep importing them —
+        // failing the record would turn a metadata gap into data loss.
+        let missing = json!({ "content": "old export" });
+        let parsed: Modality =
+            serde_json::from_value(missing["modality"].clone()).unwrap_or_default();
+        assert_eq!(parsed, Modality::Unknown);
+        assert_eq!(parsed, Modality::default());
+    }
+
+    #[test]
+    fn an_unrecognised_modality_falls_back_rather_than_failing() {
+        let odd = json!({ "modality": "Olfactory" });
+        let parsed: Modality = serde_json::from_value(odd["modality"].clone()).unwrap_or_default();
+        assert_eq!(parsed, Modality::Unknown, "a future variant must not break import");
+    }
+
+    // ── source guards: neither end may drop the field again ──
+
+    fn strip_comments(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn export_json_emits_the_modality_field() {
+        let src = strip_comments(include_str!("../bin/kannaka.rs"));
+        assert!(
+            src.contains("\"modality\": m.modality"),
+            "export-json must emit modality, or every round-trip loses NCS tagging"
+        );
+    }
+
+    #[test]
+    fn import_json_reads_the_modality_field() {
+        let src = strip_comments(include_str!("../bin/handlers/ops.rs"));
+        assert!(
+            src.contains("val[\"modality\"]"),
+            "import-json must read modality back"
+        );
+        // Applied via set_modality, NOT by assigning to the cached HyperMemory:
+        // modality is owned by the wavefront metadata, so a cache-only write is
+        // discarded by the next rebuild and the round-trip still returns
+        // Unknown. That is exactly how the first attempt at this fix failed.
+        assert!(
+            src.contains("hrm.set_modality(&new_id, want_modality)"),
+            "modality must be applied through set_modality so it reaches the metadata"
+        );
     }
 }

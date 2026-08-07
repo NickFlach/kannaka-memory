@@ -11,6 +11,54 @@ use kannaka_memory::config;
 
 use super::{check_kannaktopus_installed, KannakaConfig};
 
+
+// ---------------------------------------------------------------------------
+// GhostSignals response shapes
+//
+// This file has now drifted from the live API three separate times (#591,
+// #593, #594): a renamed route, a renamed collection key, and a wrapped
+// payload. Each failed SILENTLY — the CLI printed "?" and 0 rather than an
+// error — because every read is a fallback chain ending in a default.
+//
+// The shape decisions live here as pure functions so the contract can be
+// pinned by tests against the exact payloads kannaka-radio emits, instead of
+// being rediscovered by a human noticing that a column is always "?".
+// ---------------------------------------------------------------------------
+
+/// Unwrap `{ok, market: {...}}`, tolerating an already-unwrapped object.
+fn market_payload(v: &serde_json::Value) -> &serde_json::Value {
+    if v["market"].is_object() {
+        &v["market"]
+    } else {
+        v
+    }
+}
+
+/// The leaderboard rows, across every key the API has used.
+fn leaderboard_rows(v: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    v.as_array()
+        .or_else(|| v["traders"].as_array())
+        .or_else(|| v["agents"].as_array())
+        .or_else(|| v["leaderboard"].as_array())
+}
+
+/// A programming block's human-readable name.
+fn block_label(b: &serde_json::Value) -> &str {
+    b["label"]
+        .as_str()
+        .or_else(|| b["name"].as_str())
+        .or_else(|| b["block"].as_str())
+        .unwrap_or("?")
+}
+
+/// A programming block's descriptive text, if any.
+fn block_description(b: &serde_json::Value) -> &str {
+    b["description"]
+        .as_str()
+        .or_else(|| b["mood"].as_str())
+        .unwrap_or("")
+}
+
 // ---------------------------------------------------------------------------
 
 fn http_get(url: &str) -> Result<String, String> {
@@ -183,7 +231,7 @@ fn exchange_spacechild_for_kax(cfg: &KannakaConfig) -> Option<String> {
 fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
     let tok = cfg.ghostsignals.kax_token.trim();
     if tok.is_empty() {
-        return exchange_spacechild_for_kax(cfg).or_else(|| remint_help());
+        return exchange_spacechild_for_kax(cfg).or_else(remint_help);
     }
     let exp = jwt_claims(tok).and_then(|c| c["exp"].as_i64()).unwrap_or(0);
     let now = now_epoch();
@@ -207,7 +255,7 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 }
             }
             eprintln!("  KAX token refresh returned an unexpected response.");
-            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(|| remint_help()) }
+            if exp > now { Some(tok.to_string()) } else { exchange_spacechild_for_kax(cfg).or_else(remint_help) }
         }
         Err(e) => {
             if exp > now {
@@ -218,7 +266,7 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
                 eprintln!("  KAX token expired and refresh failed: {}", e);
                 // Dead lineage — federation can mint a fresh one if a
                 // SpaceChild session is on disk.
-                exchange_spacechild_for_kax(cfg).or_else(|| remint_help())
+                exchange_spacechild_for_kax(cfg).or_else(remint_help)
             }
         }
     }
@@ -273,7 +321,7 @@ fn pick_track(v: &serde_json::Value) -> (&str, &str) {
 }
 
 pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+    let sub = args.get(1).map(String::as_str).unwrap_or("status");
     let base = &cfg.constellation.radio_url;
 
     match sub {
@@ -331,13 +379,17 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
                         println!("  {}", "\u{2500}".repeat(50));
                         if let Some(blocks) = v.as_array().or_else(|| v["blocks"].as_array()).or_else(|| v["schedule"].as_array()) {
                             for block in blocks {
-                                let name = block["name"].as_str()
-                                    .or_else(|| block["block"].as_str())
-                                    .unwrap_or("?");
+                                // /api/programming returns getStatus(), whose
+                                // schedule entries are {start, end, label, mood,
+                                // albums} — `label`, not `name`/`block`, so every
+                                // row printed "?". Older keys kept. (#591)
+                                let name = block_label(block);
                                 let time = block["time"].as_str()
                                     .or_else(|| block["start"].as_str())
                                     .unwrap_or("");
-                                let desc = block["description"].as_str().unwrap_or("");
+                                // No `description` in the live shape either; `mood`
+                                // is the closest human-readable field. (#591)
+                                let desc = block_description(block);
                                 if desc.is_empty() {
                                     println!("  {:>8}  {}", time, name);
                                 } else {
@@ -369,7 +421,7 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
-    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
+    let sub = args.get(1).map(String::as_str).unwrap_or("list");
     // GhostSignals lives at `cfg.ghostsignals.hub_url` — falling back to
     // `cfg.constellation.radio_url` only when hub_url is empty (legacy
     // single-host configs). Pre-fix every market command hit radio_url
@@ -528,15 +580,20 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                        let q = v["question"].as_str()
-                            .or_else(|| v["title"].as_str())
+                        // GhostSignals wraps the payload: {ok, market: {...}}.
+                        // Reading the top level found nothing, so every field
+                        // silently rendered as "?" / 0. Fall back to `v` itself
+                        // so an unwrapped shape still works. (#594)
+                        let m = market_payload(&v);
+                        let q = m["question"].as_str()
+                            .or_else(|| m["title"].as_str())
                             .unwrap_or("?");
-                        let price = v["price"].as_f64()
-                            .or_else(|| v["last_price"].as_f64())
+                        let price = m["price"].as_f64()
+                            .or_else(|| m["last_price"].as_f64())
                             .unwrap_or(0.0);
-                        let vol = v["volume"].as_u64().unwrap_or(0);
-                        let created = v["created_at"].as_str().unwrap_or("?");
-                        let resolved = v["resolved"].as_bool().unwrap_or(false);
+                        let vol = m["volume"].as_u64().unwrap_or(0);
+                        let created = m["created_at"].as_str().unwrap_or("?");
+                        let resolved = m["resolved"].as_bool().unwrap_or(false);
 
                         println!("  \u{1f4ca} Market: {}", market_id);
                         println!("  {}", "\u{2500}".repeat(50));
@@ -745,13 +802,16 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
         }
         "leaderboard" => {
-            let url = format!("{}/api/agents/leaderboard", base);
+            // GhostSignals serves this at /api/leaderboard. /api/agents/leaderboard
+            // does not exist on kannaka-radio, so this 404'd every time. (#593)
+            let url = format!("{}/api/leaderboard", base);
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                        let agents = v.as_array()
-                            .or_else(|| v["agents"].as_array())
-                            .or_else(|| v["leaderboard"].as_array());
+                        // The live response is {ok, traders, count} — `traders`
+                        // was missing from this chain, so even against the right
+                        // route the list came back empty. Older keys kept. (#593)
+                        let agents = leaderboard_rows(&v);
                         if let Some(agents) = agents {
                             println!("  \u{1f3c6} GhostSignals Leaderboard");
                             println!("  {}", "\u{2500}".repeat(50));
@@ -881,3 +941,87 @@ pub(crate) fn handle_constellation(cfg: &KannakaConfig) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // The payloads below are the shapes kannaka-radio actually emits, taken
+    // from server/routes.js — not invented. That is the point: these tests
+    // fail if the client and the live API drift apart again.
+
+    #[test]
+    fn market_view_reads_the_wrapped_payload() {
+        // GET /api/markets/:id → sendJson(200, { ok: true, market: m })
+        let live = json!({
+            "ok": true,
+            "market": { "question": "Will X ship?", "price": 0.62, "volume": 41 }
+        });
+        let m = market_payload(&live);
+        assert_eq!(m["question"].as_str(), Some("Will X ship?"));
+        assert_eq!(m["price"].as_f64(), Some(0.62));
+        assert_eq!(m["volume"].as_u64(), Some(41));
+    }
+
+    #[test]
+    fn market_view_still_reads_an_unwrapped_payload() {
+        let flat = json!({ "question": "Direct", "price": 0.5 });
+        assert_eq!(market_payload(&flat)["question"].as_str(), Some("Direct"));
+    }
+
+    #[test]
+    fn leaderboard_reads_the_traders_key() {
+        // GET /api/leaderboard → sendJson(200, { ok: true, traders, count })
+        let live = json!({ "ok": true, "traders": [{ "agent_id": "kannaka" }], "count": 1 });
+        let rows = leaderboard_rows(&live).expect("traders should be found");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["agent_id"].as_str(), Some("kannaka"));
+    }
+
+    #[test]
+    fn leaderboard_still_reads_the_older_shapes() {
+        for v in [
+            json!([{ "agent_id": "a" }]),
+            json!({ "agents": [{ "agent_id": "a" }] }),
+            json!({ "leaderboard": [{ "agent_id": "a" }] }),
+        ] {
+            assert_eq!(leaderboard_rows(&v).map(|r| r.len()), Some(1));
+        }
+    }
+
+    #[test]
+    fn leaderboard_absent_is_none_not_empty() {
+        // Distinguishable from "present but empty", so the caller can say
+        // "no data" rather than printing an empty table as if it were the
+        // answer.
+        assert!(leaderboard_rows(&json!({ "ok": false })).is_none());
+        assert_eq!(leaderboard_rows(&json!({ "traders": [] })).map(|r| r.len()), Some(0));
+    }
+
+    #[test]
+    fn schedule_block_uses_the_live_field_names() {
+        // getStatus().schedule entries: {start, end, label, mood, albums}
+        let block = json!({
+            "start": "06:00", "end": "09:00",
+            "label": "Dawn Chorus", "mood": "ambient", "albums": ["a"]
+        });
+        assert_eq!(block_label(&block), "Dawn Chorus");
+        assert_eq!(block_description(&block), "ambient");
+    }
+
+    #[test]
+    fn schedule_block_falls_back_to_older_names() {
+        assert_eq!(block_label(&json!({ "name": "N" })), "N");
+        assert_eq!(block_label(&json!({ "block": "B" })), "B");
+        assert_eq!(block_description(&json!({ "description": "D" })), "D");
+    }
+
+    #[test]
+    fn schedule_block_unknown_shape_is_marked_not_blank() {
+        // "?" is deliberate: a blank name would read as a nameless block
+        // rather than as missing data.
+        assert_eq!(block_label(&json!({ "unexpected": 1 })), "?");
+        assert_eq!(block_description(&json!({ "unexpected": 1 })), "");
+    }
+}

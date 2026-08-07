@@ -418,6 +418,13 @@ impl Medium {
         resonances.sort_by(|a, b| b.1.resonance_strength.total_cmp(&a.1.resonance_strength));
         let rerank_pool = top_k.saturating_mul(2).max(top_k);
         resonances.truncate(rerank_pool);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r) in resonances.iter().take(6) {
+                eprintln!("[recall-trace]   flat raw idx={} sim={:.4} rs={:.4} eff={:.4} {}",
+                    i, r.similarity, r.resonance_strength, r.effective_strength,
+                    r.content.chars().take(32).collect::<String>());
+            }
+        }
 
         // 4. Xi diversity re-ranking: boost candidates with distinct xi signatures
         let query_xi = compute_xi_signature(&query_vector);
@@ -443,18 +450,66 @@ impl Medium {
             })
             .collect();
 
-        // 5. Re-sort by boosted resonance and take top-k
+        // 5. Re-sort by boosted resonance and take the pool.
+        //
+        // ADR-0049: when the medium holds facets, several rows can collapse to a
+        // single parent, so taking exactly `top_k` here would return fewer than
+        // `top_k` distinct memories after resolution. Over-fetch in that case —
+        // and ONLY in that case, so a corpus with no facets is byte-identical to
+        // the pre-facet behaviour.
+        let has_facets = self.has_facets();
+        let pool = if has_facets { crate::facet::overfetch_pool(top_k) } else { top_k };
         let mut sorted = initial_results;
         sorted.sort_by(|a, b| b.resonance_strength.total_cmp(&a.resonance_strength));
-        sorted.truncate(top_k);
+        sorted.truncate(pool);
 
         // 6. Coherence expansion — restricted to the candidate set when one was
         // provided, full medium otherwise. The restriction is what keeps a
         // tight beam tight; without it the expansion side-channel would pull
         // off-beam memories back in and defeat the sparsity win.
-        let coherence_expansion_results = self.expand_with_coherence_in_set(&sorted, top_k, candidates);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for r in sorted.iter().take(6) {
+                eprintln!("[recall-trace]   flat post-xi sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(32).collect::<String>());
+            }
+        }
+        let coherence_expansion_results = self.expand_with_coherence_in_set(&sorted, pool, candidates);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for r in coherence_expansion_results.iter().take(8) {
+                eprintln!("[recall-trace]   flat post-expand sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(32).collect::<String>());
+            }
+        }
 
-        Ok(coherence_expansion_results)
+        // 7. ADR-0049 facet resolution: rewrite facets to their parents, dedup
+        // by canonical id keeping the best score, truncate to top_k. Callers
+        // observe the list this returns, so an N-facet parent takes exactly one
+        // energy injection rather than N — see facet::resolve.
+        if !has_facets {
+            return Ok(coherence_expansion_results);
+        }
+        Ok(crate::facet::resolve(coherence_expansion_results, top_k, |id| {
+            self.parent_of_facet(id)
+        }))
+    }
+
+    /// Does this medium hold any facet rows? Cheap guard so an undecomposed
+    /// corpus never pays for resolution or over-fetch.
+    pub(crate) fn has_facets(&self) -> bool {
+        self.store.metadata.iter().any(|m| m.is_facet)
+    }
+
+    /// Facet → parent `(id, content)`. `None` when `id` is not a facet, or when
+    /// its parent is missing — the caller then surfaces the facet itself rather
+    /// than dropping it or attributing it to a parent that is not there.
+    pub(crate) fn parent_of_facet(&self, id: Uuid) -> Option<(Uuid, String)> {
+        let m = self.store.metadata.iter().find(|m| m.id == id)?;
+        if !m.is_facet {
+            return None;
+        }
+        let pid = m.parent_id?;
+        let parent = self.store.metadata.iter().find(|m| m.id == pid)?;
+        Some((parent.id, parent.content.clone()))
     }
 
     /// Coherence expansion that respects an attention beam.

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "p01-fork-sync",
+    "query": "bringing our downstream copy of the workspace project current with the parent repository",
+    "expect": ["8db26ff8-eb5c-4cbd-a8c1-02296320760b"],
+    "method": "target pinned via `kannaka search kannaka-buzz`; query paraphrased to avoid the tokens 'kannaka-buzz', 'fork', 'upstream', 'level', 'behind', 'ahead'"
+  },
+  {
+    "id": "p02-storage-exhausted",
+    "query": "the laptop ran out of storage and everything slowed to a crawl",
+    "expect": ["9460014c-e400-4514-a331-739514983548"],
+    "method": "pinned via `kannaka search 'Disk rescue'`; avoids 'disk', 'rescue', 'free', 'GB', 'Windows'"
+  },
+  {
+    "id": "p03-branding-overlay",
+    "query": "relocating our branding overlay so it stops colliding during merges",
+    "expect": ["33698f00-d8b1-44b0-b940-39103b981f20"],
+    "method": "pinned via `kannaka search crest`; avoids 'crest', 'component', 'upstream', 'import'"
+  },
+  {
+    "id": "p04-station-advert",
+    "query": "an advertisement airing on the station for the industrial control project",
+    "expect": ["85ebe8a2-d98f-46d9-a0f4-12dbe0037f04"],
+    "method": "pinned via `kannaka search 'Product Hunt'`; avoids 'Radio', 'commercial', '0xSCADA'"
+  },
+  {
+    "id": "p05-sensemaking-plan",
+    "query": "planned follow-up work on collective sensemaking layer calibration",
+    "expect": ["9c52001d-83b4-48d9-9873-d7cdeef1e48f"],
+    "method": "pinned via `kannaka search 'spiral engine'`; avoids 'spiral', 'L6', 'tuning', 'NEXT-SESSION'"
+  },
+  {
+    "id": "p06-auto-deploy",
+    "query": "the workspace server updates itself automatically from the container registry on a timer",
+    "expect": ["1ee9ad97-31d2-4f9f-ad5c-bdac9cd7de1c"],
+    "method": "pinned via `kannaka search ninjaportal`; avoids 'Hive', 'relay', 'ninjaportal', 'GHCR', 'auto-deploys'"
+  }
+]

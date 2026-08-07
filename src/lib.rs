@@ -6,10 +6,13 @@
 //! Memories exist as wavefronts in a high-dimensional tensor medium.
 //! Recall is resonance (constructive interference). Dreaming is annealing.
 
+pub mod acp;
 pub mod bridge;
 pub mod observe;
 pub mod openclaw;
 pub mod codebook;
+/// ADR-0049 facet decomposition — pure, deterministic compound→atomic split.
+pub mod facet;
 pub mod consolidation;
 pub mod kannaktopus;
 pub mod rhythm;
@@ -40,6 +43,9 @@ pub mod eye;
 #[cfg(feature = "nats")]
 pub mod nats;
 
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
 pub mod collective;
 pub mod sensemaking;
 pub mod immune;
@@ -49,6 +55,12 @@ pub mod research_planner;
 pub mod swarm_fitness;
 pub mod belief_fitness;
 pub mod hive_formation;
+
+/// Hive (kannaka-buzz) → NATS bridge: pure mapping, policy, and roster logic.
+/// Network plumbing lives in `src/bin/kannaka_hive_bridge.rs`.
+#[cfg(feature = "bridge")]
+pub mod hive_bridge;
+
 pub mod swarm_loop;
 pub mod paradox;
 pub mod queen;

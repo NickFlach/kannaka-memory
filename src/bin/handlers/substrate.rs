@@ -285,9 +285,9 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         // clusters, phi }, body_path, body_gz_bytes, event_id,
         // schema_version }.
         match serde_json::to_string(&sorted) {
-            Ok(s) => println!("{}", s),
+            Ok(s) => println!("{s}"),
             Err(e) => {
-                eprintln!("[list-snapshots] serialize: {}", e);
+                eprintln!("[list-snapshots] serialize: {e}");
                 process::exit(1);
             }
         }
@@ -546,7 +546,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
                     "memories": mems,
                     "contributors": contribs,
                 });
-                println!("{}", payload);
+                println!("{payload}");
             } else {
                 println!("collective substrate @ {}", ts);
                 println!("  Φ           {:.3}", phi);
@@ -566,7 +566,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
             "error": "no_phi_event",
             "wait_secs": wait_secs,
         });
-        eprintln!("{}", payload);
+        eprintln!("{payload}");
     } else {
         eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
     }
@@ -977,7 +977,7 @@ pub(crate) fn handle_substrate_backfill(
         }
     }
 
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    let _ = std::fs::write(&marker_path, chrono::Utc::now().to_rfc3339());
     eprintln!("[backfill] done — {} sent, {} failed. Marker: {}",
         sent, failed, marker_path.display());
 }
@@ -1094,7 +1094,7 @@ pub(crate) fn handle_substrate_init(
         }
     }
 
-    let _ = std::fs::write(&marker_path, format!("{}", chrono::Utc::now().to_rfc3339()));
+    let _ = std::fs::write(&marker_path, chrono::Utc::now().to_rfc3339());
     eprintln!("[init] done — {} anchors seeded ({} failed). Marker: {}",
         seeded, failed, marker_path.display());
     eprintln!("[init] substrate is now class-structured; restart `kannaka substrate run` so absorbs flow into the seeded clusters");
