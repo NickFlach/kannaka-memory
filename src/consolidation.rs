@@ -1034,7 +1034,7 @@ impl ConsolidationEngine {
                 mem_a.phase = norm(mem_a.phase + phase_correction);
             }
             if let Ok(Some(mem_b)) = engine.store.get_mut(&id_b) {
-                mem_b.phase -= phase_correction;
+                mem_b.phase = norm(mem_b.phase - phase_correction);
             }
             
             // Also slightly reduce amplitude correlation to encourage separate cluster formation
@@ -2843,7 +2843,7 @@ impl ConsolidationEngine {
                                 mem.phase = norm(mem.phase + 0.05);
                             }
                             if let Ok(Some(mem)) = engine.store.get_mut(&id_b) {
-                                mem.phase -= 0.05;
+                                mem.phase = norm(mem.phase - 0.05);
                             }
                         }
                         checks += 1;
