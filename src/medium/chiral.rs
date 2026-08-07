@@ -411,6 +411,23 @@ impl ChiralMedium {
         id: Uuid,
         pipeline: &EncodingPipeline,
     ) -> Result<usize, MediumError> {
+        // #699: canonicalize a hemisphere-local target to its right twin
+        // FIRST. The `decomposed` watermark lives per-row, so a caller that
+        // sweeps both hemispheres' ids (the eval backfill driver does) used
+        // to decompose each memory TWICE — the left pass minted a duplicate
+        // facet set whose parent_id was the left-local id, an id no
+        // canonical consumer can resolve (recall rows silently dropped
+        // downstream). Canonicalizing makes the second pass hit the
+        // watermark and every parent_id canonical.
+        let id = if self.right.id_to_index.contains_key(&id) {
+            id
+        } else if let Some(&rid) = self.left_to_right.get(&id) {
+            rid
+        } else {
+            // Orphaned left row: minting facets under an unresolvable
+            // parent would recreate exactly the dead-id defect — skip.
+            return Ok(0);
+        };
         let meta = self
             .right
             .metadata
@@ -732,8 +749,18 @@ impl ChiralMedium {
             .into_iter()
             .filter_map(|mut r| {
                 if let Some(&canonical) = self.left_to_right.get(&r.id) {
-                    r.id = canonical;
-                    Some(r)
+                    // #699 eval find: the mapping can be STALE — a resonant
+                    // merge absorbs the right row but leaves the left row and
+                    // its left_to_right entry behind, so translation emits an
+                    // id no canonical consumer can resolve (openclaw silently
+                    // drops it, shortening result lists). Same rule as the
+                    // #83 orphan case: never emit an unresolvable id.
+                    if self.right.id_to_index.contains_key(&canonical) {
+                        r.id = canonical;
+                        Some(r)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -810,8 +837,54 @@ impl ChiralMedium {
             results.truncate(top_k);
             return results;
         }
+        // #699: cap each constellation's contribution BEFORE the pool
+        // truncate. A constellation can occupy up to ~11 rows here (parent +
+        // MAX_FACETS_PER_PARENT facets, mirrored across both hemispheres), so
+        // an uncapped overfetch_pool(k) = 6k pool holds as few as ~k/2
+        // distinct constellations — measured on the frozen eval corpus:
+        // k=20 returned 10-11 rows even with widened hemisphere fetches.
+        // With a 2-row cap (best + one spare), the same pool spans >= 3k
+        // constellations and resolve can actually fill k distinct slots.
+        let mut per_parent: std::collections::HashMap<Uuid, usize> =
+            std::collections::HashMap::new();
+        results.retain(|r| {
+            let canonical = self
+                .parent_of_facet(r.id)
+                .map(|(pid, _)| pid)
+                .unwrap_or(r.id);
+            let n = per_parent.entry(canonical).or_insert(0);
+            *n += 1;
+            *n <= 2
+        });
         results.truncate(crate::facet::overfetch_pool(top_k));
-        crate::facet::resolve(results, top_k, |id| self.parent_of_facet(id))
+        if trace {
+            let facets = results
+                .iter()
+                .filter(|r| self.parent_of_facet(r.id).is_some())
+                .count();
+            eprintln!(
+                "[recall-trace] facet stage: pool={} (facet rows {}), resolving to top_k={}",
+                results.len(),
+                facets,
+                top_k
+            );
+        }
+        let resolved = crate::facet::resolve(results, top_k, |id| self.parent_of_facet(id));
+        if trace {
+            eprintln!("[recall-trace] facet stage: resolved -> {} rows", resolved.len());
+            for r in &resolved {
+                let in_right = self.right.id_to_index.contains_key(&r.id);
+                let in_left_meta = self.left.metadata.iter().any(|m| m.id == r.id);
+                eprintln!(
+                    "[recall-trace]   resolved id={} right={} leftmeta={} {}",
+                    r.id,
+                    in_right,
+                    in_left_meta,
+                    r.content.chars().take(30).collect::<String>()
+                );
+            }
+        }
+        resolved
     }
 
     /// Does either hemisphere hold facet rows? Cheap guard so an undecomposed
@@ -837,8 +910,21 @@ impl ChiralMedium {
         if !m.is_facet {
             return None;
         }
-        let parent = find(m.parent_id?)?;
-        Some((parent.id, parent.content.clone()))
+        let pid = m.parent_id?;
+        if let Some(parent) = self.right.metadata.iter().find(|m| m.id == pid) {
+            return Some((parent.id, parent.content.clone()));
+        }
+        // #699 eval find: when the parent is only found in LEFT metadata, its
+        // id is hemisphere-local — emitting it produces a row no canonical
+        // consumer can resolve (openclaw drops it silently, shortening recall
+        // lists) AND splits the constellation into a live right copy and a
+        // dead left twin. Canonicalize through left_to_right; if that fails,
+        // return None so the facet surfaces itself (a resolvable row) rather
+        // than fabricating an unresolvable parent.
+        let left_parent = self.left.metadata.iter().find(|m| m.id == pid)?;
+        let canonical = *self.left_to_right.get(&left_parent.id)?;
+        let idx = *self.right.id_to_index.get(&canonical)?;
+        Some((canonical, self.right.metadata[idx].content.clone()))
     }
 
     /// Re-encode every stored memory's content through `pipeline`, replacing the
@@ -3489,6 +3575,83 @@ The market square opens for trading at nine each morning.";
 
     fn facet_count(cm: &ChiralMedium) -> usize {
         cm.right.metadata.iter().filter(|m| m.is_facet).count()
+    }
+
+    /// #699 (frozen-corpus eval find): sweeping BOTH hemispheres' ids into
+    /// backfill used to decompose each memory twice — the left pass minted a
+    /// duplicate facet set stamped with the LEFT-LOCAL parent id, which no
+    /// canonical consumer can resolve (openclaw silently dropped those recall
+    /// rows, shortening k=20 lists to 10-11). Canonicalized backfill must
+    /// treat the left twin as already decomposed, and every minted parent_id
+    /// must be a live right id.
+    #[test]
+    fn backfill_canonicalizes_left_ids_and_never_double_mints() {
+        let p = pipeline();
+        let mut cm = ChiralMedium::new();
+        let parent = cm.store(COMPOUND, 0.9, &p).unwrap();
+
+        let n = cm.backfill_facets(parent, &p).unwrap();
+        assert!(n >= 2, "compound content must decompose");
+        let after_first = cm.right.metadata.len();
+
+        // The left twin's local id must hit the canonical watermark, not
+        // mint a second facet set.
+        let left_twin = cm.right_to_left.get(&parent).copied();
+        if let Some(left_id) = left_twin {
+            let n2 = cm.backfill_facets(left_id, &p).unwrap();
+            assert_eq!(n2, 0, "left-twin backfill must dedupe via the canonical watermark");
+            assert_eq!(cm.right.metadata.len(), after_first, "no duplicate facet rows");
+        }
+
+        // Every facet's parent_id must resolve in the RIGHT hemisphere.
+        for m in cm.right.metadata.iter().filter(|m| m.is_facet) {
+            let pid = m.parent_id.expect("facet carries parent_id");
+            assert!(
+                cm.right.id_to_index.contains_key(&pid),
+                "facet {} parent {} must be a live canonical id",
+                m.id,
+                pid
+            );
+        }
+    }
+
+    /// #699: legacy stores already contain facets whose parent_id is a
+    /// left-local id. parent_of_facet must canonicalize through
+    /// left_to_right — or surface the facet itself — but NEVER emit a
+    /// hemisphere-local id downstream.
+    #[test]
+    fn parent_of_facet_never_emits_left_local_ids() {
+        let p = pipeline();
+        let mut cm = ChiralMedium::new();
+        let parent = cm.store("the canonical parent memory row here", 0.9, &p).unwrap();
+        let facet = cm.store("a facet fragment with enough words here", 0.9, &p).unwrap();
+
+        if let Some(left_parent) = cm.right_to_left.get(&parent).copied() {
+            // Simulate the legacy defect: facet linked to the LEFT parent id.
+            for m in cm.right.metadata.iter_mut() {
+                if m.id == facet {
+                    m.is_facet = true;
+                    m.parent_id = Some(left_parent);
+                }
+            }
+            let resolved = cm.parent_of_facet(facet).expect("canonicalizes");
+            assert_eq!(
+                resolved.0, parent,
+                "left-local parent id must canonicalize to the right id"
+            );
+        }
+
+        // Orphaned parent (no such row anywhere): facet surfaces itself.
+        let ghost = uuid::Uuid::new_v4();
+        for m in cm.right.metadata.iter_mut() {
+            if m.id == facet {
+                m.parent_id = Some(ghost);
+            }
+        }
+        assert!(
+            cm.parent_of_facet(facet).is_none(),
+            "unresolvable parent must surface the facet, not fabricate an id"
+        );
     }
 
     #[test]

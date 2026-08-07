@@ -451,6 +451,11 @@ impl KannakaMemorySystem {
 
         let mut out = Vec::new();
         for (id, resonance_strength) in results {
+            if std::env::var("KANNAKA_RECALL_TRACE").is_ok()
+                && self.engine.store.get(&id).ok().flatten().is_none()
+            {
+                eprintln!("[recall-trace] openclaw DROP: id {id} not in canonical store");
+            }
             if let Some(m) = self.engine.store.get(&id).ok().flatten() {
                 let age_hours = (now - m.created_at).num_seconds().max(0) as f64 / 3600.0;
                 out.push(RecallResult {
