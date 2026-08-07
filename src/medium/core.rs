@@ -418,6 +418,13 @@ impl Medium {
         resonances.sort_by(|a, b| b.1.resonance_strength.total_cmp(&a.1.resonance_strength));
         let rerank_pool = top_k.saturating_mul(2).max(top_k);
         resonances.truncate(rerank_pool);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r) in resonances.iter().take(6) {
+                eprintln!("[recall-trace]   flat raw idx={} sim={:.4} rs={:.4} eff={:.4} {}",
+                    i, r.similarity, r.resonance_strength, r.effective_strength,
+                    r.content.chars().take(32).collect::<String>());
+            }
+        }
 
         // 4. Xi diversity re-ranking: boost candidates with distinct xi signatures
         let query_xi = compute_xi_signature(&query_vector);
@@ -460,7 +467,19 @@ impl Medium {
         // provided, full medium otherwise. The restriction is what keeps a
         // tight beam tight; without it the expansion side-channel would pull
         // off-beam memories back in and defeat the sparsity win.
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for r in sorted.iter().take(6) {
+                eprintln!("[recall-trace]   flat post-xi sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(32).collect::<String>());
+            }
+        }
         let coherence_expansion_results = self.expand_with_coherence_in_set(&sorted, pool, candidates);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for r in coherence_expansion_results.iter().take(8) {
+                eprintln!("[recall-trace]   flat post-expand sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(32).collect::<String>());
+            }
+        }
 
         // 7. ADR-0049 facet resolution: rewrite facets to their parents, dedup
         // by canonical id keeping the best score, truncate to top_k. Callers

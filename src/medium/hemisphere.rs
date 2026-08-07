@@ -421,6 +421,13 @@ impl Hemisphere {
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let rerank_pool = top_k.saturating_mul(2).max(top_k);
         results.truncate(rerank_pool);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r, s) in results.iter().take(6) {
+                eprintln!("[recall-trace]     {:?} raw idx={} sim={:.4} res={:.4} e={:.4} {}",
+                    self.hand, i, s, r, self.energy[*i],
+                    self.metadata[*i].content.chars().take(32).collect::<String>());
+            }
+        }
 
         // 3. Xi diversity re-ranking: boost candidates with distinct xi signatures.
         //
@@ -455,6 +462,12 @@ impl Hemisphere {
         // 4. Re-sort by boosted resonance and take top-k
         boosted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         boosted.truncate(top_k);
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            for (i, r, s) in boosted.iter().take(6) {
+                eprintln!("[recall-trace]     {:?} boosted idx={} sim={:.4} res={:.4}",
+                    self.hand, i, s, r);
+            }
+        }
 
         boosted
             .into_iter()

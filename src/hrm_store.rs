@@ -2334,6 +2334,10 @@ impl MediumBackend for HrmStore {
             }
         }
 
+        if std::env::var("KANNAKA_RECALL_TRACE").is_ok() {
+            eprintln!("[recall-trace] resonate_query top_k={} path={}",
+                top_k, if self.chiral.is_some() { "chiral" } else { "flat" });
+        }
         if let Some(ref chiral) = self.chiral {
             // Chiral bilateral resonance — TODO: fold cluster prefilter
             // into the chiral path; for v1 chiral users skip the prefilter

@@ -664,9 +664,18 @@ impl ChiralMedium {
     /// Recall with a pre-encoded vector.
     pub fn recall_vector(&self, vector: &[f32], top_k: usize) -> Vec<ChiralResonance> {
         let recall_mode = chiral_recall_mode();
+        let trace = std::env::var("KANNAKA_RECALL_TRACE").is_ok();
 
         // 1. Search left hemisphere (analytical - fast, precise)
         let mut left_matches = self.left.resonate(vector, top_k);
+        if trace {
+            eprintln!("[recall-trace] chiral k={} left_n={} right_n={}",
+                top_k, self.left.count(), self.right.count());
+            for r in &left_matches {
+                eprintln!("[recall-trace]   left  sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(40).collect::<String>());
+            }
+        }
         // Read-side differentiation (exp-2, dormant; Off = unchanged). `weighted`
         // boosts left matches so a routinized memory resists eviction when a novel
         // flood degrades its right-hemisphere resonance. Boosting strength does not
@@ -680,6 +689,12 @@ impl ChiralMedium {
 
         // 2. Search right hemisphere (holistic - deep, associative)
         let right_matches = self.right.resonate(vector, top_k * 2);
+        if trace {
+            for r in &right_matches {
+                eprintln!("[recall-trace]   right sim={:.4} rs={:.4} {}",
+                    r.similarity, r.resonance_strength, r.content.chars().take(40).collect::<String>());
+            }
+        }
 
         // 3. Identify intuitions: right matches not paired with left matches.
         //    Left matches carry hemisphere-local UUIDs; paired_right_ids is
@@ -739,9 +754,32 @@ impl ChiralMedium {
             return results;
         }
 
-        // Add right-hemisphere matches that aren't already paired with left matches
+        // Merge right-hemisphere matches by canonical id, keeping the STRONGER
+        // hemisphere's score for a paired memory (kannaka-memory#716b).
+        //
+        // Pre-fix, a paired right match was dropped outright and the memory
+        // surfaced with only its left-hemisphere score. Left rows score content
+        // queries near zero (the analytical encoding is not a content
+        // embedding; xi's additive tier then lifts everything to ~0.03-0.04),
+        // so the moment a memory's left row cracked the left top_k its true
+        // right-hemisphere resonance was masked — an exact-text match measured
+        // 0.9999 at top_k=3 fell to 0.0334 at top_k=4 on a 5-memory HRM purely
+        // because k decided whether its left row surfaced. Scores must not
+        // depend on top_k: a paired memory now surfaces with
+        // max(left, right) resonance, and is_intuition stays false for it
+        // (it lives in both hemispheres — not a right-only insight).
         for mut r in right_matches {
-            if !paired_right_ids.contains(&r.id) {
+            if paired_right_ids.contains(&r.id) {
+                if let Some(existing) = results.iter_mut().find(|e| e.id == r.id) {
+                    if r.resonance_strength > existing.resonance_strength {
+                        r.is_intuition = false;
+                        *existing = r;
+                    }
+                }
+                // Paired but its left row didn't survive translation (orphan):
+                // fall through to nothing — the right row was already excluded
+                // pre-fix too, and an orphaned pair heals on the next prune.
+            } else {
                 r.is_intuition = true;
                 results.push(r);
             }
@@ -2014,6 +2052,56 @@ mod tests {
 
         let results = cm.recall("quick brown fox", 5, &pipeline).unwrap();
         assert!(!results.is_empty(), "Should find stored memory");
+    }
+
+    // kannaka-memory#716b: a memory's reported score must not depend on top_k.
+    //
+    // Pre-fix, a paired right-hemisphere match was DROPPED from the merge and
+    // the memory surfaced with only its left-hemisphere score — which for
+    // content queries is near-noise (the analytical encoding is not a content
+    // embedding). So the exact same query flipped from 0.9999 to 0.03 when
+    // top_k crossed the threshold at which the memory's left row entered the
+    // left top_k pool (measured on a live 5-memory HRM: k=3 vs k=4). The merge
+    // must keep the STRONGER hemisphere's score for a paired memory.
+    #[test]
+    fn recall_score_is_top_k_invariant() {
+        let mut cm = ChiralMedium::new();
+        let pipeline = test_pipeline();
+
+        let contents = [
+            "Kannaka Labs location Tech Hub OpenBotCity memory",
+            "swarm NATS authentication kannaka nodes memory",
+            "crystal evidence ladder Level 3 perturbation survival memory",
+            "Ghost Signals podcast episode radio memory",
+            "kannaka-apps application store runner memory",
+        ];
+        let mut target = None;
+        for c in &contents {
+            let id = cm.store(c, 0.85, &pipeline).unwrap();
+            if c.contains("Ghost Signals") {
+                target = Some(id);
+            }
+        }
+        let target = target.unwrap();
+
+        let query = "Ghost Signals podcast episode radio memory";
+        let baseline = cm.recall(query, 2, &pipeline).unwrap();
+        assert_eq!(baseline[0].id, target, "exact match must rank first at k=2");
+        let baseline_strength = baseline[0].resonance_strength;
+
+        for k in 3..=8 {
+            let results = cm.recall(query, k, &pipeline).unwrap();
+            assert_eq!(
+                results[0].id, target,
+                "exact match must rank first at k={k} (716b: left row masking right score)"
+            );
+            let drift = (results[0].resonance_strength - baseline_strength).abs();
+            assert!(
+                drift < 1e-4,
+                "top hit's score changed with k: {baseline_strength} at k=2 vs {} at k={k}",
+                results[0].resonance_strength
+            );
+        }
     }
 
     #[test]
