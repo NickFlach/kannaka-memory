@@ -1726,3 +1726,69 @@ fn detect_modality_simple_returns_tuple() {
     assert_eq!(modality, Modality::Audio);
     assert!(confidence > 0.0);
 }
+
+// #699: on a facet-bearing corpus, one parent's facet cluster must not starve
+// the result list. Pre-fix, the raw pool (2k rows) filled with sibling facets
+// of the strongest parent, so recall(k) returned far fewer than k distinct
+// constellations and weaker parents were absent from the pool entirely.
+//
+// NOTE: on a corpus this small, coherence expansion alone can rescue the
+// starved pool, so this test pins the CONTRACT (k distinct constellations,
+// dedup) rather than proving the pool fix — the 615-memory field repro in
+// the issue is the honest acceptance for the recall@10 regression and runs
+// via the harbor eval harness (evals/), not the unit suite.
+#[test]
+fn facet_recall_returns_k_distinct_constellations() {
+    let pipeline = make_test_pipeline();
+    let mut medium = Medium::new();
+
+    let query = "kannaka wave memory resonance target";
+    let qv = pipeline.encode_text(query).unwrap();
+    // A vector ~70% aligned with the query, padded with mass on a fixed axis.
+    let mut weak = qv.clone();
+    for x in weak.iter_mut() {
+        *x *= 0.7;
+    }
+    weak[0] += 1.0;
+
+    // Parent A + 6 facet rows, all resonating ~1.0 with the query.
+    let parent_a = medium
+        .add_wavefront(&qv, "parent a".to_string(), 0.9)
+        .unwrap();
+    let mut facet_ids = Vec::new();
+    for i in 0..crate::facet::MAX_FACETS_PER_PARENT {
+        let id = medium
+            .add_wavefront(&qv, format!("parent a fragment {i}"), 0.9)
+            .unwrap();
+        facet_ids.push(id);
+    }
+    // Weaker distinct parents that must still surface at k=3.
+    let parent_b = medium.add_wavefront(&weak, "parent b".to_string(), 0.9).unwrap();
+    let parent_c = medium.add_wavefront(&weak, "parent c".to_string(), 0.9).unwrap();
+
+    for id in &facet_ids {
+        let idx = medium.get_wavefront_index(id).unwrap();
+        medium.store.metadata[idx].is_facet = true;
+        medium.store.metadata[idx].parent_id = Some(parent_a);
+    }
+
+    let results = medium.recall(query, 3, &pipeline).unwrap();
+    let distinct: std::collections::HashSet<Uuid> = results.iter().map(|r| r.id).collect();
+    assert_eq!(
+        distinct.len(),
+        results.len(),
+        "resolve must dedup facets to one row per constellation"
+    );
+    assert!(
+        results.len() >= 3,
+        "k=3 on a 3-parent corpus must return 3 distinct constellations, got {}: {:?}",
+        results.len(),
+        results.iter().map(|r| &r.content).collect::<Vec<_>>()
+    );
+    for wanted in [parent_a, parent_b, parent_c] {
+        assert!(
+            results.iter().any(|r| r.id == wanted),
+            "parent {wanted} missing from k=3 results"
+        );
+    }
+}

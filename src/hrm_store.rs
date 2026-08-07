@@ -469,6 +469,18 @@ impl HrmStore {
                 .map(|(id, m)| (*id, (m.retrieval_count, m.updated_at)))
                 .collect();
 
+        // #497 (remaining half): layer_depth and last_consolidated_at also
+        // live only in the cache. Rebuilding from WavefrontMeta zeroed both —
+        // discarding stage_transfer's layer promotions (DreamState's
+        // layer-banded cycles restarted from scratch) and defeating
+        // consolidate_incremental's changed-since check. Snapshot and
+        // restore them exactly like reactivation above.
+        let saved_consolidation: std::collections::HashMap<uuid::Uuid, (u8, Option<DateTime<Utc>>)> =
+            self.memory_cache.iter()
+                .filter(|(_, m)| m.layer_depth != 0 || m.last_consolidated_at.is_some())
+                .map(|(id, m)| (*id, (m.layer_depth, m.last_consolidated_at)))
+                .collect();
+
         self.memory_cache.clear();
 
         if let Some(ref chiral) = self.chiral {
@@ -568,6 +580,14 @@ impl HrmStore {
                 if last.is_some() {
                     mem.updated_at = last;
                 }
+            }
+        }
+
+        // Restore layer promotions + incremental-consolidation stamps (#497).
+        for (id, (layer, consolidated)) in saved_consolidation {
+            if let Some(mem) = self.memory_cache.get_mut(&id) {
+                mem.layer_depth = layer;
+                mem.last_consolidated_at = consolidated;
             }
         }
 
@@ -2440,6 +2460,35 @@ mod tests {
         let deleted = store.delete(&id).unwrap();
         assert!(deleted);
         assert_eq!(store.count(), 0);
+    }
+
+    /// #497 (remaining half): layer promotions and incremental-consolidation
+    /// stamps live only in the cache; rebuild_cache used to zero both,
+    /// discarding stage_transfer's work and defeating
+    /// consolidate_incremental's changed-since premise on every dream/absorb.
+    #[test]
+    fn rebuild_cache_preserves_layer_and_consolidation_stamps() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp_file.path().to_path_buf());
+
+        let memory = HyperMemory::new(vec![0.5; WAVEFRONT_DIM], "layered".to_string());
+        let id = store.insert(memory).unwrap();
+
+        let stamp = chrono::Utc::now();
+        {
+            let mem = store.get_mut(&id).unwrap().unwrap();
+            mem.layer_depth = 3;
+            mem.last_consolidated_at = Some(stamp);
+        }
+        store.rebuild_cache().unwrap();
+
+        let mem = store.get(&id).unwrap().unwrap();
+        assert_eq!(mem.layer_depth, 3, "stage_transfer promotion must survive rebuild");
+        assert_eq!(
+            mem.last_consolidated_at,
+            Some(stamp),
+            "consolidate_incremental stamp must survive rebuild"
+        );
     }
 
     // #498: search scores the LIVE cache with NORMALIZED cosine, not raw dot

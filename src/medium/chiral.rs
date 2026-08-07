@@ -666,8 +666,20 @@ impl ChiralMedium {
         let recall_mode = chiral_recall_mode();
         let trace = std::env::var("KANNAKA_RECALL_TRACE").is_ok();
 
+        // #699: on a facet-bearing corpus, per-hemisphere pools sized for
+        // plain top_k starve the post-merge facet resolution — sibling
+        // facets of a few hot parents fill the pool before other parents
+        // get a slot. Widen the hemisphere fetch by the facet over-fetch
+        // factor so resolution has k DISTINCT constellations to choose
+        // from. Undecomposed corpora keep the byte-identical pools.
+        let fetch_k = if self.has_facets() {
+            crate::facet::overfetch_pool(top_k)
+        } else {
+            top_k
+        };
+
         // 1. Search left hemisphere (analytical - fast, precise)
-        let mut left_matches = self.left.resonate(vector, top_k);
+        let mut left_matches = self.left.resonate(vector, fetch_k);
         if trace {
             eprintln!("[recall-trace] chiral k={} left_n={} right_n={}",
                 top_k, self.left.count(), self.right.count());
@@ -688,7 +700,7 @@ impl ChiralMedium {
         }
 
         // 2. Search right hemisphere (holistic - deep, associative)
-        let right_matches = self.right.resonate(vector, top_k * 2);
+        let right_matches = self.right.resonate(vector, fetch_k * 2);
         if trace {
             for r in &right_matches {
                 eprintln!("[recall-trace]   right sim={:.4} rs={:.4} {}",
