@@ -1153,6 +1153,14 @@ impl SwarmTransport {
     /// messages in their original order. Uses the same authenticated
     /// handshake as `connect()` (NATS_USER/NATS_PASSWORD are NOT dropped
     /// on reconnect).
+    ///
+    /// **Existing subscriptions do NOT survive this call (#706).** Each
+    /// `NatsSubscription` reads from a clone of the pre-reconnect socket, so
+    /// after a reconnect their `next_event()` reports `Closed`. Repair them
+    /// explicitly with [`NatsSubscription::resubscribe_via`], or treat
+    /// `Closed` as exit-for-restart (the pattern the long-lived services
+    /// use). Silently continuing to poll an old subscription after reconnect
+    /// listens to a dead socket.
     pub fn reconnect(&mut self) -> Result<(), NatsError> {
         let new_conn = handshake(&self.url, self.explicit_creds.as_ref())?;
 
@@ -2415,6 +2423,11 @@ impl SwarmTransport {
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: first_sid.to_string(),
+            // Multi-subject subscription — resubscribe_via (#706) cannot
+            // rebuild it from a single subject; callers recreate it via
+            // subscribe_phases_and_memories on the reconnected transport.
+            subject: String::new(),
+            queue_group: None,
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
@@ -2687,6 +2700,8 @@ impl SwarmTransport {
         Ok(NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: sid.to_string(),
+            subject: subject.to_string(),
+            queue_group: queue_group.map(str::to_string),
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
@@ -2747,6 +2762,10 @@ pub struct NatsSubscription {
     reader: BufReader<TcpStream>,
     /// The (first) subscription id registered for this subscription.
     sid: String,
+    /// Subject + queue group this subscription was created with — kept so a
+    /// dead subscription can be rebuilt on a reconnected transport (#706).
+    subject: String,
+    queue_group: Option<String>,
     /// Instant of the last frame of ANY kind read from the server. Reset on
     /// every Msg/Ping/Pong/etc.; drives the idle-death check (#500).
     last_frame: Instant,
@@ -2806,6 +2825,33 @@ impl NatsSubscription {
     /// The subscription id this subscription registered with the server.
     pub fn sid(&self) -> &str {
         &self.sid
+    }
+
+    /// Rebuild this subscription on a (typically just-reconnected) transport
+    /// (#706). A subscription reads from a clone of the socket it was created
+    /// on, so `SwarmTransport::reconnect()` repairs publishes but leaves
+    /// existing subscriptions pinned to the dead stream — their next_event()
+    /// reports `Closed`. Callers that want to survive a reconnect replace the
+    /// subscription:
+    ///
+    /// ```ignore
+    /// transport.reconnect()?;
+    /// sub = sub.resubscribe_via(&transport)?;
+    /// ```
+    ///
+    /// Returns an error for multi-subject subscriptions (created via
+    /// `subscribe_phases_and_memories`) — recreate those through their own
+    /// constructor.
+    pub fn resubscribe_via(
+        &self,
+        transport: &SwarmTransport,
+    ) -> Result<NatsSubscription, NatsError> {
+        if self.subject.is_empty() {
+            return Err(NatsError::Protocol(
+                "multi-subject subscription: recreate it via its original constructor".into(),
+            ));
+        }
+        transport.subscribe_with_queue(&self.subject, self.queue_group.as_deref())
     }
 
     /// Record that a frame of any kind just arrived: the connection is alive,
@@ -3804,6 +3850,8 @@ mod tests {
         let mut sub = NatsSubscription {
             reader: BufReader::new(client),
             sid: "42".to_string(),
+            subject: String::new(),
+            queue_group: None,
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: Duration::from_millis(30),
@@ -3836,6 +3884,8 @@ mod tests {
         let mut sub = NatsSubscription {
             reader: BufReader::new(client),
             sid: "43".to_string(),
+            subject: String::new(),
+            queue_group: None,
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: Duration::from_millis(40),
@@ -3866,6 +3916,8 @@ mod tests {
         let mut sub = NatsSubscription {
             reader: BufReader::new(client),
             sid: "44".to_string(),
+            subject: String::new(),
+            queue_group: None,
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: Duration::from_millis(40),
@@ -3902,6 +3954,8 @@ mod tests {
         let sub = NatsSubscription {
             reader: BufReader::new(client),
             sid: "44".to_string(),
+            subject: String::new(),
+            queue_group: None,
             last_frame: Instant::now(),
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
