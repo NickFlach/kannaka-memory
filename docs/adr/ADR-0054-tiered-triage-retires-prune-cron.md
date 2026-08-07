@@ -1,6 +1,6 @@
 # ADR-0054 — Tiered Memory Triage Inside the Dream Cycle (retiring prune-cron)
 
-**Status:** Proposed
+**Status:** Accepted (ratified by Nick 2026-08-07 — "merge the adr and start the rollout")
 **Date:** 2026-08-07
 **Relates to:** ADR-0031 (retention tiers), ADR-0036 (reactivation as the
 replay signal; incremental consolidation), ADR-0037 (ghost stamps and the
