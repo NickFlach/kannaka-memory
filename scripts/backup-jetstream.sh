@@ -39,7 +39,7 @@ if [ -f "${NATS_CONFIG}" ]; then
 fi
 
 # Cleanup old backups
-find "${BACKUP_BASE}" -maxdepth 1 -type d -mtime +${RETENTION_DAYS} -exec rm -rf {} \;
+find "${BACKUP_BASE}" -mindepth 1 -maxdepth 1 -type d -mtime +${RETENTION_DAYS} -exec rm -rf {} \;
 echo "  Old backups cleaned (retention: ${RETENTION_DAYS} days)"
 
 # Report size
