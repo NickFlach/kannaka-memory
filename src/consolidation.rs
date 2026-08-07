@@ -139,6 +139,9 @@ pub struct ConsolidationReport {
     pub clusters_synced: usize,
     pub sync_order_improvement: f32,
     pub memories_transferred: usize,
+    /// ADR-0054: rows ghosted by the retention-policy stage (cap/TTL rules
+    /// from config `[retention]`; 0 when KANNAKA_TRIAGE is off or no rules).
+    pub retention_ghosted: usize,
     pub skip_links_created: usize,
     pub hallucinations_created: usize,
     pub duration_ms: u64,
@@ -342,6 +345,13 @@ impl ConsolidationEngine {
 
         // Stage 6b: TRANSFER -- promote old memories to deeper layers
         report.memories_transferred = self.stage_transfer(engine);
+
+        // Stage 6b': RETENTION TRIAGE (ADR-0054) -- enforce declared per-prefix
+        // cap/TTL policy by GHOSTING (never hard-deleting) the lowest-value
+        // excess. Runs before COMPACT so a row ghosted here gets the full
+        // ADR-0037 recovery window before any hard delete. Dark by default:
+        // requires KANNAKA_TRIAGE=1 AND a non-empty [retention] table.
+        report.retention_ghosted = self.stage_retention_triage(engine);
 
         // Stage 6c: COMPACT -- reclaim long-ghosted memories (#361). Pruning only
         // soft-deletes (amplitude=0.0); without this sweep ghosts re-serialize
@@ -1155,6 +1165,108 @@ impl ConsolidationEngine {
     /// Retention horizon defaults to 7 days; override with
     /// `KANNAKA_GHOST_RETAIN_DAYS` (0 reclaims every ghost immediately — treats
     /// ghost as a true delete).
+    /// ADR-0054 Stage 6b': retention triage. Policy comes from the config
+    /// `[retention]` table (content-prefix → cap/ttl_days); execution is
+    /// ghost-only under the dream's existing write context, so the external
+    /// prune-cron's lock fights (and its radio stream drops) have no
+    /// equivalent here.
+    ///
+    /// Eligibility per rule: content starts with the prefix, live
+    /// (amplitude > 0), tier != Pinned, and retrieval_count below
+    /// KANNAKA_PROMOTE_HITS — a row the system keeps recalling is exactly
+    /// the signal the old cron ignored, and it must never be evicted by cap
+    /// pressure (acceptance #3).
+    fn stage_retention_triage(&self, engine: &mut ResonanceEngine) -> usize {
+        if std::env::var("KANNAKA_TRIAGE").as_deref() != Ok("1") {
+            return 0;
+        }
+        let retention = crate::config::KannakaConfig::load().retention;
+        if retention.is_empty() {
+            return 0;
+        }
+        let promote_hits: u32 = std::env::var("KANNAKA_PROMOTE_HITS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let now = chrono::Utc::now();
+
+        // Read pass: plan eligibility per rule while the immutable borrow is
+        // alive, then drop it before any ghosting mutation.
+        let plans: Vec<(String, crate::config::RetentionRule, Vec<(Uuid, u32, f32, f32)>)> = {
+            let all = match engine.store.all_memories() {
+                Ok(m) => m,
+                Err(_) => return 0,
+            };
+            retention
+                .iter()
+                .filter(|(_, rule)| rule.cap.is_some() || rule.ttl_days.is_some())
+                .map(|(prefix, rule)| {
+                    let eligible: Vec<(Uuid, u32, f32, f32)> = all
+                        .iter()
+                        .filter(|m| {
+                            m.amplitude > 0.0
+                                && m.tier != crate::medium::types::Tier::Pinned
+                                && m.retrieval_count < promote_hits
+                                && m.content.starts_with(prefix.as_str())
+                        })
+                        .map(|m| {
+                            let age_days =
+                                (now - m.created_at).num_seconds().max(0) as f32 / 86_400.0;
+                            (m.id, m.retrieval_count, m.amplitude, age_days)
+                        })
+                        .collect();
+                    (prefix.clone(), rule.clone(), eligible)
+                })
+                .collect()
+        };
+
+        let mut ghosted_total = 0usize;
+        for (prefix, rule, mut eligible) in plans {
+            let mut ghosted_here = 0usize;
+            // TTL first: stale rows ghost regardless of cap.
+            if let Some(ttl) = rule.ttl_days {
+                eligible.retain(|(id, _, _, age)| {
+                    if *age > ttl {
+                        if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                            mem.amplitude = 0.0; // ghost (soft-delete)
+                            mem.updated_at = Some(now); // ADR-0037 recovery window
+                            ghosted_here += 1;
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            // Cap: ghost the excess, lowest (retrieval_count, amplitude) first.
+            if let Some(cap) = rule.cap {
+                if eligible.len() > cap {
+                    eligible.sort_by(|a, b| {
+                        a.1.cmp(&b.1).then(
+                            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal),
+                        )
+                    });
+                    let excess = eligible.len() - cap;
+                    for (id, _, _, _) in eligible.iter().take(excess) {
+                        if let Ok(Some(mem)) = engine.store.get_mut(id) {
+                            mem.amplitude = 0.0;
+                            mem.updated_at = Some(now);
+                            ghosted_here += 1;
+                        }
+                    }
+                }
+            }
+            if ghosted_here > 0 {
+                eprintln!(
+                    "[dream] retention triage \"{prefix}\": ghosted {ghosted_here}                      (cap {:?}, ttl_days {:?})",
+                    rule.cap, rule.ttl_days
+                );
+            }
+            ghosted_total += ghosted_here;
+        }
+        ghosted_total
+    }
+
     fn stage_compact_ghosts(&self, engine: &mut ResonanceEngine, cycle_started_at: chrono::DateTime<Utc>) -> usize {
         let retain_days: i64 = std::env::var("KANNAKA_GHOST_RETAIN_DAYS")
             .ok()
@@ -3947,4 +4059,128 @@ mod tests {
         assert!(consolidation.constructive_boost < boost_before,
             "engine boost should decrease after adaptation");
     }
+
+    // -----------------------------------------------------------------------
+    // ADR-0054: retention triage (env + config are process-global, so all
+    // cases share ONE #[test], mirroring the facet_write_path pattern).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retention_triage_acceptance() {
+        let ce = ConsolidationEngine::default();
+
+        // Isolated config home for this test.
+        let dir = std::env::temp_dir().join(format!("k54-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev_data_dir = std::env::var("KANNAKA_DATA_DIR").ok();
+        std::env::set_var("KANNAKA_DATA_DIR", &dir);
+
+        // ── Acceptance #1: flag ON + EMPTY table → no-op ──────────────────
+        std::fs::write(dir.join("config.toml"), "").unwrap();
+        std::env::set_var("KANNAKA_TRIAGE", "1");
+        let mut engine = make_engine();
+        for i in 0..4 {
+            engine.remember_at_layer(&format!("audio:heard clip {i}"), 0).unwrap();
+        }
+        let before: Vec<f32> = engine.store.all_memories().unwrap().iter().map(|m| m.amplitude).collect();
+        assert_eq!(ce.stage_retention_triage(&mut engine), 0, "empty table must be a no-op");
+        let after: Vec<f32> = engine.store.all_memories().unwrap().iter().map(|m| m.amplitude).collect();
+        assert_eq!(before, after, "no amplitude may change under an empty table");
+
+        // ── Flag OFF + populated table → still a no-op ────────────────────
+        std::fs::write(
+            dir.join("config.toml"),
+            "[retention]\n\"audio:\" = { cap = 2 }\n",
+        ).unwrap();
+        std::env::remove_var("KANNAKA_TRIAGE");
+        assert_eq!(ce.stage_retention_triage(&mut engine), 0, "dark flag must gate the stage");
+
+        // ── Acceptance #2: cap ghosts exactly n-cap rows, lowest value first
+        std::env::set_var("KANNAKA_TRIAGE", "1");
+        let all = engine.store.all_memories().unwrap();
+        // Give clip 0 and clip 1 higher retrieval salience (still below the
+        // promote threshold) and boost clip 2's amplitude, leaving clip 3 the
+        // weakest — with cap=2, clips 3 and one other low row must ghost.
+        let mut ids: Vec<(Uuid, String)> = all.iter().map(|m| (m.id, m.content.clone())).collect();
+        ids.sort_by_key(|(_, c)| c.clone());
+        for (id, content) in &ids {
+            let mem = engine.store.get_mut(id).unwrap().unwrap();
+            if content.ends_with("0") || content.ends_with("1") {
+                mem.retrieval_count = 2; // below default promote threshold (3)
+            }
+            mem.amplitude = if content.ends_with("2") { 0.9 } else { 0.5 };
+        }
+        let ghosted = ce.stage_retention_triage(&mut engine);
+        assert_eq!(ghosted, 2, "cap=2 over 4 rows must ghost exactly 2");
+        for (id, content) in &ids {
+            let mem = engine.get_memory(id).unwrap().unwrap();
+            if content.ends_with("0") || content.ends_with("1") {
+                assert!(mem.amplitude > 0.0, "{content}: higher retrieval_count must survive");
+            } else {
+                assert_eq!(mem.amplitude, 0.0, "{content}: lowest-value rows must ghost");
+                assert!(mem.updated_at.is_some(), "{content}: ghost must carry the ADR-0037 stamp");
+            }
+        }
+
+        // ── Acceptance #3: promoted rows are immune to cap pressure ───────
+        let mut engine = make_engine();
+        for i in 0..3 {
+            engine.remember_at_layer(&format!("audio:heard promo {i}"), 0).unwrap();
+        }
+        let all = engine.store.all_memories().unwrap();
+        let promoted_id = all[0].id;
+        {
+            let mem = engine.store.get_mut(&promoted_id).unwrap().unwrap();
+            mem.retrieval_count = 3; // at the default KANNAKA_PROMOTE_HITS
+        }
+        std::fs::write(
+            dir.join("config.toml"),
+            "[retention]\n\"audio:\" = { cap = 0 }\n",
+        ).unwrap();
+        let ghosted = ce.stage_retention_triage(&mut engine);
+        assert_eq!(ghosted, 2, "cap=0 must ghost every eligible row");
+        assert!(
+            engine.get_memory(&promoted_id).unwrap().unwrap().amplitude > 0.0,
+            "a row at the promote threshold must never be evicted by cap pressure"
+        );
+
+        // ── Pinned rows are untouchable even by TTL ───────────────────────
+        let mut engine = make_engine();
+        let id = engine.remember_at_layer("audio:heard pinned forever", 0).unwrap();
+        {
+            let mem = engine.store.get_mut(&id).unwrap().unwrap();
+            mem.tier = crate::medium::types::Tier::Pinned;
+            mem.created_at = Utc::now() - chrono::Duration::days(365);
+        }
+        std::fs::write(
+            dir.join("config.toml"),
+            "[retention]\n\"audio:\" = { cap = 0, ttl_days = 1.0 }\n",
+        ).unwrap();
+        assert_eq!(ce.stage_retention_triage(&mut engine), 0, "Pinned survives cap AND ttl");
+
+        // ── TTL ghosts stale rows, keeps fresh ones ───────────────────────
+        let mut engine = make_engine();
+        let old_id = engine.remember_at_layer("audio:heard ancient", 0).unwrap();
+        let new_id = engine.remember_at_layer("audio:heard fresh", 0).unwrap();
+        {
+            let mem = engine.store.get_mut(&old_id).unwrap().unwrap();
+            mem.created_at = Utc::now() - chrono::Duration::days(30);
+        }
+        std::fs::write(
+            dir.join("config.toml"),
+            "[retention]\n\"audio:\" = { ttl_days = 14.0 }\n",
+        ).unwrap();
+        assert_eq!(ce.stage_retention_triage(&mut engine), 1, "only the stale row ghosts");
+        assert_eq!(engine.get_memory(&old_id).unwrap().unwrap().amplitude, 0.0);
+        assert!(engine.get_memory(&new_id).unwrap().unwrap().amplitude > 0.0);
+
+        // Cleanup (process-global env).
+        std::env::remove_var("KANNAKA_TRIAGE");
+        match prev_data_dir {
+            Some(v) => std::env::set_var("KANNAKA_DATA_DIR", v),
+            None => std::env::remove_var("KANNAKA_DATA_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
