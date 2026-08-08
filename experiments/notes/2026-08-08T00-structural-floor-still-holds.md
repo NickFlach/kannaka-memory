@@ -1,0 +1,1 @@
+No new levers since 2026-08-07T14: ADR-0054 triage stage is dark (KANNAKA_TRIAGE gate + empty retention table in L5); no consolidation.rs or research.rs changes affect fitness metrics. Structural floor intact.
