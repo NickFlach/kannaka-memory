@@ -178,6 +178,24 @@ pub fn prove_existence(
     commitment: &PedersenCommitment,
     opening: &CommitmentOpening,
 ) -> ExistenceProof {
+    // Empty `bound` reproduces the historical challenge H(C, t) byte for byte,
+    // so every existing proof type is untouched by #700.
+    prove_schnorr(commitment, opening, &[])
+}
+
+/// Schnorr proof of knowledge of an opening, with `bound` folded into the
+/// Fiat-Shamir challenge.
+///
+/// `bound` is what makes a proof mean something beyond "I know an opening"
+/// (#700). Whatever the caller puts there becomes part of the statement: the
+/// verifier recomputes the challenge from the values IT holds, so altering any
+/// of them after the fact breaks the Schnorr equation. With `bound` empty this
+/// is exactly the original construction.
+fn prove_schnorr(
+    commitment: &PedersenCommitment,
+    opening: &CommitmentOpening,
+    bound: &[u128],
+) -> ExistenceProof {
     let order = PRIME - 1;
 
     // Prover picks random k, s
@@ -189,8 +207,10 @@ pub fn prove_existence(
     let hs = mod_pow(H, s, PRIME);
     let t = mod_mul(gk, hs, PRIME);
 
-    // Fiat-Shamir challenge: c = H(C, t)
-    let c = challenge_hash(&[commitment.value, t]);
+    // Fiat-Shamir challenge: c = H(C, t, ..bound)
+    let mut inputs = vec![commitment.value, t];
+    inputs.extend_from_slice(bound);
+    let c = challenge_hash(&inputs);
 
     // Responses
     let z_v = mod_add(k, mod_mul(c, opening.committed_value, order), order);
@@ -204,23 +224,60 @@ pub fn prove_existence(
     }
 }
 
-/// Verify an existence proof.
-///
-/// Checks: g^z_v · h^z_r == t · C^c
-pub fn verify_existence(proof: &ExistenceProof) -> bool {
-    // Recompute challenge
-    let c = challenge_hash(&[proof.commitment, proof.t]);
+/// Verify a Schnorr proof whose challenge was bound to `bound`.
+fn verify_schnorr(proof: &ExistenceProof, bound: &[u128]) -> bool {
+    let mut inputs = vec![proof.commitment, proof.t];
+    inputs.extend_from_slice(bound);
+    let c = challenge_hash(&inputs);
 
-    // LHS: g^z_v · h^z_r
     let gz = mod_pow(G, proof.z_v, PRIME);
     let hz = mod_pow(H, proof.z_r, PRIME);
     let lhs = mod_mul(gz, hz, PRIME);
 
-    // RHS: t · C^c
     let cc = mod_pow(proof.commitment, c, PRIME);
     let rhs = mod_mul(proof.t, cc, PRIME);
 
     lhs == rhs
+}
+
+/// Domain-separation tag for similarity statements (#700). A distinct tag per
+/// proof type stops a proof minted for one claim being replayed as another.
+const DOMAIN_SIMILARITY: u128 = 0x5f4b414e4e414b415f53494d494c4152; // "_KANNAKA_SIMILAR"
+
+/// Fold a string into the challenge, length-prefixed so that concatenation
+/// cannot collide (`"ab"+"c"` must not digest the same as `"a"+"bc"`).
+fn digest_str(s: &str) -> u128 {
+    let mut acc: u128 = 0xcbf29ce484222325;
+    acc = acc
+        .wrapping_mul(0x100000001b3)
+        .wrapping_add(s.len() as u128);
+    for b in s.as_bytes() {
+        acc = acc.wrapping_mul(0x100000001b3).wrapping_add(*b as u128);
+        acc ^= acc >> 29;
+    }
+    acc
+}
+
+/// The exact claim a [`SimilarityProof`] makes: this glyph, this query, this
+/// score. Any change to any of the three yields a different challenge and so a
+/// proof that no longer verifies.
+///
+/// The score is hashed via `to_bits()` — a decimal rendering would not be
+/// bit-exact, and the challenge has to be reproducible byte for byte.
+fn similarity_statement(glyph_hash: &str, query_hash: u64, similarity: f64) -> [u128; 4] {
+    [
+        DOMAIN_SIMILARITY,
+        digest_str(glyph_hash),
+        query_hash as u128,
+        similarity.to_bits() as u128,
+    ]
+}
+
+/// Verify an existence proof.
+///
+/// Checks: g^z_v · h^z_r == t · C^c
+pub fn verify_existence(proof: &ExistenceProof) -> bool {
+    verify_schnorr(proof, &[])
 }
 
 /// Prove that a committed amplitude is at least `threshold`.
@@ -293,6 +350,22 @@ pub fn verify_depth(proof: &DepthProof) -> bool {
 }
 
 /// Prove similarity between a glyph and a query.
+/// The proof is BOUND to `(glyph_hash, query_hash, similarity)` (#700).
+///
+/// Pre-fix the inner existence proof covered only the vector commitment, so
+/// the score and query rode alongside it unprotected: a glyph owner knows
+/// their own opening, could staple `similarity = 1.0` to a valid proof for a
+/// query with no relevance, and the same proof bytes verified for EVERY query
+/// because the query was never an input.
+///
+/// **This proves binding, not correctness.** It attests that the prover
+/// committed to this exact score for this exact query against this exact
+/// committed vector and cannot swap any of them afterwards. It does NOT prove
+/// the cosine really is that value — that needs a ZK circuit over the inner
+/// product (the Bulletproofs upgrade path in the module header). Callers that
+/// weight ranking or trust by this score are trusting the responder's
+/// arithmetic; what they gain here is that the claim is non-replayable and
+/// attributable.
 pub fn prove_similarity(
     glyph: &PrivacyGlyph,
     commitments: &GlyphCommitments,
@@ -300,7 +373,8 @@ pub fn prove_similarity(
     query_hash: u64,
     similarity: f64,
 ) -> SimilarityProof {
-    let proof = prove_existence(&commitments.vector, &openings.vector);
+    let statement = similarity_statement(&glyph.glyph_hash, query_hash, similarity);
+    let proof = prove_schnorr(&commitments.vector, &openings.vector, &statement);
     SimilarityProof {
         glyph_hash: glyph.glyph_hash.clone(),
         similarity,
@@ -309,12 +383,18 @@ pub fn prove_similarity(
     }
 }
 
-/// Verify a similarity proof.
+/// Verify a similarity proof against the claim it carries.
+///
+/// The statement is recomputed from the proof's OWN fields, so a tampered
+/// score, a swapped query, or a different committed vector all yield a
+/// different challenge and fail the Schnorr check.
 pub fn verify_similarity(proof: &SimilarityProof) -> bool {
-    if proof.similarity < 0.0 || proof.similarity > 1.0 {
+    if !(0.0..=1.0).contains(&proof.similarity) {
         return false;
     }
-    verify_existence(&proof.proof)
+    let statement =
+        similarity_statement(&proof.glyph_hash, proof.query_hash, proof.similarity);
+    verify_schnorr(&proof.proof, &statement)
 }
 
 /// Prove that a memory is not a hallucination.
@@ -453,6 +533,90 @@ mod tests {
         );
         assert!(verify_similarity(&proof));
         assert_eq!(proof.similarity, 0.85);
+    }
+
+    /// #700: the score is BOUND. Pre-fix `verify_similarity` only range-checked
+    /// it and deferred to an existence proof that never covered it, so a glyph
+    /// owner could staple any in-range number to a valid proof.
+    #[test]
+    fn tampered_similarity_score_fails_verification() {
+        let mem = test_memory("quantum computing research");
+        let result = seal_with_commitments(&mem, 0, "agent-1");
+        let commitments = result.glyph.commitments.as_ref().unwrap();
+
+        let honest = prove_similarity(&result.glyph, commitments, &result.openings, 12345, 0.42);
+        assert!(verify_similarity(&honest), "the honest proof must verify");
+
+        // The exact attack from the issue: inflate the claim to 1.0.
+        let mut forged = honest.clone();
+        forged.similarity = 1.0;
+        assert!(
+            !verify_similarity(&forged),
+            "an inflated score must not verify — this is the core #700 break"
+        );
+
+        // Deflation must fail too; the binding is not one-directional.
+        let mut lowered = honest.clone();
+        lowered.similarity = 0.41;
+        assert!(!verify_similarity(&lowered));
+    }
+
+    /// #700: the proof must not be replayable across queries. Pre-fix the same
+    /// bytes verified for EVERY query_hash, because the query was never an
+    /// input to the challenge.
+    #[test]
+    fn similarity_proof_does_not_replay_for_another_query() {
+        let mem = test_memory("quantum computing research");
+        let result = seal_with_commitments(&mem, 0, "agent-1");
+        let commitments = result.glyph.commitments.as_ref().unwrap();
+
+        let for_query_a =
+            prove_similarity(&result.glyph, commitments, &result.openings, 111, 0.9);
+        assert!(verify_similarity(&for_query_a));
+
+        let mut replayed = for_query_a.clone();
+        replayed.query_hash = 222;
+        assert!(
+            !verify_similarity(&replayed),
+            "a proof minted for query A must not verify for query B"
+        );
+    }
+
+    /// #700: binding covers the committed vector too — a proof cannot be moved
+    /// onto a different glyph's commitment.
+    #[test]
+    fn similarity_proof_does_not_transfer_to_another_vector() {
+        let a = seal_with_commitments(&test_memory("alpha document"), 0, "agent-1");
+        let b = seal_with_commitments(&test_memory("beta document"), 0, "agent-2");
+        let ca = a.glyph.commitments.as_ref().unwrap();
+
+        let proof_a = prove_similarity(&a.glyph, ca, &a.openings, 777, 0.75);
+        assert!(verify_similarity(&proof_a));
+
+        // Swap in the other glyph's identity — the statement no longer matches.
+        let mut moved = proof_a.clone();
+        moved.glyph_hash = b.glyph.glyph_hash.clone();
+        assert!(
+            !verify_similarity(&moved),
+            "a proof must not verify under a different glyph identity"
+        );
+
+        // And the other glyph's own commitment cannot be substituted either.
+        let cb = b.glyph.commitments.as_ref().unwrap();
+        let mut swapped = proof_a.clone();
+        swapped.proof.commitment = cb.vector.value;
+        assert!(!verify_similarity(&swapped));
+    }
+
+    /// The binding must not have been achieved by breaking the other proof
+    /// types: their challenge is unchanged, so they must still verify.
+    #[test]
+    fn binding_similarity_leaves_other_proof_types_intact() {
+        let (c, o) = PedersenCommitment::commit(42);
+        assert!(
+            verify_existence(&prove_existence(&c, &o)),
+            "plain existence proofs must be unaffected by the #700 binding"
+        );
     }
 
     #[test]
