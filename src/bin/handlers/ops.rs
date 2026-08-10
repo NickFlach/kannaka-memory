@@ -640,6 +640,11 @@ pub(crate) fn import_memories_from_file(
             eprintln!("Failed to save: {}", e);
             process::exit(1);
         }
+        // #730: refresh Observatory's cached counts ONCE for the whole import.
+        // This path absorbs straight into the store rather than going through
+        // `remember`, so it needs its own call — and doing it here, not
+        // per-memory, keeps a 10k-row import to a single cache write.
+        sys.refresh_status_cache_counts();
     }
 
     ImportSummary { imported, skipped, errors, total: memories.len() }
