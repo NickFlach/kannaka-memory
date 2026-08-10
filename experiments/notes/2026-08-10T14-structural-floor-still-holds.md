@@ -1,0 +1,1 @@
+No new code changes to consolidation.rs or research.rs since the Aug 7 fire; all six autoresearch questions remain closed and all parameter levers exhausted per 2026-08-01T14 notes; structural floor intact.
