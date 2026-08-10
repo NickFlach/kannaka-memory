@@ -71,9 +71,9 @@ pub fn rank_correlation_01(pairs: &[(f32, f32)]) -> f32 {
     let mut cov = 0.0f32;
     let mut vx = 0.0f32;
     let mut vy = 0.0f32;
-    for i in 0..rx.len() {
-        let dx = rx[i] - mx;
-        let dy = ry[i] - my;
+    for (rx_i, ry_i) in rx.iter().zip(ry.iter()) {
+        let dx = *rx_i - mx;
+        let dy = *ry_i - my;
         cov += dx * dy;
         vx += dx * dx;
         vy += dy * dy;

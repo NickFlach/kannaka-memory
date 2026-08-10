@@ -68,7 +68,7 @@ pub fn parse_research_content(content: &str) -> Option<ResearchFinding> {
         .split("cited_by=")
         .nth(1)
         .and_then(|tail| {
-            let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
             digits.parse::<i64>().ok()
         });
 
@@ -77,7 +77,7 @@ pub fn parse_research_content(content: &str) -> Option<ResearchFinding> {
         .split("OpenAlex: ")
         .nth(1)
         .and_then(|tail| tail.split_whitespace().next())
-        .map(|s| s.to_string());
+        .map(str::to_string);
 
     Some(ResearchFinding { title, year, citations, abstract_snippet, openalex_id })
 }
@@ -87,7 +87,7 @@ fn extract_year(s: &str) -> Option<i64> {
     let mut i = 0;
     while i + 4 <= bytes.len() {
         if bytes[i].is_ascii_digit() {
-            let run: String = s[i..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let run: String = s[i..].chars().take_while(char::is_ascii_digit).collect();
             if run.len() == 4 {
                 if let Ok(y) = run.parse::<i64>() {
                     if (1500..=2100).contains(&y) {
