@@ -10,7 +10,108 @@ use super::{compact_input, data_dir, flag_value, parse_flag_value, KannakaConfig
 
 const ASK_USAGE: &str = "Usage: kannaka ask [--session <id>] [--quiet-tools] [--no-tools] \
 [--no-recall|--full-recall] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \
-[--remote-timeout <seconds>] [--nats-url <url>] \"your question\"";
+[--remote-timeout <seconds>] [--nats-url <url>] \"your question\"\n\
+\n\
+--remote answers with FULL recall and no tool loop, whatever the local recall-mode \
+flags say — the request protocol does not carry the mode (#746). --no-recall is \
+rejected with --remote; --full-recall and --session warn.";
+
+/// What the remote path can and cannot honour about the requested ask mode
+/// (#746).
+pub(crate) struct RemoteModeVerdict {
+    /// Set when the requested mode is not merely degraded but INVERTED, so
+    /// proceeding would do the opposite of what was asked.
+    pub fatal: Option<&'static str>,
+    pub warnings: Vec<&'static str>,
+}
+
+/// Decide what to say about ask-mode flags combined with `--remote`.
+///
+/// The remote request carries only `{text, recall_query, no_tools}` and the
+/// peer always runs `ask_notools_ex` (full recall, no tool loop). Pre-#746 the
+/// other flags were silently dropped, so the CLI reported a mode it had
+/// discarded. Pure so the policy is testable — the caller only prints and exits.
+pub(crate) fn remote_mode_verdict(
+    no_recall: bool,
+    full_recall: bool,
+    no_tools: bool,
+    has_session: bool,
+) -> RemoteModeVerdict {
+    let mut warnings = Vec::new();
+    // `--full-recall --no-tools` is exactly what the peer does, so warning
+    // there would be noise on a correct invocation.
+    if full_recall && !no_tools {
+        warnings.push(
+            "--full-recall's tool loop is not available over --remote; the peer answers without tools (#746).",
+        );
+    }
+    if has_session {
+        warnings.push(
+            "--session is not carried over --remote; the peer answers with no conversation continuity (#746).",
+        );
+    }
+    // An INVERSION, not a degradation: the caller asked for no memory context
+    // and the peer would run the fullest possible scan. No silent behaviour is
+    // defensible, so this is the one hard error.
+    let fatal = no_recall.then_some(
+        "--no-recall cannot be honored with --remote — the serving peer always\n\
+         runs FULL recall, the opposite of what you asked for. (#746)\n\
+         Drop --remote to run locally, or drop --no-recall to accept the peer's answer.",
+    );
+    RemoteModeVerdict { fatal, warnings }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_mode_verdict;
+
+    /// The sharp case: `--no-recall` over `--remote` INVERTS the request, so it
+    /// must be refused rather than silently running full recall.
+    #[test]
+    fn no_recall_over_remote_is_fatal() {
+        let v = remote_mode_verdict(true, false, false, false);
+        assert!(v.fatal.is_some(), "--no-recall --remote must be refused");
+        assert!(v.fatal.unwrap().contains("opposite"));
+    }
+
+    /// `--full-recall --no-tools` is precisely what the peer does — warning on a
+    /// correct invocation would train operators to ignore the warnings.
+    #[test]
+    fn full_recall_with_no_tools_is_silent() {
+        let v = remote_mode_verdict(false, true, true, false);
+        assert!(v.fatal.is_none());
+        assert!(
+            v.warnings.is_empty(),
+            "the one combination that already matches the peer must not warn: {:?}",
+            v.warnings
+        );
+    }
+
+    /// ...but the tool loop genuinely is unavailable, so that case does warn.
+    #[test]
+    fn full_recall_with_tools_warns_about_the_tool_loop() {
+        let v = remote_mode_verdict(false, true, false, false);
+        assert!(v.fatal.is_none());
+        assert_eq!(v.warnings.len(), 1);
+        assert!(v.warnings[0].contains("tool loop"));
+    }
+
+    #[test]
+    fn session_over_remote_warns_about_lost_continuity() {
+        let v = remote_mode_verdict(false, false, false, true);
+        assert!(v.fatal.is_none());
+        assert!(v.warnings.iter().any(|w| w.contains("--session")));
+    }
+
+    /// The common path must stay quiet — a warning on every remote ask is noise,
+    /// and the default's mismatch is the protocol half, not a caller error.
+    #[test]
+    fn plain_remote_is_quiet() {
+        let v = remote_mode_verdict(false, false, false, false);
+        assert!(v.fatal.is_none());
+        assert!(v.warnings.is_empty());
+    }
+}
 
 pub(crate) fn handle_ask(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
@@ -70,6 +171,20 @@ pub(crate) fn handle_ask(
     // --remote: route the question over NATS to a peer (or broadcast) running
     // `kannaka swarm serve`. ADR-0026 Phase 1.
     if let Some(target) = remote {
+        // #746: the request payload carries only {text, recall_query, no_tools}
+        // and the peer always answers with `ask_notools_ex` (full recall, no
+        // tool loop). Recall-mode flags therefore CANNOT be honoured remotely.
+        // Pre-fix they were silently dropped, so the CLI claimed a mode it had
+        // discarded. Say so instead. (Actually carrying the mode is a protocol
+        // change with a version-compat trap — see the issue.)
+        let verdict = remote_mode_verdict(no_recall, full_recall, no_tools, session.is_some());
+        for w in &verdict.warnings {
+            eprintln!("ask: warning: {w}");
+        }
+        if let Some(fatal) = verdict.fatal {
+            eprintln!("ask: {fatal}");
+            process::exit(2);
+        }
         return handle_ask_remote(cfg, args, &target, &prompt, recall_query.as_deref(),
             no_tools, remote_timeout_secs, quiet_tools);
     }
