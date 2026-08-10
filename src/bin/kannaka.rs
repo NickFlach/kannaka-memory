@@ -592,6 +592,8 @@ fn usage_lines() -> &'static [&'static str] {
         "  market list|view|buy      GhostSignals prediction markets",
         "  market auth <jwt>|whoami  KAX identity for labs-tier trading (auto-refreshed)",
         "  swarm status|join|sync|serve   Swarm network (serve = host KANNAKA.ask.*)",
+        "                            serve + listen --auto-sync need AUTHENTICATED NATS",
+        "                            credentials (~/.kannaka-nats.env); anon is read-only",
         "  attention serve|stats     Attention beam (eye/ear → recall_against_ids)",
         "",
         "Agent (LLM):",
