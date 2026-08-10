@@ -50,6 +50,57 @@ fn is_active_presence(p: &serde_json::Value) -> bool {
     p.get("status").and_then(|v| v.as_str()) != Some("left")
 }
 
+/// How long a presence record keeps counting as a live peer without a refresh
+/// (#737).
+///
+/// `swarm join` heartbeats every 30s by default (floor 5s), so five minutes is
+/// a 10x margin: a loaded or briefly-partitioned node is never wrongly hidden,
+/// while a node that CRASHED — and therefore never wrote the `status: "left"`
+/// tombstone `is_active_presence` looks for — stops being advertised in
+/// minutes instead of lingering for the presence stream's 24h `max_age`. It is
+/// the same window `live_phase_agents` already applies to `QUEEN.phase`, so the
+/// two liveness surfaces cannot disagree about who is here.
+pub const PRESENCE_LIVE_WINDOW_SECS: i64 = 300;
+
+/// Read the live window, honouring the `KANNAKA_PRESENCE_LIVE_SECS` escape
+/// hatch. A deployment whose agents beacon on a slow cron rather than the
+/// 30s heartbeat can widen it; `0` disables freshness filtering entirely and
+/// restores the pre-#737 "everything retained is live" behaviour.
+fn presence_live_window_secs() -> i64 {
+    std::env::var("KANNAKA_PRESENCE_LIVE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 0)
+        .unwrap_or(PRESENCE_LIVE_WINDOW_SECS)
+}
+
+/// Seconds since this record's `last_seen` heartbeat stamp, or `None` when it
+/// carries no parsable one. Negative for a stamp in the future (clock skew).
+pub fn presence_age_secs(p: &serde_json::Value, now: chrono::DateTime<Utc>) -> Option<i64> {
+    let seen = p.get("last_seen").and_then(|v| v.as_str())?;
+    let seen = chrono::DateTime::parse_from_rfc3339(seen)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(now.signed_duration_since(seen).num_seconds())
+}
+
+/// Is this presence record fresh enough to present as a reachable peer (#737)?
+///
+/// **Fails OPEN**, on the same reasoning as [`is_active_presence`]: a record
+/// with no parsable `last_seen` reads as live. Agents predating the field
+/// would otherwise vanish from the swarm the moment this shipped, which is a
+/// worse failure than showing one stale entry.
+pub fn is_fresh_presence(p: &serde_json::Value, now: chrono::DateTime<Utc>) -> bool {
+    let window = presence_live_window_secs();
+    if window == 0 {
+        return true;
+    }
+    match presence_age_secs(p, now) {
+        Some(age) => age < window,
+        None => true,
+    }
+}
+
 fn add_envelope(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
         // Per consciousness-core/docs/nats-contract.yaml:
@@ -1889,14 +1940,40 @@ impl SwarmTransport {
         self.publish_raw(&subject, &bytes)
     }
 
-    /// Read all current presence records.
+    /// Read the presence records of peers that are actually live right now.
     ///
-    /// Retraction tombstones (`status == "left"`, written by
-    /// [`Self::publish_presence_left`]) are filtered out HERE rather than in
-    /// each consumer (#590). There are at least two independent readers
-    /// (`swarm peers`, `brief --peers`) and filtering at the shared reader
-    /// means a new one cannot forget and resurrect ghosts.
+    /// Two filters, both applied HERE rather than in each consumer (#590).
+    /// There are at least two independent readers (`swarm peers`,
+    /// `brief --peers`) and filtering at the shared reader means a new one
+    /// cannot forget and resurrect ghosts:
+    ///
+    /// - retraction tombstones (`status == "left"`, from a clean
+    ///   [`Self::publish_presence_left`]) — a departure the agent announced;
+    /// - records whose `last_seen` has gone stale (#737) — a departure nobody
+    ///   announced, which is the common case: a crash, a lost network, or a
+    ///   closed laptop writes no tombstone at all, so without this the dead
+    ///   node advertised itself as reachable for the stream's full 24h
+    ///   `max_age`.
+    ///
+    /// Use [`Self::get_presence_all`] for the forensic view that keeps stale
+    /// records.
     pub fn get_presence(&self) -> Result<Vec<serde_json::Value>, NatsError> {
+        let now = Utc::now();
+        Ok(self
+            .get_presence_all()?
+            .into_iter()
+            .filter(|p| is_fresh_presence(p, now))
+            .collect())
+    }
+
+    /// Every non-tombstoned presence record the stream still retains, stale
+    /// ones included.
+    ///
+    /// For forensics and for `swarm peers --all`, which reports staleness
+    /// rather than hiding it. Anything that presents peers as *reachable* —
+    /// counts, capability advertisements, request fan-out — wants
+    /// [`Self::get_presence`] instead.
+    pub fn get_presence_all(&self) -> Result<Vec<serde_json::Value>, NatsError> {
         let all = self.get_stream_messages("KANNAKA_PRESENCE", "KANNAKA.presence.>", 200)?;
         Ok(all.into_iter().filter(is_active_presence).collect())
     }
@@ -3069,6 +3146,72 @@ mod tests {
         );
         // Envelope still applied, so the tombstone is contract-valid on the wire.
         assert_eq!(payload.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+    }
+
+    /// Build a presence record whose `last_seen` is `age_secs` old.
+    fn presence_aged(agent: &str, now: chrono::DateTime<Utc>, age_secs: i64) -> serde_json::Value {
+        serde_json::json!({
+            "agent_id": agent,
+            "last_seen": (now - chrono::Duration::seconds(age_secs)).to_rfc3339(),
+        })
+    }
+
+    /// #737: a crashed agent writes no `status: "left"` tombstone, so the
+    /// tombstone filter alone cannot retire it — only `last_seen` can. This is
+    /// the whole liveness claim `swarm peers` and `brief --peers` rest on.
+    #[test]
+    fn stale_presence_is_not_live_even_without_a_tombstone() {
+        let now = Utc::now();
+        let fresh = presence_aged("beating", now, 30); // one heartbeat ago
+        let crashed = presence_aged("crashed", now, PRESENCE_LIVE_WINDOW_SECS + 60);
+
+        assert!(
+            is_active_presence(&crashed),
+            "precondition: a crash leaves NO tombstone, so the #590 filter still calls it active"
+        );
+        assert!(is_fresh_presence(&fresh, now));
+        assert!(
+            !is_fresh_presence(&crashed, now),
+            "a record older than the live window must stop counting as a reachable peer"
+        );
+    }
+
+    /// Fails OPEN, matching `is_active_presence`: hiding every agent too old to
+    /// stamp `last_seen` would be a worse failure than showing one ghost.
+    #[test]
+    fn presence_without_parsable_last_seen_reads_as_live() {
+        let now = Utc::now();
+        let no_field = serde_json::json!({ "agent_id": "legacy" });
+        let unparsable = serde_json::json!({ "agent_id": "odd", "last_seen": "not-a-timestamp" });
+        let wrong_type = serde_json::json!({ "agent_id": "odd2", "last_seen": 12345 });
+
+        assert_eq!(presence_age_secs(&no_field, now), None);
+        for p in [&no_field, &unparsable, &wrong_type] {
+            assert!(
+                is_fresh_presence(p, now),
+                "missing/unparsable last_seen must fail OPEN, never hide a live peer: {p}"
+            );
+        }
+    }
+
+    /// A peer whose clock runs ahead of ours yields a negative age. That is
+    /// skew, not staleness — it must not read as "in the future, therefore gone".
+    #[test]
+    fn presence_from_a_skewed_future_clock_is_live() {
+        let now = Utc::now();
+        let ahead = presence_aged("skewed", now, -600);
+        assert!(presence_age_secs(&ahead, now).is_some_and(|a| a < 0));
+        assert!(is_fresh_presence(&ahead, now));
+    }
+
+    /// The window is a wide multiple of the 30s default heartbeat, so an agent
+    /// that merely missed a beat or two is never wrongly retired.
+    #[test]
+    fn live_window_leaves_room_for_missed_heartbeats() {
+        assert!(
+            PRESENCE_LIVE_WINDOW_SECS >= 30 * 5,
+            "window must tolerate several missed 30s heartbeats"
+        );
     }
 
     // hunt: the handshake INFO read (and any control line) must be BOUNDED — a
