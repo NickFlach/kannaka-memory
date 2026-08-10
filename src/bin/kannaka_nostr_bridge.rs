@@ -19,7 +19,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kannaka_memory::nostr::bridge::{process, Dedup, Outcome, RateLimiter};
+use kannaka_memory::nostr::bridge::{
+    gift_wrap_req, process, Dedup, Outcome, RateLimiter, ReplayWatermark,
+    DEFAULT_REPLAY_SLACK_SECS, NIP59_BACKDATE_WINDOW_SECS,
+};
 use kannaka_memory::nostr::{npub_from_pubkey_hex, Event};
 use tungstenite::Message;
 
@@ -29,6 +32,8 @@ struct Config {
     relays: Vec<String>,
     dedupe_file: String,
     dedupe_cap: usize,
+    watermark_file: String,
+    replay_slack_secs: i64,
     nats_url: String,
     nats_user: String,
     nats_pass: String,
@@ -53,21 +58,26 @@ fn load_config() -> Config {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    Config {
+    let cfg = Config {
         privkey,
         pubkey,
         relays,
         dedupe_file: env("BRIDGE_DEDUPE_FILE")
             .unwrap_or_else(|| "/var/lib/kannaka-bridge/dedupe.log".into()),
-        // #687: the dedupe cap is the bridge's correctness horizon — every
-        // reconnect replays ALL gift-wrap history (a NIP-59 `since` cursor
-        // would silently drop DMs; randomized created_at is adversary-
-        // influenced), so ids past the cap get re-processed AND re-published.
-        // Configurable so a deployment can buy headroom (~250B of RSS per id)
-        // ahead of its lifetime DM volume.
+        // #687: the dedupe log is now the SECOND line of defence. Reconnects
+        // are bounded by the replay watermark below, so the cap only has to
+        // cover the slack window's worth of DMs rather than the account
+        // lifetime. Still configurable (~250B of RSS per id).
         dedupe_cap: env("BRIDGE_DEDUPE_CAP")
             .and_then(|s| s.parse().ok())
             .unwrap_or(100_000),
+        watermark_file: env("BRIDGE_WATERMARK_FILE")
+            .unwrap_or_else(|| "/var/lib/kannaka-bridge/watermark.json".into()),
+        // #687 first line of defence: bound reconnect replay to a window wide
+        // enough to absorb NIP-59 backdating. 0 restores unbounded replay.
+        replay_slack_secs: env("BRIDGE_REPLAY_SLACK_SECS")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_REPLAY_SLACK_SECS),
         nats_url: env("BRIDGE_NATS_URL").unwrap_or_else(|| "nats://127.0.0.1:4222".into()),
         nats_user: env("BRIDGE_NATS_USER").unwrap_or_default(),
         nats_pass: env("BRIDGE_NATS_PASS").unwrap_or_default(),
@@ -79,7 +89,17 @@ fn load_config() -> Config {
         rate_refill: env("BRIDGE_RATE_REFILL")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.05),
+    };
+    // A slack narrower than the NIP-59 backdating window silently drops DMs —
+    // the most expensive failure this daemon has, and an invisible one. Refuse
+    // to let it be configured quietly.
+    if cfg.replay_slack_secs > 0 && cfg.replay_slack_secs < NIP59_BACKDATE_WINDOW_SECS {
+        eprintln!(
+            "[bridge] WARNING: BRIDGE_REPLAY_SLACK_SECS={} is narrower than the NIP-59\nbackdating window ({}s). Gift wraps legitimately dated further back than the\nslack will be SKIPPED on reconnect — i.e. silently lost DMs. Use >= {}s, or 0\nto disable the cursor entirely. (#687)",
+            cfg.replay_slack_secs, NIP59_BACKDATE_WINDOW_SECS, NIP59_BACKDATE_WINDOW_SECS
+        );
     }
+    cfg
 }
 
 fn now_secs() -> i64 {
@@ -186,38 +206,67 @@ fn relay_loop(
     dedup: Arc<Mutex<Dedup>>,
     limiter: Arc<Mutex<RateLimiter>>,
     nats: Arc<Mutex<NatsSink>>,
+    watermark: Arc<Mutex<ReplayWatermark>>,
 ) {
     let sub_id = format!("kb-{}", &cfg.pubkey[..8]);
-    // REQ for gift wraps p-tagged to our voice key. Relays return matching
-    // stored events + stream new ones.
-    let req = format!(
-        "[\"REQ\",\"{sub_id}\",{{\"kinds\":[1059],\"#p\":[\"{}\"]}}]",
-        cfg.pubkey
-    );
     loop {
         match tungstenite::connect(&relay) {
             Ok((mut socket, _resp)) => {
-                eprintln!("[bridge] connected {relay}");
-                if socket.send(Message::Text(req.clone().into())).is_err() {
+                // #687: rebuild the REQ per connection so it carries THIS
+                // relay's current cursor. Pre-fix the REQ was built once with
+                // no `since`, so every reconnect re-requested the relay's whole
+                // gift-wrap history and leaned on the dedupe log to suppress it
+                // — which stops working the moment the cap evicts anything.
+                let since = watermark
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .since_for(&relay, cfg.replay_slack_secs);
+                let req = gift_wrap_req(&sub_id, &cfg.pubkey, since);
+                match since {
+                    Some(s) => eprintln!("[bridge] connected {relay} (replay since {s})"),
+                    None => eprintln!("[bridge] connected {relay} (full history — no cursor yet)"),
+                }
+                if socket.send(Message::Text(req)).is_err() {
                     continue;
                 }
                 loop {
                     match socket.read() {
                         Ok(Message::Text(txt)) => {
-                            handle_relay_message(&txt, &cfg, &dedup, &limiter, &nats)
+                            handle_relay_message(&txt, &cfg, &dedup, &limiter, &nats);
+                            mark_receiving(&watermark, &relay);
                         }
                         Ok(Message::Ping(p)) => {
                             let _ = socket.send(Message::Pong(p));
+                            // A relay keepalive proves we are still receiving,
+                            // so the cursor advances on an idle-but-healthy
+                            // connection instead of only when DMs arrive.
+                            mark_receiving(&watermark, &relay);
                         }
                         Ok(Message::Close(_)) | Err(_) => break,
                         _ => {}
                     }
                 }
                 eprintln!("[bridge] disconnected {relay}");
+                // Persist before backing off: the mark we just built is what
+                // bounds the NEXT connection's replay.
+                let w = watermark.lock().unwrap_or_else(|p| p.into_inner());
+                if let Err(e) = w.flush() {
+                    eprintln!("[bridge] WARN: watermark flush failed ({e}) — next reconnect replays wider");
+                }
             }
             Err(e) => eprintln!("[bridge] connect {relay} failed: {e}"),
         }
         std::thread::sleep(Duration::from_secs(10));
+    }
+}
+
+/// Advance this relay's "receiving through here" mark. Best-effort: a failed
+/// write only means the next reconnect replays a wider window, never a
+/// narrower one, so it must not interrupt DM handling.
+fn mark_receiving(watermark: &Arc<Mutex<ReplayWatermark>>, relay: &str) {
+    let mut w = watermark.lock().unwrap_or_else(|p| p.into_inner());
+    if let Err(e) = w.record(relay, now_secs()) {
+        eprintln!("[bridge] WARN: watermark write failed ({e})");
     }
 }
 
@@ -321,8 +370,16 @@ fn main() {
     if let Some(dir) = std::path::Path::new(&cfg.dedupe_file).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    if let Some(dir) = std::path::Path::new(&cfg.watermark_file).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let dedup = Arc::new(Mutex::new(
         Dedup::open(&cfg.dedupe_file, cfg.dedupe_cap).expect("open dedupe log"),
+    ));
+    // #687: flushed at most once a minute — a crash loses at most that much
+    // watermark, which replays MORE on the next connect, never less.
+    let watermark = Arc::new(Mutex::new(
+        ReplayWatermark::open(&cfg.watermark_file, 60).expect("open replay watermark"),
     ));
     let limiter = Arc::new(Mutex::new(RateLimiter::new(cfg.rate_cap, cfg.rate_refill)));
     eprintln!(
@@ -331,14 +388,24 @@ fn main() {
         cfg.relays.len(),
         cfg.route_subject
     );
+    match cfg.replay_slack_secs {
+        0 => eprintln!("[bridge] reconnect replay: UNBOUNDED (cursor disabled)"),
+        s => eprintln!("[bridge] reconnect replay bounded to {s}s of slack"),
+    }
     let mut handles = Vec::new();
     // One transport shared by every relay thread. Lazy-connected on the first
     // DM so a bridge started while NATS is down still serves the relay side.
     let nats = Arc::new(Mutex::new(NatsSink::new(&cfg)));
 
     for relay in cfg.relays.clone() {
-        let (c, d, l, n) = (cfg.clone(), dedup.clone(), limiter.clone(), nats.clone());
-        handles.push(std::thread::spawn(move || relay_loop(relay, c, d, l, n)));
+        let (c, d, l, n, w) = (
+            cfg.clone(),
+            dedup.clone(),
+            limiter.clone(),
+            nats.clone(),
+            watermark.clone(),
+        );
+        handles.push(std::thread::spawn(move || relay_loop(relay, c, d, l, n, w)));
     }
     for h in handles {
         let _ = h.join();
