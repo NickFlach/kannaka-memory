@@ -269,7 +269,7 @@ impl AuthClient {
             email,
             tokens,
             requires_verification: v["requiresVerification"].as_bool().unwrap_or(false),
-            message: v["message"].as_str().map(|s| s.to_string()),
+            message: v["message"].as_str().map(ToString::to_string),
         })
     }
 
@@ -336,7 +336,7 @@ impl AuthClient {
             id,
             email,
             email_verified: v["isEmailVerified"].as_bool(),
-            created_at: v["createdAt"].as_str().map(|s| s.to_string()),
+            created_at: v["createdAt"].as_str().map(ToString::to_string),
         })
     }
 
@@ -371,7 +371,7 @@ impl AuthClient {
                         v["error"]
                             .as_str()
                             .or_else(|| v["message"].as_str())
-                            .map(|s| s.to_string())
+                            .map(ToString::to_string)
                     })
                     .unwrap_or_else(|| {
                         let mut b = body;
