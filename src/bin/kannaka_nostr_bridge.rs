@@ -8,7 +8,9 @@
 //! network plumbing.
 //!
 //! Config (env):
-//!   BRIDGE_VOICE_KEY_FILE   json {privkey,pubkey} the DMs are addressed to (0600)
+//!   BRIDGE_VOICE_KEY_FILE   organ key json the DMs are addressed to (0600).
+//!                           Accepts {privkey,pubkey} or {nsec,npub,pubkey,organ} (#635)
+//!   BRIDGE_ORGAN            optional; refuses a key from a different organ
 //!   BRIDGE_RELAYS           comma-separated wss:// relay urls
 //!   BRIDGE_DEDUPE_FILE      crash-durable processed-id log path
 //!   BRIDGE_NATS_URL/_USER/_PASS   route target (nats://host:port + creds)
@@ -48,10 +50,21 @@ fn env(k: &str) -> Option<String> {
 
 fn load_config() -> Config {
     let key_file = env("BRIDGE_VOICE_KEY_FILE").expect("BRIDGE_VOICE_KEY_FILE required");
-    let key_json = std::fs::read_to_string(&key_file).expect("read voice key file");
-    let key: serde_json::Value = serde_json::from_str(&key_json).expect("voice key json");
-    let privkey = key["privkey"].as_str().expect("privkey").to_string();
-    let pubkey = key["pubkey"].as_str().expect("pubkey").to_string();
+    // #635: one reader for both on-disk shapes. `pubkey` is now DERIVED from
+    // the secret rather than copied out of the file, so a file whose stored
+    // pubkey disagrees is refused instead of having this daemon advertise one
+    // identity while signing as another — every signature would still verify,
+    // which is exactly what makes that failure silent.
+    let key = kannaka_memory::nostr::organ_key::OrganKey::load(
+        &key_file,
+        env("BRIDGE_ORGAN").as_deref(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("[bridge] {key_file}: {e}");
+        std::process::exit(1);
+    });
+    let privkey = key.secret_hex.clone();
+    let pubkey = key.pubkey_hex.clone();
     let relays = env("BRIDGE_RELAYS")
         .unwrap_or_else(|| "wss://relay.damus.io,wss://nos.lol".into())
         .split(',')

@@ -24,6 +24,9 @@ pub mod nip59;
 /// Bridge inbound pipeline: dedupe + rate-limit + accept/reject decision.
 pub mod bridge;
 
+/// Canonical on-disk organ key format + reader (#635, ADR-0055).
+pub mod organ_key;
+
 /// Errors surfaced by the membrane's identity primitives. Verification errors
 /// are deliberately coarse — a caller must not branch on *why* an event failed
 /// to verify, only that it did.
