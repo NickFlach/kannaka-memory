@@ -36,7 +36,9 @@ pub(crate) fn handle_swarm_serve(
 ) {
     use std::time::Duration;
     const USAGE: &str =
-        "Usage: kannaka swarm serve [--threshold 0.4] [--nats-url URL] [--agent-id ID]";
+        "Usage: kannaka swarm serve [--threshold 0.4] [--nats-url URL] [--agent-id ID]
+         Requires AUTHENTICATED NATS credentials (~/.kannaka-nats.env): the public
+         anon identity may not subscribe to KANNAKA.ask.* or KANNAKA.recall.* (#562).";
     // Single-writer policy: the serve daemon is a long-running READER. It
     // observes/recalls (which mutate the medium in RAM) but must never
     // flush over the sole writer's .hrm. Enforce read-only here instead of

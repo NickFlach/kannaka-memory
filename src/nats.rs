@@ -422,6 +422,49 @@ fn is_auth_error(msg: &str) -> bool {
     m.contains("authorization") || m.contains("authentication")
 }
 
+/// True for a per-subject ACL refusal (`Permissions Violation for
+/// Publish/Subscription to "X"`).
+///
+/// Deliberately NOT folded into [`is_auth_error`] (#562): an authorization
+/// failure means the whole connection is dead, whereas a permissions violation
+/// leaves it perfectly usable for every other subject. Conflating them would
+/// tear down a working swarm connection over one denied subject. This is an
+/// OPERATION error, not a connection error.
+fn is_permissions_error(msg: &str) -> bool {
+    msg.to_ascii_lowercase().contains("permissions violation")
+}
+
+/// Pull the subject out of `... for Subscription to "KANNAKA.memory.new" ...`.
+///
+/// Needed for multi-subject subscriptions, where the client cannot know which
+/// of the subjects it bundled was the one refused — only the server's own
+/// message says.
+fn subject_from_permissions_error(msg: &str) -> Option<String> {
+    let start = msg.find('"')? + 1;
+    let rest = &msg[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Turn a server permissions refusal into an error an operator can act on.
+///
+/// Pre-#562 these arrived as an async `-ERR`, were printed as a stray
+/// `[nats] server error: …` line, and the operation returned `Ok` — so
+/// `swarm serve` reported itself subscribed to a subject the broker had
+/// refused, and sat deaf forever. Naming the subject, and the credentials file
+/// when the connection is anonymous, is the difference between a two-minute
+/// fix and an afternoon.
+fn permissions_error(op: &str, subject: &str, raw: &str, authenticated: bool) -> NatsError {
+    let hint = if authenticated {
+        "this connection IS authenticated, so the broker's ACL does not grant this subject to your user"
+    } else {
+        "this connection is ANONYMOUS — the subject requires authenticated NATS credentials (~/.kannaka-nats.env)"
+    };
+    NatsError::Protocol(format!(
+        "{op} denied by broker for \"{subject}\": {hint} (server said: {raw})"
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Wire-protocol frame reader
 // ---------------------------------------------------------------------------
@@ -694,6 +737,13 @@ struct Conn {
     /// truncated frame, silently publishing garbage. A dead Conn must never
     /// be written again; `reconnect()` replaces it wholesale.
     dead: bool,
+    /// Did this connection's CONNECT present credentials? Used only to phrase
+    /// a permissions refusal helpfully (#562) — an anonymous connection gets
+    /// pointed at `~/.kannaka-nats.env`. Never used to PREDICT what the broker
+    /// will allow: an unauthenticated local broker permits everything, and the
+    /// committed server config has drifted from deployed reality in both
+    /// directions, so the broker's own answer is the only reliable source.
+    authenticated: bool,
 }
 
 impl Conn {
@@ -711,6 +761,52 @@ impl Conn {
 
     fn pong(&mut self) -> Result<(), NatsError> {
         self.write_frames(b"PONG\r\n")
+    }
+
+    /// Round-trip a PING and fail if the server refused `subject` in the
+    /// meantime (#562).
+    ///
+    /// NATS answers a denied SUB/PUB with an ASYNC `-ERR Permissions
+    /// Violation`, so a fire-and-forget operation returns `Ok` on something the
+    /// broker threw away — `swarm serve` announced itself subscribed to
+    /// `KANNAKA.ask.*` and then sat deaf forever. PING/PONG is ordered behind
+    /// the preceding frame, so by the time PONG arrives any refusal of it has
+    /// already been delivered. Same pattern `handshake` uses.
+    ///
+    /// Errors are scoped to this operation: a permissions violation does not
+    /// kill the connection, and an unrelated `-ERR` is left to the paths that
+    /// already interpret it.
+    fn confirm(&mut self, op: &str, subject: &str) -> Result<(), NatsError> {
+        self.write_frames(b"PING\r\n")?;
+        // Bounded: a handful of frames may be queued ahead of our PONG.
+        for _ in 0..16 {
+            match read_frame(&mut self.reader)? {
+                ReadOutcome::Frame(Frame::Pong) => return Ok(()),
+                ReadOutcome::Frame(Frame::Ping) => self.pong()?,
+                ReadOutcome::Frame(Frame::ServerErr(m)) => {
+                    if is_permissions_error(&m) {
+                        return Err(permissions_error(op, subject, &m, self.authenticated));
+                    }
+                    if is_auth_error(&m) {
+                        return Err(NatsError::Disconnected(m));
+                    }
+                    eprintln!("[nats] server error: {m}");
+                }
+                // A MSG that raced in front of our PONG is real traffic; the
+                // subscription reader will see it on the socket after us.
+                ReadOutcome::Frame(_) => continue,
+                // Never fail an operation because confirmation was slow — the
+                // publish/subscribe itself already went out. Silence is not
+                // evidence of refusal.
+                ReadOutcome::TimedOut => return Ok(()),
+                ReadOutcome::Closed => {
+                    return Err(NatsError::Disconnected(
+                        "connection closed awaiting confirmation".to_string(),
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The single choke point for outbound bytes. Refuses to touch a
@@ -845,7 +941,14 @@ fn handshake(url: &str, explicit: Option<&(String, String)>) -> Result<Conn, Nat
     // not success); -ERR (e.g. Authorization Violation) fails the handshake.
     for _ in 0..10 {
         match read_frame(&mut reader)? {
-            ReadOutcome::Frame(Frame::Pong) => return Ok(Conn { writer, reader, dead: false }),
+            ReadOutcome::Frame(Frame::Pong) => {
+                return Ok(Conn {
+                    writer,
+                    reader,
+                    dead: false,
+                    authenticated: creds.is_some(),
+                })
+            }
             ReadOutcome::Frame(Frame::Ping) => {
                 write!(writer, "PONG\r\n")?;
                 writer.flush()?;
@@ -1643,6 +1746,31 @@ impl SwarmTransport {
         result
     }
 
+    /// `publish_raw` plus a broker-acceptance round-trip (#562).
+    ///
+    /// Reserved for the publishes the README ADVERTISES as public capabilities
+    /// — memory sync, dream publish, exemplar publish. Those are the ones an
+    /// operator reasonably believes are working, so a silent ACL refusal there
+    /// is a lie rather than a dropped packet.
+    ///
+    /// Deliberately NOT the default, for two reasons:
+    ///
+    /// 1. The confirmation costs a round-trip, and the hot paths
+    ///    (phase/presence heartbeats, every 30s per node) should not pay it.
+    /// 2. **Only safe on a transport with no live subscription.** Confirming
+    ///    reads from the transport's own `BufReader`, while a
+    ///    [`NatsSubscription`] reads a separate `BufReader` over the same
+    ///    socket — so a MSG consumed here would be invisible to that
+    ///    subscription forever. All three call sites (dream / exemplar /
+    ///    memory.new publish) run on publish-only transports. `reply()`
+    ///    deliberately stays on plain `publish_raw` because `swarm serve`
+    ///    calls it on a transport that IS subscribed.
+    fn publish_raw_confirmed(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+        self.publish_raw(subject, payload)?;
+        let mut conn = self.lock_conn()?;
+        conn.confirm("publish", subject)
+    }
+
     /// Replace a dead `Conn` with a freshly-handshaked one, in place and
     /// through interior mutability — the counterpart to `reconnect()` for
     /// callers that hold `&self`. Rate-limited to one dial per
@@ -1706,7 +1834,9 @@ impl SwarmTransport {
         add_envelope(&mut value);
         let payload = serde_json::to_vec(&value)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw("KANNAKA.dreams", &payload)
+        // #562: advertised public capability — a refused publish must not
+        // report success.
+        self.publish_raw_confirmed("KANNAKA.dreams", &payload)
     }
 
     /// Publish a single cluster exemplar to KANNAKA.exemplar.<agent>.<cluster>.
@@ -1730,7 +1860,8 @@ impl SwarmTransport {
         add_envelope(&mut enveloped);
         let bytes = serde_json::to_vec(&enveloped)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw(&subject, &bytes)
+        // #562: advertised public capability — confirm the broker took it.
+        self.publish_raw_confirmed(&subject, &bytes)
     }
 
     /// Ensure the KANNAKA_EXEMPLARS JetStream stream exists.
@@ -2073,7 +2204,9 @@ impl SwarmTransport {
         }
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw("KANNAKA.memory.new", &bytes)
+        // #562: the README documents this as THE memory-sync path, so an
+        // ACL refusal here has to surface rather than look like a no-op.
+        self.publish_raw_confirmed("KANNAKA.memory.new", &bytes)
     }
 
     /// Backward-compat shim — same as publish_memory_new_with_counts but
@@ -2497,7 +2630,8 @@ impl SwarmTransport {
         // a systemd restart rather than hang deaf.
         stream_clone.set_read_timeout(Some(SUB_POLL_MAX))?;
 
-        Ok(NatsSubscription {
+        let authenticated = conn.authenticated;
+        let mut sub = NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: first_sid.to_string(),
             // Multi-subject subscription — resubscribe_via (#706) cannot
@@ -2509,7 +2643,16 @@ impl SwarmTransport {
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
-        })
+            pending: VecDeque::new(),
+            denied: Vec::new(),
+        };
+        // #562: COLLECT refusals rather than failing. Anon may read
+        // QUEEN.phase.* but not KANNAKA.memory.new, and killing the whole
+        // subscription would take working phase gossip down to report a dead
+        // auto-sync. `denied_subjects()` lets the caller say precisely which
+        // advertised feature is off.
+        sub.collect_denials(authenticated);
+        Ok(sub)
     }
 
     /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
@@ -2763,6 +2906,7 @@ impl SwarmTransport {
             Some(g) => conn.write_frames(format!("SUB {subject} {g} {sid}\r\n").as_bytes())?,
             None => conn.write_frames(format!("SUB {subject} {sid}\r\n").as_bytes())?,
         }
+        let authenticated = conn.authenticated;
         let stream_clone = conn.writer.try_clone().map_err(NatsError::Io)?;
         // NOTE: the read timeout is a property of the underlying socket,
         // which is shared with the transport — this also clears the
@@ -2774,7 +2918,7 @@ impl SwarmTransport {
         // wakes to run the liveness check. `set_timeout(None)` and any value
         // above SUB_POLL_MAX are clamped to it.
         stream_clone.set_read_timeout(Some(SUB_POLL_MAX))?;
-        Ok(NatsSubscription {
+        let mut sub = NatsSubscription {
             reader: BufReader::new(stream_clone),
             sid: sid.to_string(),
             subject: subject.to_string(),
@@ -2783,7 +2927,20 @@ impl SwarmTransport {
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
-        })
+            pending: VecDeque::new(),
+            denied: Vec::new(),
+        };
+        // #562: confirm the broker ACCEPTED the SUB before handing back a
+        // subscription. Pre-fix a denied subject returned Ok and the caller
+        // blocked forever on a subscription the server had discarded — `swarm
+        // serve` printed "press Ctrl+C to stop" and sat deaf.
+        //
+        // Done on the SUBSCRIPTION's reader, not the transport's: they are
+        // separate BufReaders over the same socket, so a frame consumed by one
+        // is invisible to the other. Reading here keeps any raced MSG inside
+        // this subscription's own pending queue.
+        sub.confirm_accepted(authenticated)?;
+        Ok(sub)
     }
 }
 
@@ -2856,6 +3013,25 @@ pub struct NatsSubscription {
     /// Idle gap after which the socket is declared dead (defaulted from
     /// `SUB_LIVENESS_TIMEOUT`; a field so tests can shrink it).
     liveness_timeout: Duration,
+    /// Messages read off the socket by [`Self::confirm_accepted`] before the
+    /// caller's first `next_event`.
+    ///
+    /// The acceptance round-trip (#562) has to read frames to see the server's
+    /// answer, and a MSG for this very subscription can arrive ahead of the
+    /// PONG. Frames consumed there are GONE from the socket, so they are
+    /// stashed here and drained first rather than silently dropped — losing
+    /// the first message of a busy subject would be a nastier bug than the
+    /// silent-no-op this confirmation exists to fix.
+    pending: VecDeque<NatsMessage>,
+    /// Subjects the broker refused on a MULTI-subject subscription (#562).
+    ///
+    /// A single-subject subscribe fails outright when refused. A multi-subject
+    /// one cannot: `swarm listen --auto-sync` bundles `QUEEN.phase.*` (which
+    /// anon may read) with `KANNAKA.memory.new` (which it may not), so failing
+    /// the whole thing would kill working phase gossip to report a dead
+    /// auto-sync. Denials are recorded here instead and the caller decides
+    /// which advertised feature to declare unavailable.
+    denied: Vec<String>,
 }
 
 /// A received NATS message.
@@ -2957,7 +3133,94 @@ impl NatsSubscription {
     /// we send our own PING to elicit a PONG, and after `liveness_timeout` of
     /// silence with no frame at all we report `Closed` so the caller
     /// reconnects/exits instead of hanging deaf on a silently-dead socket.
+    /// Round-trip a PING and fail if the broker refused this subscription
+    /// (#562).
+    ///
+    /// PING is ordered behind the SUB, so once PONG comes back any refusal of
+    /// the SUB has already been delivered. MSG frames that raced ahead are
+    /// stashed in `pending`, never dropped.
+    fn confirm_accepted(&mut self, authenticated: bool) -> Result<(), NatsError> {
+        self.send_control(b"PING\r\n");
+        for _ in 0..16 {
+            match read_frame(&mut self.reader) {
+                Ok(ReadOutcome::Frame(Frame::Pong)) => {
+                    self.mark_frame();
+                    return Ok(());
+                }
+                Ok(ReadOutcome::Frame(Frame::Msg { subject, reply_to, payload, .. })) => {
+                    self.mark_frame();
+                    self.pending.push_back(NatsMessage { subject, payload, reply_to });
+                }
+                Ok(ReadOutcome::Frame(Frame::Ping)) => {
+                    self.mark_frame();
+                    self.send_control(b"PONG\r\n");
+                }
+                Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
+                    self.mark_frame();
+                    if is_permissions_error(&m) {
+                        // Multi-subject subscriptions carry an empty
+                        // `self.subject`, so take the name the server itself
+                        // reported — otherwise the error names nothing.
+                        let subject = if self.subject.is_empty() {
+                            subject_from_permissions_error(&m)
+                                .unwrap_or_else(|| "<multi-subject>".to_string())
+                        } else {
+                            self.subject.clone()
+                        };
+                        return Err(permissions_error(
+                            "subscribe",
+                            &subject,
+                            &m,
+                            authenticated,
+                        ));
+                    }
+                    if is_auth_error(&m) {
+                        return Err(NatsError::Disconnected(m));
+                    }
+                    eprintln!("[nats] server error: {m}");
+                }
+                Ok(ReadOutcome::Frame(_)) => {
+                    self.mark_frame();
+                }
+                // Silence is not evidence of refusal — the SUB is already on
+                // the wire, so a slow broker must not fail the subscription.
+                Ok(ReadOutcome::TimedOut) => return Ok(()),
+                Ok(ReadOutcome::Closed) => {
+                    return Err(NatsError::Disconnected(
+                        "connection closed awaiting subscribe confirmation".to_string(),
+                    ))
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Subjects this multi-subject subscription asked for and the broker
+    /// refused (#562). Empty on a healthy subscription.
+    pub fn denied_subjects(&self) -> &[String] {
+        &self.denied
+    }
+
+    /// Non-fatal variant of [`Self::confirm_accepted`] for multi-subject
+    /// subscriptions: records each refusal and warns, but keeps the
+    /// subscription so the subjects that WERE accepted keep flowing.
+    fn collect_denials(&mut self, authenticated: bool) {
+        if let Err(e) = self.confirm_accepted(authenticated) {
+            // confirm_accepted stops at the first refusal; capture it, warn
+            // loudly, and carry on with whatever the broker did accept.
+            let msg = e.to_string();
+            eprintln!("[nats] WARNING: {msg}");
+            self.denied.push(msg);
+        }
+    }
+
     pub fn next_event(&mut self) -> SubEvent {
+        // Anything the acceptance round-trip already pulled off the socket is
+        // real traffic and outranks a fresh read (#562).
+        if let Some(msg) = self.pending.pop_front() {
+            return SubEvent::Msg(msg);
+        }
         loop {
             match read_frame(&mut self.reader) {
                 Ok(ReadOutcome::Frame(Frame::Msg { subject, reply_to, payload, .. })) => {
@@ -3146,6 +3409,63 @@ mod tests {
         );
         // Envelope still applied, so the tombstone is contract-valid on the wire.
         assert_eq!(payload.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+    }
+
+    /// #562: a permissions violation must NOT read as an auth failure. The two
+    /// have opposite consequences — auth kills the connection, permissions
+    /// leaves it fully usable for every other subject — so conflating them
+    /// would tear down a working swarm connection over one denied subject.
+    #[test]
+    fn permissions_violation_is_not_an_auth_error() {
+        let perms = "Permissions Violation for Subscription to \"KANNAKA.ask.broadcast\"";
+        assert!(is_permissions_error(perms));
+        assert!(
+            !is_auth_error(perms),
+            "a per-subject ACL refusal must not be treated as a dead connection"
+        );
+
+        let authz = "Authorization Violation";
+        assert!(is_auth_error(authz));
+        assert!(
+            !is_permissions_error(authz),
+            "a dead-connection auth failure must not be downgraded to a per-subject refusal"
+        );
+    }
+
+    /// Both real server phrasings, publish and subscribe, must be recognised —
+    /// the live broker emits both and missing one restores the silent no-op.
+    #[test]
+    fn permissions_predicate_matches_both_server_phrasings() {
+        for m in [
+            "Permissions Violation for Subscription to \"KANNAKA.memory.new\"",
+            "Permissions Violation for Publish to \"$JS.API.STREAM.CREATE.QUEEN_PHASES\"",
+            "permissions violation for publish to \"x\"", // case-insensitive
+        ] {
+            assert!(is_permissions_error(m), "must match: {m}");
+        }
+        assert!(!is_permissions_error("Unknown Protocol Operation"));
+    }
+
+    /// The error has to carry the two things an operator needs: WHICH subject,
+    /// and whether adding credentials could plausibly fix it.
+    #[test]
+    fn permissions_error_names_subject_and_points_anonymous_users_at_creds() {
+        let raw = "Permissions Violation for Subscription to \"KANNAKA.ask.broadcast\"";
+
+        let anon = permissions_error("subscribe", "KANNAKA.ask.broadcast", raw, false).to_string();
+        assert!(anon.contains("KANNAKA.ask.broadcast"), "must name the subject: {anon}");
+        assert!(anon.contains("ANONYMOUS"), "must say the connection is anonymous: {anon}");
+        assert!(anon.contains(".kannaka-nats.env"), "must point at the creds file: {anon}");
+
+        // An AUTHENTICATED caller must not be told to go find credentials it
+        // already supplied — that sends them down the wrong path entirely.
+        let authed = permissions_error("subscribe", "KANNAKA.ask.broadcast", raw, true).to_string();
+        assert!(authed.contains("KANNAKA.ask.broadcast"));
+        assert!(
+            !authed.contains(".kannaka-nats.env"),
+            "an authenticated caller must NOT be sent to the credentials file: {authed}"
+        );
+        assert!(authed.contains("IS authenticated"), "{authed}");
     }
 
     /// Build a presence record whose `last_seen` is `age_secs` old.
@@ -3999,6 +4319,8 @@ mod tests {
             probe_sent: false,
             ping_idle: Duration::from_millis(30),
             liveness_timeout: Duration::from_secs(30), // far away — no death here
+            pending: VecDeque::new(),
+            denied: Vec::new(),
         };
         // Poll well past ping_idle. Each next_event blocks ~20ms, so ~40 polls
         // is ~0.8s of wall time — comfortably past 30ms even under load — and
@@ -4033,6 +4355,8 @@ mod tests {
             probe_sent: false,
             ping_idle: Duration::from_millis(40),
             liveness_timeout: Duration::from_millis(200),
+            pending: VecDeque::new(),
+            denied: Vec::new(),
         };
         let start = Instant::now();
         let mut saw_closed = false;
@@ -4065,6 +4389,8 @@ mod tests {
             probe_sent: false,
             ping_idle: Duration::from_millis(40),
             liveness_timeout: Duration::from_secs(30), // cannot race the writer
+            pending: VecDeque::new(),
+            denied: Vec::new(),
         };
         let writer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(80));
@@ -4103,6 +4429,8 @@ mod tests {
             probe_sent: false,
             ping_idle: SUB_PING_IDLE,
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
+            pending: VecDeque::new(),
+            denied: Vec::new(),
         };
         sub.set_timeout(None).unwrap();
         assert_eq!(sub.reader.get_ref().read_timeout().unwrap(), Some(SUB_POLL_MAX));
