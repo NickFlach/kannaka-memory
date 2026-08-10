@@ -8,7 +8,9 @@
 //!
 //! Config (env):
 //!   HIVE_RELAY_URL            wss:// url of the buzz relay
-//!   HIVE_KEY_FILE             json {privkey,pubkey}, 0600 — an allowlisted member
+//!   HIVE_KEY_FILE             organ key json, 0600 — an allowlisted member.
+//!                             Accepts {privkey,pubkey} or {nsec,npub,pubkey,organ} (#635)
+//!   HIVE_ORGAN                optional; refuses a key from a different organ
 //!   HIVE_DEDUPE_FILE          crash-durable processed-id log
 //!   HIVE_CURSOR_FILE          persisted replay cursor (bounds reconnect history)
 //!   HIVE_NATS_URL/_USER/_PASS route target
@@ -44,11 +46,25 @@ fn env(k: &str) -> Option<String> {
 
 fn load_config() -> Config {
     let key_file = env("HIVE_KEY_FILE").expect("HIVE_KEY_FILE required");
-    let key_json = std::fs::read_to_string(&key_file).expect("read hive key file");
-    let key: serde_json::Value = serde_json::from_str(&key_json).expect("hive key json");
+    // #635: accepts BOTH on-disk shapes — `{privkey,pubkey}` and the delivered
+    // `{nsec,npub,pubkey,organ}`. Pre-fix this read `key["privkey"]` only, so a
+    // delivered organ key could not be loaded at all and the daemon was blocked
+    // on a file it had been handed. HIVE_ORGAN, when set, refuses a key
+    // belonging to a different organ rather than running as the wrong identity.
+    let key = kannaka_memory::nostr::organ_key::OrganKey::load(
+        &key_file,
+        env("HIVE_ORGAN").as_deref(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("[hive] {key_file}: {e}");
+        std::process::exit(1);
+    });
+    if let Some(ref organ) = key.organ {
+        eprintln!("[hive] organ key for `{organ}` ({}…)", &key.pubkey_hex[..12]);
+    }
     Config {
         relay_url: env("HIVE_RELAY_URL").expect("HIVE_RELAY_URL required"),
-        privkey: key["privkey"].as_str().expect("privkey").to_string(),
+        privkey: key.secret_hex.clone(),
         dedupe_file: env("HIVE_DEDUPE_FILE")
             .unwrap_or_else(|| "/var/lib/kannaka-hive-bridge/dedupe.log".into()),
         cursor_file: env("HIVE_CURSOR_FILE")
