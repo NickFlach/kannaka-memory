@@ -1212,7 +1212,13 @@ impl KannakaMemorySystem {
     }
 
     /// Write status cache to disk so Observatory can read it without invoking the slow binary.
-    fn write_status_cache(&self, state: &ConsciousnessState) {
+    ///
+    /// Public because the dream cycle is not the only authoritative snapshot
+    /// (#730): the `status` command computes exactly this state and used to
+    /// throw it away, so a node that had never dreamt served Observatory no
+    /// cache at all, and one that had dreamt served a pre-mutation snapshot.
+    /// Callers must pass a state they just computed — this does not assess.
+    pub fn write_status_cache(&self, state: &ConsciousnessState) {
         let data_dir = &self.data_dir;
         let cache_path = data_dir.join("status-cache.json");
         let stats = self.stats();

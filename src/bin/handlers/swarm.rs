@@ -1102,14 +1102,22 @@ pub(crate) fn handle_swarm_absorb(
 
 #[cfg(feature = "nats")]
 pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
-    const USAGE: &str = "Usage: kannaka swarm peers [--json] [--nats-url URL]";
-    // Usage: kannaka swarm peers [--json]
+    const USAGE: &str = "Usage: kannaka swarm peers [--json] [--all] [--nats-url URL]";
+    // Usage: kannaka swarm peers [--json] [--all]
     let mut as_json = false;
+    let mut show_all = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--json" => {
                 as_json = true;
+                i += 1;
+            }
+            // Forensic view: include peers whose `last_seen` has gone stale
+            // (crashed / partitioned / retired but never tombstoned, #737)
+            // instead of hiding them.
+            "--all" => {
+                show_all = true;
                 i += 1;
             }
             "--nats-url" => {
@@ -1130,23 +1138,59 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
             process::exit(1);
         }
     };
-    let peers = match transport.get_presence() {
+    // Read the retained set ONCE and split it locally, so the default view can
+    // say how many stale records it suppressed without a second round trip.
+    let retained = match transport.get_presence_all() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("get_presence: {e}");
             process::exit(1);
         }
     };
+    let now = chrono::Utc::now();
+    let stale_count = retained
+        .iter()
+        .filter(|p| !kannaka_memory::nats::is_fresh_presence(p, now))
+        .count();
+    let peers: Vec<serde_json::Value> = if show_all {
+        retained
+    } else {
+        retained
+            .into_iter()
+            .filter(|p| kannaka_memory::nats::is_fresh_presence(p, now))
+            .collect()
+    };
     if as_json {
+        // Annotate rather than only filter: `live` and `last_seen_age_secs` are
+        // additive fields, so existing consumers keep parsing the records they
+        // already read, and one that wants the freshness signal (or is looking
+        // at `--all`) no longer has to re-derive it from `last_seen`.
+        let annotated: Vec<serde_json::Value> = peers
+            .into_iter()
+            .map(|mut p| {
+                let live = kannaka_memory::nats::is_fresh_presence(&p, now);
+                let age = kannaka_memory::nats::presence_age_secs(&p, now);
+                if let Some(obj) = p.as_object_mut() {
+                    obj.insert("live".into(), serde_json::json!(live));
+                    obj.insert("last_seen_age_secs".into(), serde_json::json!(age));
+                }
+                p
+            })
+            .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&peers).unwrap_or_default()
+            serde_json::to_string_pretty(&annotated).unwrap_or_default()
         );
         return;
     }
     if peers.is_empty() {
         println!("No peers in the swarm yet.");
         println!("Hint: peers register via 'kannaka swarm join'.");
+        if stale_count > 0 {
+            println!(
+                "({stale_count} stale record(s) retained but not live — 'kannaka swarm peers --all' to see them)"
+            );
+        }
         return;
     }
     println!();
@@ -1203,10 +1247,45 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
         if !trusted {
             label.push_str(" (unverified)");
         }
+        // Only reachable under --all: the default view has already dropped
+        // these. Say how long ago the node was last heard from so a stale row
+        // can never be mistaken for a live one.
+        if !kannaka_memory::nats::is_fresh_presence(p, now) {
+            match kannaka_memory::nats::presence_age_secs(p, now) {
+                Some(age) => label.push_str(&format!(" (stale {})", human_age(age))),
+                None => label.push_str(" (stale)"),
+            }
+        }
         println!("{:<24} {:<8} {:<8} {}", label, mem, ver, caps);
     }
     println!();
-    println!("{} peers", peers.len());
+    if show_all {
+        println!("{} peers ({} stale)", peers.len(), stale_count);
+    } else {
+        println!("{} live peers", peers.len());
+        if stale_count > 0 {
+            println!(
+                "{stale_count} stale record(s) hidden — 'kannaka swarm peers --all' to see them"
+            );
+        }
+    }
+}
+
+/// Render a `last_seen` age as a compact human span (`45s`, `12m`, `3h`, `2d`).
+#[cfg(feature = "nats")]
+fn human_age(secs: i64) -> String {
+    // A negative age means the peer's clock runs ahead of ours; report it as
+    // "just now" rather than a nonsense "-3h".
+    let s = secs.max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86_400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86_400)
+    }
 }
 
 #[cfg(not(feature = "nats"))]

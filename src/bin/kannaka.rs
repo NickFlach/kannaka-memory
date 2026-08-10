@@ -2564,6 +2564,14 @@ fn main() {
 
             output["field_mode"] = serde_json::json!("HRM");
 
+            // Refresh the Observatory fast-path cache from the snapshot we
+            // just computed (#730). Pre-fix only dream()/dream_lite() ever
+            // wrote it, so a fresh node had no status-cache.json until its
+            // first dream and every reader after a remember/forget saw the
+            // last dream's counts. `state` is authoritative and already in
+            // hand, so this costs one small atomic file write, no reassessment.
+            sys.write_status_cache(&state);
+
             // ADR-0029 Phase 4b — opt-in JSON envelope.
             // `--envelope` wraps the existing payload in the standard
             // {schema_version, command, data, errors} shape. Without
