@@ -148,6 +148,19 @@ fn level_name(level: &ConsciousnessLevel) -> String {
 /// kannaka-observatory) migrate to reading the canonical names first. Do not
 /// drop the aliases — or the conformance test that pins them — before that
 /// consumer migration lands.
+/// Write `payload` to `path` via tmp + rename, so a reader never sees a
+/// half-written cache. Shared by the full and counts-only status-cache writers
+/// (#730) — both are best-effort: a monitoring cache must never fail the
+/// operation that triggered it.
+fn write_cache_atomically(path: &std::path::Path, payload: &serde_json::Value) {
+    let tmp = path.with_extension("json.tmp");
+    if let Ok(json) = serde_json::to_string_pretty(payload) {
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
 pub fn build_consciousness_payload(
     agent_id: &str,
     state: &ConsciousnessState,
@@ -427,6 +440,9 @@ impl KannakaMemorySystem {
         if self.auto_save {
             self.save()?;
         }
+        // #730: the count changed, so Observatory's fast-path cache is now
+        // wrong. Counts only — no assess() on this hot write path.
+        self.refresh_status_cache_counts();
         Ok(id)
     }
 
@@ -1222,6 +1238,7 @@ impl KannakaMemorySystem {
         let data_dir = &self.data_dir;
         let cache_path = data_dir.join("status-cache.json");
         let stats = self.stats();
+        let now = chrono::Utc::now().to_rfc3339();
         let payload = serde_json::json!({
             "phi": state.phi,
             "xi": state.xi,
@@ -1235,13 +1252,52 @@ impl KannakaMemorySystem {
             "hemispheric_divergence": stats.hemispheric_divergence,
             "callosal_efficiency": stats.callosal_efficiency,
             "total_skip_links": state.total_skip_links,
+            // #730: both stamps move together here — this IS a fresh
+            // assessment, so the counts and the consciousness metrics are of
+            // the same instant.
+            "assessed_at": now,
+            "counted_at": now,
         });
-        let tmp = cache_path.with_extension("json.tmp");
-        if let Ok(json) = serde_json::to_string_pretty(&payload) {
-            if std::fs::write(&tmp, &json).is_ok() {
-                let _ = std::fs::rename(&tmp, &cache_path);
-            }
+        write_cache_atomically(&cache_path, &payload);
+    }
+
+    /// Refresh ONLY the counts in `status-cache.json`, preserving the last
+    /// real assessment (#730).
+    ///
+    /// Called from the mutating paths — `remember`, `forget`, `import-json` —
+    /// which change how many memories exist but hold no `ConsciousnessState`.
+    /// Computing one costs ~1.5s on the production HRM (measured: `status` is
+    /// 2.9s against 1.4s for a bare load), which is not a price a hot write
+    /// path should pay to keep a monitoring cache fresh.
+    ///
+    /// So the counts become current and the consciousness fields are carried
+    /// forward VERBATIM under their original `assessed_at`. The cache means
+    /// "latest counts, metrics as of `assessed_at`" — never fabricated
+    /// metrics, and never a stale count.
+    pub fn refresh_status_cache_counts(&self) {
+        let cache_path = self.data_dir.join("status-cache.json");
+        let stats = self.stats();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Carry the previous assessment forward. A missing or unreadable cache
+        // leaves the consciousness fields ABSENT rather than zeroed: absence
+        // says "never assessed", whereas phi=0 is a claim about the medium.
+        let mut payload = std::fs::read_to_string(&cache_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("total_memories".into(), serde_json::json!(stats.total_memories));
+            obj.insert("active_memories".into(), serde_json::json!(stats.active_memories));
+            obj.insert("counted_at".into(), serde_json::json!(now));
+            // `field_mode` is a constant property of this build, not an
+            // assessment — safe to state on a counts-only write.
+            obj.entry("field_mode".to_string())
+                .or_insert_with(|| serde_json::json!("HRM"));
         }
+        write_cache_atomically(&cache_path, &payload);
     }
 
     // migrate_from_sqlite removed — use chiral_migrate binary instead
@@ -1279,7 +1335,12 @@ impl KannakaMemorySystem {
 
     /// Delete a memory by ID.
     pub fn forget(&mut self, id: &Uuid) -> Result<bool, SystemError> {
-        Ok(self.engine.delete(id)?)
+        let removed = self.engine.delete(id)?;
+        if removed {
+            // #730: same as remember — the count moved, the metrics did not.
+            self.refresh_status_cache_counts();
+        }
+        Ok(removed)
     }
 
     /// Boost a memory's amplitude.
@@ -1749,6 +1810,86 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         env::temp_dir().join(format!("kannaka_octest_{}_{}", name, Uuid::new_v4()))
+    }
+
+    fn read_cache(dir: &std::path::Path) -> serde_json::Value {
+        let s = std::fs::read_to_string(dir.join("status-cache.json"))
+            .expect("status-cache.json should exist");
+        serde_json::from_str(&s).expect("cache must be valid JSON")
+    }
+
+    /// #730: `remember` must refresh the cached COUNTS without a dream and
+    /// without an assess(). Pre-fix only dream()/dream_lite() ever wrote the
+    /// file, so a node that had never dreamt served Observatory nothing.
+    #[test]
+    fn remember_refreshes_cached_counts_without_a_dream() {
+        let dir = temp_dir("cache_counts");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("first memory").unwrap();
+
+        let c = read_cache(&dir);
+        assert_eq!(c["total_memories"], 1);
+        assert!(c["counted_at"].is_string(), "a counts write must stamp counted_at");
+        // Nothing has assessed this node, and a fabricated phi=0 would be a
+        // claim about the medium. Absence is the honest signal.
+        assert!(
+            c.get("assessed_at").is_none_or(|v| v.is_null()),
+            "an unassessed node must not claim an assessment: {c}"
+        );
+        assert!(c.get("phi").is_none(), "counts-only write must not invent phi: {c}");
+
+        sys.remember("second memory").unwrap();
+        assert_eq!(read_cache(&dir)["total_memories"], 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The load-bearing half of the design: a counts refresh must carry the
+    /// last real assessment forward VERBATIM rather than dropping or zeroing
+    /// it. If this regresses, every mutation silently erases Φ/Ξ.
+    #[test]
+    fn counts_refresh_preserves_the_last_assessment() {
+        let dir = temp_dir("cache_preserve");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("seed").unwrap();
+
+        // A full assessment write, as `status` / `dream` would do.
+        let state = sys.assess();
+        sys.write_status_cache(&state);
+        let before = read_cache(&dir);
+        let assessed_at = before["assessed_at"].as_str().unwrap().to_string();
+        assert!(before["phi"].is_number());
+
+        sys.remember("another").unwrap();
+        let after = read_cache(&dir);
+
+        assert_eq!(after["total_memories"], 2, "counts must advance");
+        assert_eq!(
+            after["phi"], before["phi"],
+            "consciousness metrics must be carried forward untouched"
+        );
+        assert_eq!(after["consciousness_level"], before["consciousness_level"]);
+        assert_eq!(
+            after["assessed_at"].as_str().unwrap(),
+            assessed_at,
+            "assessed_at must keep pointing at the LAST REAL assessment, not now"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `forget` moves the count too, so it must refresh as well.
+    #[test]
+    fn forget_refreshes_cached_counts() {
+        let dir = temp_dir("cache_forget");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        let id = sys.remember("disposable").unwrap();
+        assert_eq!(read_cache(&dir)["total_memories"], 1);
+
+        assert!(sys.forget(&id).unwrap());
+        assert_eq!(
+            read_cache(&dir)["total_memories"], 0,
+            "a deletion must not leave a stale higher count behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
