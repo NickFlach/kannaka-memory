@@ -88,7 +88,7 @@ impl Dedup {
             // evicted gift wrap. Loud, once per compaction, so operators
             // see the cliff instead of silent duplicate DMs.
             eprintln!(
-                "[dedupe] WARNING: cap {} reached — evicting oldest ids;                  reconnect replays can now re-deliver DMs older than the cap.                  Raise BRIDGE_DEDUPE_CAP (memory ~250B/id) or see issue #687.",
+                "[dedupe] WARNING: cap {} reached — evicting oldest ids;\nreconnect replays can now re-deliver DMs older than the cap.\nRaise BRIDGE_DEDUPE_CAP (memory ~250B/id) or see issue #687.",
                 self.max_ids
             );
             self.compact()?;
