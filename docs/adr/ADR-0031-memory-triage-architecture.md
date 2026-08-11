@@ -1,6 +1,21 @@
 # ADR-0031 — Memory Triage Architecture (retire prune-cron as a bridge measure)
 
-Status: **Accepted** (ratified 2026-06-06; Phase 1 shipped)
+Status: **Accepted** (ratified 2026-06-06). Phases 1, 2 and 2b SHIPPED.
+**Phase 3 superseded by [ADR-0054](ADR-0054-tiered-triage-retires-prune-cron.md).**
+
+> **Read ADR-0054 first if you are asking how triage runs today.** This ADR
+> established the tier model (`ShortTerm`/`LongTerm`/`Pinned`), the `kannaka
+> triage`/`promote`/`pin` commands, and dream-driven promotion — all of which
+> still hold. What it did NOT settle was *who runs triage and under whose lock*;
+> its Phase 3 answer (a Kannaktopus-scheduled cadence) was replaced by
+> ADR-0054, which makes triage a stage inside the dream cycle under the single
+> writer's existing lock and moves retention policy into a `[retention]` config
+> table. That is what ends the lock contention with running daemons, by
+> construction rather than by scheduling around it.
+>
+> Shipped from this ADR: Phase 1 (in-process online prune), Phase 2 (tiers,
+> back-compat-safe across pre-tier `.hrm` files), Phase 2b (dream-survival
+> promotion + ear captures defaulting to ShortTerm).
 Date: 2026-06-06
 Authors: Nick Flaukowski (vision), Claude (drafting)
 Note: the shipped CLI uses the flat command `kannaka triage` (consistent with the

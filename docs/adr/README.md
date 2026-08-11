@@ -74,7 +74,7 @@ unused.
 | [0028](ADR-0028-event-sourced-hrm-time-machine.md) | Event-Sourced HRM with Time-Machine Exploration | Proposed | 2026-05-17 |
 | [0029](ADR-0029-cli-infrastructure.md) | CLI Infrastructure: clap, plugins, updates, completions | Proposed | 2026-05-24 |
 | [0030](ADR-0030-kannaktopus-dynamic-arms.md) | Kannaktopus Dynamic Arms (Resident Octopus Memory) | Proposed | 2026-05-28 |
-| [0031](ADR-0031-memory-triage-architecture.md) | Memory Triage Architecture (retire prune-cron) | Accepted (Phase 1 shipped) | 2026-06-06 |
+| [0031](ADR-0031-memory-triage-architecture.md) | Memory Triage Architecture (retire prune-cron) | Accepted (Phases 1/2/2b shipped; Phase 3 superseded by 0054) | 2026-06-06 |
 | [0032](ADR-0032-skip-link-persistence.md) | Skip Link Persistence in Dolt Backend | Proposed | 2026-03-12 |
 | [0033](ADR-0033-kannaka-voice.md) | Kannaka Voice — Memory-Driven Writing Engine | Proposed | 2026-03-12 |
 | [0035](ADR-0035-swarm-sensemaking-architecture.md) | Swarm Sensemaking Architecture | Proposed | 2026-06-14 |
@@ -83,3 +83,4 @@ unused.
 | [0038](ADR-0038-consolidation-solver-interface.md) | Consolidation as QUBO: a Solver Interface for the Dream Phase | Accepted | 2026-07-01 |
 | [0039](ADR-0039-corroboration-trust-model.md) | The Corroboration Trust Model — identity says who, corroboration proves what | Accepted | 2026-07-07 |
 | [0040](ADR-0040-cerebellar-novelty-detection.md) | Cerebellar Novelty Detection — surprise as a dual-timescale differentiator on recall familiarity | Accepted | 2026-07-11 |
+| [0054](ADR-0054-tiered-triage-retires-prune-cron.md) | Tiered Memory Triage Inside the Dream Cycle (retiring prune-cron) | Accepted (Phases 1+2 live; Phase 3 pending parallel-run) | 2026-08-07 |
