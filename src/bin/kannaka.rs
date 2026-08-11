@@ -637,6 +637,74 @@ pub(crate) fn resolve_nats_url(args: &[String], start: usize, config_nats_url: &
     config_nats_url.to_string()
 }
 
+/// Broker-selection precedence is the contract every swarm-facing command
+/// shares, and it had no test — so a claim that `--nats-url` is ignored could
+/// only be answered by hand-running the CLI (#753, #754, and #735/#731 before
+/// them, all of which turned out to be stale checkouts). These pin the order so
+/// CI answers it instead.
+#[cfg(all(test, feature = "nats"))]
+mod nats_url_tests {
+    use super::resolve_nats_url;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The whole contract in one assertion: an explicit `--nats-url` outranks
+    /// whatever config/env resolved to. `config_nats_url` already carries
+    /// `KANNAKA_NATS_URL > config.toml > default`, so beating it beats all three.
+    #[test]
+    fn cli_flag_outranks_config_and_env() {
+        let args = argv(&["ask", "--remote", "broadcast", "--nats-url", "nats://cli:29999", "hello"]);
+        assert_eq!(
+            resolve_nats_url(&args, 0, "nats://env-or-config:19999"),
+            "nats://cli:29999"
+        );
+    }
+
+    /// Without the flag, the resolved config/env value is used unchanged — the
+    /// scanner must not invent a default of its own.
+    #[test]
+    fn without_the_flag_the_config_value_passes_through() {
+        let args = argv(&["ask", "--remote", "broadcast", "hello"]);
+        assert_eq!(
+            resolve_nats_url(&args, 0, "nats://env-or-config:19999"),
+            "nats://env-or-config:19999"
+        );
+    }
+
+    /// Callers pass different `start` offsets (`ask` uses 0, the swarm
+    /// subcommands use `command_start`). A flag before `start` must not be
+    /// picked up, or one subcommand could read another's arguments.
+    #[test]
+    fn scan_respects_the_start_offset() {
+        let args = argv(&["--nats-url", "nats://before:1", "swarm", "status"]);
+        assert_eq!(
+            resolve_nats_url(&args, 2, "nats://config:2"),
+            "nats://config:2",
+            "a flag positioned before `start` is out of scope for this scan"
+        );
+        assert_eq!(resolve_nats_url(&args, 0, "nats://config:2"), "nats://before:1");
+    }
+
+    /// First occurrence wins, deterministically — not last, and not a panic.
+    #[test]
+    fn first_occurrence_wins() {
+        let args = argv(&["ask", "--nats-url", "nats://first:1", "--nats-url", "nats://second:2"]);
+        assert_eq!(resolve_nats_url(&args, 0, "nats://config:3"), "nats://first:1");
+    }
+
+    /// A trailing `--nats-url` with no value falls through rather than panicking
+    /// or returning the flag name as a URL. Unreachable in practice — each
+    /// command parses the flag with `flag_value`, which exits 2 on a missing
+    /// value — but the scanner must not be the thing that breaks.
+    #[test]
+    fn trailing_flag_without_a_value_falls_through() {
+        let args = argv(&["ask", "hello", "--nats-url"]);
+        assert_eq!(resolve_nats_url(&args, 0, "nats://config:2"), "nats://config:2");
+    }
+}
+
 /// Return the value following `--flag` at position `i`, or exit 2 with the
 /// given usage line when the flag is the last token. Replaces the
 /// `"--flag" if i + 1 < args.len()` guards whose failure mode was silently
