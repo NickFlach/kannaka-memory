@@ -1035,6 +1035,68 @@ pub fn ask_with_opts(
     Ok(result)
 }
 
+/// Which recall path a remote ask asks its peer to run (#746).
+///
+/// Pre-#746 the request carried no mode and `swarm serve` always ran
+/// `ask_notools_ex`, so a caller's local recall-mode flags were silently
+/// discarded. This is the shared vocabulary for the two ends of that wire —
+/// defined once so the client's request and the server's dispatch cannot drift
+/// into disagreeing about a string literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteAskMode {
+    /// Query-aware beam, then resonance against the beam only. The LOCAL
+    /// default, and what `ask --remote` without flags now asks for.
+    Attention,
+    /// Skip resonance entirely — no memory context.
+    NoRecall,
+    /// Full medium scan. Served WITHOUT the tool loop; see `mode_used`.
+    FullRecall,
+}
+
+impl RemoteAskMode {
+    /// The value the client puts in the request's `mode` field.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Attention => "attention",
+            Self::NoRecall => "no_recall",
+            Self::FullRecall => "full_recall",
+        }
+    }
+
+    /// Parse a request's `mode`.
+    ///
+    /// **Absent or unrecognised falls back to `FullRecall`**, which is exactly
+    /// what every pre-#746 server did. That is what makes an old client's
+    /// payload behave identically against a new server, and what stops a
+    /// future mode name from breaking an older-but-mode-aware peer.
+    pub fn from_wire(mode: Option<&str>) -> Self {
+        match mode {
+            Some("attention") => Self::Attention,
+            Some("no_recall") => Self::NoRecall,
+            _ => Self::FullRecall,
+        }
+    }
+
+    /// The value the server echoes back as `mode_used`.
+    ///
+    /// `FullRecall` deliberately echoes `full_recall_no_tools`, NOT
+    /// `full_recall`: the serving side runs the full scan but does **not** run
+    /// the tool loop, and saying `full_recall` would overclaim. The loop
+    /// exposes `remember` and `dream`, and `swarm serve`'s read-only mode
+    /// blocks only the PERSIST — an in-RAM `remember` would still poison the
+    /// live medium that daemon answers everyone else from. Exposing remote
+    /// tool invocation is a separate capability decision, so the mode is
+    /// honoured in the part that is safe and reported honestly in the part
+    /// that is not.
+    pub fn mode_used_name(self) -> &'static str {
+        match self {
+            Self::Attention => "attention",
+            Self::NoRecall => "no_recall",
+            Self::FullRecall => "full_recall_no_tools",
+        }
+    }
+}
+
 /// One-shot ask: surface memories from `prompt` (full medium scan), run the
 /// tool loop, return text.
 pub fn ask(
@@ -1459,6 +1521,56 @@ fn parse_content(response: &Value) -> Result<Vec<ContentBlock>, AgentError> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod remote_ask_mode_tests {
+    use super::RemoteAskMode;
+
+    /// The compatibility keystone (#746): an absent `mode` — every pre-#746
+    /// client — must resolve to what those servers already did. If this
+    /// regresses, upgrading a server silently changes how it answers every old
+    /// client on the constellation.
+    #[test]
+    fn absent_mode_resolves_to_legacy_full_recall() {
+        assert_eq!(RemoteAskMode::from_wire(None), RemoteAskMode::FullRecall);
+    }
+
+    /// An UNRECOGNISED mode must also fall back rather than error, so a future
+    /// mode name cannot break an older-but-mode-aware peer.
+    #[test]
+    fn unknown_mode_falls_back_instead_of_failing() {
+        assert_eq!(
+            RemoteAskMode::from_wire(Some("telepathy")),
+            RemoteAskMode::FullRecall,
+            "an unknown mode must degrade, never reject — old peers must survive new vocabulary"
+        );
+    }
+
+    /// Wire names round-trip. These strings are the protocol; a typo on either
+    /// side would silently downgrade every ask to full recall.
+    #[test]
+    fn wire_names_round_trip() {
+        for m in [RemoteAskMode::Attention, RemoteAskMode::NoRecall, RemoteAskMode::FullRecall] {
+            assert_eq!(RemoteAskMode::from_wire(Some(m.wire_name())), m, "{m:?}");
+        }
+    }
+
+    /// `full_recall` must NOT echo as `full_recall`. The server runs the scan
+    /// but not the tool loop, and claiming the plain name would overclaim
+    /// exactly the capability that was deliberately withheld.
+    #[test]
+    fn full_recall_echo_is_explicit_about_no_tools() {
+        assert_eq!(RemoteAskMode::FullRecall.mode_used_name(), "full_recall_no_tools");
+        assert_ne!(
+            RemoteAskMode::FullRecall.mode_used_name(),
+            RemoteAskMode::FullRecall.wire_name(),
+            "the echo must not claim the tool loop ran"
+        );
+        // The two non-tool modes are served exactly as named.
+        assert_eq!(RemoteAskMode::Attention.mode_used_name(), "attention");
+        assert_eq!(RemoteAskMode::NoRecall.mode_used_name(), "no_recall");
+    }
 }
 
 #[cfg(test)]
