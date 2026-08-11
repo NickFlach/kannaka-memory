@@ -12,9 +12,11 @@ const ASK_USAGE: &str = "Usage: kannaka ask [--session <id>] [--quiet-tools] [--
 [--no-recall|--full-recall] [--recall-query \"text\"] [--remote <agent_id|broadcast>] \
 [--remote-timeout <seconds>] [--nats-url <url>] \"your question\"\n\
 \n\
---remote answers with FULL recall and no tool loop, whatever the local recall-mode \
-flags say — the request protocol does not carry the mode (#746). --no-recall is \
-rejected with --remote; --full-recall and --session warn.";
+--remote carries the recall mode to the peer (#746): the default attention beam, \
+--no-recall and --full-recall are all honoured. The peer does NOT run the tool loop, \
+so --full-recall warns. --session is never carried: sessions live on the peer disk, \
+so honouring it would attach you to its conversation, not yours. A peer too old to \
+report a mode is flagged after it answers.";
 
 /// What the remote path can and cannot honour about the requested ask mode
 /// (#746).
@@ -42,7 +44,7 @@ pub(crate) fn remote_mode_verdict(
     // there would be noise on a correct invocation.
     if full_recall && !no_tools {
         warnings.push(
-            "--full-recall's tool loop is not available over --remote; the peer answers without tools (#746).",
+            "--full-recall's tool loop is not run over --remote: the peer's loop exposes remember/dream and its read-only mode blocks only the persist, so an in-RAM write would poison the medium it answers everyone from. The full recall itself IS honoured (#746).",
         );
     }
     if has_session {
@@ -50,28 +52,94 @@ pub(crate) fn remote_mode_verdict(
             "--session is not carried over --remote; the peer answers with no conversation continuity (#746).",
         );
     }
-    // An INVERSION, not a degradation: the caller asked for no memory context
-    // and the peer would run the fullest possible scan. No silent behaviour is
-    // defensible, so this is the one hard error.
-    let fatal = no_recall.then_some(
-        "--no-recall cannot be honored with --remote — the serving peer always\n\
-         runs FULL recall, the opposite of what you asked for. (#746)\n\
-         Drop --remote to run locally, or drop --no-recall to accept the peer's answer.",
-    );
-    RemoteModeVerdict { fatal, warnings }
+    // #746 second half: `--no-recall` is now CARRIED to the peer and honoured,
+    // so it is no longer an inversion and no longer fatal. It was only ever a
+    // hard error because the peer silently did the opposite; now it does what
+    // was asked. A peer too old to understand the mode is caught after the
+    // fact by `mode_echo_warning`, which is the only place that can know.
+    let _ = no_recall;
+    RemoteModeVerdict { fatal: None, warnings }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::remote_mode_verdict;
+    use super::{mode_echo_warning, remote_mode_verdict};
+    use kannaka_memory::agent::RemoteAskMode;
 
-    /// The sharp case: `--no-recall` over `--remote` INVERTS the request, so it
-    /// must be refused rather than silently running full recall.
+    /// #746 second half: `--no-recall` is now CARRIED and honoured, so the
+    /// hard error from the first half is gone. It was only fatal because the
+    /// peer silently did the opposite.
     #[test]
-    fn no_recall_over_remote_is_fatal() {
+    fn no_recall_over_remote_is_no_longer_fatal() {
         let v = remote_mode_verdict(true, false, false, false);
-        assert!(v.fatal.is_some(), "--no-recall --remote must be refused");
-        assert!(v.fatal.unwrap().contains("opposite"));
+        assert!(
+            v.fatal.is_none(),
+            "--no-recall is carried to the peer now, so it must not be refused"
+        );
+    }
+
+    // ---- the four client/server vintage combinations (#746) ----------------
+
+    /// NEW client → NEW server, mode honoured: nothing to say.
+    #[test]
+    fn matrix_new_client_new_server_honoured_is_silent() {
+        for m in [RemoteAskMode::Attention, RemoteAskMode::NoRecall, RemoteAskMode::FullRecall] {
+            assert_eq!(
+                mode_echo_warning(m, Some(m.mode_used_name())),
+                None,
+                "an honoured {m:?} must not warn"
+            );
+        }
+    }
+
+    /// NEW client → OLD server. The old server never saw `mode` and echoes
+    /// nothing, so the ABSENCE of the echo is what identifies it. This is the
+    /// combination that would otherwise silently mislead the caller.
+    #[test]
+    fn matrix_new_client_old_server_warns_on_missing_echo() {
+        let w = mode_echo_warning(RemoteAskMode::Attention, None)
+            .expect("a peer that reports no mode must produce a warning");
+        assert!(w.contains("predates"), "{w}");
+        assert!(w.contains("attention"), "the warning must name what was requested: {w}");
+    }
+
+    /// OLD client → NEW server: the request carries no `mode`, and the server
+    /// must resolve that to exactly what every pre-#746 server did. Tested on
+    /// the server's parser, which is the side that decides.
+    #[test]
+    fn matrix_old_client_new_server_falls_back_to_legacy_behaviour() {
+        assert_eq!(
+            RemoteAskMode::from_wire(None),
+            RemoteAskMode::FullRecall,
+            "an old client's payload must behave exactly as it always has"
+        );
+    }
+
+    /// A mode-aware peer that ran something ELSE — e.g. a future server
+    /// declining a mode. Both sides must be named or the difference is not
+    /// actionable.
+    #[test]
+    fn matrix_new_client_new_server_mismatch_names_both_sides() {
+        let w = mode_echo_warning(RemoteAskMode::Attention, Some("no_recall"))
+            .expect("a mode mismatch must warn");
+        assert!(w.contains("no_recall"), "must name what the peer ran: {w}");
+        assert!(w.contains("attention"), "must name what we asked for: {w}");
+    }
+
+    /// `full_recall` echoes `full_recall_no_tools`, so the match must be on the
+    /// echoed spelling — not the requested one, or every full-recall ask would
+    /// warn spuriously.
+    #[test]
+    fn full_recall_echo_uses_the_no_tools_spelling() {
+        assert_eq!(RemoteAskMode::FullRecall.mode_used_name(), "full_recall_no_tools");
+        assert_eq!(
+            mode_echo_warning(RemoteAskMode::FullRecall, Some("full_recall_no_tools")),
+            None
+        );
+        assert!(
+            mode_echo_warning(RemoteAskMode::FullRecall, Some("full_recall")).is_some(),
+            "a peer claiming plain `full_recall` ran something we did not ask for"
+        );
     }
 
     /// `--full-recall --no-tools` is precisely what the peer does — warning on a
@@ -185,8 +253,18 @@ pub(crate) fn handle_ask(
             eprintln!("ask: {fatal}");
             process::exit(2);
         }
+        // Mirror the local precedence (--no-recall > --full-recall > attention)
+        // so `--remote` asks the peer for the SAME path the caller would have
+        // run locally — which is the whole point of #746.
+        let mode = if no_recall {
+            kannaka_memory::agent::RemoteAskMode::NoRecall
+        } else if full_recall {
+            kannaka_memory::agent::RemoteAskMode::FullRecall
+        } else {
+            kannaka_memory::agent::RemoteAskMode::Attention
+        };
         return handle_ask_remote(cfg, args, &target, &prompt, recall_query.as_deref(),
-            no_tools, remote_timeout_secs, quiet_tools);
+            no_tools, remote_timeout_secs, quiet_tools, mode);
     }
 
     let result = if no_recall {
@@ -307,6 +385,36 @@ fn publish_ask_activity(_: &KannakaConfig, _: &str) {}
 
 // ── ADR-0026 Phase 1: remote ask routing over NATS ─────────────────────────
 
+/// What the peer's `mode_used` echo says about whether our mode was honoured
+/// (#746).
+///
+/// The echo IS the version negotiation: it is discovered per call from the
+/// reply itself, so there is no capability registry, no presence-record field
+/// and no deploy ordering. Pure so all four client/server vintage combinations
+/// are testable without a broker.
+///
+/// `None` means nothing worth saying. `Some(msg)` is a warning for stderr —
+/// never fatal, because the answer itself is still valid and useful.
+pub(crate) fn mode_echo_warning(
+    requested: kannaka_memory::agent::RemoteAskMode,
+    echoed: Option<&str>,
+) -> Option<String> {
+    match echoed {
+        // Pre-#746 peer: it never saw our `mode` and ran its fixed path.
+        None => Some(format!(
+            "peer reported no mode; it likely predates mode support and ran full recall without tools, not the requested `{}` (#746).",
+            requested.wire_name()
+        )),
+        Some(used) if used == requested.mode_used_name() => None,
+        // Mode-aware peer that ran something else — e.g. a future server
+        // declining a mode. Name both sides so the difference is actionable.
+        Some(used) => Some(format!(
+            "peer ran `{used}`, not the requested `{}` (#746).",
+            requested.wire_name()
+        )),
+    }
+}
+
 #[cfg(feature = "nats")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_ask_remote(
@@ -318,6 +426,7 @@ pub(crate) fn handle_ask_remote(
     no_tools: bool,
     timeout_secs: u64,
     quiet_tools: bool,
+    mode: kannaka_memory::agent::RemoteAskMode,
 ) {
     use std::time::Duration;
     // Honors --nats-url > KANNAKA_NATS_URL (folded into cfg at load) >
@@ -332,11 +441,14 @@ pub(crate) fn handle_ask_remote(
         Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
     };
 
+    // #746: `mode` is additive — a pre-#746 server ignores the field and
+    // answers exactly as before, so adding it cannot break an old peer.
     let request = serde_json::json!({
         "from": cfg.agent.id,
         "text": prompt,
         "recall_query": recall_query,
         "no_tools": no_tools,
+        "mode": mode.wire_name(),
     });
     let payload = match serde_json::to_vec(&request) {
         Ok(b) => b,
@@ -369,6 +481,11 @@ pub(crate) fn handle_ask_remote(
                     if !quiet_tools {
                         eprintln!("─── reply {} from {}{} ───", i + 1, from_s, mark);
                     }
+                    if let Some(w) =
+                        mode_echo_warning(mode, parsed.get("mode_used").and_then(|v| v.as_str()))
+                    {
+                        eprintln!("ask: warning: {from_s}: {w}");
+                    }
                     println!("{}", kannaka_memory::sanitize_display(text));
                     if !quiet_tools && i + 1 < replies.len() { println!(); }
                 }
@@ -383,6 +500,11 @@ pub(crate) fn handle_ask_remote(
                     .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
                 let text = parsed.get("text").and_then(|v| v.as_str())
                     .unwrap_or("(no text)");
+                if let Some(w) =
+                    mode_echo_warning(mode, parsed.get("mode_used").and_then(|v| v.as_str()))
+                {
+                    eprintln!("ask: warning: {w}");
+                }
                 // SECURITY (increment-0): wire-sourced reply body — never print raw.
                 println!("{}", kannaka_memory::sanitize_display(text));
             }
@@ -393,7 +515,7 @@ pub(crate) fn handle_ask_remote(
 
 #[cfg(not(feature = "nats"))]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_ask_remote(_: &KannakaConfig, _: &[String], _: &str, _: &str, _: Option<&str>, _: bool, _: u64, _: bool) {
+pub(crate) fn handle_ask_remote(_: &KannakaConfig, _: &[String], _: &str, _: &str, _: Option<&str>, _: bool, _: u64, _: bool, _: kannaka_memory::agent::RemoteAskMode) {
     eprintln!("--remote requires the 'nats' feature");
     process::exit(1);
 }

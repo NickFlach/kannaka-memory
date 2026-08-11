@@ -447,12 +447,46 @@ fn _handle_serve_msg(
         eprintln!("[swarm serve] directed from {from}");
     }
 
-    let result = kannaka_memory::agent::ask_notools_ex(sys, cfg, text, recall_q);
+    // #746: honour the caller's recall mode. An ABSENT or unrecognised `mode`
+    // resolves to FullRecall — byte-identical to what every pre-#746 server
+    // did — so an old client's payload behaves exactly as it always has.
+    //
+    // None of these three run the tool loop. That is deliberate, not an
+    // oversight: the loop exposes `remember` and `dream`, and this daemon's
+    // read-only mode blocks the PERSIST, not the in-RAM mutation, so a remote
+    // `remember` would poison the live medium every other caller is answered
+    // from. `mode_used` says `full_recall_no_tools` rather than `full_recall`
+    // so the caller is told that plainly instead of having to infer it.
+    let mode = kannaka_memory::agent::RemoteAskMode::from_wire(
+        req.get("mode").and_then(|v| v.as_str()),
+    );
+    eprintln!("[swarm serve] mode={} (requested {:?})", mode.wire_name(), req.get("mode"));
+    let result = match mode {
+        kannaka_memory::agent::RemoteAskMode::Attention => {
+            kannaka_memory::agent::ask_attention(sys, cfg, text)
+        }
+        kannaka_memory::agent::RemoteAskMode::NoRecall => {
+            kannaka_memory::agent::ask_no_recall(sys, cfg, text)
+        }
+        kannaka_memory::agent::RemoteAskMode::FullRecall => {
+            kannaka_memory::agent::ask_notools_ex(sys, cfg, text, recall_q)
+        }
+    };
     // "from" is the id this serve loop is actually answering as (the
     // --agent-id override when given), not unconditionally cfg.agent.id.
+    // `mode_used` is additive: an old client ignores it, a new one uses its
+    // presence to tell a mode-aware peer from a pre-#746 one.
     let reply = match result {
-        Ok(r) => serde_json::json!({ "from": serve_agent_id, "text": r.text }),
-        Err(e) => serde_json::json!({ "from": serve_agent_id, "error": format!("{e}") }),
+        Ok(r) => serde_json::json!({
+            "from": serve_agent_id,
+            "text": r.text,
+            "mode_used": mode.mode_used_name(),
+        }),
+        Err(e) => serde_json::json!({
+            "from": serve_agent_id,
+            "error": format!("{e}"),
+            "mode_used": mode.mode_used_name(),
+        }),
     };
 
     // Heavy ask calls take 3–5 min. The original NATS connection has been
