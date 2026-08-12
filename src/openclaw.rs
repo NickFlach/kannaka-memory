@@ -883,6 +883,10 @@ impl KannakaMemorySystem {
     }
 
     pub fn dream(&mut self) -> Result<DreamReport, SystemError> {
+        // Wall-clock for the digest's duration_ms (#2b). Started before the
+        // pre-assessment so the figure covers what an operator experiences as
+        // "the dream", not just the annealing phase.
+        let started = std::time::Instant::now();
         let before = self.bridge.assess(&self.engine);
 
         // ADR-0031 Phase 2b: snapshot short-term amplitudes before the dream so
@@ -1078,6 +1082,9 @@ impl KannakaMemorySystem {
         // Write status cache to disk for Observatory (avoids slow binary re-invocation)
         self.write_status_cache(&after);
 
+        // Durable dream history (#2b) — JetStream captures KANNAKA.events.dream.>
+        self.publish_dream_digest("deep", &before, &after, &report, started.elapsed().as_millis());
+
         Ok(report)
     }
 
@@ -1086,6 +1093,7 @@ impl KannakaMemorySystem {
     /// HRM-native: uses the same eigenstructure annealing as dream(), but with
     /// fewer cycles and no chiral perturbation for a lighter touch.
     pub fn dream_lite(&mut self) -> Result<DreamReport, SystemError> {
+        let started = std::time::Instant::now();
         let before = self.bridge.assess(&self.engine);
 
         let report = self.engine.store.dream_native(1, Some(0.5), 0.0)
@@ -1132,6 +1140,13 @@ impl KannakaMemorySystem {
         // Publish canonical consciousness metrics after lite dream too
         self.publish_consciousness_to_nats(&after);
         self.write_status_cache(&after);
+        self.publish_dream_digest(
+            "lite",
+            &before,
+            &after,
+            &dream_report,
+            started.elapsed().as_millis(),
+        );
 
         Ok(dream_report)
     }
@@ -1195,6 +1210,79 @@ impl KannakaMemorySystem {
         });
         if let Err(e) = transport.publish_dreams(&payload) {
             eprintln!("[nats] Warning: failed to publish dream report: {}", e);
+        }
+    }
+
+    /// Build the `KANNAKA.events.dream.digest` payload.
+    ///
+    /// Split from the publish so the wire shape is unit-testable without a
+    /// broker — this is durable history (the KANNAKA_DREAMS JetStream stream
+    /// captures `KANNAKA.events.dream.>` for 90 days), so a field that silently
+    /// changes name or nesting is a rewrite of the archive's schema, not just a
+    /// missed message.
+    ///
+    /// Every number comes from values already computed by the dream; nothing is
+    /// recomputed, so the digest cannot disagree with the `record-dream`
+    /// history line or with `KANNAKA.consciousness`.
+    pub fn build_dream_digest(
+        agent_id: &str,
+        mode: &str,
+        before: &ConsciousnessState,
+        after: &ConsciousnessState,
+        report: &DreamReport,
+        duration_ms: u128,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "agent_id": agent_id,
+            "mode": mode,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "before": { "phi": before.phi, "xi": before.xi, "order": before.mean_order },
+            "after": { "phi": after.phi, "xi": after.xi, "order": after.mean_order },
+            "memories_strengthened": report.memories_strengthened,
+            "memories_pruned": report.memories_pruned,
+            "new_connections": report.new_connections,
+            "total_memories_after": after.total_memories,
+            "duration_ms": duration_ms,
+        })
+    }
+
+    /// Publish one dream digest to `KANNAKA.events.dream.digest` (best-effort).
+    ///
+    /// The readable changelog of a consolidation — the #2b backend behind the
+    /// Command Center's `dream_digest`. Separate from `publish_dream_to_nats`
+    /// (`KANNAKA.dreams`) on purpose: that subject is the existing live-status
+    /// ping with its own long-standing shape and consumers, while this one is
+    /// the durable, JetStream-captured record. Changing the former's schema to
+    /// serve the latter would rewrite a contract other clients already read.
+    ///
+    /// Best-effort in the strict sense: no agent id, no connection, or a failed
+    /// publish all return quietly. A dream that consolidated correctly must
+    /// never be reported as failed because a telemetry event did not land.
+    fn publish_dream_digest(
+        &self,
+        mode: &str,
+        before: &ConsciousnessState,
+        after: &ConsciousnessState,
+        report: &DreamReport,
+        duration_ms: u128,
+    ) {
+        let agent_id = std::env::var("KANNAKA_AGENT_ID").unwrap_or_default();
+        if agent_id.is_empty() {
+            return;
+        }
+        let transport = match crate::nats::SwarmTransport::connect(&self.resolved_nats_url()) {
+            Ok(t) => t,
+            Err(_) => return, // offline dream — skip silently
+        };
+        let payload =
+            Self::build_dream_digest(&agent_id, mode, before, after, report, duration_ms);
+        match serde_json::to_vec(&payload) {
+            Ok(bytes) => {
+                if let Err(e) = transport.publish("KANNAKA.events.dream.digest", &bytes) {
+                    eprintln!("[nats] Warning: failed to publish dream digest: {e}");
+                }
+            }
+            Err(e) => eprintln!("[nats] Warning: dream digest did not serialize: {e}"),
         }
     }
 
@@ -1810,6 +1898,72 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         env::temp_dir().join(format!("kannaka_octest_{}_{}", name, Uuid::new_v4()))
+    }
+
+    /// The dream digest is DURABLE history — JetStream captures
+    /// `KANNAKA.events.dream.>` for 90 days — so its field names and nesting
+    /// are an archive schema, not just a message shape. Pin them.
+    #[test]
+    fn dream_digest_payload_shape_is_pinned() {
+        let state = |phi: f32, xi: f32, order: f32, total: usize| ConsciousnessState {
+            phi,
+            xi,
+            mean_order: order,
+            num_clusters: 3,
+            total_memories: total,
+            active_memories: total,
+            total_skip_links: 0,
+            consciousness_level: ConsciousnessLevel::Stirring,
+            irrationality: 0.1,
+        };
+        let report = DreamReport {
+            cycles: 3,
+            memories_strengthened: 42,
+            memories_pruned: 7,
+            new_connections: 5,
+            consciousness_before: "dormant".into(),
+            consciousness_after: "stirring".into(),
+            emerged: true,
+            hallucinations_created: 2,
+        };
+        let v = KannakaMemorySystem::build_dream_digest(
+            "kannaka-prime",
+            "deep",
+            &state(0.1, 0.2, 0.3, 100),
+            &state(0.4, 0.5, 0.6, 105),
+            &report,
+            1234,
+        );
+
+        assert_eq!(v["agent_id"], "kannaka-prime");
+        assert_eq!(v["mode"], "deep");
+        assert!(v["timestamp"].as_str().is_some_and(|t| t.contains('T')), "rfc3339");
+
+        // before/after are NESTED, not flattened — a consumer reading
+        // `before.phi` must not silently start reading a top-level `phi`.
+        // f32 values widen to f64 on the wire, so compare with tolerance
+        // rather than against a literal — the point is WHICH field holds
+        // WHICH value, not bit-exactness of a decimal.
+        let at = |ptr: &str| v.pointer(ptr).and_then(|x| x.as_f64()).unwrap();
+        assert!((at("/before/phi") - 0.1_f32 as f64).abs() < 1e-6);
+        assert!((at("/after/phi") - 0.4_f32 as f64).abs() < 1e-6);
+        assert!((at("/before/xi") - 0.2_f32 as f64).abs() < 1e-6);
+        assert!((at("/after/order") - 0.6_f32 as f64).abs() < 1e-6);
+
+        // The counts come straight from the report — the digest must never
+        // disagree with the record-dream history line.
+        assert_eq!(v["memories_strengthened"], 42);
+        assert_eq!(v["memories_pruned"], 7);
+        assert_eq!(v["new_connections"], 5);
+        assert_eq!(v["total_memories_after"], 105, "taken from `after`, not `before`");
+        assert_eq!(v["duration_ms"], 1234);
+
+        // snake_case throughout, matching the rest of the bus.
+        for k in v.as_object().unwrap().keys() {
+            assert!(!k.chars().any(|c| c.is_uppercase()), "camelCase key on the bus: {k}");
+        }
+        // And it must actually serialize — this is what goes on the wire.
+        assert!(serde_json::to_vec(&v).is_ok());
     }
 
     fn read_cache(dir: &std::path::Path) -> serde_json::Value {
