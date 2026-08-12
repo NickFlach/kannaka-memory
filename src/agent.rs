@@ -866,6 +866,26 @@ pub fn client_from_config(cfg: &KannakaConfig) -> Result<LlmClient, AgentError> 
     }
 }
 
+/// Can this node actually answer an LLM-backed ask?
+///
+/// Deliberately implemented as `client_from_config(..).is_ok()` rather than a
+/// hand-rolled check of `cfg.llm.*`: a parallel predicate would drift from the
+/// thing it is predicting the moment a provider is added or a key-resolution
+/// fallback changes, and the failure mode of that drift is a node advertising
+/// a capability it does not have — exactly what this exists to prevent.
+///
+/// Cheap and side-effect-free: `client_from_config` only reads config and env
+/// and builds a struct. It issues NO network request, so this is safe to call
+/// on the startup path.
+///
+/// Used by `swarm serve` (#O1/O3 split): two nodes served `kannaka-prime` in
+/// the same NATS queue group while only one had a provider configured, so ask
+/// requests round-robined and roughly half came back "no LLM provider
+/// configured". A keyless node now declines to join the ask queue at all.
+pub fn llm_available(cfg: &KannakaConfig) -> bool {
+    client_from_config(cfg).is_ok()
+}
+
 // ---------------------------------------------------------------------------
 // Agent (single-turn + multi-turn chat)
 // ---------------------------------------------------------------------------
@@ -1521,6 +1541,53 @@ fn parse_content(response: &Value) -> Result<Vec<ContentBlock>, AgentError> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod llm_available_tests {
+    use super::llm_available;
+    use crate::config::KannakaConfig;
+
+    /// A keyless node must report NO capability. This is the whole point of the
+    /// `swarm serve` gate: O1 and O3 both served `kannaka-prime` in one NATS
+    /// queue group while only O1 had a provider, so ~half of all asks
+    /// round-robined onto O3 and came back "no LLM provider configured".
+    #[test]
+    fn empty_provider_is_unavailable() {
+        let mut cfg = KannakaConfig::default();
+        cfg.llm.provider = String::new();
+        assert!(!llm_available(&cfg), "an empty provider cannot answer an ask");
+
+        cfg.llm.provider = "none".to_string();
+        assert!(!llm_available(&cfg), "provider `none` cannot answer an ask");
+    }
+
+    /// A configured provider WITH a key is available. Asserting the positive
+    /// direction too, so the gate cannot be satisfied by always returning
+    /// false — which would take every responder off the ask queue.
+    #[test]
+    fn configured_provider_with_key_is_available() {
+        let mut cfg = KannakaConfig::default();
+        cfg.llm.provider = "anthropic".to_string();
+        cfg.llm.api_key = "sk-ant-test-not-a-real-key".to_string();
+        assert!(llm_available(&cfg));
+
+        // Ollama is the local path — no key required, so it is available on
+        // provider alone. A gate that demanded an api_key would wrongly
+        // exclude every local-model node.
+        let mut local = KannakaConfig::default();
+        local.llm.provider = "ollama".to_string();
+        assert!(llm_available(&local), "ollama needs no api_key");
+    }
+
+    /// An unsupported provider name is not a capability either — better to
+    /// decline the queue than to join it and fail every request.
+    #[test]
+    fn unsupported_provider_is_unavailable() {
+        let mut cfg = KannakaConfig::default();
+        cfg.llm.provider = "telepathy".to_string();
+        assert!(!llm_available(&cfg));
+    }
 }
 
 #[cfg(test)]

@@ -5,9 +5,8 @@
 //! Extracted from `bin/kannaka.rs` in v0.3.29 following the pattern
 //! documented in `handlers/substrate.rs`. The largest single extraction
 //! this session — moves ~830 lines including the 8 public swarm
-//! handlers and 3 private helpers (_serve_directed_only,
-//! _handle_serve_msg, _process_work_msg) that are only called from
-//! within this module.
+//! handlers and the private helpers (_handle_serve_msg, _process_work_msg,
+//! _neighbors_reply) that are only called from within this module.
 
 use std::process;
 
@@ -89,15 +88,27 @@ pub(crate) fn handle_swarm_serve(
     let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
     let directed = format!("KANNAKA.ask.{}", agent_id);
 
+    // Capability gate (see the subscription block below): decided BEFORE the
+    // banner so the banner cannot announce subjects this node then declines to
+    // subscribe. Advertising a capability you do not have is the exact failure
+    // this gate exists to remove; printing it would reintroduce it in the log.
+    let llm_ok = kannaka_memory::agent::llm_available(cfg);
+
     eprintln!("[swarm serve] agent_id={agent_id}");
-    eprintln!(
-        "[swarm serve] subscribing to {} and KANNAKA.ask.broadcast",
-        directed
-    );
-    eprintln!(
-        "[swarm serve] broadcast resonance threshold: {:.2}",
-        threshold
-    );
+    if llm_ok {
+        eprintln!(
+            "[swarm serve] subscribing to {} and KANNAKA.ask.broadcast",
+            directed
+        );
+        eprintln!(
+            "[swarm serve] broadcast resonance threshold: {:.2}",
+            threshold
+        );
+    } else {
+        eprintln!(
+            "[swarm serve] recall-only mode (no LLM provider configured) — not serving KANNAKA.ask.*"
+        );
+    }
     eprintln!("[swarm serve] press Ctrl+C to stop");
 
     // Single subscription per subject; in v1 we run them sequentially via
@@ -112,40 +123,67 @@ pub(crate) fn handle_swarm_serve(
     // The group must be per-identity (not global): ask.broadcast is a shared
     // subject, and a global group would split broadcasts BETWEEN identities.
     let serve_group = format!("serve_{}", agent_id);
-    let mut directed_sub = match transport.subscribe_with_queue(&directed, Some(&serve_group)) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("subscribe directed: {e}");
-            process::exit(1);
+
+    // Capability gate: only join the ask queue group if this node can actually
+    // answer. O1 and O3 both served `kannaka-prime` in `serve_kannaka-prime`,
+    // but only O1 had an LLM provider — NATS round-robins a queue group, so
+    // roughly half of all asks landed on O3 and came back "no LLM provider
+    // configured". Declining the subscription removes the keyless node from
+    // the rotation entirely, which is the durable fix; a client-side retry can
+    // only paper over it.
+    //
+    // Recall and neighbors need no LLM and are subscribed regardless, below.
+    // `llm_ok` was resolved above, before the banner.
+    let mut directed_sub = if llm_ok {
+        match transport.subscribe_with_queue(&directed, Some(&serve_group)) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("subscribe directed: {e}");
+                process::exit(1);
+            }
         }
+    } else {
+        None
     };
     // Short read timeout so the loop multiplexes all subjects responsively.
     // (Was 5s — with directed+broadcast+recall round-robined, a 5s timeout meant
     // the recall sub was only polled every ~12s, making daemon-served recall
     // slower than local. 250ms keeps recall sub-second; idle cost is a blocking
     // read, near-zero CPU.)
-    let _ = directed_sub.set_timeout(Some(Duration::from_millis(250)));
+    if let Some(s) = directed_sub.as_mut() {
+        let _ = s.set_timeout(Some(Duration::from_millis(250)));
+    }
 
     // Broadcast on a separate connection so the directed sub doesn't block it.
-    let bcast_transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("[swarm serve] WARN: broadcast subscription unavailable: {e}");
-            // Continue with directed-only (never returns).
-            _serve_directed_only(sys, cfg, &transport, directed_sub, &agent_id, &nats_url)
+    //
+    // A failure here now leaves `bcast_sub` as None and the main loop carries
+    // on with whatever else subscribed. Pre-fix it diverted into a
+    // directed-only loop that ALSO abandoned the recall responder — a
+    // degradation well beyond the thing that had actually failed. Every
+    // subscription being optional makes that special case unnecessary.
+    let bcast_transport = if llm_ok {
+        match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("[swarm serve] WARN: broadcast subscription unavailable: {e}");
+                None
+            }
         }
+    } else {
+        None
     };
-    let mut bcast_sub = match bcast_transport
-        .subscribe_with_queue("KANNAKA.ask.broadcast", Some(&serve_group))
-    {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[swarm serve] WARN: broadcast subscribe failed: {e}");
-            // Never returns.
-            _serve_directed_only(sys, cfg, &transport, directed_sub, &agent_id, &nats_url)
+    let mut bcast_sub = bcast_transport.as_ref().and_then(|t| {
+        match t.subscribe_with_queue("KANNAKA.ask.broadcast", Some(&serve_group)) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("[swarm serve] WARN: broadcast subscribe failed: {e}");
+                None
+            }
         }
-    };
-    let _ = bcast_sub.set_timeout(Some(Duration::from_millis(250)));
+    });
+    if let Some(s) = bcast_sub.as_mut() {
+        let _ = s.set_timeout(Some(Duration::from_millis(250)));
+    }
 
     // Daemon-served recall (KANNAKA.recall.<agent_id>): the observatory, OBC
     // pulses, and the radio DJ can recall against this agent's warm in-memory
@@ -166,6 +204,33 @@ pub(crate) fn handle_swarm_serve(
         }
         None => eprintln!(
             "[swarm serve] WARN: recall responder unavailable (extra NATS connection failed)"
+        ),
+    }
+
+    // Associative neighbours (KANNAKA.neighbors.<agent_id>): the "resonate"
+    // backend — top-K memories near a query OR near an existing memory, the
+    // wire twin of the `kannaka neighbors` CLI subcommand.
+    //
+    // Deliberately BESIDE recall rather than behind the ask gate: this needs no
+    // LLM, so a keyless node still serves it. That is the point of recall-only
+    // mode — such a node keeps contributing everything its memory can answer,
+    // and declines only what it genuinely cannot.
+    //
+    // Own connection, matching recall: the transport documents a
+    // one-subscription-per-connection model, and sharing would have the two
+    // readers steal each other's bytes.
+    let neighbors_subject = format!("KANNAKA.neighbors.{}", agent_id);
+    let neighbors_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
+    let mut neighbors_sub = neighbors_transport
+        .as_ref()
+        .and_then(|t| t.subscribe_with_queue(&neighbors_subject, Some(&serve_group)).ok());
+    match neighbors_sub.as_mut() {
+        Some(s) => {
+            let _ = s.set_timeout(Some(Duration::from_millis(250)));
+            eprintln!("[swarm serve] serving neighbors on {neighbors_subject}");
+        }
+        None => eprintln!(
+            "[swarm serve] WARN: neighbors responder unavailable (extra NATS connection failed)"
         ),
     }
 
@@ -232,38 +297,43 @@ pub(crate) fn handle_swarm_serve(
         // "nothing right now — poll the next subject"; Closed means the
         // socket is dead and the loop must NOT spin on it (pre-fix this
         // burned 100% CPU forever after a NATS restart).
-        match directed_sub.next_event() {
-            SubEvent::Msg(msg) => {
-                _handle_serve_msg(
-                    sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold, &agent_id,
-                    &nats_url,
-                );
-            }
-            SubEvent::Timeout => {}
-            SubEvent::Closed => {
-                eprintln!(
-                    "[swarm serve] directed subscription ({directed}) closed — exiting for restart"
-                );
-                process::exit(1);
+        // Both ask subjects are absent in recall-only mode (no LLM provider).
+        if let Some(sub) = directed_sub.as_mut() {
+            match sub.next_event() {
+                SubEvent::Msg(msg) => {
+                    _handle_serve_msg(
+                        sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold, &agent_id,
+                        &nats_url,
+                    );
+                }
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    eprintln!(
+                        "[swarm serve] directed subscription ({directed}) closed — exiting for restart"
+                    );
+                    process::exit(1);
+                }
             }
         }
-        match bcast_sub.next_event() {
-            SubEvent::Msg(msg) => {
-                _handle_serve_msg(
-                    sys,
-                    cfg,
-                    &bcast_transport,
-                    &msg,
-                    /*is_broadcast*/ true,
-                    threshold,
-                    &agent_id,
-                    &nats_url,
-                );
-            }
-            SubEvent::Timeout => {}
-            SubEvent::Closed => {
-                eprintln!("[swarm serve] broadcast subscription closed — exiting for restart");
-                process::exit(1);
+        if let (Some(sub), Some(bt)) = (bcast_sub.as_mut(), bcast_transport.as_ref()) {
+            match sub.next_event() {
+                SubEvent::Msg(msg) => {
+                    _handle_serve_msg(
+                        sys,
+                        cfg,
+                        bt,
+                        &msg,
+                        /*is_broadcast*/ true,
+                        threshold,
+                        &agent_id,
+                        &nats_url,
+                    );
+                }
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    eprintln!("[swarm serve] broadcast subscription closed — exiting for restart");
+                    process::exit(1);
+                }
             }
         }
         // Daemon-served recall — reply with the agent's own memories (full content).
@@ -346,6 +416,30 @@ pub(crate) fn handle_swarm_serve(
         if recall_closed {
             recall_sub = None;
         }
+        // Associative neighbours — same best-effort posture as recall: a closed
+        // subscription degrades this one responder rather than taking the
+        // daemon down, because the ask/recall paths are still serving.
+        let mut neighbors_closed = false;
+        if let Some(ref mut nsub) = neighbors_sub {
+            match nsub.next_event() {
+                SubEvent::Timeout => {}
+                SubEvent::Closed => {
+                    eprintln!("[swarm serve] WARN: neighbors subscription closed — continuing without neighbors responder");
+                    neighbors_closed = true;
+                }
+                SubEvent::Msg(msg) => {
+                    if let (Some(reply_to), Some(nt)) =
+                        (msg.reply_to.clone(), neighbors_transport.as_ref())
+                    {
+                        let payload = _neighbors_reply(sys, &agent_id, &msg.payload);
+                        let _ = nt.reply(&reply_to, payload.to_string().as_bytes());
+                    }
+                }
+            }
+        }
+        if neighbors_closed {
+            neighbors_sub = None;
+        }
         if last_reactivation_flush.elapsed() >= Duration::from_secs(60) {
             sys.flush_reactivation();
             last_reactivation_flush = std::time::Instant::now();
@@ -353,39 +447,90 @@ pub(crate) fn handle_swarm_serve(
     }
 }
 
+/// Clamp a peer-supplied `top_k` for the neighbours responder.
+///
+/// The value arrives straight off the NATS wire and drives recall plus a
+/// per-result Vec allocation, a `store.get` and JSON serialization, so an
+/// unbounded one (`{"top_k": 4000000000}`) is an OOM lever on the 1-vCPU hub.
+/// Same cap the recall responder and the `cores` handler already apply.
 #[cfg(feature = "nats")]
-fn _serve_directed_only(
+pub(crate) fn neighbors_top_k(req: &serde_json::Value) -> usize {
+    req.get("top_k")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .clamp(1, 100) as usize
+}
+
+/// Build the reply for one `KANNAKA.neighbors.<agent_id>` request.
+///
+/// The wire twin of the `kannaka neighbors` CLI subcommand: top-K memories
+/// near a free-text `query`, or — when `id` is a UUID — near that memory's own
+/// content, which is the associative "what sits next to this?" mode.
+///
+/// Read-only. `swarm serve` enforces `KANNAKA_READONLY`, so the observation
+/// recall performs mutates the medium in RAM and never persists.
+#[cfg(feature = "nats")]
+fn _neighbors_reply(
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
-    cfg: &KannakaConfig,
-    transport: &kannaka_memory::nats::SwarmTransport,
-    mut sub: kannaka_memory::nats::NatsSubscription,
-    serve_agent_id: &str,
-    nats_url: &str,
-) -> ! {
-    // The directed sub already carries a short read timeout from the main
-    // setup path. Pre-fix this loop used `while let Some(...) = next_message()`
-    // which treated that timeout as connection close and silently exited
-    // (status 0) within ~250ms of idle.
-    loop {
-        match sub.next_event() {
-            SubEvent::Msg(msg) => {
-                _handle_serve_msg(
-                    sys,
-                    cfg,
-                    transport,
-                    &msg,
-                    false,
-                    0.0,
-                    serve_agent_id,
-                    nats_url,
-                );
-            }
-            SubEvent::Timeout => {}
-            SubEvent::Closed => {
-                eprintln!("[swarm serve] directed subscription closed — exiting for restart");
-                process::exit(1);
-            }
+    agent_id: &str,
+    payload: &[u8],
+) -> serde_json::Value {
+    let req: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            return serde_json::json!({ "from": agent_id, "error": format!("bad json: {e}") })
         }
+    };
+    let top_k = neighbors_top_k(&req);
+
+    // An `id` that parses as a UUID anchors on that memory's content; anything
+    // else falls back to `query`. Mirrors the CLI's precedence.
+    let id_str = req.get("id").and_then(|v| v.as_str());
+    let (query, anchor) = match id_str.and_then(|s| s.parse::<uuid::Uuid>().ok()) {
+        Some(uuid) => match sys.engine.store.get(&uuid) {
+            Ok(Some(m)) => (m.content.clone(), serde_json::json!({ "id": uuid.to_string() })),
+            _ => {
+                return serde_json::json!({
+                    "from": agent_id,
+                    "error": format!("memory {uuid} not found"),
+                })
+            }
+        },
+        None => {
+            let q = req
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if q.is_empty() {
+                return serde_json::json!({
+                    "from": agent_id,
+                    "error": "neighbors requires `query` (text) or `id` (uuid)",
+                });
+            }
+            let anchor = serde_json::json!({ "query": q });
+            (q, anchor)
+        }
+    };
+
+    match sys.recall(&query, top_k) {
+        Ok(results) => {
+            let neighbors: Vec<serde_json::Value> = results
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id.to_string(),
+                        "content": m.content,
+                        "similarity": m.similarity,
+                        "strength": m.strength,
+                        "age_hours": m.age_hours,
+                        "layer": m.layer,
+                    })
+                })
+                .collect();
+            serde_json::json!({ "from": agent_id, "anchor": anchor, "neighbors": neighbors })
+        }
+        Err(e) => serde_json::json!({ "from": agent_id, "error": format!("recall failed: {e}") }),
     }
 }
 
@@ -2203,5 +2348,48 @@ mod serve_hardness_tests {
             freshness_decision(t0, t0, p, now + Duration::from_secs(25), settle),
             (None, false)
         );
+    }
+}
+
+#[cfg(all(test, feature = "nats"))]
+mod neighbors_tests {
+    use super::neighbors_top_k;
+
+    /// Absent `top_k` uses the documented default rather than 0 (which would
+    /// return nothing and look like an empty memory).
+    #[test]
+    fn absent_top_k_defaults_to_ten() {
+        assert_eq!(neighbors_top_k(&serde_json::json!({ "query": "x" })), 10);
+    }
+
+    /// The value comes straight off the NATS wire and drives allocation, a
+    /// per-result `store.get` and JSON serialization, so an unbounded one is an
+    /// OOM lever on the 1-vCPU hub. Same cap recall and `cores` already apply.
+    #[test]
+    fn hostile_top_k_is_clamped() {
+        assert_eq!(
+            neighbors_top_k(&serde_json::json!({ "top_k": 4_000_000_000u64 })),
+            100
+        );
+    }
+
+    /// Zero would make a well-formed request return nothing at all; floor it so
+    /// a caller always gets the answer it asked a question to get.
+    #[test]
+    fn zero_top_k_floors_to_one() {
+        assert_eq!(neighbors_top_k(&serde_json::json!({ "top_k": 0 })), 1);
+    }
+
+    /// A sane value passes through untouched.
+    #[test]
+    fn in_range_top_k_passes_through() {
+        assert_eq!(neighbors_top_k(&serde_json::json!({ "top_k": 25 })), 25);
+    }
+
+    /// A non-numeric `top_k` falls back to the default instead of failing the
+    /// whole request — the query is still answerable.
+    #[test]
+    fn non_numeric_top_k_falls_back_to_default() {
+        assert_eq!(neighbors_top_k(&serde_json::json!({ "top_k": "lots" })), 10);
     }
 }
