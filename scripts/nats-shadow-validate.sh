@@ -25,7 +25,7 @@ sed -e "s#0.0.0.0:4222#127.0.0.1:$PORT#" "$CONF_SRC" \
 # Every credential var the config references -> the shared test password.
 for v in NATS_PASSWORD NATS_ANON_PASS NATS_WRITER_PASS NATS_SERVE_PASS \
          NATS_RADIO_PASS NATS_PRESENCE_PASS NATS_RESPONDER_PASS NATS_EYE_PASS \
-         NATS_KANNAKTOPUS_PASS NATS_UIBRIDGE_PASS; do export "$v=$PASS"; done
+         NATS_KANNAKTOPUS_PASS NATS_UIBRIDGE_PASS NATS_QUEEN_AGENT_PASS; do export "$v=$PASS"; done
 
 echo "== config syntax check =="
 nats-server -t -c "$CONF" || { echo "SYNTAX FAIL"; exit 1; }
@@ -56,6 +56,14 @@ check "anon ALLOWED consciousness"       allow anon   "KANNAKA.consciousness"
 check "presence publishes obc events"    allow presence "KANNAKA.events.obc.dm_message"
 check "presence DENIED memory publish"   deny  presence "KANNAKA.memory.new"
 check "compat internal still god (1a)"   allow kannaka_internal "KANNAKA.memory.new"
+check "queen_agent writes KV roster"     allow queen_agent '$KV.QUEEN_AGENTS.test-agent'
+check "anon DENIED KV roster write"      deny  anon        '$KV.QUEEN_AGENTS.test-agent'
+check "queen_agent publishes phase"      allow queen_agent "QUEEN.phase.test-agent"
+check "queen_agent publishes presence"   allow queen_agent "KANNAKA.presence.test-agent"
+check "queen_agent directed ask OK"      allow queen_agent "KANNAKA.ask.kannaka-prime"
+check "queen_agent DENIED stream create" deny  queen_agent '$JS.API.STREAM.CREATE.SHADOW_TEST'
+check "queen_agent DENIED work queue"    deny  queen_agent "KANNAKA.work.research"
+check "anon ALLOWED retained reads"      allow anon        '$JS.API.STREAM.MSG.GET.QUEEN_PHASES'
 
 echo "== result: $pass passed, $fail failed =="
 [ "$fail" -eq 0 ] && echo "SHADOW VALIDATION PASSED" || { echo "SHADOW VALIDATION FAILED"; exit 1; }
