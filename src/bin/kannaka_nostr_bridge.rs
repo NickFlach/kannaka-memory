@@ -349,6 +349,10 @@ fn handle_relay_message(
         Outcome::Accept(dm) => {
             let sender_npub =
                 npub_from_pubkey_hex(&dm.sender).unwrap_or_else(|_| dm.sender.clone());
+            // If this DM is a `propose:` message, file it to the market door as
+            // nostr:<npub> (best-effort; the DM is still routed to the responder
+            // below). Dormant unless NOSTR_PROPOSE_CHANNEL_TOKEN is set.
+            maybe_file_proposal(&sender_npub, &dm.content);
             let routed = serde_json::json!({
                 "type": "nostr_dm",
                 "sender_hex": dm.sender,
@@ -375,6 +379,51 @@ fn handle_relay_message(
         Outcome::Duplicate => {}
         Outcome::RateLimited => eprintln!("[bridge] rate-limited a sender"),
         Outcome::Invalid => {} // silently drop — never disclose why
+    }
+}
+
+/// If a decrypted DM is a `propose:` market proposal, file it to the observatory's
+/// channel-scoped propose door as `nostr:<npub>` (the sender is the VERIFIED seal
+/// signer, so this principal is sound). Best-effort and non-panicking — a failed
+/// file is logged, never fatal, and the DM is routed to the responder regardless.
+/// Dormant unless NOSTR_PROPOSE_CHANNEL_TOKEN is set. The door re-checks the token
+/// against the pinned `nostr:` prefix, so a bug here fails closed, not open.
+fn maybe_file_proposal(sender_npub: &str, content: &str) {
+    // Prefix-match the trigger (never substring) so Kannaka's own outbound copy
+    // can't retrigger: optional leading '!', then "propose" + ':' or whitespace.
+    let t = content.trim_start();
+    let t = t.strip_prefix('!').unwrap_or(t);
+    let is_propose = t
+        .to_ascii_lowercase()
+        .strip_prefix("propose")
+        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(char::is_whitespace));
+    if !is_propose {
+        return;
+    }
+    let token = match std::env::var("NOSTR_PROPOSE_CHANNEL_TOKEN") {
+        Ok(t) if !t.is_empty() => t,
+        _ => return, // feature off
+    };
+    let base = std::env::var("OBSERVATORY_BASE_URL")
+        .unwrap_or_else(|_| "https://observatory.ninja-portal.com".to_string());
+    let url = format!(
+        "{}/api/predictions/propose-channel",
+        base.trim_end_matches('/')
+    );
+    let principal = format!("nostr:{sender_npub}");
+    let body = serde_json::json!({ "principal": principal, "text": content });
+    match ureq::post(&url)
+        .set("authorization", &format!("Bearer {token}"))
+        .send_json(body)
+    {
+        Ok(resp) => eprintln!(
+            "[bridge] filed nostr proposal from {sender_npub} → {}",
+            resp.status()
+        ),
+        Err(ureq::Error::Status(code, _)) => {
+            eprintln!("[bridge] nostr proposal rejected ({code}) from {sender_npub}")
+        }
+        Err(e) => eprintln!("[bridge] nostr proposal POST failed: {e}"),
     }
 }
 
