@@ -717,6 +717,99 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                 }
             }
         }
+        "propose" => {
+            let statement = match args.get(2) {
+                Some(s) => s.clone(),
+                None => {
+                    eprintln!("Usage: kannaka market propose \"<falsifiable claim>\" --by YYYY-MM-DD [--category <topic>]");
+                    eprintln!("  Files a market proposal to Kannaka Labs, attributed to your KAX identity.");
+                    eprintln!("  The settle-by date is required; a future date auto-opens it into a funded market.");
+                    eprintln!("  You cannot trade a market you proposed (anti-self-dealing).");
+                    process::exit(1);
+                }
+            };
+            const PROPOSE_USAGE: &str =
+                "Usage: kannaka market propose \"<claim>\" --by YYYY-MM-DD [--category <topic>]";
+            let mut settles_by: Option<String> = None;
+            let mut category: Option<String> = None;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--by" | "--settles-by" | "--due" => {
+                        settles_by = Some(super::parse_flag_value::<String>(args, i, "--by", PROPOSE_USAGE));
+                        i += 2;
+                    }
+                    "--category" | "--cat" => {
+                        category = Some(super::parse_flag_value::<String>(args, i, "--category", PROPOSE_USAGE));
+                        i += 2;
+                    }
+                    other => {
+                        if other.starts_with("--") {
+                            eprintln!("[market propose] ignoring unknown flag: {}", other);
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            if settles_by.is_none() {
+                eprintln!("  market propose: a settle-by date is required (--by YYYY-MM-DD).");
+                eprintln!("  {}", PROPOSE_USAGE);
+                process::exit(1);
+            }
+            // Proof-forward (multichannel-ingress-design.md): the observatory door
+            // verifies OUR KAX identity and derives the canonical principal
+            // (kax:agent:<bot> / kax:user:<sub>) — the SAME id we trade as, which
+            // is what makes the anti-self-dealing guard fire on a market we propose.
+            // Refresh the token first so a long-lived shell still authenticates.
+            let kax = match ensure_fresh_kax_token(cfg) {
+                Some(t) => t,
+                None => {
+                    eprintln!("  Proposing needs a KAX identity. Run: kannaka market auth <jwt>");
+                    process::exit(1);
+                }
+            };
+            let url = format!("{}/api/predictions/propose", cfg.constellation.observatory_url);
+            let body = serde_json::json!({
+                "statement": statement,
+                "settlesBy": settles_by,
+                "category": category,
+            })
+            .to_string();
+            match http_post_json_with_token(&url, &body, &kax) {
+                Ok(resp) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        let p = &v["prediction"];
+                        let num = p["number"]
+                            .as_i64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        let status = p["status"].as_str().unwrap_or("proposed");
+                        if v["duplicate"].as_bool() == Some(true) {
+                            println!("  \u{2713} That claim is already an active market (prediction \u{2116}{}).", num);
+                        } else {
+                            println!("  \u{2713} Proposed prediction \u{2116}{} \u{2014} status: {}", num, status);
+                            println!("  \"{}\"", statement);
+                            if let Some(sb) = &settles_by {
+                                println!("  Settles by: {}", sb);
+                            }
+                            println!(
+                                "  You can't trade this one (anti-self-dealing); watch it at {}",
+                                cfg.constellation.observatory_url
+                            );
+                        }
+                    } else {
+                        println!("{}", resp);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Proposal failed: {}", e);
+                    if e.contains("401") {
+                        eprintln!("  (proposing needs a KAX identity token: kannaka market auth <jwt>)");
+                    }
+                    process::exit(1);
+                }
+            }
+        }
         "create" => {
             let question = match args.get(2) {
                 Some(q) => q.clone(),
@@ -842,7 +935,9 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
         }
         _ => {
-            eprintln!("Usage: kannaka market <list|view|buy|create|portfolio|leaderboard|auth|link|whoami>");
+            eprintln!("Usage: kannaka market <list|view|buy|propose|create|portfolio|leaderboard|auth|link|whoami>");
+            eprintln!("  propose \"<claim>\" --by YYYY-MM-DD [--category <topic>]");
+            eprintln!("               file a market proposal to Kannaka Labs (attributed to your KAX identity)");
             eprintln!("  auth <jwt>   store a KAX identity token (labs-tier trading; auto-refreshed)");
             eprintln!("  link         federate a KAX identity from your SpaceChild login (kannaka identity login)");
             eprintln!("  whoami       show the stored KAX principal + token/lineage status");
