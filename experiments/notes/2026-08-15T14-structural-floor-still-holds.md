@@ -1,0 +1,1 @@
+No new consolidation.rs or research.rs changes since Aug 7 fire; ADR-0054 retention triage (a3e04ab) is dark by default (KANNAKA_TRIAGE=1 required, no L5 impact); structural floor intact; all levers remain exhausted.
