@@ -157,15 +157,6 @@ mod tests {
         }
     }
 
-    // Exact-theme domains for tests.
-    fn exact(a: &str, b: &str) -> f32 {
-        if a == b {
-            1.0
-        } else {
-            0.0
-        }
-    }
-
     #[test]
     fn narrowly_held_domain_has_lower_coverage_than_widely_held() {
         // "wide" held by 5 agents; "narrow" by 1, same size/coherence each.
@@ -173,7 +164,7 @@ mod tests {
         for i in 0..5 {
             clusters.push(cl(&format!("b{i}"), "wide", 10, 0.9, 0.8));
         }
-        let map = build_coverage_map(&clusters, 5, |a, b| exact(a, b) > 0.5);
+        let map = build_coverage_map(&clusters, 5, |a, b| a == b);
         let narrow = map.iter().find(|d| d.domain == "narrow").unwrap();
         let wide = map.iter().find(|d| d.domain == "wide").unwrap();
         assert!(narrow.coverage < wide.coverage, "{} !< {}", narrow.coverage, wide.coverage);
@@ -187,7 +178,7 @@ mod tests {
         for i in 0..4 {
             clusters.push(cl(&format!("a{i}"), "solid", 30, 0.95, 0.9));
         }
-        let map = build_coverage_map(&clusters, 4, |a, b| exact(a, b) > 0.5);
+        let map = build_coverage_map(&clusters, 4, |a, b| a == b);
         let gaps = detect_gaps(&map, 0.25);
         assert!(gaps.is_empty(), "well-covered domain should not be a gap: {gaps:?}");
     }
@@ -200,7 +191,7 @@ mod tests {
             cl("b", "shaky", 30, 0.2, 0.9),
             cl("c", "shaky", 30, 0.2, 0.9),
         ];
-        let map = build_coverage_map(&clusters, 3, |a, b| exact(a, b) > 0.5);
+        let map = build_coverage_map(&clusters, 3, |a, b| a == b);
         let gaps = detect_gaps(&map, 0.5);
         let g = gaps.iter().find(|g| g.domain == "shaky").unwrap();
         assert_eq!(g.kind, GapKind::LowConfidence);
@@ -212,7 +203,7 @@ mod tests {
         for i in 0..4 {
             clusters.push(cl(&format!("b{i}"), "common", 30, 0.9, 0.9));
         }
-        let map = build_coverage_map(&clusters, 5, |a, b| exact(a, b) > 0.5);
+        let map = build_coverage_map(&clusters, 5, |a, b| a == b);
         let gaps = detect_gaps(&map, 0.3);
         let g = gaps.iter().find(|g| g.domain == "rare").unwrap();
         assert_eq!(g.kind, GapKind::WeaklyRepresented);
