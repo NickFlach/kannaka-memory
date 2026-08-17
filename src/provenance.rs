@@ -445,16 +445,19 @@ impl ReplayLru {
     }
 
     /// Low-water eviction: drop everything older than `now - SKEW_MS`; if the
-    /// set is still at/over cap, evict oldest-first until under cap.
+    /// set is still at/over cap, bulk-evict the oldest 20% in one O(n log n)
+    /// pass rather than the previous O(n²) one-at-a-time scan.
     fn evict(&mut self, now_ms: i64) {
         self.seen.retain(|_, &mut ts| now_ms - ts <= SKEW_MS);
-        while self.seen.len() >= self.cap {
-            let oldest = self.seen.iter().min_by_key(|(_, &ts)| ts).map(|(k, _)| *k);
-            match oldest {
-                Some(k) => {
+        if self.seen.len() >= self.cap {
+            let target = self.cap * 4 / 5;
+            let to_drop = self.seen.len().saturating_sub(target);
+            if to_drop > 0 {
+                let mut by_age: Vec<_> = self.seen.iter().map(|(k, &ts)| (ts, *k)).collect();
+                by_age.sort_unstable_by_key(|(ts, _)| *ts);
+                for (_, k) in by_age.into_iter().take(to_drop) {
                     self.seen.remove(&k);
                 }
-                None => break,
             }
         }
     }
