@@ -1112,9 +1112,64 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
 /// a shared embedding, and contradiction detection needs phase in the recall
 /// response — both are responder-side protocol extensions tracked for the next
 /// increment.
-fn swarm_brief_peers(cfg: &KannakaConfig, topic: &str, want_json: bool) -> bool {
-    let nats_url = cfg.swarm.nats_url.clone();
-    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+/// `nats_url` arrives RESOLVED from the caller (CLI > env > config) rather
+/// than being read from config here — reading `cfg.swarm.nats_url` directly is
+/// exactly how `--nats-url` came to be silently ignored (#766). The config
+/// parameter went with it: the URL was the only thing this function ever read
+/// from it, which is itself the evidence that resolution never belonged here.
+/// Collect the free words of a `swarm brief` invocation into the topic,
+/// skipping flags AND their values. The old inline filter only dropped tokens
+/// starting with `--`, so a value-carrying flag leaked its value into the
+/// topic: `brief "x" --peers --nats-url nats://a:4222` briefed the topic
+/// "x nats://a:4222" (#766, second half). Extracted so the contract is pinned
+/// by tests the way `resolve_nats_url`'s is.
+fn brief_topic(args: &[String], start: usize) -> String {
+    let mut words: Vec<&str> = Vec::new();
+    let mut i = start;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--nats-url" => i += 2, // flag + value
+            a if a.starts_with("--") => i += 1,
+            a => {
+                words.push(a);
+                i += 1;
+            }
+        }
+    }
+    words.join(" ")
+}
+
+#[cfg(all(test, feature = "nats"))]
+mod brief_topic_tests {
+    use super::brief_topic;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The #766 report, replayed: the broker URL must not become part of the
+    /// question the swarm is asked.
+    #[test]
+    fn a_flag_value_does_not_leak_into_the_topic() {
+        let args = argv(&["swarm", "brief", "disk", "pressure", "--peers", "--nats-url", "nats://other:4222"]);
+        assert_eq!(brief_topic(&args, 2), "disk pressure");
+    }
+
+    #[test]
+    fn bare_flags_are_skipped_without_eating_a_word() {
+        let args = argv(&["swarm", "brief", "disk", "--json", "pressure"]);
+        assert_eq!(brief_topic(&args, 2), "disk pressure");
+    }
+
+    #[test]
+    fn a_trailing_valueless_nats_url_does_not_panic() {
+        let args = argv(&["swarm", "brief", "disk", "--nats-url"]);
+        assert_eq!(brief_topic(&args, 2), "disk");
+    }
+}
+
+fn swarm_brief_peers(nats_url: &str, topic: &str, want_json: bool) -> bool {
+    let transport = match kannaka_memory::nats::SwarmTransport::connect(nats_url) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("brief --peers: NATS connect failed: {e}; using local");
@@ -3805,21 +3860,23 @@ fn main() {
                 // the pure `sensemaking` module end-to-end.
                 "brief" => {
                     let want_json = args.iter().any(|a| a == "--json");
-                    let topic: String = args[command_start + 2..]
-                        .iter()
-                        .filter(|a| !a.starts_with("--"))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let topic = brief_topic(&args, command_start + 2);
                     if topic.trim().is_empty() {
-                        eprintln!("Usage: kannaka swarm brief \"<topic>\" [--json] [--peers]");
+                        eprintln!("Usage: kannaka swarm brief \"<topic>\" [--json] [--peers] [--nats-url URL]");
                         process::exit(1);
                     }
                     // --peers (Wave 1 fan-out): fan recall out to live swarm peers
                     // and run consensus voting. Falls back to local on no peers.
+                    //
+                    // The broker is resolved HERE, with the same precedence
+                    // every other swarm verb uses (CLI > env > config), and
+                    // handed down — swarm_brief_peers used to read
+                    // cfg.swarm.nats_url directly, which silently ignored
+                    // --nats-url (#766, first half).
                     let mut handled = false;
                     if args.iter().any(|a| a == "--peers") {
-                        handled = swarm_brief_peers(&cfg, &topic, want_json);
+                        let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
+                        handled = swarm_brief_peers(&nats_url, &topic, want_json);
                     }
                     if !handled {
                     match sys.recall(&topic, 8) {
