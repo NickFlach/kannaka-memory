@@ -3343,6 +3343,39 @@ mod tests {
         assert_eq!(pinned["ts"].as_i64(), Some(42));
     }
 
+    /// #703: an exemplar payload, run through the same `add_envelope` that
+    /// `publish_exemplar` applies, must carry every key the amended contract
+    /// (consciousness-core docs/nats-contract.yaml) requires — with the
+    /// contract's TYPES, not just the names. `centroid` is deliberately
+    /// absent: the contract moved it to optional, because HRM encodings are
+    /// per-agent and an absorbing node re-encodes the exemplar's CONTENT
+    /// into its own wave space — a foreign centroid was never usable.
+    #[test]
+    fn exemplar_payload_meets_the_amended_contract() {
+        // Mirror the swarm exemplar builder's shape (handlers/swarm.rs).
+        let mut payload = serde_json::json!({
+            "agent_id": "test-agent",
+            "cluster_id": 7,
+            "size": 3,
+            "content": "distilled cluster exemplar",
+            "amplitude": 0.42,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        });
+        add_envelope(&mut payload);
+
+        // The contract's four required keys, value AND type.
+        assert_eq!(payload["schema_version"], serde_json::json!("1.0"));
+        assert!(
+            payload["ts"].as_i64().is_some_and(|t| t > 1_600_000_000_000),
+            "ts must be numeric unix-ms"
+        );
+        assert!(payload["agent_id"].is_string());
+        assert!(
+            payload["cluster_id"].as_u64().is_some(),
+            "cluster_id must be an integer"
+        );
+    }
+
     /// #705 residual: dream lifecycle payloads must carry the report fields
     /// at the TOP level (the contract requires memories_strengthened /
     /// memories_faded on queen.event.dream.end) — not nested in `details`.
