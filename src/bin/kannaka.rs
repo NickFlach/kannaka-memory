@@ -104,6 +104,57 @@ pub(crate) fn data_dir() -> PathBuf {
         .unwrap_or_else(|_| dirs_or_default())
 }
 
+/// The directory the ACTIVE store lives in: the parent of `cfg.hrm.path` when
+/// a custom path is configured, else `data_dir()`.
+///
+/// Store-coupled sidecar state — the autoabsorb safety counters, the
+/// reputation store, quarantine staging, the serve freshness watch — must
+/// live HERE, not under a raw `data_dir()`: state that guards a memory
+/// universe has to travel with that universe. Left on `data_dir()`, moving a
+/// node onto a custom `hrm.path` silently resets absorb history, two stores
+/// sharing one config home bleed quota and reputation into each other, and
+/// the serve daemon watches the mtime of an HRM nobody writes (#769).
+pub(crate) fn store_dir(cfg: &KannakaConfig) -> PathBuf {
+    if !cfg.hrm.path.is_empty() {
+        if let Some(parent) = std::path::Path::new(&cfg.hrm.path).parent() {
+            if !parent.as_os_str().is_empty() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    data_dir()
+}
+
+#[cfg(test)]
+mod store_dir_tests {
+    use super::store_dir;
+    use crate::KannakaConfig;
+
+    /// A custom hrm.path moves ALL store-coupled state with it (#769).
+    #[test]
+    fn custom_hrm_path_wins() {
+        let mut cfg = KannakaConfig::default();
+        cfg.hrm.path = "/srv/custom-store/kannaka.hrm".to_string();
+        assert_eq!(store_dir(&cfg), std::path::PathBuf::from("/srv/custom-store"));
+    }
+
+    /// An empty hrm.path (pre-init, or default-resolved later) falls back to
+    /// data_dir() — the historical location, so existing nodes see no move.
+    #[test]
+    fn empty_path_falls_back_to_data_dir() {
+        let cfg = KannakaConfig::default();
+        assert_eq!(store_dir(&cfg), super::data_dir());
+    }
+
+    /// A bare filename has no usable parent; falling back beats returning "".
+    #[test]
+    fn bare_filename_falls_back() {
+        let mut cfg = KannakaConfig::default();
+        cfg.hrm.path = "kannaka.hrm".to_string();
+        assert_eq!(store_dir(&cfg), super::data_dir());
+    }
+}
+
 fn dirs_or_default() -> PathBuf {
     // Check env var first, then home directory, then CWD as last resort
     if let Ok(dir) = std::env::var("KANNAKA_DATA_DIR") {

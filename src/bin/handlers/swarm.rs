@@ -10,7 +10,7 @@
 
 use std::process;
 
-use super::{data_dir, resolve_nats_url, KannakaConfig};
+use super::{data_dir, resolve_nats_url, store_dir, KannakaConfig};
 #[cfg(feature = "nats")]
 use super::{flag_value, parse_flag_value};
 
@@ -248,7 +248,14 @@ pub(crate) fn handle_swarm_serve(
     // small hub (an in-place reload would briefly hold two full HRMs). The
     // settle window avoids reloading mid-write. Replaces the hourly cron
     // restart, whose only surviving job (post-#500 liveness) was freshness.
-    let hrm_path = data_dir().join("kannaka.hrm");
+    // The CONFIGURED store, not the default: with a custom `cfg.hrm.path`
+    // this used to watch the mtime of a file nobody writes, so the served
+    // mind silently never reloaded (#769 — the serve half).
+    let hrm_path = if cfg.hrm.path.is_empty() {
+        data_dir().join("kannaka.hrm")
+    } else {
+        std::path::PathBuf::from(&cfg.hrm.path)
+    };
     let hrm_loaded_mtime = std::fs::metadata(&hrm_path).and_then(|m| m.modified()).ok();
     let mut hrm_pending: Option<(std::time::SystemTime, std::time::Instant)> = None;
     let mut last_freshness_check = std::time::Instant::now();
@@ -1147,8 +1154,9 @@ pub(crate) fn handle_swarm_absorb(
 
     // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
     // enabled AND seeds are pinned (then it governs each absorb below).
-    let mut rep_store = kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
-    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+    let gate_dir = store_dir(cfg);
+    let mut rep_store = kannaka_memory::reputation::RepStore::load(&gate_dir, &cfg.swarm_trust);
+    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&gate_dir);
 
     for e in ordered.iter().take(top_k) {
         let source = e.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1525,7 +1533,9 @@ pub(crate) fn handle_swarm_autoabsorb(
         super::warn_if_readonly("swarm autoabsorb");
     }
 
-    let state_path = data_dir().join("autoabsorb-state.json");
+    // Beside the ACTIVE store (#769): the per-source caps and phi-drop pause
+    // guard THIS memory universe, so they travel with it.
+    let state_path = store_dir(cfg).join("autoabsorb-state.json");
     let mut state = AutoabsorbState::load(&state_path);
     let today_key = chrono::Utc::now().format("%Y-%m-%d").to_string();
     state.purge_old_days(&today_key);
@@ -1588,8 +1598,9 @@ pub(crate) fn handle_swarm_autoabsorb(
 
     // inc-1b corroboration admit() chokepoint state. DORMANT unless the gate is
     // enabled AND seeds are pinned (then it governs each absorb below).
-    let mut rep_store = kannaka_memory::reputation::RepStore::load(&data_dir(), &cfg.swarm_trust);
-    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&data_dir());
+    let gate_dir = store_dir(cfg);
+    let mut rep_store = kannaka_memory::reputation::RepStore::load(&gate_dir, &cfg.swarm_trust);
+    let mut staging = kannaka_memory::absorb_gate::QuarantineStaging::load(&gate_dir);
 
     for e in ordered.iter() {
         let source = e
