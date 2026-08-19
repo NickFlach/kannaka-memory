@@ -28,6 +28,7 @@ boxes; `oracle-cluster.conf.template` in `ops/nats-cluster/` is the redacted sha
 | `ui_bridge` | kannaka-ui-bridge | `UI.>`, `hrm.>`, `js.>`, `ooda.>`, `radio.>`, `swarm.>`, `dream.>`, `$JS.API.>` (stream-admin denied), `_INBOX.>` | INTERNAL |
 | `beacon` | kannaka-beacon (seeds) | `KANNAKA.events.beacon`, `_INBOX.>` | INTERNAL |
 | `kannaktopus` | Kannaktopus daemons (off-box) | `QUEEN.phase.>`, `announce`, `queen.event.>`, `reactions`, `KANNAKTOPUS.>` | INTERNAL |
+| `queen_agent` | owned swarm members off-box (`kannaka swarm join` on laptops: 0xSCADA-QE, Flaukowski, …) | open memory lane + `QUEEN.*`, `ask.>`, `inbox.>`, **`$KV.QUEEN_AGENTS.>`** (KV roster — the one write anon must never get), `$JS.API.STREAM.MSG.GET.>`; **denied** `work.>`/JS-admin/private lanes | INTERNAL |
 | `anon` | open swarm peers, observatory reads, Command Center MCP | open memory lane ONLY (see below); **denied** `ask.>`/`work.>`/`inbox.>`/JS-admin | PUBLIC |
 
 All identities `subscribe` broadly within their reach; the security invariant is
@@ -66,3 +67,9 @@ Passwords are env placeholders in `nats-accounts.conf`
 `/home/opc/.kannaka-nats.env` (extended with the per-organ vars). Each daemon's
 unit/env sets `NATS_USER=<identity>` + its matching `NATS_PASSWORD`. Rotation =
 change env + `nats-server --signal reload` (no JetStream drop).
+
+`queen_agent` (`$NATS_QUEEN_AGENT_PASS`) is the off-box case: its credential
+lives on each agent's machine, either as
+`nats_url = "nats://queen_agent:<pass>@swarm.ninja-portal.com:4222"` in that
+agent's `~/.kannaka/config.toml` or as `NATS_USER`/`NATS_PASSWORD` env (env
+wins). One shared credential for all owned members; rotate it like the others.
