@@ -186,15 +186,18 @@ pub fn create_group(
     creator: &str,
     initial_members: Vec<String>,
 ) -> GroupKey {
-    // Generate deterministic key material from group_id + creator
+    // Deterministic key material from group_id + creator. blake3 with a
+    // domain and length framing (#773): two nodes deriving this
+    // independently must agree, and DefaultHasher only agrees within one
+    // compiled toolchain. 32 bytes now instead of the old 8 — more key
+    // material, same determinism.
     let key_material = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        group_id.hash(&mut hasher);
-        creator.hash(&mut hasher);
-        let h = hasher.finish();
-        h.to_le_bytes().to_vec()
+        let mut h = blake3::Hasher::new();
+        h.update(b"kannaka.groupkey.v2");
+        h.update(&(group_id.len() as u64).to_le_bytes());
+        h.update(group_id.as_bytes());
+        h.update(creator.as_bytes());
+        h.finalize().as_bytes().to_vec()
     };
 
     let mut members = initial_members;
