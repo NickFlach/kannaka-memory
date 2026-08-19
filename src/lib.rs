@@ -7,6 +7,7 @@
 //! Recall is resonance (constructive interference). Dreaming is annealing.
 
 pub mod acp;
+pub(crate) mod fs_util;
 pub mod bridge;
 pub mod observe;
 pub mod openclaw;
