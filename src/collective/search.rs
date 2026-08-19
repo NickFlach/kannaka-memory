@@ -21,8 +21,6 @@
 //! but never WHAT it contains.
 
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 use crate::collective::glyph_store::{GlyphStore, StoredGlyph, ProofType};
 use crate::collective::proofs::{
@@ -98,11 +96,14 @@ pub enum ProofExchangeEvent {
 
 /// Compute a hash for a query vector (public identifier, no content leak).
 pub fn hash_query(query: &[f64]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    // blake3 (#773): the hash travels inside SimilarityProof; keep it stable
+    // across toolchains like every other persisted/wire identifier.
+    let mut h = blake3::Hasher::new();
+    h.update(b"kannaka.query.v2");
     for &v in query {
-        v.to_bits().hash(&mut hasher);
+        h.update(&v.to_bits().to_le_bytes());
     }
-    hasher.finish()
+    u64::from_le_bytes(h.finalize().as_bytes()[..8].try_into().unwrap())
 }
 
 /// Compute cosine similarity between two vectors.

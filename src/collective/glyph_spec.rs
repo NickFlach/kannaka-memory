@@ -622,12 +622,13 @@ pub fn memory_to_glyph(memory: &HyperMemory, bloom_difficulty: u32, agent_id: &s
             ((cls), (mc.h2, mc.d, mc.l))
         }
         None => {
+            // blake3, not DefaultHasher (#773): this u64 seeds SGA
+            // classification, and DefaultHasher's algorithm is not stable
+            // across Rust releases — two swarm nodes on different toolchains
+            // would classify the SAME memory into DIFFERENT classes.
             let content_hash = {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut h = DefaultHasher::new();
-                memory.content.hash(&mut h);
-                h.finish()
+                let d = blake3::hash(memory.content.as_bytes());
+                u64::from_le_bytes(d.as_bytes()[..8].try_into().unwrap())
             };
             let mc = classify_memory("knowledge", content_hash, memory.amplitude as f64);
             let cls = SgaClass::from_memory_coords(&mc);
@@ -635,27 +636,21 @@ pub fn memory_to_glyph(memory: &HyperMemory, bloom_difficulty: u32, agent_id: &s
         }
     };
 
-    // Compute glyph_id from content hash
+    // Compute glyph_id from content hash. blake3 with an explicit domain and
+    // length-framed fields (#773): glyph_id rides the binary wire format and
+    // is cross-node identity, and the old chained-DefaultHasher scheme meant
+    // a toolchain upgrade orphaned every glyph ever emitted. Length framing
+    // keeps ("ab","c") and ("a","bc") distinct.
     let glyph_id = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        memory.content.hash(&mut hasher);
-        memory.id.hash(&mut hasher);
-        let h = hasher.finish();
-        let mut id = [0u8; 32];
-        id[..8].copy_from_slice(&h.to_le_bytes());
-        // Fill remaining with second hash
-        memory.vector.len().hash(&mut hasher);
-        let h2 = hasher.finish();
-        id[8..16].copy_from_slice(&h2.to_le_bytes());
-        memory.amplitude.to_bits().hash(&mut hasher);
-        let h3 = hasher.finish();
-        id[16..24].copy_from_slice(&h3.to_le_bytes());
-        memory.created_at.timestamp_millis().hash(&mut hasher);
-        let h4 = hasher.finish();
-        id[24..32].copy_from_slice(&h4.to_le_bytes());
-        id
+        let mut h = blake3::Hasher::new();
+        h.update(b"kannaka.glyph.id.v2");
+        h.update(&(memory.content.len() as u64).to_le_bytes());
+        h.update(memory.content.as_bytes());
+        h.update(memory.id.as_bytes());
+        h.update(&(memory.vector.len() as u64).to_le_bytes());
+        h.update(&memory.amplitude.to_bits().to_le_bytes());
+        h.update(&memory.created_at.timestamp_millis().to_le_bytes());
+        *h.finalize().as_bytes()
     };
 
     // Create bloom salt
@@ -724,15 +719,9 @@ pub fn privacy_glyph_to_glyph(pg: &PrivacyGlyph) -> Glyph {
     }
     // Fill remaining bytes with hash of the full string for uniqueness
     if hex_chars.len() > 32 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        pg.glyph_hash.hash(&mut h);
-        let extra = h.finish().to_le_bytes();
-        glyph_id[16..24].copy_from_slice(&extra);
-        pg.glyph_hash.len().hash(&mut h);
-        let extra2 = h.finish().to_le_bytes();
-        glyph_id[24..32].copy_from_slice(&extra2);
+        // blake3 (#773): the fill bytes are part of a persisted identifier.
+        let d = blake3::hash(pg.glyph_hash.as_bytes());
+        glyph_id[16..32].copy_from_slice(&d.as_bytes()[..16]);
     }
 
     Glyph {
@@ -1152,37 +1141,19 @@ pub fn scada_to_glyph(
 /// Content-addressed: same inputs always produce the same ID.
 /// No timestamps or randomness — glyph identity is purely content-derived.
 fn compute_glyph_id_from_fano(fano: &[f64; 7], agent_id: &str, source_tag: &str) -> [u8; 32] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
+    // blake3 with a domain and length-framed fields (#773): "same inputs
+    // always produce the same ID" was the whole contract, and DefaultHasher
+    // only honours it within one compiled toolchain.
+    let mut h = blake3::Hasher::new();
+    h.update(b"kannaka.glyph.fano.v2");
     for &f in fano {
-        f.to_bits().hash(&mut hasher);
+        h.update(&f.to_bits().to_le_bytes());
     }
-    agent_id.hash(&mut hasher);
-    source_tag.hash(&mut hasher);
-    let h1 = hasher.finish();
-
-    // Chain additional hashes from different projections of the same content
-    fano.len().hash(&mut hasher);
-    let h2 = hasher.finish();
-
-    agent_id.len().hash(&mut hasher);
-    source_tag.len().hash(&mut hasher);
-    let h3 = hasher.finish();
-
-    // Mix fano values in reverse for additional entropy
-    for &f in fano.iter().rev() {
-        (f * 1e12).to_bits().hash(&mut hasher);
-    }
-    let h4 = hasher.finish();
-
-    let mut id = [0u8; 32];
-    id[..8].copy_from_slice(&h1.to_le_bytes());
-    id[8..16].copy_from_slice(&h2.to_le_bytes());
-    id[16..24].copy_from_slice(&h3.to_le_bytes());
-    id[24..32].copy_from_slice(&h4.to_le_bytes());
-    id
+    h.update(&(agent_id.len() as u64).to_le_bytes());
+    h.update(agent_id.as_bytes());
+    h.update(&(source_tag.len() as u64).to_le_bytes());
+    h.update(source_tag.as_bytes());
+    *h.finalize().as_bytes()
 }
 
 // ============================================================================
@@ -1831,5 +1802,31 @@ mod tests {
         // Fano should be normalized
         let sum: f64 = hall.fano.iter().sum();
         assert!((sum - 1.0).abs() < 1e-6, "hallucinated Fano should be normalized: {}", sum);
+    }
+}
+
+#[cfg(test)]
+mod stable_identity_tests {
+    use super::*;
+
+    /// #773: glyph identity must be STABLE ACROSS TOOLCHAINS — the property
+    /// DefaultHasher could not give and blake3 can. These golden values are
+    /// the contract: if any of them changes, glyph identity has drifted and
+    /// every previously emitted glyph is orphaned. Do not update them
+    /// casually — a change here is a migration, not a refactor.
+    #[test]
+    fn fano_glyph_id_matches_golden() {
+        let fano = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+        let a = compute_glyph_id_from_fano(&fano, "agent-a", "tag");
+        let b = compute_glyph_id_from_fano(&fano, "agent-a", "tag");
+        assert_eq!(a, b, "content-addressed: same inputs, same ID");
+        let c = compute_glyph_id_from_fano(&fano, "agent-b", "tag");
+        assert_ne!(a, c, "different agent, different ID");
+        let hexs: String = a.iter().map(|b| format!("{b:02x}")).collect();
+        println!("GOLDEN fano_glyph_id: {hexs}");
+        assert_eq!(
+            hexs, "609fffaf86a1d3c356c3cfe542e129eb2ee7cbf69ff23dc98adfa0bfe597e899",
+            "glyph identity drifted — this is a migration, not a refactor"
+        );
     }
 }
