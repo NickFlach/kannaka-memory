@@ -921,34 +921,8 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// Atomic write: temp sibling → `write_all` → `sync_all` → rename over target.
-/// Mirrors the sidecar writers elsewhere in the crate.
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("reputation: mkdir {}: {e}", dir.display()))?;
-    let tmp = dir.join(format!(".kannaka-rep-tmp-{}", uuid::Uuid::new_v4()));
-    {
-        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("reputation: tmp: {e}"))?;
-        if let Err(e) = f.write_all(bytes) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("reputation: write: {e}"));
-        }
-        if let Err(e) = f.sync_all() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("reputation: sync: {e}"));
-        }
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("reputation: rename: {e}"));
-    }
-    Ok(())
-}
-
+// #777: atomic write now lives in crate::fs_util — one implementation.
+use crate::fs_util::atomic_write_bytes as atomic_write;
 /// Verify (finding #4) + read + gunzip + bincode-decode a snapshot. `None` on
 /// ANY failure (fail-closed): missing/short signature sidecar, no node key on
 /// disk, a signature that does not verify against THIS node's own key, or a

@@ -341,39 +341,10 @@ fn check_stale(ctx: &ToolCtx, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// #777: delegates to crate::fs_util — one atomic-write implementation.
+/// Agent-visible files stay world-readable (0o644) on unix, as before.
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        return Err(format!("cannot create {}: {e}", dir.display()));
-    }
-    // Write to a sibling temp file in the SAME directory (so the rename is a
-    // same-filesystem atomic swap), then rename over the target.
-    let tmp = dir.join(format!(".kannaka-agent-tmp-{}", uuid::Uuid::new_v4()));
-    {
-        use std::io::Write;
-        let mut f = match std::fs::File::create(&tmp) {
-            Ok(f) => f,
-            Err(e) => return Err(format!("temp create: {e}")),
-        };
-        if let Err(e) = f.write_all(content.as_bytes()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("write: {e}"));
-        }
-        if let Err(e) = f.sync_all() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("sync: {e}"));
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644));
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("rename: {e}"));
-    }
-    Ok(())
+    crate::fs_util::atomic_write_bytes_mode(path, content.as_bytes(), Some(0o644))
 }
 
 fn write_file(ctx: &mut ToolCtx, input: &Value) -> (String, bool) {

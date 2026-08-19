@@ -688,35 +688,8 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// Atomic write: temp sibling → `write_all` → `fsync` → rename over target.
-/// Mirrors `hrm_store::atomic_write` but adds the fsync the replay set needs.
-fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| Path::new(".").to_path_buf());
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let tmp = dir.join(format!(".kannaka-replay-tmp-{}", Uuid::new_v4()));
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("temp create: {e}"))?;
-        if let Err(e) = f.write_all(bytes) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("write: {e}"));
-        }
-        if let Err(e) = f.sync_all() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("sync: {e}"));
-        }
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("rename: {e}"));
-    }
-    Ok(())
-}
-
+// #777: atomic write now lives in crate::fs_util — one implementation.
+use crate::fs_util::atomic_write_bytes;
 // --- base64 (standard alphabet, with padding) ------------------------------
 // The crate has no `base64` dep; this mirrors the codec in `nats.rs`.
 

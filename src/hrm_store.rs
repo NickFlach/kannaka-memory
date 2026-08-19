@@ -678,10 +678,14 @@ impl HrmStore {
     /// state when the JSON fails to parse. `rename` within the same directory
     /// is atomic, so a reader always sees either the old or the new file whole.
     fn atomic_write(path: &std::path::Path, bytes: &[u8]) {
-        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-        if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        // #777: delegates to crate::fs_util. This copy was the divergent one,
+        // twice over: no sync_all (a crash after write-complete but before
+        // flush could lose the sidecar even though the rename "succeeded"),
+        // and a `with_extension("tmp.<pid>")` temp name that REPLACES a
+        // dotless basename instead of creating a sibling. Sidecar saves stay
+        // deliberately best-effort, so the Result is dropped here — but the
+        // write itself is now durable and the temp name always safe.
+        let _ = crate::fs_util::atomic_write_bytes(path, bytes);
     }
 
     /// Save the link graph as a sidecar JSON file alongside the HRM file.
