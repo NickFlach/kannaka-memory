@@ -57,8 +57,13 @@ if [ "$VERSION" = "latest" ]; then
     DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS}-${ARCH}${EXT}"
     TUI_DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/kannaka-tui-${OS}-${ARCH}${EXT}"
 else
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${VERSION}-${OS}-${ARCH}${EXT}"
-    TUI_DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/kannaka-tui-${VERSION}-${OS}-${ARCH}${EXT}"
+    # Release assets are UNVERSIONED (kannaka-linux-aarch64 etc.) — the tag in
+    # the path pins the version. The old versioned names 404'd on every pinned
+    # install (hit live rolling v0.15.0 to oracle3), and the tui 404 aborted
+    # the whole install before the main binary landed.
+    VERSION="${VERSION#v}"  # tolerate KANNAKA_VERSION=v0.15.0 as well as 0.15.0
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${OS}-${ARCH}${EXT}"
+    TUI_DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/kannaka-tui-${OS}-${ARCH}${EXT}"
 fi
 
 echo "  Downloading kannaka:     ${DOWNLOAD_URL}"
