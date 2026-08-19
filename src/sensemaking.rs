@@ -79,6 +79,8 @@ pub fn merge_recall_votes(
     agree: impl Fn(&str, &str) -> bool,
 ) -> Vec<ConsensusItem> {
     let denom = n_peers.max(1) as f32;
+    // O(n × d) by nature: an arbitrary predicate cannot be bucketed. The CLI
+    // brief --peers path uses `merge_recall_votes_keyed` (#774).
     let mut groups: Vec<(String, Vec<&PeerRecall>)> = Vec::new();
     for r in recalls {
         match groups.iter_mut().find(|(rep, _)| agree(rep, &r.content)) {
@@ -87,6 +89,12 @@ pub fn merge_recall_votes(
         }
     }
 
+    finish_consensus(groups, denom)
+}
+
+/// Shared scoring/sort tail for both grouping strategies (#774), so the keyed
+/// fast path and the predicate path cannot drift apart.
+fn finish_consensus(groups: Vec<(String, Vec<&PeerRecall>)>, denom: f32) -> Vec<ConsensusItem> {
     let mut items: Vec<ConsensusItem> = groups
         .into_iter()
         .map(|(content, members)| {
@@ -113,6 +121,33 @@ pub fn merge_recall_votes(
 
     items.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
     items
+}
+
+/// `merge_recall_votes` for key-reducible agreement predicates: recalls whose
+/// `key(content)` are equal are one claim. Single HashMap pass — O(n)
+/// expected — instead of the predicate version's O(n × d) scan (#774: a
+/// 50-peer brief returning 1,000 distinct items cost up to 1M `agree` calls,
+/// each trimming and case-folding ~100-char strings). First-seen content
+/// stays the claim representative, matching the predicate version exactly.
+pub fn merge_recall_votes_keyed(
+    recalls: &[PeerRecall],
+    n_peers: usize,
+    key: impl Fn(&str) -> String,
+) -> Vec<ConsensusItem> {
+    let denom = n_peers.max(1) as f32;
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut groups: Vec<(String, Vec<&PeerRecall>)> = Vec::new();
+    for r in recalls {
+        let k = key(&r.content);
+        match index.get(&k) {
+            Some(&gi) => groups[gi].1.push(r),
+            None => {
+                index.insert(k, groups.len());
+                groups.push((r.content.clone(), vec![r]));
+            }
+        }
+    }
+    finish_consensus(groups, denom)
 }
 
 /// A detected disagreement: two claims about the same subject with opposed stance.
@@ -398,5 +433,45 @@ mod tests {
         let hyps = vec![Hypothesis { content: "x".into(), phase: 0.0 }];
         let v = reinforce_hypotheses(&hyps, &[], |_, _| 1.0, 0.8, 1.0, 1);
         assert_eq!(v[0].status, HypothesisStatus::Speculative);
+    }
+}
+
+#[cfg(test)]
+mod keyed_parity_tests {
+    use super::*;
+
+    fn recall(peer: &str, content: &str, sim: f32) -> PeerRecall {
+        PeerRecall {
+            peer_id: peer.into(),
+            content: content.into(),
+            similarity: sim,
+            amplitude: 0.5,
+            phase: 0.0,
+            confidence: 0.9,
+        }
+    }
+
+    /// #774: keyed fast path ≡ predicate path for the CLI's predicate
+    /// (trim + eq_ignore_ascii_case ⇔ key = trim + to_ascii_lowercase),
+    /// including first-seen representative content and ordering.
+    #[test]
+    fn keyed_matches_predicate_for_the_cli_predicate() {
+        let recalls = vec![
+            recall("p1", "The Wire Is Truth", 0.9),
+            recall("p2", "  the wire is truth ", 0.8),
+            recall("p1", "Sleep consolidates", 0.7),
+            recall("p3", "THE WIRE IS TRUTH", 0.95),
+            recall("p2", "sleep consolidates", 0.6),
+        ];
+        let via_pred =
+            merge_recall_votes(&recalls, 3, |a, b| a.trim().eq_ignore_ascii_case(b.trim()));
+        let via_key = merge_recall_votes_keyed(&recalls, 3, |s| s.trim().to_ascii_lowercase());
+        assert_eq!(via_pred.len(), via_key.len());
+        for (p, k) in via_pred.iter().zip(via_key.iter()) {
+            assert_eq!(p.content, k.content, "first-seen representative must match");
+            assert_eq!(p.support, k.support);
+            assert!((p.confidence - k.confidence).abs() < 1e-6);
+            assert!((p.mean_similarity - k.mean_similarity).abs() < 1e-6);
+        }
     }
 }

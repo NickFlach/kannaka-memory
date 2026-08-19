@@ -1284,8 +1284,10 @@ fn swarm_brief_peers(nats_url: &str, topic: &str, want_json: bool) -> bool {
         eprintln!("brief --peers: no peers responded within timeout; using local");
         return false;
     }
-    let agree = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
-    let known = kannaka_memory::sensemaking::merge_recall_votes(&recalls, peer_ids.len(), agree);
+    // Keyed variant (#774): trim+case-fold is key-reducible, and the predicate
+    // scan cost up to n² agree() calls across long content strings.
+    let key = |s: &str| s.trim().to_ascii_lowercase();
+    let known = kannaka_memory::sensemaking::merge_recall_votes_keyed(&recalls, peer_ids.len(), key);
     // Cross-peer contradiction: same claim (content), opposed wave phase. Uses the
     // phase now carried in the recall response (v0.6.23+ responders).
     let sim = |a: &str, b: &str| {
@@ -4141,8 +4143,10 @@ fn main() {
                             mean_amplitude: c.mean_amplitude,
                         })
                         .collect();
-                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
-                        a.trim().eq_ignore_ascii_case(b.trim())
+                    // Keyed variant (#771): trim+case-fold is key-reducible,
+                    // and the predicate scan is O(n²) on distinct themes.
+                    let map = kannaka_memory::gap::build_coverage_map_keyed(&clusters, 1, |t| {
+                        t.trim().to_ascii_lowercase()
                     });
                     let gaps = kannaka_memory::gap::detect_gaps(&map, 0.4);
                     if want_json {
@@ -4194,8 +4198,10 @@ fn main() {
                             mean_amplitude: c.mean_amplitude,
                         })
                         .collect();
-                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
-                        a.trim().eq_ignore_ascii_case(b.trim())
+                    // Keyed variant (#771): trim+case-fold is key-reducible,
+                    // and the predicate scan is O(n²) on distinct themes.
+                    let map = kannaka_memory::gap::build_coverage_map_keyed(&clusters, 1, |t| {
+                        t.trim().to_ascii_lowercase()
                     });
                     let gaps = kannaka_memory::gap::detect_gaps(&map, 0.4);
                     let tasks = kannaka_memory::research_planner::plan_research(&gaps, 0);
@@ -4263,8 +4269,10 @@ fn main() {
                             mean_amplitude: c.mean_amplitude,
                         })
                         .collect();
-                    let map = kannaka_memory::gap::build_coverage_map(&clusters, 1, |a, b| {
-                        a.trim().eq_ignore_ascii_case(b.trim())
+                    // Keyed variant (#771): trim+case-fold is key-reducible,
+                    // and the predicate scan is O(n²) on distinct themes.
+                    let map = kannaka_memory::gap::build_coverage_map_keyed(&clusters, 1, |t| {
+                        t.trim().to_ascii_lowercase()
                     });
                     let gap_count = kannaka_memory::gap::detect_gaps(&map, 0.4).len();
                     let ctx = kannaka_memory::swarm_loop::SwarmContext {

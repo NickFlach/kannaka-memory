@@ -74,7 +74,10 @@ pub fn build_coverage_map(
     same_domain: impl Fn(&str, &str) -> bool,
 ) -> Vec<DomainCoverage> {
     let denom = n_agents.max(1) as f32;
-    // Group clusters whose themes are the "same domain".
+    // Group clusters whose themes are the "same domain". O(n × d) by nature:
+    // an arbitrary predicate cannot be bucketed. Callers whose predicate is
+    // key-reducible (every CLI caller: trim + case-fold) should use
+    // `build_coverage_map_keyed`, which does the same job in O(n) (#771).
     let mut groups: Vec<(String, Vec<&DomainCluster>)> = Vec::new();
     for c in clusters {
         match groups.iter_mut().find(|(rep, _)| same_domain(rep, &c.theme)) {
@@ -83,6 +86,15 @@ pub fn build_coverage_map(
         }
     }
 
+    finish_coverage_map(groups, denom)
+}
+
+/// Shared scoring/sort tail for both grouping strategies, so the keyed fast
+/// path (#771) and the predicate path cannot drift apart.
+fn finish_coverage_map(
+    groups: Vec<(String, Vec<&DomainCluster>)>,
+    denom: f32,
+) -> Vec<DomainCoverage> {
     let mut map: Vec<DomainCoverage> = groups
         .into_iter()
         .map(|(domain, members)| {
@@ -116,6 +128,34 @@ pub fn build_coverage_map(
 
     map.sort_by(|a, b| a.coverage.total_cmp(&b.coverage));
     map
+}
+
+/// `build_coverage_map` for key-reducible domain predicates: clusters whose
+/// `key(theme)` are equal share a domain. Single HashMap pass — O(n) expected
+/// — instead of the predicate version's O(n × d) scan, which degrades to
+/// O(n²) when themes are largely distinct (#771: ~25M comparisons for 5,000
+/// unique-theme observations on the `kannaka gaps` hot path). First-seen
+/// theme string stays the domain representative, matching the predicate
+/// version's behavior exactly.
+pub fn build_coverage_map_keyed(
+    clusters: &[DomainCluster],
+    n_agents: usize,
+    key: impl Fn(&str) -> String,
+) -> Vec<DomainCoverage> {
+    let denom = n_agents.max(1) as f32;
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut groups: Vec<(String, Vec<&DomainCluster>)> = Vec::new();
+    for c in clusters {
+        let k = key(&c.theme);
+        match index.get(&k) {
+            Some(&gi) => groups[gi].1.push(c),
+            None => {
+                index.insert(k, groups.len());
+                groups.push((c.theme.clone(), vec![c]));
+            }
+        }
+    }
+    finish_coverage_map(groups, denom)
 }
 
 /// Flag domains whose coverage is below `weak_threshold`. A weak domain that is
@@ -207,5 +247,49 @@ mod tests {
         let gaps = detect_gaps(&map, 0.3);
         let g = gaps.iter().find(|g| g.domain == "rare").unwrap();
         assert_eq!(g.kind, GapKind::WeaklyRepresented);
+    }
+}
+
+#[cfg(test)]
+mod keyed_parity_tests {
+    use super::*;
+
+    fn cluster(agent: &str, theme: &str, size: usize) -> DomainCluster {
+        DomainCluster {
+            agent_id: agent.into(),
+            theme: theme.into(),
+            size,
+            coherence: 0.8,
+            mean_amplitude: 0.5,
+        }
+    }
+
+    /// #771: the keyed fast path must be BEHAVIORALLY IDENTICAL to the
+    /// predicate path for the predicate every CLI caller passes
+    /// (trim + eq_ignore_ascii_case ⇔ key = trim + to_ascii_lowercase) —
+    /// including first-seen representative naming and ordering.
+    #[test]
+    fn keyed_matches_predicate_for_the_cli_predicate() {
+        let clusters = vec![
+            cluster("a", "Rust Perf", 10),
+            cluster("b", "  rust perf ", 5),
+            cluster("a", "Sleep Science", 20),
+            cluster("c", "RUST PERF", 1),
+            cluster("b", "sleep science", 2),
+            cluster("c", "Lone Topic", 3),
+        ];
+        let via_pred = build_coverage_map(&clusters, 3, |a, b| {
+            a.trim().eq_ignore_ascii_case(b.trim())
+        });
+        let via_key = build_coverage_map_keyed(&clusters, 3, |t| t.trim().to_ascii_lowercase());
+        assert_eq!(via_pred.len(), via_key.len());
+        for (p, k) in via_pred.iter().zip(via_key.iter()) {
+            assert_eq!(p.domain, k.domain, "first-seen representative must match");
+            assert_eq!(p.peers_holding, k.peers_holding);
+            assert_eq!(p.total_size, k.total_size);
+            assert!((p.breadth - k.breadth).abs() < 1e-6);
+            assert!((p.depth - k.depth).abs() < 1e-6);
+            assert!((p.confidence - k.confidence).abs() < 1e-6);
+        }
     }
 }
