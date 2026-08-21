@@ -69,14 +69,10 @@ impl RhythmEngine {
     /// Create a new engine, loading persisted state if available.
     pub fn new(data_dir: &Path) -> Self {
         let persist_path = data_dir.join("rhythm_state.json");
-        let state = if persist_path.exists() {
-            match std::fs::read_to_string(&persist_path) {
-                Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-                Err(_) => RhythmState::default(),
-            }
-        } else {
-            RhythmState::default()
-        };
+        let state = std::fs::read_to_string(&persist_path)
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
 
         Self {
             state,
@@ -197,7 +193,7 @@ impl RhythmEngine {
 
     /// Persist state to disk.
     fn persist(&self) {
-        if let Some(ref path) = self.persist_path {
+        if let Some(path) = &self.persist_path {
             if let Ok(json) = serde_json::to_string_pretty(&self.state) {
                 let _ = std::fs::write(path, json);
             }
