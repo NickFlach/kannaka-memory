@@ -1705,19 +1705,6 @@ impl ConsolidationEngine {
             return 0;
         }
 
-        // Create hallucinated_from relations (skip links with special strength)
-        for &idx in &parent_indices {
-            let parent_id = candidates[idx].0;
-            // Forward link: hallucination -> parent
-            if let Ok(Some(_hall_mem)) = engine.store.get_mut(&hall_id) {
-                // TODO(chiral): skip link removed - associations emergent from interference
-            }
-            // Reverse link: parent -> hallucination
-            if let Ok(Some(_parent_mem)) = engine.store.get_mut(&parent_id) {
-                // TODO(chiral): skip link removed - associations emergent from interference
-            }
-        }
-
         1 // created 1 hallucination this cycle
     }
 
