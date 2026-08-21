@@ -1,0 +1,29 @@
+# Manual ops probe: can a third-party network reach a fleet TCP port?
+# Added 2026-08-21 while diagnosing why the Agent-Kax constellation bridge
+# (Replit egress) never reaches swarm.ninja-portal.com:4222 even though the
+# VCN ingress rule is 0.0.0.0/0 — a GitHub runner is a neutral vantage that
+# separates "port not world-reachable" from "the client never tries".
+name: port-probe
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        default: swarm.ninja-portal.com
+        required: true
+      port:
+        default: "4222"
+        required: true
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: TCP connect + NATS banner
+        run: |
+          H="${{ inputs.host }}"; P="${{ inputs.port }}"
+          echo "probing $H:$P from $(curl -s https://ifconfig.me)"
+          if timeout 8 bash -c "exec 3<>/dev/tcp/$H/$P && head -c 200 <&3"; then
+            echo; echo "RESULT: reachable"
+          else
+            echo "RESULT: unreachable"; exit 1
+          fi
