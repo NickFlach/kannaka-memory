@@ -341,13 +341,13 @@ pub fn encode_wire(glyph: &Glyph) -> Vec<u8> {
 
     // Optional sections
 
-    if let Some(ref capsule) = glyph.capsule {
+    if let Some(capsule) = &glyph.capsule {
         write_length_prefixed_bytes(&mut buf, &capsule.ciphertext);
         buf.extend_from_slice(&capsule.nonce);
         buf.extend_from_slice(&capsule.tag);
     }
 
-    if let Some(ref commitments) = glyph.commitments {
+    if let Some(commitments) = &glyph.commitments {
         // Serialize commitments as JSON (simple for now; binary in production)
         let c_json = serde_json::to_vec(commitments).unwrap_or_default();
         write_length_prefixed_bytes(&mut buf, &c_json);
@@ -357,7 +357,7 @@ pub fn encode_wire(glyph: &Glyph) -> Vec<u8> {
         buf.extend_from_slice(&eta.to_le_bytes());
     }
 
-    if let Some(ref gates) = glyph.gates {
+    if let Some(gates) = &glyph.gates {
         for g in gates {
             buf.push(match g {
                 None => 0,

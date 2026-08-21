@@ -242,7 +242,7 @@ impl ConsciousnessBridge {
             // Only insert geometry-based partitions when geometry is present.
             // Using a sentinel (255) would group all unclassified memories together
             // and artificially inflate diversity and cross-partition ratios.
-            if let Some(ref g) = mem.geometry {
+            if let Some(g) = &mem.geometry {
                 id_to_h2.insert(mem.id, g.h2);
                 id_to_class.insert(mem.id, g.class_index);
                 id_to_triality.insert(mem.id, g.d);

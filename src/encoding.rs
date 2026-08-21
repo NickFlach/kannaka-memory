@@ -135,7 +135,7 @@ impl TextEncoder for HttpEmbeddingEncoder {
         });
 
         let mut req = ureq::post(&url).set("Content-Type", "application/json");
-        if let Some(ref key) = self.api_key {
+        if let Some(key) = &self.api_key {
             req = req.set("Authorization", &format!("Bearer {key}"));
         }
 
