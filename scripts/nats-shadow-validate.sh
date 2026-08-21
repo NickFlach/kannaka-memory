@@ -25,7 +25,7 @@ sed -e "s#0.0.0.0:4222#127.0.0.1:$PORT#" "$CONF_SRC" \
 # Every credential var the config references -> the shared test password.
 for v in NATS_PASSWORD NATS_ANON_PASS NATS_WRITER_PASS NATS_SERVE_PASS \
          NATS_RADIO_PASS NATS_PRESENCE_PASS NATS_RESPONDER_PASS NATS_EYE_PASS \
-         NATS_KANNAKTOPUS_PASS NATS_UIBRIDGE_PASS NATS_QUEEN_AGENT_PASS \n         NATS_ATTENTION_PASS NATS_BEACON_PASS; do export "$v=$PASS"; done
+         NATS_KANNAKTOPUS_PASS NATS_UIBRIDGE_PASS NATS_QUEEN_AGENT_PASS \n         NATS_ATTENTION_PASS NATS_BEACON_PASS NATS_KAX_BRIDGE_PASS; do export "$v=$PASS"; done
 
 echo "== config syntax check =="
 nats-server -t -c "$CONF" || { echo "SYNTAX FAIL"; exit 1; }
