@@ -982,6 +982,50 @@ impl KannakaMemorySystem {
         self.engine.store.chiral_dream(false, 1);
         eprintln!("[dream] Lite chiral dream pass complete");
 
+        // Phase 4b: SETTLE — let the reshaped field relax before anyone reads or
+        // persists it. Borrowed from kannaka-crystal, whose dream ends with
+        // `engine.resonate(50)` "so the reshaped field relaxes into a
+        // self-consistent state before anyone probes it". We had no equivalent:
+        // Phase 3's single dt=0.3 coupling kick is the MELT, and the very next
+        // thing we did was assess and flush — freezing the substrate mid-melt.
+        //
+        // Measured 2026-08-22 over 17 dreams: cluster structure melts and
+        // recrystallizes (O3 18→4→3→21→8→6; O2 witness 25→6→52→42) and phi peaks
+        // exactly at the recrystallization (O2 0.099→0.476, +380%). Nothing
+        // controlled WHEN the field was written, so a substrate was routinely
+        // persisted at 3 clusters instead of 21.
+        //
+        // This is a cooling schedule, which is what "annealing" actually means:
+        // re-apply the same coupling with geometrically decaying dt so the field
+        // slides into a nearby self-consistent configuration instead of being
+        // frozen at the top of the kick. Not new forcing — the same operator,
+        // cooling.
+        //
+        // Default OFF pending measurement (KANNAKA_DREAM_SETTLE_STEPS=n to enable).
+        let settle_steps: u32 = std::env::var("KANNAKA_DREAM_SETTLE_STEPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if settle_steps > 0 {
+            let cooling: f32 = std::env::var("KANNAKA_DREAM_SETTLE_COOLING")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|c: &f32| *c > 0.0 && *c < 1.0)
+                .unwrap_or(0.6);
+            let mut dt = 0.3f32;
+            for _ in 0..settle_steps {
+                dt *= cooling;
+                self.engine.store.callosal_kuramoto(dt);
+            }
+            eprintln!(
+                "[dream] Settle complete: {} cooling steps, dt {:.3}→{:.4} (cooling {:.2})",
+                settle_steps,
+                0.3 * cooling,
+                dt,
+                cooling
+            );
+        }
+
         let after = self.bridge.assess(&self.engine);
         self.mark_dreamed();
 
