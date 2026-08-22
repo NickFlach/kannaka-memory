@@ -263,13 +263,112 @@ pub fn compute_merge_grouping(
                 if absorbed + this <= cap_n {
                     absorbed += this;
                     grouping.admitted.push(m);
+                } else if opts.merge_partial_groups && absorbed < cap_n {
+                    // The group does not fit whole. Historically it was skipped
+                    // entirely — and since nothing about it changes, it was then
+                    // skipped again every night, forever. Measured on the local
+                    // substrate 2026-08-22: 217 absorbable, 9 absorbed, because one
+                    // ~208-member group could never fit under the 20% cap.
+                    //
+                    // Instead admit a PREFIX of it: the representative plus the
+                    // `room` members most cohesive with the representative. The cap
+                    // is still honoured exactly (we take at most `room`); the group
+                    // simply drains across successive nights rather than never.
+                    let room = cap_n - absorbed;
+                    // Representative = max energy, matching apply_consolidation's
+                    // carrier choice and the cohesion scoring above.
+                    let rep = *m
+                        .iter()
+                        .max_by(|&&a, &&b| {
+                            energies[a]
+                                .partial_cmp(&energies[b])
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .unwrap();
+                    let mut others: Vec<usize> = m.iter().copied().filter(|&i| i != rep).collect();
+                    // Most cohesive with rep first; index tiebreak keeps it deterministic.
+                    others.sort_by(|&a, &b| {
+                        let ca = if norms[rep] < eps || norms[a] < eps {
+                            0.0
+                        } else {
+                            gram[[rep, a]] / (norms[rep] * norms[a])
+                        };
+                        let cb = if norms[rep] < eps || norms[b] < eps {
+                            0.0
+                        } else {
+                            gram[[rep, b]] / (norms[rep] * norms[b])
+                        };
+                        cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
+                    });
+                    others.truncate(room);
+                    if !others.is_empty() {
+                        let mut part = Vec::with_capacity(others.len() + 1);
+                        part.push(rep);
+                        part.extend(others);
+                        absorbed += part.len() - 1;
+                        grouping.admitted.push(part);
+                    }
                 }
-                // else: leave this group intact (never partially merge a group).
+                // else: cap exhausted, or partial admission disabled — leave intact.
             }
+            debug_assert!(absorbed <= cap_n, "partial admission must never exceed the cap");
         }
     }
 
     grouping
+}
+
+/// ADR-0036 **M3 salience decay** — pick the ShortTerm wavefronts that should fade.
+///
+/// Shared by the plan and apply paths so a dry-run is a faithful preview (the same
+/// structural-parity discipline `compute_merge_grouping` already enforces for merges).
+///
+/// Borrowed from `kannaka-crystal`'s dream engine: it thresholds at a **percentile of
+/// the observed distribution**, never at an absolute constant. That matters because
+/// the absolute evict floor here (0.15) was measured on 2026-08-22 to sit below the
+/// entire live distribution on every node — weakest active wavefront 0.60 on
+/// kannaka-prime, 1.73 mean locally — so nothing ever became evictable and every
+/// substrate grew without bound. A rank-based percentile has no scale to get wrong.
+///
+/// Selection is by **rank**, not by value, so a corpus where many amplitudes are
+/// exactly equal (the common case — audio telemetry lands on identical amplitudes)
+/// still fades the intended fraction rather than all-or-nothing.
+///
+/// Only unretrieved ShortTerm traces that are not merge participants are eligible:
+/// Pinned/LongTerm are structurally excluded, anything ever recalled is spared, and
+/// the result is a soft multiply — **never a removal**.
+pub fn compute_decay_set(
+    amplitudes: &[f32],
+    tiers: &[crate::medium::types::Tier],
+    retrieval_counts: &[u32],
+    merge_participants: &std::collections::HashSet<usize>,
+    opts: &crate::medium::types::ConsolidateOpts,
+) -> Vec<usize> {
+    use crate::medium::types::Tier;
+    if opts.shortterm_decay_pctl <= 0.0 || opts.shortterm_decay_factor >= 1.0 {
+        return Vec::new();
+    }
+    let mut candidates: Vec<usize> = (0..amplitudes.len())
+        .filter(|&i| {
+            tiers.get(i).copied() == Some(Tier::ShortTerm)
+                && retrieval_counts.get(i).copied().unwrap_or(0) == 0
+                && !merge_participants.contains(&i)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    // Weakest first; index tiebreak keeps the choice deterministic across runs
+    // (dream determinism, #521).
+    candidates.sort_by(|&a, &b| {
+        amplitudes[a]
+            .partial_cmp(&amplitudes[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    let take = ((candidates.len() as f32) * opts.shortterm_decay_pctl).floor() as usize;
+    candidates.truncate(take.min(candidates.len()));
+    candidates
 }
 
 /// T1.4 (#474) gated dream-entropy core — **deterministic given `bytes`**: seed a
@@ -1253,8 +1352,16 @@ impl HrmStore {
                 }
             }
         }
+        // M3 salience decay projection. `would_decay` previously just echoed the
+        // ShortTerm COUNT, which read as "186 would decay" on a node where nothing
+        // decayed at all — the metric hid the very bug it should have exposed. It
+        // now reports how many wavefronts this pass will actually attenuate.
+        let amps: Vec<f32> = entries.iter().map(|(_, m)| m.amplitude).collect();
+        let dtiers: Vec<Tier> = entries.iter().map(|(_, m)| m.tier).collect();
+        let dretr: Vec<u32> = entries.iter().map(|(_, m)| m.retrieval_count as u32).collect();
+        let decay_set = compute_decay_set(&amps, &dtiers, &dretr, &merged_indices, opts);
         report.shortterm_total = st_total;
-        report.would_decay = st_total;
+        report.would_decay = decay_set.len();
         report.would_evict = st_evict;
         report.projected_memories = n.saturating_sub(absorb).saturating_sub(st_evict);
 
@@ -1468,6 +1575,43 @@ impl HrmStore {
             }
         }
 
+        // --- 3b. M3 salience decay (crystal-borrowed percentile). Attenuate the
+        //         weakest unretrieved ShortTerm traces so they can actually reach
+        //         the evict floor. This is the step that makes step 4 reachable at
+        //         all: measured 2026-08-22, the absolute floor (0.15) sat below the
+        //         whole live amplitude distribution, so `would_evict` was always 0
+        //         and the substrate grew without bound on every node.
+        //
+        //         Soft multiply only — nothing is removed here, and anything ever
+        //         recalled (retrieval_count > 0) is spared entirely. ---
+        let decay_indices = {
+            let amps: Vec<f32> = snaps.iter().map(|s| s.energy).collect();
+            let dtiers: Vec<Tier> = snaps.iter().map(|s| s.tier).collect();
+            let dretr: Vec<u32> =
+                snaps.iter().map(|s| retrieval.get(&s.id).copied().unwrap_or(0)).collect();
+            let participants: std::collections::HashSet<usize> = (0..snaps.len())
+                .filter(|&i| merged_ids.contains(&snaps[i].id))
+                .collect();
+            compute_decay_set(&amps, &dtiers, &dretr, &participants, opts)
+        };
+        let mut decayed = 0usize;
+        for &i in &decay_indices {
+            let id = snaps[i].id;
+            let faded = snaps[i].energy * opts.shortterm_decay_factor;
+            if let Some(ref mut chiral) = self.chiral {
+                if let Some(&idx) = chiral.right.id_to_index.get(&id) {
+                    chiral.right.energy[idx] = faded;
+                    decayed += 1;
+                }
+            } else if let Some(&idx) = self.medium.store.id_to_index.get(&id) {
+                self.medium.store.energy[idx] = faded;
+                decayed += 1;
+            }
+            // Keep the snapshot coherent so step 4 evicts against post-decay
+            // energy in the SAME pass a trace finally crosses the floor.
+            snaps[i].energy = faded;
+        }
+
         // --- 4. ShortTerm evict candidates: tier==ShortTerm AND energy<threshold
         //        AND retrieval_count==0 AND NOT part of any merge. (Pinned and
         //        LongTerm are structurally excluded by the tier check.) ---
@@ -1532,7 +1676,8 @@ impl HrmStore {
         report.would_merge = groups_found;
         report.would_absorb = absorbed_removed;
         report.shortterm_total = snaps.iter().filter(|s| s.tier == Tier::ShortTerm).count();
-        report.would_decay = report.shortterm_total;
+        // Actual attenuations this pass, not the ShortTerm headcount (see plan path).
+        report.would_decay = decayed;
         report.would_evict = evicted_removed;
         report.centered = grouping.centered;
         report.absorb_capped = grouping.capped();
@@ -3413,6 +3558,182 @@ mod tests {
             admitted.contains(&0) && admitted.contains(&1),
             "the identical pair (tightest cohesion) is admitted, not the looser pair"
         );
+    }
+
+    // ---- M3 salience decay (crystal-borrowed percentile) --------------------
+
+    fn decay_opts(pctl: f32) -> ConsolidateOpts {
+        ConsolidateOpts { shortterm_decay_pctl: pctl, shortterm_decay_factor: 0.9,
+                          ..Default::default() }
+    }
+
+    /// The bug this whole mechanism exists for: an absolute floor cannot select
+    /// anything when the distribution never reaches it. A rank-based percentile
+    /// still fades the intended fraction even when EVERY amplitude is identical —
+    /// which is the live case (audio telemetry all lands on the same amplitude).
+    #[test]
+    fn decay_is_rank_based_so_equal_amplitudes_still_fade() {
+        let n = 10;
+        let amps = vec![0.6f32; n]; // all equal, all far above the 0.15 evict floor
+        let tiers = vec![Tier::ShortTerm; n];
+        let retr = vec![0u32; n];
+        let none = std::collections::HashSet::new();
+        let set = compute_decay_set(&amps, &tiers, &retr, &none, &decay_opts(0.5));
+        assert_eq!(set.len(), 5, "half the field fades despite identical amplitudes");
+        // Deterministic tie-break by index (dream determinism, #521).
+        assert_eq!(set, vec![0, 1, 2, 3, 4]);
+        // And the absolute predicate selects nothing at all on this same field.
+        let evictable = amps.iter().filter(|&&a| a < 0.15).count();
+        assert_eq!(evictable, 0, "this is precisely why decay had to be added");
+    }
+
+    /// Weakest-first ordering.
+    #[test]
+    fn decay_takes_the_weakest_first() {
+        let amps = vec![0.9f32, 0.1, 0.5, 0.3];
+        let tiers = vec![Tier::ShortTerm; 4];
+        let retr = vec![0u32; 4];
+        let none = std::collections::HashSet::new();
+        let set = compute_decay_set(&amps, &tiers, &retr, &none, &decay_opts(0.5));
+        assert_eq!(set, vec![1, 3], "the two weakest, in ascending amplitude order");
+    }
+
+    /// Protections: only unretrieved ShortTerm non-merge-participants may fade.
+    #[test]
+    fn decay_spares_protected_tiers_retrieved_and_merge_members() {
+        let amps = vec![0.1f32; 8];
+        let tiers = vec![
+            Tier::ShortTerm, Tier::ShortTerm, Tier::LongTerm, Tier::Pinned,
+            Tier::ShortTerm, Tier::ShortTerm, Tier::ShortTerm, Tier::ShortTerm,
+        ];
+        // index 4 has been recalled; index 5 is being merged this pass.
+        let retr = vec![0, 0, 0, 0, 3, 0, 0, 0];
+        let mut participants = std::collections::HashSet::new();
+        participants.insert(5usize);
+        // pctl 1.0 => take every eligible candidate, so exclusions are the only filter.
+        let set = compute_decay_set(&amps, &tiers, &retr, &participants, &decay_opts(1.0));
+        let got: std::collections::HashSet<usize> = set.into_iter().collect();
+        assert_eq!(got, [0usize, 1, 6, 7].into_iter().collect());
+    }
+
+    /// `pctl = 0` is an exact opt-out — the pre-existing behaviour, byte-identical.
+    #[test]
+    fn decay_disabled_selects_nothing() {
+        let amps = vec![0.1f32; 6];
+        let tiers = vec![Tier::ShortTerm; 6];
+        let retr = vec![0u32; 6];
+        let none = std::collections::HashSet::new();
+        assert!(compute_decay_set(&amps, &tiers, &retr, &none, &decay_opts(0.0)).is_empty());
+        // A factor of 1.0 is a no-op multiply and must also select nothing.
+        let noop = ConsolidateOpts { shortterm_decay_pctl: 0.5, shortterm_decay_factor: 1.0,
+                                     ..Default::default() };
+        assert!(compute_decay_set(&amps, &tiers, &retr, &none, &noop).is_empty());
+    }
+
+    /// Decay must converge below the evict floor in bounded time, or it has
+    /// merely slowed unbounded growth rather than fixed it.
+    #[test]
+    fn decay_reaches_the_evict_floor_in_bounded_nights() {
+        let o = ConsolidateOpts::default();
+        let mut a = 0.60f32; // measured weakest-active on kannaka-prime, 2026-08-22
+        let mut nights = 0;
+        while a >= o.shortterm_evict && nights < 100 {
+            a *= o.shortterm_decay_factor;
+            nights += 1;
+        }
+        assert!(a < o.shortterm_evict, "must actually cross the floor");
+        assert!((10..=20).contains(&nights), "≈2 weeks unretrieved, got {nights}");
+    }
+
+    // ---- partial admission of an oversized group ----------------------------
+
+    /// Build `k` near-identical vectors around an anchor axis so they form one
+    /// transitive group, plus a tight orthogonal pair.
+    fn oversized_group_field(k: usize, dim: usize) -> (Vec<Vec<f32>>, usize) {
+        let mut owned = Vec::new();
+        for i in 0..k {
+            let mut v = vec![0.0f32; dim];
+            v[0] = 1.0;
+            v[1] = 0.001 * i as f32; // tiny spread, still ≥ any sim gate
+            owned.push(v);
+        }
+        (owned, k)
+    }
+
+    /// The stranding bug: a group bigger than the per-pass cap used to be skipped
+    /// WHOLE, every night, forever. Measured locally 2026-08-22 — 217 absorbable,
+    /// 9 absorbed. Partial admission drains it instead, without ever exceeding
+    /// the cap.
+    #[test]
+    fn partial_admission_drains_an_oversized_group_within_the_cap() {
+        let dim = 64usize;
+        let (owned, k) = oversized_group_field(20, dim);
+        let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+        let phases = vec![0.0f32; k];
+        let tiers = vec![Tier::LongTerm; k];
+        let energies: Vec<f32> = (0..k).map(|i| 1.0 + i as f32 * 0.01).collect();
+        // cap_n = floor(0.20 * 20) = 4.
+        let opts = ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            max_absorb_frac: Some(0.20),
+            merge_partial_groups: true,
+            ..Default::default()
+        };
+        let g = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, false);
+        assert_eq!(g.groups_before_cap, 1, "one transitive blob");
+        assert_eq!(g.absorb_before_cap, k - 1);
+        let absorbed: usize = g.admitted.iter().map(|m| m.len() - 1).sum();
+        assert!(absorbed > 0, "the group must no longer be stranded");
+        assert!(absorbed <= 4, "cap honoured exactly, got {absorbed}");
+        assert_eq!(absorbed, 4, "drains the full remaining capacity");
+    }
+
+    /// The cap invariant is the safety property; partial admission must not weaken it.
+    #[test]
+    fn partial_admission_never_exceeds_the_cap() {
+        let dim = 64usize;
+        for k in [5usize, 12, 33, 50] {
+            for frac in [0.05f32, 0.1, 0.2, 0.5] {
+                let (owned, _) = oversized_group_field(k, dim);
+                let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+                let phases = vec![0.0f32; k];
+                let tiers = vec![Tier::LongTerm; k];
+                let energies = vec![1.0f32; k];
+                let opts = ConsolidateOpts {
+                    mode: ConsolidateMode::Apply,
+                    max_absorb_frac: Some(frac),
+                    merge_partial_groups: true,
+                    ..Default::default()
+                };
+                let g =
+                    compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, false);
+                let cap_n = (frac * k as f32).floor() as usize;
+                let absorbed: usize = g.admitted.iter().map(|m| m.len() - 1).sum();
+                assert!(absorbed <= cap_n, "k={k} frac={frac}: {absorbed} > cap {cap_n}");
+                // A partially-admitted group is still a valid group (≥2 members).
+                assert!(g.admitted.iter().all(|m| m.len() >= 2));
+            }
+        }
+    }
+
+    /// Opt-out restores the historical skip-whole behaviour exactly.
+    #[test]
+    fn partial_admission_off_strands_the_group_as_before() {
+        let dim = 64usize;
+        let (owned, k) = oversized_group_field(20, dim);
+        let vectors: Vec<&[f32]> = owned.iter().map(|v| v.as_slice()).collect();
+        let phases = vec![0.0f32; k];
+        let tiers = vec![Tier::LongTerm; k];
+        let energies = vec![1.0f32; k];
+        let opts = ConsolidateOpts {
+            mode: ConsolidateMode::Apply,
+            max_absorb_frac: Some(0.20),
+            merge_partial_groups: false,
+            ..Default::default()
+        };
+        let g = compute_merge_grouping(&vectors, &phases, &tiers, &energies, &opts, false);
+        assert!(g.admitted.is_empty(), "historical behaviour: skipped whole");
+        assert!(g.capped());
     }
 
     /// End-to-end: even if the criteria are fully fooled into one giant redundant

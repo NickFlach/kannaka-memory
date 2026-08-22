@@ -127,6 +127,12 @@ pub const DEFAULT_BELIEF_ABSORB_FRAC: f32 = 0.20;
 /// redundancy clears the bar.
 pub const DEFAULT_MERGE_SIM_BELIEF: f32 = 0.95;
 
+/// M3 salience decay defaults — see [`ConsolidateOpts::shortterm_decay_pctl`].
+/// 0.50 mirrors `kannaka-crystal`'s deep-dream `prune_percentile`.
+pub const DEFAULT_SHORTTERM_DECAY_PCTL: f32 = 0.50;
+/// Gentler than crystal's 0.65 because kannaka dreams nightly rather than on demand.
+pub const DEFAULT_SHORTTERM_DECAY_FACTOR: f32 = 0.90;
+
 /// Tunables for the consolidation planner, sourced from env so the dry-run can
 /// be observed and the thresholds tuned before any destructive apply lands.
 #[derive(Debug, Clone)]
@@ -149,6 +155,35 @@ pub struct ConsolidateOpts {
     /// (so the default non-belief path stays byte-identical). `Some(f)` forces the
     /// cap regardless of belief; `Some(1.0)` disables it.
     pub max_absorb_frac: Option<f32>,
+    /// M3 salience decay — fraction of the *observed ShortTerm amplitude
+    /// distribution* attenuated each pass. Borrowed from `kannaka-crystal`'s
+    /// dream engine, which thresholds at a **percentile of what is actually
+    /// there** rather than at an absolute constant.
+    ///
+    /// This exists because the absolute [`ConsolidateOpts::shortterm_evict`]
+    /// floor (0.15) sits below the entire live amplitude distribution — measured
+    /// 2026-08-22, the weakest active wavefront on kannaka-prime was 0.60 and the
+    /// local substrate averaged 1.73 — so `would_evict` was **structurally always
+    /// 0** on every node in the constellation and nothing ever reclaimed.
+    ///
+    /// A percentile cannot be miscalibrated against an unknown scale. Decay is a
+    /// soft multiply, never a removal: unretrieved ShortTerm traces fade toward
+    /// the evict floor over successive nights, and the existing (conservative,
+    /// reactivation-guarded) evict path finally becomes reachable. `0.0` disables.
+    pub shortterm_decay_pctl: f32,
+    /// Multiplier applied to a decaying wavefront's amplitude each pass. Crystal's
+    /// deep dream uses 0.65, but it dreams on demand; kannaka dreams nightly, so
+    /// this is gentler — 0.90 fades a 0.60 trace under the 0.15 floor in ~14
+    /// unretrieved nights.
+    pub shortterm_decay_factor: f32,
+    /// When the absorb cap is engaged, admit the most-cohesive members of an
+    /// oversized group up to the remaining capacity instead of skipping the group
+    /// whole. Without this a group larger than the cap is skipped **every night
+    /// forever** — measured on the local substrate: 217 of 654 wavefronts met the
+    /// redundancy criteria but only 9 merged, because the one ~208-member group
+    /// could never fit under the 20% cap. The cap is still honoured exactly; the
+    /// group simply drains over several nights instead of never.
+    pub merge_partial_groups: bool,
 }
 
 impl Default for ConsolidateOpts {
@@ -160,6 +195,9 @@ impl Default for ConsolidateOpts {
             shortterm_evict: 0.15,
             merge_sim_belief: DEFAULT_MERGE_SIM_BELIEF,
             max_absorb_frac: None,
+            shortterm_decay_pctl: DEFAULT_SHORTTERM_DECAY_PCTL,
+            shortterm_decay_factor: DEFAULT_SHORTTERM_DECAY_FACTOR,
+            merge_partial_groups: true,
         }
     }
 }
@@ -195,6 +233,16 @@ impl ConsolidateOpts {
         }
         if let Ok(v) = std::env::var("KANNAKA_MERGE_MAX_ABSORB_FRAC") {
             if let Ok(f) = v.parse::<f32>() { o.max_absorb_frac = Some(f.clamp(0.0, 1.0)); }
+        }
+        // M3 salience decay (crystal-borrowed percentile). `=0` disables.
+        if let Ok(v) = std::env::var("KANNAKA_SHORTTERM_DECAY_PCTL") {
+            if let Ok(f) = v.parse::<f32>() { o.shortterm_decay_pctl = f.clamp(0.0, 1.0); }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_SHORTTERM_DECAY_FACTOR") {
+            if let Ok(f) = v.parse::<f32>() { o.shortterm_decay_factor = f.clamp(0.0, 1.0); }
+        }
+        if let Ok(v) = std::env::var("KANNAKA_MERGE_PARTIAL") {
+            o.merge_partial_groups = !matches!(v.as_str(), "0" | "off" | "false");
         }
         o
     }
