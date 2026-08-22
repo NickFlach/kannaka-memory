@@ -606,6 +606,22 @@ fn _handle_serve_msg(
         req.get("mode").and_then(|v| v.as_str()),
     );
     eprintln!("[swarm serve] mode={} (requested {:?})", mode.wire_name(), req.get("mode"));
+
+    // #412: answer AS the served identity. When --agent-id makes this loop
+    // serve a different agent than the config's own `[agent]`, that agent must
+    // NOT be lent the config agent's persona/display name (the bug where
+    // KANNAKA.ask.0xSCADA-QE answered "I'm Kannaka"). Present the served id
+    // with a neutral self; the config's persona only applies when the config
+    // IS that agent. A box that serves 0xSCADA-QE for real sets `[agent] id`
+    // and `persona` in its own config and hits the equal-id branch.
+    let mut eff = cfg.clone();
+    if eff.agent.id != serve_agent_id {
+        eff.agent.id = serve_agent_id.to_string();
+        eff.agent.display_name = String::new();
+        eff.agent.persona = String::new();
+    }
+    let cfg = &eff;
+
     let result = match mode {
         kannaka_memory::agent::RemoteAskMode::Attention => {
             kannaka_memory::agent::ask_attention(sys, cfg, text)
