@@ -932,11 +932,12 @@ impl KannakaMemorySystem {
         let consolidate_report = self.engine.store.consolidate_resonance(&consolidate_opts);
         if consolidate_report.mode != "off" {
             eprintln!(
-                "[dream] Consolidation plan ({}{}): {} memories → {} redundant groups would merge, absorbing {} wavefronts; ShortTerm {}/{} would evict → projected {} memories (applied={})",
+                "[dream] Consolidation plan ({}{}): {} memories → {} redundant groups would merge, absorbing {} wavefronts; ShortTerm {} decay / {} evict of {} → projected {} memories (applied={})",
                 consolidate_report.mode,
                 if consolidate_report.centered { ", belief-safe/centered" } else { "" },
                 consolidate_report.memories_examined,
                 consolidate_report.groups_found, consolidate_report.would_absorb,
+                consolidate_report.would_decay,
                 consolidate_report.would_evict, consolidate_report.shortterm_total,
                 consolidate_report.projected_memories, consolidate_report.applied);
             if consolidate_report.absorb_capped {
