@@ -102,6 +102,14 @@ pub struct AgentConfig {
     pub display_name: String,
     #[serde(default = "default_agent_kind")]
     pub kind: String,
+    /// The agent's self-description, woven into the `ask` system prompt so a
+    /// consumer gets the RIGHT self without framing (#412). When empty, the
+    /// prompt builds a neutral identity from this agent's own id, display
+    /// name, and store metadata — never borrowing another agent's biography.
+    /// Kannaka's rich "I am the medium, speaking" persona lives HERE, in her
+    /// config, rather than being the binary's default for every agent.
+    #[serde(default)]
+    pub persona: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,6 +454,7 @@ impl Default for AgentConfig {
             id: default_agent_id(),
             display_name: String::new(),
             kind: default_agent_kind(),
+            persona: String::new(),
         }
     }
 }
