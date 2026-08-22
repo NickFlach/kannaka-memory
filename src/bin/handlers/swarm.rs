@@ -1897,11 +1897,18 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
                 |_| serde_json::json!({"raw": String::from_utf8_lossy(&reply).to_string()}),
             );
             let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+            eprintln!("[enqueue] reply from {}", from);
+            if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+                eprintln!("[enqueue] worker error: {}", err);
+                if let Some(tid) = parsed.get("task_id").and_then(|v| v.as_str()) {
+                    eprintln!("[enqueue] task_id: {}", tid);
+                }
+                process::exit(1);
+            }
             let text = parsed
                 .get("text")
                 .and_then(|v| v.as_str())
                 .unwrap_or("(no text)");
-            eprintln!("[enqueue] reply from {}", from);
             println!("{}", text);
         }
         Err(e) => {
