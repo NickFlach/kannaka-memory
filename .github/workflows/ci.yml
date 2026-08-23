@@ -22,16 +22,45 @@ jobs:
         with:
           path: kannaka-memory
 
-      - name: Checkout consciousness-core (sibling dependency)
+      # Pinned to the lockfile, exactly as release.yml is — CI has to test what
+      # will actually ship. Left on the siblings' default branches, CI could go
+      # green against physics no release will contain, and a release could ship
+      # a version CI never compiled.
+      #
+      # This is deliberately NOT the place that catches upstream breakage. The
+      # cascade PR is: a new consciousness-core tag opens a lockfile bump here,
+      # and THAT pull request runs this workflow against the new version. Early
+      # warning arrives as a red PR naming the version that broke, rather than
+      # as a red default branch nobody here changed.
+      - name: Resolve sibling versions from Cargo.lock
+        id: siblings
+        shell: bash
+        working-directory: kannaka-memory
+        run: |
+          set -euo pipefail
+          ver() {
+            v=$(grep -A1 "^name = \"$1\"\$" Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+            if [ -z "$v" ]; then
+              echo "::error::could not resolve $1 version from Cargo.lock" >&2
+              exit 1
+            fi
+            echo "$v"
+          }
+          echo "cc=v$(ver consciousness-core)" >> "$GITHUB_OUTPUT"
+          echo "ka=v$(ver kannaka-attention)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout consciousness-core (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/consciousness-core
+          ref: ${{ steps.siblings.outputs.cc }}
           path: consciousness-core
 
-      - name: Checkout kannaka-attention (sibling dependency)
+      - name: Checkout kannaka-attention (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/kannaka-attention
+          ref: ${{ steps.siblings.outputs.ka }}
           path: kannaka-attention
 
       - name: Install stable toolchain

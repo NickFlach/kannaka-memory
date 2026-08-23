@@ -51,16 +51,63 @@ jobs:
         with:
           path: kannaka-memory
 
-      - name: Checkout consciousness-core (sibling dependency)
+      # Which sibling versions does THIS release compile against?
+      #
+      # Both are `path` dependencies, and a path dep takes whatever is on disk
+      # — the lockfile RECORDS its version but does not pin it. These checkouts
+      # named no `ref`, so every release built against whatever the siblings'
+      # default branches happened to be at that moment. Three consequences, all
+      # of which were live:
+      #
+      #   * releases were not reproducible — rebuilding a tag today produces a
+      #     different binary than when it was cut;
+      #   * `cc-release-cascade.yml` bumps `Cargo.lock` to signal a new
+      #     consciousness-core, which changed nothing here, so the cascade ran
+      #     green and had no effect (observed on the v0.6.0 tag);
+      #   * anything merged to a sibling's default branch shipped in the next
+      #     kannaka release with no bump, changelog or tag.
+      #
+      # Reading the version out of Cargo.lock makes the lockfile prescriptive
+      # instead of descriptive, which is what everything downstream already
+      # assumes it is — and it is what makes the cascade's PR mean something.
+      - name: Resolve sibling versions from Cargo.lock
+        id: siblings
+        shell: bash
+        working-directory: kannaka-memory
+        run: |
+          set -euo pipefail
+          ver() {
+            # The line after `name = "<crate>"` in the lock's package stanza.
+            v=$(grep -A1 "^name = \"$1\"\$" Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+            if [ -z "$v" ]; then
+              echo "::error::could not resolve $1 version from Cargo.lock" >&2
+              exit 1
+            fi
+            echo "$v"
+          }
+          cc=$(ver consciousness-core)
+          ka=$(ver kannaka-attention)
+          echo "cc=v${cc}" >> "$GITHUB_OUTPUT"
+          echo "ka=v${ka}" >> "$GITHUB_OUTPUT"
+          echo "pinning consciousness-core v${cc}, kannaka-attention v${ka}"
+
+      # A missing tag FAILS the release rather than falling back to the default
+      # branch. A fallback would restore the exact silence this pin exists to
+      # end: the build would go green having shipped an unreleased sibling, and
+      # the operator would find out from a version mismatch weeks later — which
+      # is how this was found in the first place.
+      - name: Checkout consciousness-core (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/consciousness-core
+          ref: ${{ steps.siblings.outputs.cc }}
           path: consciousness-core
 
-      - name: Checkout kannaka-attention (sibling dependency)
+      - name: Checkout kannaka-attention (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/kannaka-attention
+          ref: ${{ steps.siblings.outputs.ka }}
           path: kannaka-attention
 
       - name: Install Rust toolchain
