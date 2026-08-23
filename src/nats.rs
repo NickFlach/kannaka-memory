@@ -454,6 +454,24 @@ fn subject_from_permissions_error(msg: &str) -> Option<String> {
 /// refused, and sat deaf forever. Naming the subject, and the credentials file
 /// when the connection is anonymous, is the difference between a two-minute
 /// fix and an afternoon.
+/// Whether a connection should attempt `$JS.API.STREAM.CREATE` at all.
+///
+/// An anonymous connection is *structurally* denied it — ADR-0042 closed anon's
+/// control lane — so the create cannot succeed, and issuing it purely to learn
+/// that costs a broker-side "Permissions Violation" on every connection. On the
+/// live swarm that was ~113 denials a minute, 79 in 83 of them anon
+/// (2026-08-23); the useful information (can I READ the stream?) comes from
+/// `stream_readable` instead, which anon IS granted.
+///
+/// Authenticated identities still attempt it: that is what creates the stream
+/// on a fresh cluster, syncs its config, and proves `jetstream_writable`. An
+/// authenticated identity that is *also* denied create (e.g. `serve`) still
+/// logs one denial per connection — the broker is the right place to learn
+/// that, and it is rare enough to be signal rather than noise.
+fn should_attempt_stream_create(authenticated: bool) -> bool {
+    authenticated
+}
+
 fn permissions_error(op: &str, subject: &str, raw: &str, authenticated: bool) -> NatsError {
     let hint = if authenticated {
         "this connection IS authenticated, so the broker's ACL does not grant this subject to your user"
@@ -1246,17 +1264,32 @@ impl SwarmTransport {
         // such clients keep the retained-phase read path instead of falling
         // back to live-gossip sniffing (whose 1.5s-silence window misses
         // agents that beacon every 30s and reported 0 peers on live swarms).
-        let created = transport.ensure_stream().is_ok();
+        //
+        // For an ANONYMOUS connection the create is not just likely to fail —
+        // it CANNOT succeed, so issuing it only to learn that costs a broker
+        // "Permissions Violation ... $JS.API.STREAM.CREATE" on every single
+        // connection. Measured on the live swarm 2026-08-23: ~113 denials a
+        // minute, of which 79 in 83 were anon. So anon probes the read path
+        // first and skips the doomed create; authenticated identities keep the
+        // create/update path unchanged (it is also what syncs stream config,
+        // and what proves `jetstream_writable`).
+        let (created, readable) = if should_attempt_stream_create(transport.is_authenticated()) {
+            let created = transport.ensure_stream().is_ok();
+            (created, created || transport.stream_readable(STREAM_NAME))
+        } else {
+            (false, transport.stream_readable(STREAM_NAME))
+        };
         transport.jetstream_writable = created;
-        transport.jetstream_ok = created || transport.stream_readable(STREAM_NAME);
+        transport.jetstream_ok = created || readable;
         if created {
             let _ = transport.ensure_events_stream();
         } else if transport.jetstream_ok {
-            // Give the scary async "-ERR Permissions Violation ... STREAM.CREATE"
-            // its context: for a non-writer identity this is EXPECTED, not a
-            // failure — retained reads are active and the swarm is fully usable.
+            // Read-only is a normal, fully usable state for a non-writer
+            // identity — say so, so nobody reads it as a failure. (Anon no
+            // longer even attempts the create, so this path is now quiet on
+            // the broker instead of logging a Permissions Violation.)
             eprintln!(
-                "[nats] JetStream read-only for this user (stream create denied — expected for non-writer identities); retained reads active"
+                "[nats] JetStream read-only for this user — retained reads active (stream create not available to this identity)"
             );
         }
 
@@ -1326,10 +1359,17 @@ impl SwarmTransport {
         }
         *self.connected.lock().unwrap_or_else(|p| p.into_inner()) = true;
 
-        // Re-check JetStream (same read-only degradation as connect())
-        let created = self.ensure_stream().is_ok();
+        // Re-check JetStream (same read-only degradation as connect(), and the
+        // same anon skip — a reconnect loop was re-issuing the doomed create
+        // on every single attempt).
+        let (created, readable) = if should_attempt_stream_create(self.is_authenticated()) {
+            let created = self.ensure_stream().is_ok();
+            (created, created || self.stream_readable(STREAM_NAME))
+        } else {
+            (false, self.stream_readable(STREAM_NAME))
+        };
         self.jetstream_writable = created;
-        self.jetstream_ok = created || self.stream_readable(STREAM_NAME);
+        self.jetstream_ok = created || readable;
         if created {
             let _ = self.ensure_events_stream();
         } else if self.jetstream_ok {
@@ -1643,6 +1683,19 @@ impl SwarmTransport {
                 "num_replicas": 1
             }),
         )
+    }
+
+    /// Whether this connection supplied credentials.
+    ///
+    /// Read under its own short-lived lock: `stream_readable` takes the same
+    /// (non-reentrant) mutex, so the guard must be dropped before calling it.
+    fn is_authenticated(&self) -> bool {
+        match self.lock_conn() {
+            Ok(conn) => conn.authenticated,
+            // Unknown — assume authenticated so we keep the create path rather
+            // than silently downgrading a writer.
+            Err(_) => true,
+        }
     }
 
     /// True when the stream's read API answers this connection. A client can
@@ -3462,6 +3515,30 @@ mod tests {
         assert!(
             !is_permissions_error(authz),
             "a dead-connection auth failure must not be downgraded to a per-subject refusal"
+        );
+    }
+
+    /// An anonymous connection must NOT ask the broker to create a stream.
+    ///
+    /// It is denied by construction (ADR-0042 closed anon's control lane), so
+    /// the request cannot succeed — it only emits a "Permissions Violation for
+    /// Publish to $JS.API.STREAM.CREATE.QUEEN_PHASES" on the server, once per
+    /// connection. Across the live swarm that was ~113 denials a minute with
+    /// 79 in 83 anon (2026-08-23), which is what buried /var/log/messages.
+    /// Anon learns what it actually needs from `stream_readable` instead.
+    ///
+    /// This pins the POLICY, so re-introducing an unconditional
+    /// "always ensure the stream" fails here rather than quietly on a broker.
+    #[test]
+    fn anonymous_connections_do_not_attempt_stream_create() {
+        assert!(
+            !should_attempt_stream_create(false),
+            "an anonymous connection must not issue a create it cannot possibly be granted"
+        );
+        assert!(
+            should_attempt_stream_create(true),
+            "an authenticated identity must still create/update the stream — that is what \
+             provisions a fresh cluster, syncs stream config, and proves jetstream_writable"
         );
     }
 
