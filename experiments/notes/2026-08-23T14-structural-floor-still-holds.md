@@ -1,0 +1,1 @@
+Structural floor confirmed at 0.059-0.060 (bare, K=0.5); settle hypothesis from 2026-08-22 notes noted but expected L5 gain <0.001 (phase_coherence only; transfer is structural); no new code changes affect L5 since 2026-08-07; no trials run.
