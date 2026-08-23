@@ -54,15 +54,35 @@ jobs:
           ref: v${{ steps.resolve.outputs.version }}
           path: kannaka-attention
 
-      # consciousness-core is also a path-dep of kannaka-memory; cargo
-      # has to resolve the whole manifest even when only one dep changed,
-      # so check it out at its default branch too. Without this the cargo
-      # update step fails with "failed to load source for dependency
-      # `consciousness-core`".
-      - name: Checkout consciousness-core (sibling path-dep)
+      # consciousness-core is also a path-dep of kannaka-memory; cargo has to
+      # resolve the whole manifest even when only one dep changed, so it has to
+      # be on disk. Without it the cargo update step fails with "failed to load
+      # source for dependency `consciousness-core`".
+      #
+      # Pinned to the lockfile, NOT its default branch — the mirror of the note
+      # in cc-release-cascade.yml. This cascade asks whether kannaka-memory
+      # still builds against the new kannaka-attention; a floating
+      # consciousness-core answers that against a combination no release will
+      # contain, and can smuggle an unrelated physics change into a lockfile
+      # bump whose title names only attention.
+      - name: Resolve consciousness-core version from Cargo.lock
+        id: cc
+        shell: bash
+        working-directory: kannaka-memory
+        run: |
+          set -euo pipefail
+          v=$(grep -A1 '^name = "consciousness-core"$' Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+          if [ -z "$v" ]; then
+            echo "::error::could not resolve consciousness-core version from Cargo.lock" >&2
+            exit 1
+          fi
+          echo "ref=v${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout consciousness-core (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/consciousness-core
+          ref: ${{ steps.cc.outputs.ref }}
           path: consciousness-core
 
       - name: Install Rust toolchain
