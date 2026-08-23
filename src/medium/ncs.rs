@@ -116,7 +116,7 @@ impl Medium {
         }
 
         // Sort by variant name for deterministic output
-        axes.sort_by(|a, b| format!("{}", a.modality).cmp(&format!("{}", b.modality)));
+        axes.sort_by_key(|a| a.modality.to_string());
         axes
     }
 

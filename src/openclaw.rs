@@ -699,7 +699,7 @@ impl KannakaMemorySystem {
         let mut buckets: std::collections::BTreeMap<String, Vec<&crate::memory::HyperMemory>> =
             std::collections::BTreeMap::new();
         for m in &all {
-            buckets.entry(format!("{}", m.modality)).or_default().push(m);
+            buckets.entry(m.modality.to_string()).or_default().push(m);
         }
 
         let mut to_forget: Vec<Uuid> = Vec::new();
