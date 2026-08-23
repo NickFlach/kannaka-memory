@@ -56,16 +56,36 @@ jobs:
           path: consciousness-core
 
       # kannaka-attention is also a path-dep of kannaka-memory; cargo has
-      # to resolve the whole manifest even when only one dep changed, so
-      # check it out at its default branch too. Without this the cargo
-      # update step fails with "failed to load source for dependency
-      # `kannaka-attention`". (This was the same root cause as the
-      # historic cc-cascade failures in May 2026 — missing sibling dep
-      # plus an unset PAT in the sender repo.)
-      - name: Checkout kannaka-attention (sibling path-dep)
+      # to resolve the whole manifest even when only one dep changed, so it
+      # has to be on disk. Without it the cargo update step fails with
+      # "failed to load source for dependency `kannaka-attention`". (This was
+      # the same root cause as the historic cc-cascade failures in May 2026 —
+      # missing sibling dep plus an unset PAT in the sender repo.)
+      #
+      # Pinned to the lockfile, NOT its default branch. This cascade exists to
+      # answer one question — does kannaka-memory still build against the new
+      # consciousness-core — and leaving the other sibling floating answers a
+      # different one, against a combination no release will contain. It also
+      # means the PR could carry an unrelated attention change nobody asked
+      # for, in a lockfile bump whose title names only consciousness-core.
+      - name: Resolve kannaka-attention version from Cargo.lock
+        id: ka
+        shell: bash
+        working-directory: kannaka-memory
+        run: |
+          set -euo pipefail
+          v=$(grep -A1 '^name = "kannaka-attention"$' Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+          if [ -z "$v" ]; then
+            echo "::error::could not resolve kannaka-attention version from Cargo.lock" >&2
+            exit 1
+          fi
+          echo "ref=v${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout kannaka-attention (pinned to the lockfile)
         uses: actions/checkout@v4
         with:
           repository: NickFlach/kannaka-attention
+          ref: ${{ steps.ka.outputs.ref }}
           path: kannaka-attention
 
       - name: Install Rust toolchain
