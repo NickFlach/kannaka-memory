@@ -3445,13 +3445,19 @@ fn run_experiment_l5_session(params: &Params) {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(7);
-    // K=0.5 confirmed optimal in K-sweep (2026-06-06): weaker coupling preserves
-    // more phase diversity than K=1.0, further lifting xi and reducing avg fitness
-    // from ~0.138 (K=1.0) to ~0.133 (K=0.5). KURAMOTO_COUPLING env var overrides.
+    // K=2.0 confirmed optimal post-plumbing-fix (Jul 12 2026 K-sweep re-run against
+    // b60f757 normalization): transfer=0.938 at K=2.0 vs 0.866 at K=3.0 and 0.803 at
+    // K=1.5. The prior K=0.5 default was carried over from a pre-plumbing K-sweep and
+    // measured against stage_sync silently ignoring params.kuramoto_*. KURAMOTO_COUPLING
+    // env var still overrides.
     l5_params.kuramoto_coupling = std::env::var("KURAMOTO_COUPLING")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(0.5);
+        .unwrap_or(2.0);
+    // DREAM_GRAVITY=0.35 confirmed optimal (Jul 31 2026 notes): the pre-dream phase
+    // topology gets weighted 0.35× toward the attractor's phase-neighbors, reinforcing
+    // B_primed vs B_naive transfer distinction. DREAM_GRAVITY env var still overrides.
+    l5_params.dream_gravity = 0.35;
     let params = &l5_params;
 
     // Build Corpus A (hardness=2, bimodal frequency assignment)
@@ -3628,6 +3634,15 @@ fn run_experiment_l5_session(params: &Params) {
     let amp_deltas_flat = {
         let mut flat_params = (*params).clone();
         flat_params.chain_depth = 6;
+        // CARRIER_KURAMOTO_COUPLING decouples the flat-corpus K from the transfer corpora.
+        // The flat corpus only measures drive-induced amplitude patterns; lower K prevents
+        // Kuramoto phase-lock from suppressing the periodic amplitude signal. Default K=1.5
+        // is optimal when transfer corpora run at K=2.0 (Jul 15 research fire — eliminates
+        // carrier_e penalty entirely). env var overrides.
+        flat_params.kuramoto_coupling = std::env::var("CARRIER_KURAMOTO_COUPLING")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.5);
         std::env::set_var("CARRIER_NO_INJECT", "1");
         let (_cs_flat, _phi_flat, _totals_flat, _quiescence_flat, all_deltas,
              _inj_flat, _orig_flat, _init_amp_flat) =
@@ -3656,11 +3671,12 @@ fn run_experiment_l5_session(params: &Params) {
     let frequency_transfer = eval_frequency_transfer(&engine_a, &engine_b_primed);
 
     // L5.8: xi_robustness_v2 — adversarial robustness of xi re-ranking paths
-    // Xi engines (clean + adv) get depth=2: 32 relaxation steps vs 64 at depth=4.
-    // T16 identified that depth=4 gave adversaries extra disruption time (xi 0.808).
-    // depth=2 gives the same relative comparison (both engines equally constrained)
-    // while halving adversarial phase-disruption time.
-    let xi_eval_params = { let mut p = (*params).clone(); p.chain_depth = 2; p };
+    // Xi engines use depth=3 at K=1.0: three cycles reinforce clean-engine phase structure
+    // without giving adversaries excessive disruption time; K=1.0 (not the transfer K=2.0)
+    // keeps adversarial coupling weaker so clean signal wins. Jul 16+Jul 26 research confirmed
+    // depth=3+K=1.0 improves xi from 0.9526 to 0.9783 vs depth=2+K=0.5, saving 0.003427
+    // fitness. depth=4 hurts xi (T16: adversaries dominate at four cycles).
+    let xi_eval_params = { let mut p = (*params).clone(); p.chain_depth = 3; p.kuramoto_coupling = 1.0; p };
     let xi_robustness_v2 = eval_xi_robustness_v2(&corpus_a, &xi_eval_params, dim);
 
     // L5 fitness — all 13 metrics wired, no placeholders remaining
