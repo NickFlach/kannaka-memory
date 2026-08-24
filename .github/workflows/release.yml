@@ -133,6 +133,54 @@ jobs:
         working-directory: kannaka-memory
         run: cargo build --release --target ${{ matrix.target }} --bin kannaka --bin kannaka-acp
 
+      # Sign the macOS binaries BEFORE they are packaged, because packaging is
+      # what computes the .sha256 sidecar and signing REWRITES THE FILE. Signed
+      # after, every sidecar would describe the unsigned bytes, install.sh would
+      # refuse the mismatch, and every macOS install would break — loudly, but
+      # only for users, and only after a release.
+      #
+      # A different certificate to the .pkg. `productsign` signs installers with
+      # a "Developer ID Installer" certificate; an executable is signed by
+      # `codesign` with a "Developer ID Application" one. They are separate
+      # certificates from the same account and are not interchangeable.
+      #
+      # Inert without the secret, like every other signing path here.
+      - name: Sign macOS binaries (Developer ID Application)
+        if: contains(matrix.target, 'apple-darwin') && env.HAS_APP_SIGN == 'true'
+        shell: bash
+        env:
+          HAS_APP_SIGN: ${{ secrets.MACOS_APP_CERT_P12_BASE64 != '' }}
+          CERT_B64: ${{ secrets.MACOS_APP_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.MACOS_APP_CERT_PASSWORD }}
+        run: |
+          trap 'rm -f appcert.p12' EXIT
+          echo "$CERT_B64" | base64 -d > appcert.p12
+          security create-keychain -p actions app.keychain
+          security default-keychain -s app.keychain
+          security unlock-keychain -p actions app.keychain
+          security import appcert.p12 -k app.keychain -P "$CERT_PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions app.keychain
+
+          ID=$(security find-identity -v app.keychain | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
+          if [ -z "$ID" ]; then
+            echo "::error::no 'Developer ID Application' identity in MACOS_APP_CERT_P12_BASE64."
+            echo "::error::A 'Developer ID Installer' certificate signs .pkg files and CANNOT sign an executable."
+            security find-identity -v app.keychain || true
+            exit 1
+          fi
+          echo "signing as: $ID"
+
+          # --options runtime is the hardened runtime, which notarisation
+          # REQUIRES; --timestamp is required too, and a signature without one
+          # stops verifying the day the certificate expires rather than the day
+          # the software does.
+          for b in kannaka kannaka-acp; do
+            f="kannaka-memory/target/${{ matrix.target }}/release/$b"
+            codesign --force --sign "$ID" --timestamp --options runtime "$f"
+            codesign --verify --strict --verbose=2 "$f"
+          done
+          echo "::notice::signed kannaka and kannaka-acp for ${{ matrix.target }}"
+
       - name: Rename artifacts + emit SHA-256 sidecars (ADR-0029 Phase 4a)
         shell: bash
         # The sidecar is a `<artifact>.sha256` file in the same release
@@ -154,6 +202,67 @@ jobs:
           }
           package kannaka "${{ matrix.artifact }}"
           package kannaka-acp "${{ matrix.acp_artifact }}"
+
+      # Notarise AFTER checksumming, which is safe here and would not be for a
+      # .pkg: a bare Mach-O executable CANNOT be stapled. `stapler` attaches a
+      # ticket to .app, .dmg and .pkg only, so for a loose binary notarisation
+      # is a record Apple keeps and Gatekeeper checks ONLINE. Nothing is written
+      # back into the file, so the sidecars stay true.
+      #
+      # What that buys, precisely: a binary downloaded in a BROWSER carries
+      # com.apple.quarantine, and Gatekeeper currently refuses it outright.
+      # Notarised, that same download is checked against Apple and opens. A
+      # machine with no network still refuses it — the limitation is inherent to
+      # an unstapleable format, not something this step is getting wrong.
+      #
+      # (The installer path was never affected: curl sets no quarantine flag.)
+      - name: Notarise macOS binaries
+        if: contains(matrix.target, 'apple-darwin') && env.HAS_APP_SIGN == 'true'
+        shell: bash
+        env:
+          HAS_APP_SIGN: ${{ secrets.MACOS_APP_CERT_P12_BASE64 != '' }}
+          AC_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          AC_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          AC_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          AC_APPLE_ID=$(printf '%s' "$AC_APPLE_ID" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          AC_TEAM_ID=$(printf '%s' "$AC_TEAM_ID" | tr -d '\r\n' | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]//g')
+          AC_PASSWORD=$(printf '%s' "$AC_PASSWORD" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          if ! printf '%s' "$AC_PASSWORD" | grep -Eq '^[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}$'; then
+            echo "::error::MACOS_NOTARY_PASSWORD is not shaped like an app-specific password (expected abcd-efgh-ijkl-mnop)"
+            exit 1
+          fi
+
+          # Both architectures' binaries go up as ONE submission — notarytool
+          # accepts a zip, and two round trips would double a wait measured in
+          # tens of minutes for no benefit.
+          ditto -c -k --keepParent "${{ matrix.artifact }}" a.zip
+          ditto -c -k --keepParent "${{ matrix.acp_artifact }}" b.zip
+          for z in a.zip b.zip; do
+            xcrun notarytool submit "$z" --apple-id "$AC_APPLE_ID" --team-id "$AC_TEAM_ID" \
+              --password "$AC_PASSWORD" --wait --output-format json > n.json
+            cat n.json
+            st=$(python3 -c 'import json;print(json.load(open("n.json")).get("status",""))')
+            if [ "$st" != "Accepted" ]; then
+              echo "::error::notarisation of $z returned '$st', not Accepted"
+              # The log says WHY — a hardened-runtime or signature problem is
+              # named there and nowhere else.
+              id=$(python3 -c 'import json;print(json.load(open("n.json")).get("id",""))')
+              [ -n "$id" ] && xcrun notarytool log "$id" --apple-id "$AC_APPLE_ID" \
+                --team-id "$AC_TEAM_ID" --password "$AC_PASSWORD" || true
+              exit 1
+            fi
+          done
+          rm -f a.zip b.zip n.json
+          echo "::notice::notarised ${{ matrix.artifact }} and ${{ matrix.acp_artifact }}"
+
+          # The sidecars must still describe what ships. Notarisation writes
+          # nothing into an unstapleable binary, so this is a check rather than
+          # a fix — and a check worth having, because if that ever changes the
+          # failure would be a checksum mismatch in every user's installer.
+          for f in "${{ matrix.artifact }}" "${{ matrix.acp_artifact }}"; do
+            shasum -a 256 -c "$f.sha256" || { echo "::error::$f changed after checksumming"; exit 1; }
+          done
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
