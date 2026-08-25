@@ -5199,18 +5199,41 @@ fn main() {
                             // two instead of silently inflating one number.
                             // Escape hatch KANNAKA_METRICS_TRUSTED_ONLY=0 makes
                             // trusted_peer_count == peer_count.
-                            peer_count = live_agents
-                                .as_ref()
-                                .map(|v| v.len())
-                                .unwrap_or(nats_phases.len());
+                            // #808: a peer is somebody ELSE. Both sources
+                            // include our own phase — we publish it ourselves,
+                            // and the broker heard it — so a solo node
+                            // reported `peers: 1` and disagreed with
+                            // `swarm peers`, which derives from presence and
+                            // says "No peers in the swarm yet." Anything
+                            // reading `swarm.peers` as a remote-neighbour
+                            // count was overestimating connectivity by exactly
+                            // one, always.
+                            peer_count = match live_agents.as_ref() {
+                                Some(v) => kannaka_memory::count_peers_excluding_self(
+                                    v.iter().map(|s| s.as_str()),
+                                    &agent_id,
+                                ),
+                                None => kannaka_memory::count_peers_excluding_self(
+                                    nats_phases.iter().map(|p| p.agent_id.as_str()),
+                                    &agent_id,
+                                ),
+                            };
                             let trusted_peer_count = if cfg.swarm_trust.metrics_trusted_only {
+                                // filter_wire_phases keeps `self_id` on purpose —
+                                // it feeds the sync/queen metrics, which must
+                                // include us. As a PEER count it must not, or
+                                // the pair stops being comparable: the gap
+                                // between raw and trusted is supposed to show a
+                                // forged-id flood, not a constant off-by-one.
                                 kannaka_memory::filter_wire_phases(
                                     nats_phases,
                                     &agent_id,
                                     &cfg.swarm_trust.trusted_agents,
                                     cfg.swarm_trust.wire_trust_cap,
                                 )
-                                .len()
+                                .iter()
+                                .filter(|p| p.agent_id != agent_id)
+                                .count()
                             } else {
                                 peer_count
                             };
