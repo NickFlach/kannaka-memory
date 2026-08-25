@@ -329,11 +329,28 @@ impl AttentionField {
             }
         };
 
+        // #804: this was hardcoded `0` behind a TODO, while the detection it
+        // was waiting for already existed and was already being read —
+        // `observe.rs` pulls the same `switch_count` for its NCS block. So the
+        // field reported "no attention switches, ever" on a system that was
+        // counting them the whole time, and a zero here is indistinguishable
+        // from a genuine zero.
+        //
+        // The count lives on the HRM medium, so it is only available when the
+        // backend actually IS an HrmStore. A non-HRM backend has no NCS to
+        // report and still reports 0 — but that is now a real absence rather
+        // than an unwired field.
+        let recent_switch_points = store
+            .as_any()
+            .downcast_ref::<crate::hrm_store::HrmStore>()
+            .map(|hrm| hrm.medium().ncs_metrics().switch_count)
+            .unwrap_or(0);
+
         AttentionProjection {
             active_wavefronts: wavefronts,
             dominant_modality,
             attention_coherence,
-            recent_switch_points: 0, // TODO: derive from NCS switch detection
+            recent_switch_points,
         }
     }
 }
