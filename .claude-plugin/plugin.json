@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "kannaka-memory",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Kannaka Holographic Resonance Medium — wave-interference memory with chiral hemispheres, 96-class collective substrate, event-sourced HRM with time-machine snapshots + replay, collective recall across the swarm, NATS sync, an agentic coding loop (kannaka agent), real quantum tools (qBraid), and Anthropic/OpenAI/Ollama LLM-backed chat. Skill teaches Claude how to drive `kannaka` end-to-end: remember/recall/dream/observe, the agent coding loop, quantum recall/circuits/entropy, swarm join/serve, substrate run/status/init/backfill, events init/snapshot/list-snapshots/restore, cross-host disaster recovery, attention serve, provider switching.",
   "author": {
     "name": "flaukowski",
