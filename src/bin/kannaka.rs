@@ -1903,7 +1903,7 @@ fn main() {
                             // `events init` run yet) the publish still goes
                             // to the subject — it just won't persist. Once
                             // streams exist, every remember lands durably.
-                            let modality_str = format!("{}", modality);
+                            let modality_str = modality.to_string();
                             if let Err(e) = transport.publish_event(
                                 kannaka_memory::nats::EventPayload::MemoryRemember {
                                     agent_id,

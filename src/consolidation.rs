@@ -2866,7 +2866,7 @@ impl ConsolidationEngine {
 
         for mem in &all {
             let (modality, _confidence) = crate::medium::types::detect_modality_simple(&mem.content);
-            let mod_str = format!("{}", modality);
+            let mod_str = modality.to_string();
             if mod_str != "unknown" && mod_str != "mixed" {
                 modality_groups.entry(mod_str.clone()).or_default().push(mem.id);
                 modality_tags.insert(mem.id, mod_str);
