@@ -1074,6 +1074,26 @@ pub fn filter_wire_phases(
         .collect()
 }
 
+/// Count how many of `ids` are somebody other than `self_id` (#808).
+///
+/// Every source of swarm membership includes us: we publish our own phase, so
+/// the broker's live-phase list has us in it, and `get_all_phases` retains it.
+/// Reporting that raw as `swarm.peers` made a solo node claim one peer and put
+/// `swarm status` at odds with `swarm peers`, which derives from presence and
+/// correctly says "No peers in the swarm yet."
+///
+/// Deliberately a free function over ids rather than a method on a phase list:
+/// the two call sites hold different types (a `Vec<String>` of live agent ids
+/// and a `Vec<AgentPhase>`), and the off-by-one has to be fixed in both or the
+/// JetStream and gossip paths disagree.
+pub fn count_peers_excluding_self<I, S>(ids: I, self_id: &str) -> usize
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    ids.into_iter().filter(|id| id.as_ref() != self_id).count()
+}
+
 /// Make a wire-sourced string safe to print to a terminal.
 ///
 /// Strips ANSI/OSC escape sequences (CSI `\x1b[…`, OSC `\x1b]…`) and all
@@ -1924,5 +1944,38 @@ mod tests {
         let truncated = sanitize_display(&long);
         assert_eq!(truncated.chars().count(), 2001);
         assert!(truncated.ends_with('\u{2026}'));
+    }
+
+    // ---- #808: a peer is somebody else -----------------------------------
+
+    #[test]
+    fn a_solo_node_that_published_its_own_phase_has_zero_peers() {
+        // The exact repro from the issue: selfId=solo-agent, one phase on the
+        // wire (our own), status previously reported peers=1.
+        assert_eq!(count_peers_excluding_self(["solo-agent"], "solo-agent"), 0);
+    }
+
+    #[test]
+    fn real_peers_are_counted_and_our_own_id_is_not() {
+        let ids = ["kannaka-prime", "solo-agent", "flaukowski"];
+        assert_eq!(count_peers_excluding_self(ids, "solo-agent"), 2);
+        // Seen from a node that is not in the list at all, everyone counts.
+        assert_eq!(count_peers_excluding_self(ids, "someone-else"), 3);
+    }
+
+    #[test]
+    fn an_empty_swarm_is_zero_not_a_panic() {
+        let none: [&str; 0] = [];
+        assert_eq!(count_peers_excluding_self(none, "solo-agent"), 0);
+    }
+
+    #[test]
+    fn matching_is_exact_not_prefix() {
+        // "solo-agent-2" is a different agent, not us. A prefix or contains
+        // match here would silently under-count real peers.
+        assert_eq!(
+            count_peers_excluding_self(["solo-agent-2", "solo-agent"], "solo-agent"),
+            1
+        );
     }
 }

@@ -172,7 +172,10 @@ pub use paradox::{
 };
 
 pub use queen::{QueenSync, QueenConfig, QueenState, AgentPhase, Hive, HiveInfo, Handedness, SwarmAgent, PartitionPhiResult};
-pub use queen::{filter_wire_phases, sanitize_display, agent_matches_allowlist, wire_source_trusted};
+pub use queen::{
+    agent_matches_allowlist, count_peers_excluding_self, filter_wire_phases, sanitize_display,
+    wire_source_trusted,
+};
 
 // ed25519 provenance substrate (inc-1a).
 pub use provenance::{

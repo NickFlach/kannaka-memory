@@ -61,10 +61,113 @@ pub(crate) fn remote_mode_verdict(
     RemoteModeVerdict { fatal: None, warnings }
 }
 
+/// What a peer's reply actually said.
+///
+/// The wire contract has had an error channel all along — `_handle_serve_msg`
+/// answers `{from, error}` for bad JSON, for empty text, and for any failure
+/// out of the ask itself, and `_process_work_msg` does the same for worker
+/// failures. The client read only `text` and defaulted a missing one to
+/// `(no text)`, so every one of those turned into a successful-looking answer
+/// whose body was a placeholder, on exit code 0.
+///
+/// That is the worst available outcome. Transport failures already fail loudly;
+/// it was specifically the peer's *application* failures — the ones carrying a
+/// diagnosis — that were laundered into "here is your answer".
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PeerReply<'a> {
+    Answer(&'a str),
+    /// The peer reported a failure. The string is its own message.
+    Failed(&'a str),
+    /// Neither a usable `text` nor an `error`: a reply we cannot interpret.
+    /// Not an answer, so it must not be printed as one.
+    Unintelligible,
+}
+
+/// Classify one parsed reply. Pure, so the contract is testable without a
+/// broker — which is why the defect survived: nothing that ran in CI ever
+/// looked at a reply body.
+pub(crate) fn interpret_reply(parsed: &serde_json::Value) -> PeerReply<'_> {
+    // `error` wins over `text`. A reply carrying both is a peer that failed
+    // and said something anyway; the failure is the load-bearing half.
+    if let Some(e) = parsed.get("error").and_then(|v| v.as_str()) {
+        if !e.trim().is_empty() {
+            return PeerReply::Failed(e);
+        }
+    }
+    match parsed.get("text").and_then(|v| v.as_str()) {
+        // An empty string IS an answer the peer chose to give. Only a missing
+        // or non-string `text` is unintelligible.
+        Some(t) => PeerReply::Answer(t),
+        None => PeerReply::Unintelligible,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{mode_echo_warning, remote_mode_verdict};
+    use super::{interpret_reply, mode_echo_warning, remote_mode_verdict, PeerReply};
     use kannaka_memory::agent::RemoteAskMode;
+
+    // ---- #820: a peer's failure must not read as an answer -----------------
+
+    #[test]
+    fn an_error_only_reply_is_a_failure_not_a_blank_answer() {
+        let r = serde_json::json!({ "from": "peer-a", "error": "upstream model timeout" });
+        assert_eq!(interpret_reply(&r), PeerReply::Failed("upstream model timeout"));
+    }
+
+    #[test]
+    fn the_serve_side_error_shapes_are_all_recognised() {
+        // These are the literal shapes _handle_serve_msg and _process_work_msg
+        // put on the wire. If one of them ever stopped being classified as a
+        // failure it would silently become "(no text)" again.
+        for body in [
+            serde_json::json!({ "from": "p", "error": "bad json: expected value" }),
+            serde_json::json!({ "from": "p", "error": "empty text" }),
+            serde_json::json!({ "from": "p", "error": "model unavailable", "mode_used": "full_recall_no_tools" }),
+        ] {
+            assert!(
+                matches!(interpret_reply(&body), PeerReply::Failed(_)),
+                "not classified as a failure: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_alongside_text_still_reports_the_failure() {
+        let r = serde_json::json!({ "from": "p", "error": "tool loop aborted", "text": "partial" });
+        assert_eq!(interpret_reply(&r), PeerReply::Failed("tool loop aborted"));
+    }
+
+    #[test]
+    fn a_real_answer_is_still_an_answer() {
+        let r = serde_json::json!({ "from": "p", "text": "the answer" });
+        assert_eq!(interpret_reply(&r), PeerReply::Answer("the answer"));
+    }
+
+    #[test]
+    fn an_empty_string_answer_is_an_answer_but_a_missing_one_is_not() {
+        // The distinction the old `.unwrap_or("(no text)")` erased: a peer that
+        // deliberately answered with nothing is not the same event as a peer
+        // that sent us something we cannot read.
+        assert_eq!(
+            interpret_reply(&serde_json::json!({ "from": "p", "text": "" })),
+            PeerReply::Answer("")
+        );
+        assert_eq!(
+            interpret_reply(&serde_json::json!({ "from": "p" })),
+            PeerReply::Unintelligible
+        );
+        assert_eq!(
+            interpret_reply(&serde_json::json!({ "from": "p", "text": 42 })),
+            PeerReply::Unintelligible
+        );
+    }
+
+    #[test]
+    fn an_empty_error_string_does_not_manufacture_a_failure() {
+        let r = serde_json::json!({ "from": "p", "error": "  ", "text": "fine" });
+        assert_eq!(interpret_reply(&r), PeerReply::Answer("fine"));
+    }
 
     /// #746 second half: `--no-recall` is now CARRIED and honoured, so the
     /// hard error from the first half is gone. It was only fatal because the
@@ -465,12 +568,36 @@ pub(crate) fn handle_ask_remote(
                     eprintln!("(no replies within {}s)", timeout_secs);
                     process::exit(2);
                 }
+                let mut answered = 0usize;
                 for (i, reply) in replies.iter().enumerate() {
                     let parsed: serde_json::Value = serde_json::from_slice(reply)
                         .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(reply)}));
                     let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
-                    let text = parsed.get("text").and_then(|v| v.as_str())
-                        .unwrap_or("(no text)");
+                    // #820: a peer that reported a failure is not a peer that
+                    // answered. Its diagnosis goes to stderr, where a failure
+                    // belongs, and it does not count toward having been
+                    // answered at all.
+                    let text = match interpret_reply(&parsed) {
+                        PeerReply::Answer(t) => {
+                            answered += 1;
+                            t
+                        }
+                        PeerReply::Failed(e) => {
+                            eprintln!(
+                                "ask: peer {} failed: {}",
+                                kannaka_memory::sanitize_display(from),
+                                kannaka_memory::sanitize_display(e)
+                            );
+                            continue;
+                        }
+                        PeerReply::Unintelligible => {
+                            eprintln!(
+                                "ask: peer {} sent a reply with neither text nor error",
+                                kannaka_memory::sanitize_display(from)
+                            );
+                            continue;
+                        }
+                    };
                     // SECURITY (increment-0): reply came from a peer over the
                     // open swarm — sanitize the id + body before printing and
                     // flag replies from ids not on the trusted allowlist.
@@ -489,6 +616,16 @@ pub(crate) fn handle_ask_remote(
                     println!("{}", kannaka_memory::sanitize_display(text));
                     if !quiet_tools && i + 1 < replies.len() { println!(); }
                 }
+                // Replies arrived, but not one of them was an answer. That is a
+                // different fact from "no replies" (exit 2) and from a
+                // transport failure (exit 1), and it must not be exit 0.
+                if answered == 0 {
+                    eprintln!(
+                        "ask: {} peer(s) replied, none with an answer",
+                        replies.len()
+                    );
+                    process::exit(3);
+                }
             }
             Err(e) => { eprintln!("request_many: {e}"); process::exit(1); }
         }
@@ -498,13 +635,34 @@ pub(crate) fn handle_ask_remote(
             Ok(reply) => {
                 let parsed: serde_json::Value = serde_json::from_slice(&reply)
                     .unwrap_or_else(|_| serde_json::json!({"raw": String::from_utf8_lossy(&reply)}));
-                let text = parsed.get("text").and_then(|v| v.as_str())
-                    .unwrap_or("(no text)");
                 if let Some(w) =
                     mode_echo_warning(mode, parsed.get("mode_used").and_then(|v| v.as_str()))
                 {
                     eprintln!("ask: warning: {w}");
                 }
+                // #820: on a directed ask there is exactly one peer, so its
+                // failure is the whole outcome. Report it on stderr and exit
+                // non-zero — printing the peer's diagnosis to stdout as though
+                // it were the answer is how a caller ends up storing "upstream
+                // model timeout" as a result.
+                let text = match interpret_reply(&parsed) {
+                    PeerReply::Answer(t) => t,
+                    PeerReply::Failed(e) => {
+                        eprintln!(
+                            "ask: peer {} failed: {}",
+                            kannaka_memory::sanitize_display(target),
+                            kannaka_memory::sanitize_display(e)
+                        );
+                        process::exit(3);
+                    }
+                    PeerReply::Unintelligible => {
+                        eprintln!(
+                            "ask: peer {} sent a reply with neither text nor error",
+                            kannaka_memory::sanitize_display(target)
+                        );
+                        process::exit(3);
+                    }
+                };
                 // SECURITY (increment-0): wire-sourced reply body — never print raw.
                 println!("{}", kannaka_memory::sanitize_display(text));
             }
