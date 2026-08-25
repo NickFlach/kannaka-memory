@@ -1792,3 +1792,225 @@ fn facet_recall_returns_k_distinct_constellations() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #822 — effective_dimensionality must be able to return a bad value.
+//
+// The pre-fix implementation could not. It took a participation ratio over a
+// row-sum "eigenvalue proxy" of `diagonal + off_diagonal_sum / n`; wavefronts
+// are unit-normalised so `diagonal` is always exactly 1.0 and the mean overlap
+// is order 0.008, making every proxy 1.008 ± ε. A participation ratio over
+// near-identical values equals the COUNT of values, so d_eff ≈ n always.
+//
+// These are the tests the issue asked for: feed the metric its own pathological
+// case and assert that it screams.
+// ---------------------------------------------------------------------------
+
+/// Total collapse. n copies of one vector has true dimensionality 1, and this
+/// is the exact failure the metric exists to detect. Pre-fix it scored n.
+#[test]
+fn effective_dimensionality_identical_wavefronts_collapse_to_one() {
+    let mut medium = Medium::new();
+    let vector = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..30 {
+        medium.add_wavefront(&vector, format!("copy_{i}"), 1.0).unwrap();
+    }
+    let (d_eff, _nominal, _ratio) = medium.effective_dimensionality();
+    assert!(
+        d_eff < 1.5,
+        "30 identical wavefronts have ONE dimension between them; got d_eff={d_eff}. \
+         A value near 30 means the row-sum proxy has come back and the metric is \
+         reporting the memory count again."
+    );
+}
+
+/// The opposite pole. Mutually orthogonal wavefronts genuinely occupy n
+/// dimensions, so d_eff should be near n rather than near 1 — otherwise the fix
+/// would have traded one constant for another.
+#[test]
+fn effective_dimensionality_orthogonal_wavefronts_use_every_dimension() {
+    let mut medium = Medium::new();
+    for i in 0..20 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0; // distinct basis vector each time
+        medium.add_wavefront(&v, format!("basis_{i}"), 1.0).unwrap();
+    }
+    let (d_eff, _nominal, _ratio) = medium.effective_dimensionality();
+    assert!(
+        d_eff > 15.0,
+        "20 mutually orthogonal wavefronts span 20 dimensions; got d_eff={d_eff}"
+    );
+}
+
+/// The assertion that actually has teeth, and the one the issue specified: the
+/// two extremes must be separated by an order of magnitude. Pre-fix they were
+/// separated by nothing at all — both read as n.
+#[test]
+fn effective_dimensionality_separates_collapse_from_spread() {
+    let mut collapsed = Medium::new();
+    let same = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        collapsed.add_wavefront(&same, format!("same_{i}"), 1.0).unwrap();
+    }
+
+    let mut spread = Medium::new();
+    for i in 0..20 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0;
+        spread.add_wavefront(&v, format!("basis_{i}"), 1.0).unwrap();
+    }
+
+    let (d_collapsed, _, _) = collapsed.effective_dimensionality();
+    let (d_spread, _, _) = spread.effective_dimensionality();
+    assert!(
+        d_spread > d_collapsed * 10.0,
+        "collapse and spread must differ by at least an order of magnitude, \
+         got collapsed={d_collapsed} spread={d_spread}. Equal values mean the \
+         metric is measuring the memory count, not the structure."
+    );
+}
+
+/// A rank-k subspace should read as ~k dimensions, not as n. This is the case
+/// that distinguishes a real spectral measurement from one that only manages
+/// the two extremes.
+#[test]
+fn effective_dimensionality_recovers_a_low_rank_subspace() {
+    let mut medium = Medium::new();
+    // 24 wavefronts drawn from a 4-dimensional subspace.
+    let mut basis = Vec::new();
+    for b in 0..4 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[b] = 1.0;
+        basis.push(v);
+    }
+    for i in 0..24 {
+        let b = &basis[i % 4];
+        medium.add_wavefront(b, format!("sub_{i}"), 1.0).unwrap();
+    }
+    let (d_eff, _, _) = medium.effective_dimensionality();
+    assert!(
+        (2.0..=8.0).contains(&d_eff),
+        "24 wavefronts spanning a 4-d subspace should read near 4, got {d_eff}"
+    );
+}
+
+/// d_eff is bounded by the number of wavefronts and by 1 from below. f32
+/// accumulation over a large Gram matrix can drift; "0.9998 dimensions" is not
+/// a thing anyone should ever be shown.
+#[test]
+fn effective_dimensionality_stays_within_its_own_bounds() {
+    let mut medium = Medium::new();
+    let v = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..12 {
+        medium.add_wavefront(&v, format!("b_{i}"), 1.0).unwrap();
+    }
+    let (d_eff, nominal, ratio) = medium.effective_dimensionality();
+    assert!(d_eff >= 1.0, "d_eff must never read below one dimension, got {d_eff}");
+    assert!(d_eff <= 12.0, "d_eff cannot exceed the wavefront count, got {d_eff}");
+    assert!((ratio - d_eff / nominal as f32).abs() < 1e-6, "ratio must stay d_eff/nominal");
+}
+
+/// Fewer than two wavefronts is not a measurable field. Reporting 0.0 is the
+/// honest answer; reporting 1.0 would claim a collapsed field we cannot see.
+#[test]
+fn effective_dimensionality_is_zero_below_two_wavefronts() {
+    let mut medium = Medium::new();
+    assert_eq!(medium.effective_dimensionality().0, 0.0);
+    medium.add_wavefront(&vec![0.5; WAVEFRONT_DIM], "one".to_string(), 1.0).unwrap();
+    assert_eq!(medium.effective_dimensionality().0, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// #823 — compute_irrationality_index was provably constant 0.0.
+//
+// Its "energy proxy" was each wavefront's L2 norm, and wavefronts are
+// unit-normalised at encode, so every energy was exactly 1.0 and the whole
+// expression reduced to (1.0 - 1.0) = 0.0 for every reachable state. A live
+// 482-memory HRM reported exactly 0.0 and it was read as "the field is
+// perfectly rational" rather than as a dead sensor.
+//
+// Note what these tests deliberately do NOT do: assert `0.0 <= i <= 1.0`.
+// That range check passes trivially against the broken version and is itself
+// an instance of the defect class.
+// ---------------------------------------------------------------------------
+
+/// The headline: two media with genuinely different concentration must produce
+/// DIFFERENT values. Nothing else distinguishes a measurement from a constant.
+#[test]
+fn irrationality_distinguishes_concentrated_from_spread() {
+    let mut collapsed = Medium::new();
+    let same = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        collapsed.add_wavefront(&same, format!("same_{i}"), 1.0).unwrap();
+    }
+
+    let mut spread = Medium::new();
+    for i in 0..20 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0;
+        spread.add_wavefront(&v, format!("basis_{i}"), 1.0).unwrap();
+    }
+
+    let i_collapsed = collapsed.compute_irrationality_index();
+    let i_spread = spread.compute_irrationality_index();
+    assert!(
+        i_collapsed - i_spread > 0.5,
+        "a collapsed field and an orthogonal one must not score the same; \
+         got collapsed={i_collapsed} spread={i_spread}. Equal values mean the \
+         L2-norm proxy is back and the metric is constant again."
+    );
+}
+
+/// The docstring's own maximum, which used to be unreachable: total collapse
+/// is maximum irrationality, ι = 1 - 1/n.
+#[test]
+fn irrationality_is_near_maximum_for_a_collapsed_field() {
+    let mut medium = Medium::new();
+    let v = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        medium.add_wavefront(&v, format!("copy_{i}"), 1.0).unwrap();
+    }
+    let iota = medium.compute_irrationality_index();
+    assert!(
+        iota > 0.9,
+        "20 identical wavefronts concentrate everything into one dimension — \
+         ι should approach 1 - 1/n = 0.95, got {iota}"
+    );
+}
+
+/// And its minimum. An orthogonal field spans everything it can, so there is no
+/// residual left to call irrational.
+#[test]
+fn irrationality_is_near_zero_for_an_orthogonal_field() {
+    let mut medium = Medium::new();
+    for i in 0..20 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0;
+        medium.add_wavefront(&v, format!("basis_{i}"), 1.0).unwrap();
+    }
+    let iota = medium.compute_irrationality_index();
+    assert!(iota < 0.15, "an orthogonal field is maximally rational, got {iota}");
+}
+
+/// The two metrics must stay two readings of one computation, not two proxies
+/// that can drift apart again.
+#[test]
+fn irrationality_and_effective_dimensionality_agree() {
+    let mut medium = Medium::new();
+    let mut basis = Vec::new();
+    for b in 0..4 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[b] = 1.0;
+        basis.push(v);
+    }
+    for i in 0..24 {
+        medium.add_wavefront(&basis[i % 4], format!("sub_{i}"), 1.0).unwrap();
+    }
+    let (d_eff, _, _) = medium.effective_dimensionality();
+    let iota = medium.compute_irrationality_index();
+    let n = 24.0f32;
+    assert!(
+        (iota - (1.0 - d_eff / n)).abs() < 1e-5,
+        "i must be exactly 1 - d_eff/n; got i={iota} d_eff={d_eff}"
+    );
+}

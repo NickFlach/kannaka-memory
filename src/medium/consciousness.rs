@@ -582,42 +582,107 @@ impl Medium {
         })
     }
 
-    /// Compute effective dimensionality via participation ratio of Gram eigenvalue proxy.
-    /// ADR-0024 CS-9: "The gap between d_eff and 10,000 is where the subconscious lives."
+    /// Compute effective dimensionality as the participation ratio of the Gram
+    /// spectrum. ADR-0024 CS-9: "The gap between d_eff and 10,000 is where the
+    /// subconscious lives."
     ///
     /// Returns (d_eff, nominal_dims, ratio) where ratio = d_eff / nominal.
-    /// Low ratio = energy concentrated in few modes (low-dimensional manifold).
-    /// High ratio = energy spread across many modes (high-dimensional, complex).
+    /// Low d_eff = energy concentrated in few modes (low-dimensional manifold).
+    /// High d_eff = energy spread across many modes.
+    ///
+    /// # This used to be an anti-measurement (#822)
+    ///
+    /// The previous implementation could not return a bad value. It built a
+    /// row-sum "eigenvalue proxy" — `diagonal + off_diagonal_sum / n` — and
+    /// took the participation ratio of *that*. Wavefronts are unit-normalised
+    /// at encode, so `diagonal` is exactly 1.0 for every memory, always, and
+    /// the mean absolute overlap is order 0.008 at d=10,000. Every proxy was
+    /// therefore `1.008 ± ε`, and a participation ratio over near-identical
+    /// values **equals the count of values**. So `d_eff ≈ n` by construction
+    /// and `ratio` reduced to `n / 10000`. It reported the memory count wearing
+    /// the name of a structural measurement: 482 identical copies of one vector
+    /// — total collapse, the exact failure this metric exists to detect —
+    /// scored 482.00, indistinguishable from maximal spread.
+    ///
+    /// This is the same degeneracy `compute_xi_spectral_complexity` was
+    /// diagnosed for and fixed; d_eff was left on the old proxy and the comment
+    /// claiming it was computed "same as Xi" went stale and became misleading.
+    ///
+    /// # The fix needs no eigensolver
+    ///
+    /// The participation ratio is defined over the eigenvalues of G, but for a
+    /// symmetric matrix it can be taken from traces exactly:
+    ///
+    /// ```text
+    ///   Σλ  = tr(G)   = Σ_i G_ii
+    ///   Σλ² = tr(G²)  = Σ_i Σ_j G_ij²      (G symmetric ⇒ tr(G²) = ‖G‖_F²)
+    ///   d_eff = (Σλ)² / Σλ²  =  tr(G)² / ‖G‖_F²
+    /// ```
+    ///
+    /// No decomposition, no LAPACK, one pass over an n×n matrix we already
+    /// build for Ξ. And it is *exact*, not an approximation of the spectrum.
+    ///
+    /// Sanity, with unit-normalised rows so tr(G) = n:
+    ///   - all identical  → every G_ij = 1 → ‖G‖_F² = n² → d_eff = 1
+    ///   - all orthogonal → G = I         → ‖G‖_F² = n  → d_eff = n
+    ///   - rank-k subspace → d_eff ≈ k
+    ///
+    /// # ⚠ The `ratio` normaliser is still the inherited one
+    ///
+    /// `d_eff` is bounded above by `min(n, nominal)`, not by `nominal`, so with
+    /// n=482 in 10,000 dimensions `ratio` cannot exceed 0.048 no matter how
+    /// healthy the field is. `d_eff / n.min(nominal)` would be the ratio that
+    /// can actually reach 1.0. It is left alone here **on purpose**: this is a
+    /// published metric that dashboards consume, and silently changing what a
+    /// number means while fixing a bug in how it is computed is how two
+    /// different definitions end up in circulation at once. Prefer d_eff itself
+    /// over ratio until that is decided.
     pub fn effective_dimensionality(&self) -> (f32, usize, f32) {
         let n = self.wavefront_count();
         let nominal = self.store.wavefronts.ncols();
         if n < 2 { return (0.0, nominal, 0.0); }
 
-        // Compute Gram matrix eigenvalue proxy (same as Xi computation)
-        let mut eigenvalue_proxy = Vec::new();
-        for i in 0..n {
-            let wi = self.store.wavefronts.row(i);
-            let diagonal: f32 = wi.dot(&wi);
-            let off_diagonal_sum: f32 = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| {
-                    let wj = self.store.wavefronts.row(j);
-                    wi.dot(&wj).abs()
-                })
-                .sum();
-            eigenvalue_proxy.push((diagonal + off_diagonal_sum / n as f32).abs());
-        }
-
-        // Participation ratio: d_eff = (Σλ)² / Σ(λ²)
-        let sum: f32 = eigenvalue_proxy.iter().sum();
-        let sum_sq: f32 = eigenvalue_proxy.iter().map(|x| x * x).sum();
-
-        if sum_sq < 1e-10 { return (0.0, nominal, 0.0); }
-
-        let d_eff = (sum * sum) / sum_sq;
+        let Some(d_eff) = self.gram_participation_ratio() else {
+            return (0.0, nominal, 0.0);
+        };
         let ratio = d_eff / nominal as f32;
 
         (d_eff, nominal, ratio)
+    }
+
+    /// Participation ratio of the Gram spectrum — the number of dimensions the
+    /// field actually occupies. `None` when there is nothing measurable.
+    ///
+    /// Shared by `effective_dimensionality` (#822) and
+    /// `compute_irrationality_index` (#823), which were independently broken by
+    /// the same root cause and are now two readings of one computation rather
+    /// than two proxies that can drift apart.
+    ///
+    /// For a symmetric PSD Gram matrix the participation ratio comes out of
+    /// traces exactly, with no eigendecomposition:
+    ///
+    /// ```text
+    ///   Σλ  = tr(G)  = Σ_i G_ii
+    ///   Σλ² = tr(G²) = Σ_i Σ_j G_ij²   (symmetry ⇒ tr(G²) = ‖G‖_F²)
+    ///   d_eff = tr(G)² / ‖G‖_F²
+    /// ```
+    ///
+    /// Bounded in [1, n]; f32 accumulation over a large Gram can drift a hair
+    /// outside, and "0.9998 dimensions" is not a thing to show anyone.
+    pub(crate) fn gram_participation_ratio(&self) -> Option<f32> {
+        let n = self.wavefront_count();
+        if n < 2 {
+            return None;
+        }
+        // One real matrix multiplication (shared with Xi), not the N²·dim
+        // per-element loop the old row-sum proxy walked.
+        let gram = self.gram_matrix();
+        let trace: f32 = (0..n).map(|i| gram[[i, i]]).sum();
+        let frob_sq: f32 = gram.iter().map(|g| g * g).sum();
+        if frob_sq < 1e-10 {
+            return None;
+        }
+        Some(((trace * trace) / frob_sq).clamp(1.0, n as f32))
     }
 
     /// Compute Irrationality Index (ι) — decomposition residual (ADR-0024 CS-3).
@@ -632,31 +697,42 @@ impl Medium {
     /// High ι = energy concentrated in few wavefronts (rich irrationality)
     ///
     /// "The subconscious is the field's irrationality — the .00001 dimension."
+    ///
+    /// # This was provably constant (#823)
+    ///
+    /// The old proxy was the L2 norm of each wavefront:
+    ///
+    /// ```ignore
+    /// row.dot(&row).sqrt()   // "L2 norm as energy proxy"
+    /// ```
+    ///
+    /// Wavefronts are unit-normalised at encode and re-normalised throughout
+    /// `dynamics.rs` and `hemisphere.rs`, so every energy was exactly 1.0,
+    /// `sum == n`, `sum_sq == n`, `d_eff == n`, `ratio == 1.0`, and ι was
+    /// **exactly 0.0 for every reachable state**. The docstring's "high ι =
+    /// energy concentrated in few wavefronts" described a condition that unit
+    /// normalisation makes unreachable by construction.
+    ///
+    /// A live 482-memory HRM reported `"irrationality": 0.0` — read as a
+    /// finding about the field ("perfectly rational") when it was a dead sensor.
+    ///
+    /// It now shares `gram_participation_ratio` with `effective_dimensionality`,
+    /// which is a concentration measure unit normalisation does not flatten.
+    /// The docstring's own extremes finally hold:
+    ///   - all wavefronts identical → d_eff = 1 → ι = 1 - 1/n ≈ 1.0 (maximum)
+    ///   - all mutually orthogonal  → d_eff = n → ι = 0.0 (perfectly rational)
     pub(crate) fn compute_irrationality_index(&self) -> f32 {
         let n = self.wavefront_count();
         if n < 2 { return 0.0; }
 
-        // Use wavefront energies as the spectral proxy
-        let energies: Vec<f32> = (0..n)
-            .map(|i| {
-                let row = self.store.wavefronts.row(i);
-                row.dot(&row).sqrt() // L2 norm as energy proxy
-            })
-            .collect();
+        let Some(d_eff) = self.gram_participation_ratio() else {
+            return 0.0;
+        };
 
-        let sum: f32 = energies.iter().sum();
-        let sum_sq: f32 = energies.iter().map(|e| e * e).sum();
-
-        if sum_sq < 1e-10 { return 0.0; }
-
-        // Participation ratio: effective dimensionality
-        let d_eff = (sum * sum) / sum_sq;
-
-        // Irrationality: how far from uniform distribution
-        // d_eff/n = 1.0 means perfectly uniform (zero irrationality)
-        // d_eff/n → 1/n means all energy in one wavefront (maximum irrationality)
-        let ratio = d_eff / n as f32;
-        (1.0 - ratio).clamp(0.0, 1.0)
+        // d_eff/n = 1.0 means the field spans every dimension it could
+        // (zero irrationality); d_eff/n → 1/n means it has collapsed onto one
+        // (maximum irrationality).
+        (1.0 - d_eff / n as f32).clamp(0.0, 1.0)
     }
 
     /// Count clusters using eigenvalue-based partitioning
