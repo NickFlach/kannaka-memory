@@ -10,6 +10,97 @@ use uuid::Uuid;
 use crate::memory::HyperMemory;
 use crate::store::ResonanceEngine;
 
+/// How many memories `cluster_by_delta` will pair up before capping.
+///
+/// The neighbour build is O(n²·d). At 4096 that is ~8.4M pairs — seconds, not
+/// minutes, at a typical embedding width. A live HRM holding tens of thousands
+/// of memories would be hundreds of times that, which is where "slow" stops
+/// being distinguishable from "hung".
+pub const DEFAULT_DELTA_CLUSTER_MAX: usize = 4096;
+
+/// How many nearest wavefronts `compute_delta` reconstructs a memory from.
+pub const DELTA_NEIGHBORS: usize = 5;
+
+/// Indices of the `k` most cosine-similar vectors to each input, best-first.
+///
+/// Split out of `cluster_by_delta` so the part that actually costs something
+/// can be tested without a store behind it — the reason the quadratic blowup
+/// and the guard bypass both went unnoticed is that nothing could reach this
+/// logic on its own.
+///
+/// #810 — the previous inline version, per vector, allocated an n-element Vec,
+/// called `cosine_similarity` n times (each recomputing BOTH norms from
+/// scratch, so 2n² norm passes over d floats), and fully sorted n entries to
+/// keep 5. This normalises once up front so each pair costs a single dot
+/// product, walks only the upper triangle since `sim(i,j) == sim(j,i)`, and
+/// keeps a fixed k-slot row instead of sorting n. Same neighbours, same order,
+/// far less work — though still O(n²·d), which is why the caller caps n.
+///
+/// #809 — the old code called `consciousness_core::wave::cosine_similarity`
+/// directly, bypassing `crate::wave::cosine_similarity`'s empty-vector guard.
+/// The guard is honoured here by construction: a vector with no magnitude
+/// scores 0.0 against everything, exactly as the guard returns. Its WARNING is
+/// deliberately raised once per input by the caller rather than once per pair —
+/// routing every pair through the guard, which is the literal fix, would make
+/// a handful of un-embedded memories emit O(n²) identical lines to stderr.
+pub fn top_k_neighbors(vectors: &[&[f32]], k: usize) -> Vec<Vec<usize>> {
+    let n = vectors.len();
+    if n == 0 || k == 0 {
+        return vec![Vec::new(); n];
+    }
+
+    // Unit-normalised copies. A zero-magnitude (or empty) vector stays empty
+    // and is treated as resonating with nothing.
+    let units: Vec<Vec<f32>> = vectors
+        .iter()
+        .map(|v| {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if !norm.is_finite() || norm < 1e-12 {
+                Vec::new()
+            } else {
+                v.iter().map(|x| x / norm).collect()
+            }
+        })
+        .collect();
+
+    // (similarity, index) per row, kept worst-first so the weakest entry —
+    // the only one that can be displaced — is always at index 0.
+    let mut best: Vec<Vec<(f32, usize)>> = vec![Vec::with_capacity(k + 1); n];
+    fn offer(row: &mut Vec<(f32, usize)>, sim: f32, idx: usize, k: usize) {
+        if row.len() < k {
+            row.push((sim, idx));
+        } else if sim > row[0].0 {
+            row[0] = (sim, idx);
+        } else {
+            return;
+        }
+        row.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // Mismatched widths never resonate; compute_delta skips them
+            // anyway, so scoring them 0.0 only avoids pointless work.
+            let sim = if units[i].is_empty() || units[j].is_empty() || units[i].len() != units[j].len()
+            {
+                0.0
+            } else {
+                units[i].iter().zip(&units[j]).map(|(a, b)| a * b).sum::<f32>()
+            };
+            offer(&mut best[i], sim, j, k);
+            offer(&mut best[j], sim, i, k);
+        }
+    }
+
+    best.into_iter()
+        .map(|mut row| {
+            // Back to best-first, matching what the old descending sort yielded.
+            row.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            row.into_iter().map(|(_, j)| j).collect()
+        })
+        .collect()
+}
+
 /// Invariant metrics computed for a memory that remain stable across transformations
 #[derive(Debug, Clone)]
 pub struct InvariantMetrics {
@@ -192,25 +283,78 @@ pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCl
         Ok(mems) => mems,
         Err(_) => return Vec::new(),
     };
-    
+
     if all_memories.is_empty() {
         return Vec::new();
     }
-    
-    // Build neighbor map via cosine similarity (top-5 nearest wavefronts)
-    let mut neighbor_map: HashMap<Uuid, Vec<&HyperMemory>> = HashMap::new();
 
-    for memory in &all_memories {
-        let mut sims: Vec<(usize, f32)> = all_memories.iter()
-            .enumerate()
-            .filter(|(_, other)| other.id != memory.id)
-            .map(|(i, other)| {
-                let sim = consciousness_core::wave::cosine_similarity(&memory.vector, &other.vector);
-                (i, sim)
-            })
-            .collect();
-        sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let neighbors: Vec<&HyperMemory> = sims.iter().take(5).map(|(i, _)| &*all_memories[*i]).collect();
+    // The pair loop below is quadratic. On a live HRM that is not slow, it is
+    // indistinguishable from a hang — and this runs behind `invariant_clusters`
+    // and `detect_cmfs`, which a person types expecting an answer.
+    //
+    // So it is bounded, and the bound is ANNOUNCED. A cap that quietly analyses
+    // a slice of the medium and reports the result as though it covered all of
+    // it is worse than being slow: the caller cannot tell a real coboundary
+    // structure from an artefact of which memories happened to be included.
+    // Override with KANNAKA_DELTA_CLUSTER_MAX; 0 disables the cap entirely.
+    let cap = std::env::var("KANNAKA_DELTA_CLUSTER_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DELTA_CLUSTER_MAX);
+    let all_memories: Vec<&HyperMemory> = if cap > 0 && all_memories.len() > cap {
+        eprintln!(
+            "[warn] cluster_by_delta: {} memories exceeds the {} cap — analysing the {} \
+             most recent only. These clusters describe that subset, not the whole medium. \
+             Raise or disable with KANNAKA_DELTA_CLUSTER_MAX.",
+            all_memories.len(),
+            cap,
+            cap
+        );
+        let mut sorted = all_memories;
+        sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sorted.truncate(cap);
+        sorted
+    } else {
+        all_memories
+    };
+
+    // Build neighbor map via cosine similarity (top-5 nearest wavefronts).
+    //
+    // This is the whole cost of the function, and it used to be avoidably
+    // brutal. Per memory it allocated an n-element Vec, called
+    // `cosine_similarity` n times — each recomputing BOTH vectors' norms from
+    // scratch, so 2n² norm passes over d floats — and then fully sorted n
+    // entries to keep 5.
+    //
+    // Three changes, none of which alter a single returned cluster:
+    //   1. Normalise once, up front (n·d). Cosine of unit vectors is a plain
+    //      dot product, so the per-pair work drops to one fused pass and the
+    //      2n² redundant norm computations disappear.
+    //   2. Compute the upper triangle only and mirror it: sim(i,j) == sim(j,i).
+    //      Halves the pair count.
+    //   3. Keep a fixed 5-slot top-k per row instead of sorting n and taking 5.
+    //      Removes the O(n log n) sort AND the n-element allocation per memory.
+    //
+    // It is still O(n²·d) asymptotically — genuinely fixing that needs an ANN
+    // index, which is a much larger change than this function deserves — so
+    // there is also an explicit cap below rather than a silent hang.
+    // #809: warn ONCE per un-embedded memory, not once per pair.
+    let empty_count = all_memories.iter().filter(|m| m.vector.is_empty()).count();
+    if empty_count > 0 {
+        eprintln!(
+            "[warn] cluster_by_delta: {empty_count} of {} memories have empty vectors \
+             (missing embeddings?) — they resonate with nothing and cluster as isolated",
+            all_memories.len()
+        );
+    }
+
+    let vectors: Vec<&[f32]> = all_memories.iter().map(|m| m.vector.as_slice()).collect();
+    let rows = top_k_neighbors(&vectors, DELTA_NEIGHBORS);
+
+    let mut neighbor_map: HashMap<Uuid, Vec<&HyperMemory>> = HashMap::new();
+    for (i, memory) in all_memories.iter().enumerate() {
+        let neighbors: Vec<&HyperMemory> =
+            rows[i].iter().map(|&j| &*all_memories[j]).collect();
         neighbor_map.insert(memory.id, neighbors);
     }
     
@@ -363,5 +507,161 @@ mod tests {
         
         let distance = delta_distance(&a, &b);
         assert!(distance < 0.1, "identical memories should have small distance");
+    }
+
+    // ---- #809 / #810: the neighbour build ---------------------------------
+
+    /// Reference implementation: exactly what the pre-fix inline code did.
+    /// The optimisation must be behaviour-preserving, so the cheapest way to
+    /// say that is to keep the slow version and compare against it.
+    fn naive_top_k(vectors: &[&[f32]], k: usize) -> Vec<Vec<usize>> {
+        (0..vectors.len())
+            .map(|i| {
+                let mut sims: Vec<(usize, f32)> = (0..vectors.len())
+                    .filter(|j| *j != i)
+                    .map(|j| (j, crate::wave::cosine_similarity(vectors[i], vectors[j])))
+                    .collect();
+                sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                sims.iter().take(k).map(|(j, _)| *j).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn top_k_matches_the_naive_full_sort_it_replaced() {
+        // Deterministic, well-separated vectors so there are no similarity
+        // ties — with ties the two implementations may legitimately disagree
+        // on ORDER among equals, and asserting on that would be asserting on
+        // sort stability rather than on neighbours.
+        let raw: Vec<Vec<f32>> = (0..24)
+            .map(|i| {
+                let mut v = vec![0.0f32; 8];
+                v[i % 8] = 1.0;
+                v[(i + 3) % 8] = 0.1 + (i as f32) * 0.017;
+                v
+            })
+            .collect();
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(top_k_neighbors(&vectors, 5), naive_top_k(&vectors, 5));
+    }
+
+    #[test]
+    fn neighbours_are_best_first() {
+        // a is nearest to b, then c, then the orthogonal d.
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![0.99f32, 0.14, 0.0];
+        let c = vec![0.7f32, 0.7, 0.0];
+        let d = vec![0.0f32, 0.0, 1.0];
+        let raw = [a, b, c, d];
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(top_k_neighbors(&vectors, 3)[0], vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn an_empty_vector_resonates_with_nothing_and_does_not_panic() {
+        // #809: the guard bypass meant this path was never exercised at all.
+        let a = vec![1.0f32, 0.0];
+        let empty: Vec<f32> = Vec::new();
+        let b = vec![0.9f32, 0.1];
+        let raw = [a, empty, b];
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        let rows = top_k_neighbors(&vectors, 2);
+        // The real neighbour outranks the empty one for everybody.
+        assert_eq!(rows[0][0], 2);
+        assert_eq!(rows[2][0], 0);
+        // The empty vector still gets a row rather than being dropped.
+        assert_eq!(rows[1].len(), 2);
+    }
+
+    #[test]
+    fn a_zero_magnitude_vector_is_treated_like_an_empty_one() {
+        // Normalising this would be a divide by zero and produce NaNs, which
+        // then poison every comparison they touch.
+        let raw = [vec![0.0f32, 0.0], vec![1.0f32, 0.0], vec![0.8f32, 0.6]];
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        let rows = top_k_neighbors(&vectors, 2);
+        assert_eq!(rows[1][0], 2, "the two real vectors must find each other");
+        assert!(rows[0].iter().all(|j| *j < 3));
+    }
+
+    #[test]
+    fn mismatched_widths_do_not_panic_or_resonate() {
+        let raw = [vec![1.0f32, 0.0], vec![1.0f32, 0.0, 0.0], vec![0.9f32, 0.1]];
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        let rows = top_k_neighbors(&vectors, 2);
+        assert_eq!(rows[0][0], 2, "the same-width partner must win over the wider one");
+    }
+
+    #[test]
+    fn degenerate_inputs_are_shaped_correctly() {
+        let raw = [vec![1.0f32, 0.0]];
+        let one: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(top_k_neighbors(&one, 5), vec![Vec::<usize>::new()]);
+        assert_eq!(top_k_neighbors(&[], 5), Vec::<Vec<usize>>::new());
+        assert_eq!(top_k_neighbors(&one, 0), vec![Vec::<usize>::new()]);
+    }
+
+    #[test]
+    fn k_is_a_ceiling_not_a_target() {
+        let raw = [vec![1.0f32, 0.0], vec![0.0f32, 1.0], vec![0.7f32, 0.7]];
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+        // Only two other vectors exist, so a k of 5 yields 2, not 5.
+        assert!(top_k_neighbors(&vectors, 5).iter().all(|r| r.len() == 2));
+    }
+}
+
+#[cfg(test)]
+mod perf_probe {
+    use super::*;
+
+    /// Not a correctness test — a measurement, kept out of the normal run.
+    /// `cargo test --release --lib perf_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_against_naive() {
+        use std::time::Instant;
+        let n = 1500usize;
+        let d = 256usize;
+        let raw: Vec<Vec<f32>> = (0..n)
+            .map(|i| (0..d).map(|k| (((i * 31 + k * 17) % 97) as f32) / 97.0 - 0.5).collect())
+            .collect();
+        let vectors: Vec<&[f32]> = raw.iter().map(|v| v.as_slice()).collect();
+
+        let t0 = Instant::now();
+        let fast = top_k_neighbors(&vectors, 5);
+        let fast_ms = t0.elapsed().as_millis();
+
+        let t1 = Instant::now();
+        let naive: Vec<Vec<usize>> = (0..n)
+            .map(|i| {
+                let mut sims: Vec<(usize, f32)> = (0..n)
+                    .filter(|j| *j != i)
+                    .map(|j| (j, crate::wave::cosine_similarity(vectors[i], vectors[j])))
+                    .collect();
+                sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                sims.iter().take(5).map(|(j, _)| *j).collect()
+            })
+            .collect();
+        let naive_ms = t1.elapsed().as_millis();
+
+        println!("n={n} d={d}  new={fast_ms}ms  old={naive_ms}ms");
+
+        // Compare the SIMILARITY PROFILE, not the index list. With synthetic
+        // data there are exact ties, and two correct top-k implementations may
+        // legitimately break a tie differently. What must match is the set of
+        // scores selected, in order.
+        let score = |i: usize, j: usize| crate::wave::cosine_similarity(vectors[i], vectors[j]);
+        let mut differing_indices = 0usize;
+        for i in 0..n {
+            let a: Vec<f32> = fast[i].iter().map(|&j| score(i, j)).collect();
+            let b: Vec<f32> = naive[i].iter().map(|&j| score(i, j)).collect();
+            for (x, y) in a.iter().zip(&b) {
+                assert!((x - y).abs() < 1e-6, "row {i}: picked a genuinely worse neighbour: {a:?} vs {b:?}");
+            }
+            if fast[i] != naive[i] {
+                differing_indices += 1;
+            }
+        }
+        println!("rows whose tie-break order differs: {differing_indices}/{n}");
     }
 }

@@ -6,8 +6,27 @@ use crate::geometry::MemoryCoordinates;
 use crate::medium::Modality;
 use crate::wave::WaveParams;
 
-/// Stub type for backward compatibility with serialized data that had skip links.
-/// Inert — associations are now emergent from interference in the holographic medium.
+/// An explicit skip link between two memories.
+///
+/// ⚠ The name and the old doc comment lie about this type, and the lie is
+/// dangerous: it said "Stub type … Inert", which reads as an invitation to
+/// delete it. It is not inert. Dream consolidation WRITES these — `link_span`
+/// and the bridge-forming stages in `consolidation.rs` push a forward and a
+/// reverse `LegacyLink` for every pair they decide to associate — and several
+/// live readers depend on them:
+///
+/// - `consolidation.rs` bridge-node detection: a memory is a bridge when its
+///   links reach 3+ clusters.
+/// - `bridge.rs` counts skip-link edges to compute cluster degree.
+/// - `research.rs` reports how many bridges are linked at all.
+/// - `kannaka.rs` / `handlers/ops.rs` expose them, and rank "most connected"
+///   memories by `connections.len()`.
+///
+/// What IS true is that associations are ALSO emergent from interference in
+/// the holographic medium; explicit skip links are a second, coarser structure
+/// laid on top, not a superseded one. The `Legacy` in the name is historical
+/// and renaming it is a serialization-visible change, so the name stays and
+/// this comment carries the correction. See #792.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LegacyLink {
     pub target_id: Uuid,
@@ -70,9 +89,20 @@ pub struct HyperMemory {
     pub created_at: DateTime<Utc>,
     /// Temporal layer (0=immediate, 1=day, 2=week, etc.)
     pub layer_depth: u8,
-    /// Legacy connections field — skip links now emergent from interference in ChiralMedium.
-    /// Kept as a stub struct for backward compatibility with serialized data.
-    /// TODO(chiral): remove once all serialized data is migrated and callers updated
+    /// Explicit skip links to other memories. **Actively written and read** —
+    /// see [`LegacyLink`] for the full list of producers and consumers. The
+    /// previous comment here described it as a backward-compatibility stub
+    /// awaiting removal, which was wrong on both counts: dream consolidation
+    /// populates it every cycle, and bridge-node detection would silently stop
+    /// finding bridges if it went away. #792.
+    ///
+    /// Persisted, but NOT in the HRM binary and not via `WavefrontMeta` —
+    /// `hrm_store` writes a separate **link-graph sidecar** and restores from
+    /// it on load, and `rebuild_cache` snapshots and re-attaches these across
+    /// the cache clear. Which is itself the evidence that they are load-bearing:
+    /// `origin_agent`, genuinely rebuilt state, got no such treatment and comes
+    /// back as `"local"` every restart (ADR-0056). This field was given a
+    /// sidecar because losing it loses real structure.
     #[serde(default)]
     pub connections: Vec<LegacyLink>,
     /// Original text content (for debugging/migration)
