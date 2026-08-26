@@ -756,7 +756,10 @@ impl QueenSync {
             frequency: self.frequency,
             coherence: self.coherence,
             phi: self.phi,
-            order_parameter: 0.0,
+            // #827: was hardcoded 0.0 on the wire. self.coherence IS this
+            // agent's Kuramoto order parameter (see the field's own doc), so
+            // publish it rather than a constant zero.
+            order_parameter: self.coherence,
             cluster_count,
             memory_count,
             link_count,
@@ -952,6 +955,12 @@ impl QueenSync {
         self.phase = phase;
         self.frequency = frequency;
         self.coherence = coherence;
+        // #827: Phi was never assigned in this derive path, so every publish
+        // site that did not hand-patch it (most of them) broadcast phi=0.0 to
+        // peers while the local reading was non-zero. Assign it from the same
+        // medium, alongside the other derived fields, so there is one source of
+        // truth and no site can forget.
+        self.phi = medium.compute_phi_integrated_information();
 
         (phase, frequency, coherence)
     }
@@ -1563,6 +1572,68 @@ mod tests {
             coherence >= 0.0 && coherence <= 1.001,
             "coherence {} out of [0, 1]",
             coherence
+        );
+    }
+
+    #[test]
+    fn published_phase_carries_phi_and_order_not_hardcoded_zero() {
+        // #827 regression. Before the fix, derive_local_state never assigned
+        // phi and to_agent_phase hardcoded order_parameter = 0.0, so every
+        // publish path broadcast phi=0.0 and order=0.0 to peers regardless of
+        // the medium's real state. This asserts both reach the wire.
+        use crate::codebook::Codebook;
+        use crate::encoding::{SimpleHashEncoder, EncodingPipeline};
+        use crate::medium::WAVEFRONT_DIM;
+        use tempfile::NamedTempFile;
+
+        let encoder = SimpleHashEncoder::new(384, 42);
+        let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline = EncodingPipeline::new(Box::new(encoder), codebook);
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(pipeline, temp.path().to_path_buf());
+        for i in 0..8 {
+            let mem = crate::memory::HyperMemory::new(
+                vec![0.05 + i as f32 * 0.1; WAVEFRONT_DIM],
+                format!("integrated memory {i}"),
+            );
+            store.insert(mem).unwrap();
+        }
+        // Expected phi straight from the medium, for an exact-match assertion.
+        let expected_phi = store.medium().compute_phi_integrated_information();
+
+        let enc2 = SimpleHashEncoder::new(384, 42);
+        let cb2 = Codebook::new(384, WAVEFRONT_DIM, 42);
+        let pipeline2 = EncodingPipeline::new(Box::new(enc2), cb2);
+        let engine = ResonanceEngine::new(Box::new(store), pipeline2);
+
+        let mut queen = QueenSync::new(QueenConfig::default(), "me");
+        let (_p, _f, coherence) = queen.derive_local_state(&engine);
+
+        // derive must have assigned phi from the medium, not left it at 0.
+        assert!(
+            (queen.phi - expected_phi).abs() < 1e-6,
+            "derive did not assign phi from the medium: queen.phi={} expected={}",
+            queen.phi,
+            expected_phi
+        );
+
+        let published = queen.to_agent_phase(0, 8, 0);
+        // phi must reach the wire, equal to what derive computed.
+        assert_eq!(
+            published.phi, queen.phi,
+            "published phi diverged from the derived phi"
+        );
+        // order_parameter must publish self.coherence, never a constant 0.0.
+        assert_eq!(
+            published.order_parameter, coherence,
+            "order_parameter must publish the Kuramoto order (coherence)"
+        );
+        // For this integrated fixture the order is strictly positive -- the
+        // exact reading the old hardcoded zero could never produce.
+        assert!(
+            published.order_parameter > 0.0,
+            "order_parameter published as {} for an integrated medium",
+            published.order_parameter
         );
     }
 
