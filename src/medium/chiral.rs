@@ -1792,7 +1792,24 @@ impl ChiralMedium {
                     let norm_l: f32 = l.iter().map(|x| x * x).sum::<f32>().sqrt();
                     let norm_r: f32 = r.iter().map(|x| x * x).sum::<f32>().sqrt();
                     if norm_l > 0.0 && norm_r > 0.0 {
-                        1.0 - (dot / (norm_l * norm_r)).clamp(-1.0, 1.0)
+                        // Cosine of the hemisphere means: 0 divergence for
+                        // identical hemispheres regardless of their internal
+                        // diversity, which is the semantic the rest of the code
+                        // relies on (a raw mean-pairwise-cosine would score two
+                        // identical-but-diverse hemispheres as maximally
+                        // divergent, which is wrong).
+                        //
+                        // #826: the old form returned `1 - cos` in [0, 2], so it
+                        // exceeded 1.0 whenever the means were anti-aligned --
+                        // which happens on ~half of independent inputs, because
+                        // averaging diverse unit wavefronts yields a near-zero
+                        // mean whose leftover direction is noise, and it also
+                        // scored shared-subspace hemispheres as MORE divergent
+                        // than independent ones. Anti-aligned near-zero means
+                        // carry no more signal than orthogonal ones (both mean
+                        // "unrelated"), so saturate at maximal divergence rather
+                        // than overflow the range: clamp the result to [0, 1].
+                        (1.0 - (dot / (norm_l * norm_r)).clamp(-1.0, 1.0)).clamp(0.0, 1.0)
                     } else {
                         0.0
                     }
@@ -1897,6 +1914,64 @@ mod tests {
         let encoder = Box::new(SimpleHashEncoder::new(384, 42));
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(encoder, codebook)
+    }
+
+    #[test]
+    fn hemispheric_divergence_stays_in_range_and_zero_for_identical() {
+        // #826 regression. The old form returned `1 - cos(mean_L, mean_R)` in
+        // [0, 2], exceeding 1.0 on ~half of independent inputs and scoring
+        // shared-subspace hemispheres as MORE divergent than independent ones.
+        let dim = ChiralMedium::new().left.dims;
+        let unit = |seed: u64| -> Vec<f32> {
+            let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+            let mut v = vec![0.0f32; dim];
+            for x in v.iter_mut() {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                *x = ((s >> 40) as f32) / ((1u64 << 24) as f32) - 0.5;
+            }
+            let n: f32 = v.iter().map(|a| a * a).sum::<f32>().sqrt();
+            for x in v.iter_mut() {
+                *x /= n;
+            }
+            v
+        };
+
+        // (a) Independent random hemispheres must NEVER exceed 1.0 -- the old
+        //     code did, on roughly half of seeds.
+        for trial in 0..12u64 {
+            let mut m = ChiralMedium::new();
+            for i in 0..16u64 {
+                m.left
+                    .add_wavefront(&unit(trial * 1000 + i), format!("l{i}"), 0.5)
+                    .unwrap();
+                m.right
+                    .add_wavefront(&unit(trial * 1000 + 500 + i), format!("r{i}"), 0.5)
+                    .unwrap();
+            }
+            let d = m.consciousness_summary().hemispheric_divergence;
+            assert!(
+                (0.0..=1.0).contains(&d),
+                "divergence {d} escaped [0,1] on trial {trial} -- the #826 range bug"
+            );
+        }
+
+        // (b) Identical hemispheres -- same memories on both sides, internally
+        //     diverse -- must read ~0. This is the case a raw mean-pairwise
+        //     cosine gets wrong (it would score them maximally divergent);
+        //     cosine-of-means gets it right.
+        let mut same = ChiralMedium::new();
+        for i in 0..16u64 {
+            let v = unit(7777 + i);
+            same.left.add_wavefront(&v, format!("l{i}"), 0.5).unwrap();
+            same.right.add_wavefront(&v, format!("r{i}"), 0.5).unwrap();
+        }
+        let d_same = same.consciousness_summary().hemispheric_divergence;
+        assert!(
+            d_same < 0.05,
+            "identical hemispheres should read ~0, got {d_same}"
+        );
     }
 
     /// ADR-0050 follow-up probe: can `sensemaking::detect_contradictions` see a
