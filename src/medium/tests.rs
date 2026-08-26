@@ -2014,3 +2014,64 @@ fn irrationality_and_effective_dimensionality_agree() {
         "i must be exactly 1 - d_eff/n; got i={iota} d_eff={d_eff}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// gram_matrix must see the LIVE wavefronts only.
+//
+// `wavefronts.nrows()` is CAPACITY, not count. `insert` grows by amortized
+// doubling (surplus rows are zeros) and `remove` is a swap-with-last that
+// decrements len WITHOUT clearing the vacated row — so after a deletion the
+// rows past `len` hold stale copies. `compact()` only runs before persistence.
+//
+// Zero padding is harmless to a Frobenius norm; stale rows are not. Found
+// 2026-08-25 while pruning 1,270 telemetry rows off the witness node.
+// ---------------------------------------------------------------------------
+
+/// Deleting must not leave stale rows influencing d_eff. Before the slice,
+/// `frob_sq` summed the whole capacity array while `trace` summed 0..n, so
+/// forgotten wavefronts inflated the denominator and pushed d_eff down.
+#[test]
+fn effective_dimensionality_ignores_rows_left_behind_by_delete() {
+    let mut medium = Medium::new();
+    // Twelve mutually orthogonal wavefronts: d_eff should read ~12.
+    let mut ids = Vec::new();
+    for i in 0..12 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0;
+        ids.push(medium.add_wavefront(&v, format!("basis_{i}"), 1.0).unwrap());
+    }
+    let (before, _, _) = medium.effective_dimensionality();
+    assert!(before > 9.0, "12 orthogonal wavefronts should read near 12, got {before}");
+
+    // Forget half. The remaining six are still mutually orthogonal, so d_eff
+    // must fall to ~6 — NOT be dragged elsewhere by the six stale rows that
+    // swap-remove leaves sitting past `len`.
+    for id in ids.iter().take(6) {
+        medium.remove_wavefront(id).unwrap();
+    }
+    assert_eq!(medium.wavefront_count(), 6);
+    let (after, _, _) = medium.effective_dimensionality();
+    assert!(
+        (4.0..=7.5).contains(&after),
+        "six orthogonal survivors should read near 6, got {after} — stale rows are still in the Gram"
+    );
+}
+
+/// The Gram must be square in the LIVE count, not the allocated capacity.
+/// Amortized doubling means capacity routinely exceeds count even with no
+/// deletions at all, so this holds on a store that has only ever grown.
+#[test]
+fn gram_matrix_is_sized_by_live_count_not_capacity() {
+    let mut medium = Medium::new();
+    // 5 inserts against doubling growth (8 slots) leaves capacity > count.
+    for i in 0..5 {
+        let mut v = vec![0.0; WAVEFRONT_DIM];
+        v[i] = 1.0;
+        medium.add_wavefront(&v, format!("m_{i}"), 1.0).unwrap();
+    }
+    let n = medium.wavefront_count();
+    assert_eq!(n, 5);
+    let g = medium.gram_matrix();
+    assert_eq!(g.nrows(), n, "gram rows must equal the live count");
+    assert_eq!(g.ncols(), n, "gram cols must equal the live count");
+}

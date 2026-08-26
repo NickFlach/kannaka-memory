@@ -677,8 +677,16 @@ impl Medium {
         // One real matrix multiplication (shared with Xi), not the N²·dim
         // per-element loop the old row-sum proxy walked.
         let gram = self.gram_matrix();
+        // Both sums walk the SAME n×n region, explicitly. `gram_matrix` now
+        // slices to the live count, but reading `gram.iter()` for one term and
+        // `0..n` for the other made this silently wrong the moment those two
+        // disagreed — which they did after any deletion, because `remove`
+        // leaves stale rows past `len`. Stating the bound twice costs nothing
+        // and cannot drift.
         let trace: f32 = (0..n).map(|i| gram[[i, i]]).sum();
-        let frob_sq: f32 = gram.iter().map(|g| g * g).sum();
+        let frob_sq: f32 = (0..n)
+            .map(|i| (0..n).map(|j| gram[[i, j]] * gram[[i, j]]).sum::<f32>())
+            .sum();
         if frob_sq < 1e-10 {
             return None;
         }

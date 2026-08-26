@@ -130,8 +130,26 @@ impl Medium {
     /// this replaced cost ~40s on a 650×1024 field; this is ~100ms. Every
     /// O(N²·dim) consumer (coherence, interference, Gram-based Ξ) routes
     /// through here.
+    /// H·Hᵀ over the LIVE wavefronts only.
+    ///
+    /// ⚠ The slice is load-bearing twice over, because `wavefronts.nrows()` is
+    /// the store's *capacity*, not its count:
+    ///
+    /// - `insert` grows by amortized doubling, so straight after a growth the
+    ///   array is up to 2× the live count, the surplus rows being zeros.
+    /// - `remove` is a swap-with-last that decrements `len` and does NOT clear
+    ///   the vacated row, so after any deletion the rows past `len` hold STALE
+    ///   COPIES of live or forgotten wavefronts. `compact()` only runs before
+    ///   persistence.
+    ///
+    /// Unsliced, the zero rows are harmless to a Frobenius norm (a zero row
+    /// makes its whole Gram row zero) but the stale ones are not: they inflate
+    /// ‖G‖_F and pull `effective_dimensionality` down after every prune. And
+    /// either way the product is computed at capacity² when only count² is ever
+    /// read — up to 4× the work on a freshly-doubled store.
     pub(crate) fn gram_matrix(&self) -> Array2<f32> {
-        let h = &self.store.wavefronts;
+        let n = self.store.count();
+        let h = self.store.wavefronts.slice(s![..n, ..]);
         h.dot(&h.t())
     }
 
