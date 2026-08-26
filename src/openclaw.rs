@@ -1423,6 +1423,11 @@ impl KannakaMemorySystem {
     }
 
     /// Delete a memory by ID.
+    ///
+    /// ⚠ Refreshing the status cache means a full `stats()` — which runs
+    /// `bridge.assess()` over the WHOLE medium — plus a read, parse and write
+    /// of status-cache.json. That is the right price for one deletion and a
+    /// ruinous one in a loop. Deleting many? Use [`forget_many`].
     pub fn forget(&mut self, id: &Uuid) -> Result<bool, SystemError> {
         let removed = self.engine.delete(id)?;
         if removed {
@@ -1430,6 +1435,46 @@ impl KannakaMemorySystem {
             self.refresh_status_cache_counts();
         }
         Ok(removed)
+    }
+
+    /// Delete many memories, refreshing the status cache ONCE at the end.
+    ///
+    /// Returns `(deleted, not_found)`.
+    ///
+    /// # Why this exists
+    ///
+    /// `forget` calls `refresh_status_cache_counts` on every successful
+    /// delete, and that call is not cheap: `stats()` runs a full
+    /// `bridge.assess()` over the entire medium — the eigendecomposition
+    /// behind phi and xi — then walks every memory for the geometry
+    /// histogram, then reads, parses and rewrites status-cache.json.
+    ///
+    /// Called once, that is correct and unnoticeable. Called in a loop it is
+    /// quadratic-or-worse in the number of deletions, and the cost lands
+    /// exactly where deletions come in bulk. Measured on the witness node
+    /// 2026-08-25: `prune-prefix` over 1,270 matches spent **~61 minutes of
+    /// CPU** — about 2.9s per deletion — on a store whose actual removal work
+    /// is trivial. 1,269 of those 1,270 assessments were computed only to be
+    /// immediately invalidated by the next delete.
+    ///
+    /// Only the final state is observable, so the intermediate refreshes buy
+    /// nothing. This does the deletions, then refreshes once.
+    pub fn forget_many(&mut self, ids: &[Uuid]) -> Result<(usize, usize), SystemError> {
+        let mut deleted = 0usize;
+        let mut not_found = 0usize;
+        for id in ids {
+            if self.engine.delete(id)? {
+                deleted += 1;
+            } else {
+                not_found += 1;
+            }
+        }
+        // Once — and only if something actually changed, so a no-op prune does
+        // not pay for an assessment either.
+        if deleted > 0 {
+            self.refresh_status_cache_counts();
+        }
+        Ok((deleted, not_found))
     }
 
     /// Boost a memory's amplitude.
@@ -1995,6 +2040,65 @@ mod tests {
 
         sys.remember("second memory").unwrap();
         assert_eq!(read_cache(&dir)["total_memories"], 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `forget_many` deletes everything `forget` would, and refreshes the
+    /// status cache ONCE instead of once per deletion.
+    ///
+    /// Measured on the witness node 2026-08-25: prune-prefix over 1,270
+    /// matches spent ~61 minutes of CPU because every `forget` ran a full
+    /// `bridge.assess()` over the whole medium, then read, parsed and rewrote
+    /// status-cache.json — 1,269 of those assessments invalidated by the very
+    /// next delete.
+    #[test]
+    fn forget_many_deletes_everything_and_leaves_the_cache_correct() {
+        let dir = temp_dir("forget_many");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            ids.push(sys.remember(&format!("bulk memory {i}")).unwrap());
+        }
+        assert_eq!(sys.stats().total_memories, 6);
+
+        // Delete four of six; the cache must reflect the FINAL state, which is
+        // the only state anything observes.
+        let (deleted, not_found) = sys.forget_many(&ids[..4]).unwrap();
+        assert_eq!(deleted, 4);
+        assert_eq!(not_found, 0);
+        assert_eq!(sys.stats().total_memories, 2);
+        assert_eq!(read_cache(&dir)["total_memories"], 2, "cache must match the medium after a bulk forget");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An id that is not there is counted, not fatal — a prune re-run over a
+    /// list that was already partly deleted must not abort partway.
+    #[test]
+    fn forget_many_counts_misses_without_failing() {
+        let dir = temp_dir("forget_many_miss");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        let real = sys.remember("kept").unwrap();
+        let ghost = Uuid::new_v4();
+        let (deleted, not_found) = sys.forget_many(&[real, ghost]).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(not_found, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A prune that matches nothing must not pay for an assessment at all.
+    /// This is the guard on the `if deleted > 0` condition: without it, an
+    /// hourly cron that finds nothing to do still runs a full bridge.assess()
+    /// over the medium every hour, forever.
+    #[test]
+    fn forget_many_of_nothing_does_not_touch_the_cache() {
+        let dir = temp_dir("forget_many_noop");
+        let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+        sys.remember("kept").unwrap();
+        let before = read_cache(&dir);
+        let (deleted, not_found) = sys.forget_many(&[Uuid::new_v4()]).unwrap();
+        assert_eq!((deleted, not_found), (0, 1));
+        assert_eq!(read_cache(&dir)["counted_at"], before["counted_at"],
+            "a no-op prune must not rewrite the cache");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

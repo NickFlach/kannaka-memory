@@ -2143,15 +2143,21 @@ fn main() {
                 return;
             }
             // Phase 2: delete (mutable borrow).
-            let mut ok = 0usize;
-            let mut miss = 0usize;
-            for id in &to_forget {
-                match sys.forget(id) {
-                    Ok(true) => ok += 1,
-                    Ok(false) => miss += 1,
-                    Err(e) => eprintln!("forget {id}: {e}"),
+            //
+            // forget_many, NOT forget in a loop. `forget` refreshes the status
+            // cache on every delete, and that refresh is a full bridge.assess()
+            // over the whole medium plus a JSON read/parse/write. On the
+            // witness node this turned a 1,270-match prune into ~61 minutes of
+            // CPU — 2.9s per deletion — computing 1,269 assessments that the
+            // next delete immediately invalidated. Only the final state is
+            // observable, so it is refreshed once, at the end.
+            let (ok, miss) = match sys.forget_many(&to_forget) {
+                Ok(counts) => counts,
+                Err(e) => {
+                    eprintln!("prune-prefix: {e}");
+                    process::exit(1);
                 }
-            }
+            };
             if let Err(e) = sys.save() {
                 eprintln!("Failed to persist HRM after prune: {e}");
                 process::exit(1);
