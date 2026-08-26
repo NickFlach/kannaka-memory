@@ -77,10 +77,11 @@ fn prune_snapshot_dir(dir: &std::path::Path, agent_id: &str, retain: usize) {
 /// cleanup. A future slice can prune to the latest N per agent (the
 /// KANNAKA_SNAPSHOTS stream already auto-prunes manifests to 168).
 #[cfg(feature = "nats")]
-fn capture_and_publish_snapshot(
+pub(crate) fn capture_and_publish_snapshot(
     transport: &kannaka_memory::nats::SwarmTransport,
     agent_id: &str,
     sys: &mut kannaka_memory::openclaw::KannakaMemorySystem,
+    retain_override: Option<usize>,
 ) -> Result<u64, String> {
     use std::io::Write;
     // Flush in-memory medium to disk so the snapshot reflects current state.
@@ -118,7 +119,11 @@ fn capture_and_publish_snapshot(
     //
     // KANNAKA_SNAPSHOT_RETAIN env still overrides either tier when an
     // operator wants a custom budget.
-    let default_retain = if agent_id == "kannaka-substrate" { 24 } else { 168 };
+    // A caller with large per-agent HRMs (the swarm-join writer, #831) can
+    // override the naive default: 168 hourly snapshots of a 40 MB HRM is ~5 GB,
+    // the same disk-fill shape that filled the Oracle root on 2026-05-24.
+    let default_retain =
+        retain_override.unwrap_or(if agent_id == "kannaka-substrate" { 24 } else { 168 });
     let retain: usize = std::env::var("KANNAKA_SNAPSHOT_RETAIN")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(default_retain);
     prune_snapshot_dir(&snapshots_dir, agent_id, retain);
@@ -204,7 +209,7 @@ pub(crate) fn handle_events_snapshot(
     match interval_secs {
         None => {
             // One-shot
-            if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys) {
+            if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys, None) {
                 eprintln!("[snapshot] failed: {}", e);
                 process::exit(1);
             }
@@ -213,7 +218,7 @@ pub(crate) fn handle_events_snapshot(
             // Daemon
             eprintln!("[snapshot] daemon ready — cadence {}s, Ctrl+C to stop", secs);
             loop {
-                if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys) {
+                if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys, None) {
                     eprintln!("[snapshot] warning: {}", e);
                 }
                 std::thread::sleep(Duration::from_secs(secs));
@@ -872,7 +877,7 @@ pub(crate) fn handle_substrate_run(
         if snapshot_interval_secs > 0
             && last_snapshot.elapsed() >= Duration::from_secs(snapshot_interval_secs)
         {
-            match capture_and_publish_snapshot(&transport, &cfg.agent.id, sys) {
+            match capture_and_publish_snapshot(&transport, &cfg.agent.id, sys, None) {
                 Ok(_) => {
                     consecutive_failures = 0;
                 }

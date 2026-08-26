@@ -4565,6 +4565,40 @@ fn main() {
                         }
                     }
 
+                    // #831: this swarm-join daemon is the swarm's sole HRM
+                    // writer, but autosnapshot only ever ran inside the substrate
+                    // daemon -- which is not what runs on a seed -- so a node
+                    // could persist writes for months with no restore point.
+                    // Snapshot on a cadence here. Default hourly;
+                    // KANNAKA_SNAPSHOT_INTERVAL_SECS=0 disables. Retain 24 (one
+                    // day hourly) rather than the naive 168, because production
+                    // HRMs are tens of MB and 168 * ~30 MB would refill the disk.
+                    let snapshot_interval_secs: u64 =
+                        std::env::var("KANNAKA_SNAPSHOT_INTERVAL_SECS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(3600);
+                    // A read-only replica must not snapshot (its .hrm is not the
+                    // authoritative one and it holds no writer lock).
+                    let snapshot_on = snapshot_interval_secs > 0 && !readonly_env_active();
+                    // Offset the clock back one interval so the first tick takes
+                    // an early snapshot -- quick durability on a fresh daemon --
+                    // instead of waiting a full interval for the first restore point.
+                    let mut last_snapshot = std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(snapshot_interval_secs))
+                        .unwrap_or_else(std::time::Instant::now);
+                    if snapshot_on {
+                        println!(
+                            "[snapshot] autosnapshot ON — every {}s, retain 24, {}/snapshots (KANNAKA_SNAPSHOT_INTERVAL_SECS=0 disables)",
+                            snapshot_interval_secs,
+                            data_dir().display()
+                        );
+                    } else if readonly_env_active() {
+                        println!("[snapshot] autosnapshot OFF — read-only node");
+                    } else {
+                        println!("[snapshot] autosnapshot OFF — KANNAKA_SNAPSHOT_INTERVAL_SECS=0");
+                    }
+
                     let mut tick: u64 = 0;
                     while running.load(Ordering::SeqCst) {
                         // Granular sleep so Ctrl+C is responsive (<= 1s).
@@ -4589,6 +4623,26 @@ fn main() {
                         );
                         // Quiet output — one terse status line per tick.
                         println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+
+                        // #831 autosnapshot. Best-effort: the local .hrm.gz body
+                        // is written before the manifest is published, so an Err
+                        // here (usually a NATS publish hiccup) still means the
+                        // restore point landed on disk. Never fatal to the loop.
+                        if snapshot_on
+                            && last_snapshot.elapsed().as_secs() >= snapshot_interval_secs
+                        {
+                            if let Err(e) = handlers_substrate::capture_and_publish_snapshot(
+                                &transport,
+                                &my_agent_id,
+                                &mut sys,
+                                Some(24),
+                            ) {
+                                eprintln!(
+                                    "[snapshot] WARNING: {e} — local snapshot may still have landed before the failing step"
+                                );
+                            }
+                            last_snapshot = std::time::Instant::now();
+                        }
 
                         // Recovery: this daemon is the swarm's sole HRM writer
                         // and, until now, NEVER dialed again after a dead
