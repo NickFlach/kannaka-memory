@@ -407,6 +407,25 @@ fn apply_entropy_perturbation(
 ///
 /// This wraps a Medium and provides the familiar MediumBackend interface,
 /// allowing HRM to be the sole storage backend.
+/// Result of a whole-store facet backfill sweep (#836 / ADR-0049).
+#[derive(Debug, Default, Clone)]
+pub struct FacetBackfillStats {
+    /// Right-hemisphere rows examined (the canonical population).
+    pub scanned: usize,
+    /// Rows that are themselves facets (never decomposed).
+    pub facet_rows: usize,
+    /// Parents already carrying the `decomposed` watermark.
+    pub already_decomposed: usize,
+    /// Rows whose content yields fewer than two facets (nothing to mint).
+    pub atomic: usize,
+    /// Parents decomposed this run (dry run: that WOULD be decomposed).
+    pub parents_decomposed: usize,
+    /// Facet rows minted this run (dry run: that WOULD be minted).
+    pub facets_minted: usize,
+    /// Per-row errors — logged and skipped, the sweep continues.
+    pub errors: usize,
+}
+
 pub struct HrmStore {
     /// The underlying holographic resonance medium
     medium: Medium,
@@ -1979,6 +1998,74 @@ impl HrmStore {
         self.chiral.as_ref()
     }
 
+    /// #836 / ADR-0049: whole-store facet backfill — the migration for a
+    /// corpus written before facet decomposition existed. Write-time
+    /// decomposition (`store_with_facets`) only ever touches NEW memories;
+    /// every compound memory stored before the flag went live remains one
+    /// smeared wavefront that short queries cannot reach.
+    ///
+    /// Sweeps the RIGHT hemisphere — content enters right-first, so it is the
+    /// canonical population; left-only rows are orphans that
+    /// `backfill_facets` skips by design. Idempotent: `decomposed` is the
+    /// watermark, so a repeated or resumed run mints nothing twice.
+    ///
+    /// `apply = false` is a dry run: identical counting, no mutation.
+    pub fn backfill_all_facets(&mut self, apply: bool) -> FacetBackfillStats {
+        let mut stats = FacetBackfillStats::default();
+        let mut mutated = false;
+        {
+            let HrmStore { chiral, pipeline, .. } = self;
+            let Some(chiral) = chiral.as_mut() else {
+                return stats; // flat (non-chiral) store: nothing to sweep
+            };
+            // Snapshot the candidate rows first so the guards read a stable
+            // view while apply-mode mutates the medium underneath.
+            let rows: Vec<(Uuid, bool, bool, String)> = chiral
+                .right
+                .metadata
+                .iter()
+                .map(|m| (m.id, m.is_facet, m.decomposed, m.content.clone()))
+                .collect();
+            stats.scanned = rows.len();
+            for (id, is_facet, decomposed, content) in rows {
+                if is_facet {
+                    stats.facet_rows += 1;
+                    continue;
+                }
+                if decomposed {
+                    stats.already_decomposed += 1;
+                    continue;
+                }
+                let facets = crate::facet::decompose(&content);
+                if facets.len() < 2 {
+                    stats.atomic += 1;
+                    continue;
+                }
+                if apply {
+                    match chiral.backfill_facets(id, pipeline) {
+                        Ok(0) => stats.atomic += 1, // guard re-check disagreed
+                        Ok(n) => {
+                            stats.parents_decomposed += 1;
+                            stats.facets_minted += n;
+                            mutated = true;
+                        }
+                        Err(e) => {
+                            stats.errors += 1;
+                            eprintln!("[facets] backfill error on {id}: {e}");
+                        }
+                    }
+                } else {
+                    stats.parents_decomposed += 1;
+                    stats.facets_minted += facets.len();
+                }
+            }
+        }
+        if mutated {
+            self.mark_dirty();
+        }
+        stats
+    }
+
     /// Set the modality of a wavefront (NCS Phase 1.1).
     pub fn set_modality(&mut self, id: &Uuid, modality: crate::medium::Modality) {
         // Tag the flat medium
@@ -2579,6 +2666,88 @@ mod tests {
         let encoder = SimpleHashEncoder::new(384, 42);
         let codebook = Codebook::new(384, WAVEFRONT_DIM, 42);
         EncodingPipeline::new(Box::new(encoder), codebook)
+    }
+
+    #[test]
+    fn backfill_all_facets_migrates_then_is_idempotent() {
+        // #836 regression: write-time decomposition never touches memories
+        // stored before the flag existed. The sweep must (a) count correctly
+        // in dry-run without mutating, (b) mint facets on --apply, and
+        // (c) mint NOTHING on a second apply -- `decomposed` is the watermark.
+        std::env::remove_var("KANNAKA_FACET_DECOMPOSE"); // pre-facet corpus
+
+        const COMPOUND_A: &str = "The harbor beacon channel moved to twentyseven last spring. \
+            The lighthouse keeper still logs every crossing by hand. \
+            Gulls avoid the eastern pier when the foghorn is running.";
+        const COMPOUND_B: &str = "The northern trail floods after two days of rain. \
+            The rangers close the gate before the water reaches the bridge.";
+        const ATOMIC: &str = "hello harbor";
+
+        // Self-validating fixture: if the qualifier ever stops splitting these,
+        // fail HERE, not mysteriously in the counts below.
+        assert!(
+            crate::facet::decompose(COMPOUND_A).len() >= 2,
+            "fixture A no longer decomposes"
+        );
+        assert!(
+            crate::facet::decompose(COMPOUND_B).len() >= 2,
+            "fixture B no longer decomposes"
+        );
+        assert!(crate::facet::decompose(ATOMIC).len() < 2, "fixture ATOMIC splits");
+
+        let temp = NamedTempFile::new().unwrap();
+        let mut store = HrmStore::new(make_test_pipeline(), temp.path().to_path_buf());
+        store.upgrade_to_chiral();
+        let p = make_test_pipeline();
+        for content in [COMPOUND_A, COMPOUND_B, ATOMIC] {
+            let vector = p.encode_text(content).unwrap();
+            store.insert(HyperMemory::new(vector, content.to_string())).unwrap();
+        }
+        let rows_before = store.chiral_medium().unwrap().right.count();
+
+        // (a) dry run: counts, no mutation.
+        let dry = store.backfill_all_facets(false);
+        assert_eq!(dry.parents_decomposed, 2, "two compound parents: {dry:?}");
+        assert!(dry.facets_minted >= 4, "each parent >=2 facets: {dry:?}");
+        assert_eq!(dry.atomic, 1, "one atomic row: {dry:?}");
+        assert_eq!(
+            store.chiral_medium().unwrap().right.count(),
+            rows_before,
+            "dry run must not mutate"
+        );
+
+        // (b) apply: mints exactly what the dry run promised.
+        let applied = store.backfill_all_facets(true);
+        assert_eq!(applied.parents_decomposed, 2, "{applied:?}");
+        assert_eq!(
+            applied.facets_minted, dry.facets_minted,
+            "apply must mint what dry-run counted"
+        );
+        assert_eq!(
+            store.chiral_medium().unwrap().right.count(),
+            rows_before + applied.facets_minted,
+            "row count grows by exactly the minted facets"
+        );
+        let facet_rows = store
+            .chiral_medium()
+            .unwrap()
+            .right
+            .metadata
+            .iter()
+            .filter(|m| m.is_facet)
+            .count();
+        assert_eq!(facet_rows, applied.facets_minted, "facet flags on the minted rows");
+
+        // (c) idempotent: a second apply mints nothing.
+        let again = store.backfill_all_facets(true);
+        assert_eq!(again.parents_decomposed, 0, "watermark must hold: {again:?}");
+        assert_eq!(again.facets_minted, 0, "{again:?}");
+        assert_eq!(again.already_decomposed, 2, "{again:?}");
+        assert_eq!(
+            store.chiral_medium().unwrap().right.count(),
+            rows_before + applied.facets_minted,
+            "second apply must not grow the store"
+        );
     }
 
     #[test]
