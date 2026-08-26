@@ -28,6 +28,10 @@ use handlers_substrate::{
     handle_substrate_status,
 };
 
+#[path = "handlers/facets.rs"]
+mod handlers_facets;
+use handlers_facets::handle_facets;
+
 #[path = "handlers/chat.rs"]
 mod handlers_chat;
 use handlers_chat::handle_chat;
@@ -5647,6 +5651,10 @@ fn main() {
         }
 
         #[cfg(feature = "nats")]
+        "facets" => {
+            // #836 / ADR-0049: corpus facet migration. Dry-run by default.
+            handle_facets(&mut sys, &cfg, &args[command_start + 1..]);
+        }
         "attention" => {
             if args.len() < command_start + 2 {
                 eprintln!("Usage: kannaka attention <serve|stats>");

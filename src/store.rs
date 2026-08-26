@@ -402,6 +402,19 @@ impl ResonanceEngine {
             .map(|hrm| hrm.xi_bridge_summary())
     }
 
+    /// #836 / ADR-0049: decompose every existing compound memory into facets —
+    /// the corpus migration for stores written before facet decomposition
+    /// existed. Dry run unless `apply`. `None` when the backend isn't an HRM.
+    pub fn backfill_all_facets(
+        &mut self,
+        apply: bool,
+    ) -> Option<crate::hrm_store::FacetBackfillStats> {
+        self.store
+            .as_any_mut()
+            .downcast_mut::<crate::hrm_store::HrmStore>()
+            .map(|hrm| hrm.backfill_all_facets(apply))
+    }
+
     pub fn new(store: Box<dyn MediumBackend>, pipeline: EncodingPipeline) -> Self {
         Self {
             store,

@@ -387,6 +387,11 @@ EXAMPLE:
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
         .subcommand(
+            Command::new("facets")
+                .about("ADR-0049 facet migration: backfill [--apply] decomposes existing compound memories (dry-run by default; --apply snapshots first)")
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
+        .subcommand(
             Command::new("inbox")
                 .about("Agent-to-agent declarative messaging: send, serve, tail")
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
