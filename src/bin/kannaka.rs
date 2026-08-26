@@ -949,11 +949,24 @@ fn swarm_publish_heartbeat(
     if let Err(e) = transport.publish_phase(&phase) {
         eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
     }
+    // #835: `ask` was advertised unconditionally, but the KANNAKA.ask.*
+    // responder lives in `swarm serve`, not in this join heartbeat -- a
+    // join-only node advertised a capability nothing answered, and peers
+    // DM'd into the void. The responder may legitimately be a SIBLING
+    // process under the same agent_id, which this process cannot detect,
+    // so the capability is operator-declared: set KANNAKA_ADVERTISE_ASK=1
+    // on hosts where an ask responder actually runs. Default OFF -- an
+    // unset flag under-advertises (a peer skips asking), which is
+    // recoverable; the old always-on over-advertised, which silently
+    // swallowed messages.
+    let advertise_ask = std::env::var("KANNAKA_ADVERTISE_ASK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let mut presence = serde_json::json!({
         "agent_id": my_agent_id,
         "display_name": display_name,
         "capabilities": {
-            "ask": true, "dream": true,
+            "ask": advertise_ask, "dream": true,
             "exemplar_broadcast": true, "absorb": true,
         },
         "joined_at": joined_at,
