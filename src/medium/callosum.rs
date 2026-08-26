@@ -51,6 +51,17 @@ pub struct CorpusCallosum {
 
     /// Maximum transfer log size
     max_log_size: usize,
+
+    /// #824: energy-gate decisions made this process -- how many transfers were
+    /// CONSIDERED, and how many cleared the gate. `efficiency` is passes/attempts.
+    /// Not persisted (runtime-only, `#[serde(skip)]`) so the .hrm format is
+    /// unchanged and old readers are unaffected; resets to 0 on load. The old
+    /// efficiency counted only LOGGED transfers, which had all already cleared
+    /// the gate at their call site, so it was 1.0 by construction.
+    #[serde(skip)]
+    gate_attempts: u64,
+    #[serde(skip)]
+    gate_passes: u64,
 }
 
 impl CorpusCallosum {
@@ -65,6 +76,8 @@ impl CorpusCallosum {
             remaining_budget: 20.0,
             transfer_log: Vec::new(),
             max_log_size: 100,
+            gate_attempts: 0,
+            gate_passes: 0,
         }
     }
 
@@ -107,6 +120,20 @@ impl CorpusCallosum {
     /// Check if a wavefront passes the gate (energy above threshold)
     pub fn passes_gate(&self, energy: f32) -> bool {
         energy >= self.gate_threshold
+    }
+
+    /// Record and evaluate an energy-gate decision for a transfer being
+    /// CONSIDERED, feeding the efficiency metric. Unlike `passes_gate` (a pure
+    /// predicate reused in several contexts), only real transfer decisions call
+    /// this, so `gate_passes / gate_attempts` becomes a genuine cross-callosal
+    /// success rate rather than the constant 1.0 it used to be (#824).
+    pub fn try_gate(&mut self, energy: f32) -> bool {
+        self.gate_attempts += 1;
+        let passed = self.passes_gate(energy);
+        if passed {
+            self.gate_passes += 1;
+        }
+        passed
     }
 
     /// Apply transfer noise for sub→conscious direction (intuition fuzz).
@@ -208,12 +235,17 @@ impl CorpusCallosum {
         let total_energy: f32 = self.transfer_log.iter().map(|t| t.energy).sum();
 
         let total = self.transfer_log.len();
-        // Efficiency (κ): ratio of transfers that crossed the gate to total transfers.
-        // Any transfer with energy >= gate_threshold is a successful cross-callosal resonance.
-        let successful = self.transfer_log.iter()
-            .filter(|t| t.energy >= self.gate_threshold)
-            .count();
-        let efficiency = if total > 0 { successful as f32 / total as f32 } else { 0.0 };
+        // Efficiency (κ): fraction of CONSIDERED transfers whose energy cleared
+        // the gate (see `try_gate`). #824: the old form counted only LOGGED
+        // transfers -- which had all already passed the gate at their call site
+        // -- so `successful == total` and efficiency was 1.0 by construction, a
+        // number that could never report a problem. It is now the real
+        // gate-pass rate over decisions made this process (0.0 if none yet).
+        let efficiency = if self.gate_attempts > 0 {
+            self.gate_passes as f32 / self.gate_attempts as f32
+        } else {
+            0.0
+        };
 
         CallosumStats {
             total_transfers: total,
@@ -290,6 +322,34 @@ mod tests {
         assert!(!cc.passes_gate(0.1)); // Below threshold
         assert!(cc.passes_gate(0.5)); // Above threshold
         assert!(cc.passes_gate(cc.gate_threshold)); // Exactly at threshold
+    }
+
+    #[test]
+    fn efficiency_reflects_gate_pass_rate_not_constant_one() {
+        // #824 regression: efficiency must drop below 1.0 when considered
+        // transfers do not clear the gate. The old metric scored only logged
+        // (already-passed) transfers, so it was always exactly 1.0.
+        let mut cc = CorpusCallosum::new(); // gate_threshold default 0.3
+        assert!(cc.try_gate(0.5)); // pass
+        assert!(cc.try_gate(0.9)); // pass
+        assert!(!cc.try_gate(0.1)); // fail
+        assert!(!cc.try_gate(0.2)); // fail
+        let eff = cc.transfer_stats().efficiency;
+        assert!(
+            (eff - 0.5).abs() < 1e-6,
+            "efficiency should be 2 passes / 4 attempts = 0.5, got {eff}"
+        );
+        assert!(
+            eff < 1.0,
+            "efficiency must be able to report below 1.0 (#824)"
+        );
+    }
+
+    #[test]
+    fn efficiency_is_zero_before_any_gate_decision() {
+        // No transfers considered yet -> nothing to report, not a spurious 1.0.
+        let cc = CorpusCallosum::new();
+        assert_eq!(cc.transfer_stats().efficiency, 0.0);
     }
 
     #[test]
