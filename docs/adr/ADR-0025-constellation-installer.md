@@ -163,7 +163,10 @@ Step 3/4: Join the constellation swarm
 - Default NATS URL: `nats://swarm.ninja-portal.com:4222` (matches `DEFAULT_NATS_URL` in `nats.rs`)
 - If connection fails: offers to continue in offline mode, retry, or enter a different URL
 - On success: runs `swarm join` internally (announces via NATS, publishes initial phase)
-- Registers in NATS KV bucket `QUEEN_AGENTS` (existing infrastructure)
+- Presence (`KANNAKA.presence.<agent>`) is the peer directory. (A `QUEEN_AGENTS`
+  KV registration was described here historically; the bucket was never read by
+  production code and the vestigial path was removed in #582 — trust is
+  reputation-derived, not registration-derived.)
 
 ### Step 4: GhostSignals registration
 

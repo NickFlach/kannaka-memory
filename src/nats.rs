@@ -197,7 +197,6 @@ fn legacy_announce_payload(
 pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
 const EVENTS_STREAM_NAME: &str = "QUEEN_EVENTS";
-const KV_BUCKET_AGENTS: &str = "QUEEN_AGENTS";
 
 /// Maximum number of messages to buffer during disconnect.
 const PUBLISH_BUFFER_LIMIT: usize = 100;
@@ -2046,22 +2045,6 @@ impl SwarmTransport {
         self.publish_presence(agent_id, &payload)
     }
 
-    /// Register this agent in the `QUEEN_AGENTS` KV bucket (#582).
-    ///
-    /// [`Self::discover_peers`] reads this bucket, but until now nothing ever
-    /// wrote to it — the constant was read-only in practice, so trust-weighted
-    /// QueenSync had no registrations to weight and sat at default trust
-    /// forever.
-    pub fn register_agent(
-        &self,
-        agent_id: &str,
-        registration: &serde_json::Value,
-    ) -> Result<(), NatsError> {
-        let value = serde_json::to_string(registration)
-            .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.kv_put(KV_BUCKET_AGENTS, agent_id, &value)
-    }
-
     /// Ensure the KANNAKA_PRESENCE stream exists. ADR-0026 Phase 5.
     pub fn ensure_presence_stream(&self) -> Result<(), NatsError> {
         self.ensure_js_stream(
@@ -2626,27 +2609,11 @@ impl SwarmTransport {
             .collect())
     }
 
-    /// Discover all agents registered in the QUEEN_AGENTS KV bucket.
-    ///
-    /// Returns a map of agent_id -> registration JSON value.
-    pub fn discover_peers(&self) -> Result<HashMap<String, serde_json::Value>, NatsError> {
-        let keys = self.kv_keys(KV_BUCKET_AGENTS)?;
-        let mut peers = HashMap::new();
-        for key in keys {
-            match self.kv_get(KV_BUCKET_AGENTS, &key) {
-                Ok(val) => {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val) {
-                        peers.insert(key, parsed);
-                    } else {
-                        peers.insert(key, serde_json::Value::String(val));
-                    }
-                }
-                Err(NatsError::KvNotFound(_)) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(peers)
-    }
+    // QUEEN_AGENTS discovery removed (#582): `discover_peers` was consumed by
+    // nothing but its own integration test. The peer directory is
+    // KANNAKA.presence; trust is reputation-derived (collective/trust.rs),
+    // never registration-derived -- a self-registration carries no trust
+    // signal a Sybil could not forge.
 
     // -----------------------------------------------------------------------
     // Subscriptions / PING
@@ -4155,39 +4122,6 @@ mod tests {
         match transport.kv_get("TEST_MISSING", "nonexistent") {
             Err(NatsError::KvNotFound(_)) => {}
             other => panic!("expected KvNotFound, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn integration_discover_peers() {
-        let transport = match connect_or_skip() {
-            Some(t) => t,
-            None => return,
-        };
-        if !transport.has_jetstream_write() {
-            eprintln!("JetStream not available, skipping discover_peers test");
-            return;
-        }
-
-        transport.create_kv_bucket(KV_BUCKET_AGENTS, 300).expect("create agents bucket");
-        let info = serde_json::json!({
-            "agent_id": "test-discover",
-            "role": "tester",
-            "joined_at": chrono::Utc::now().to_rfc3339(),
-        });
-        transport.kv_put(KV_BUCKET_AGENTS, "test-discover", &info.to_string())
-            .expect("register agent");
-        std::thread::sleep(Duration::from_millis(200));
-
-        let peers = transport.discover_peers().expect("discover_peers");
-        // On a fresh NATS server this will always find the agent. If the KV bucket
-        // was previously created with a stale discard policy, the put may have been
-        // silently dropped; we log instead of failing to keep CI green.
-        if !peers.contains_key("test-discover") {
-            eprintln!(
-                "discover_peers: agent not found (stale KV bucket config?). peers={:?}",
-                peers
-            );
         }
     }
 
