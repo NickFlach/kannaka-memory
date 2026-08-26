@@ -587,7 +587,7 @@ impl ChiralMedium {
         // 6. Echo to LEFT hemisphere via callosum (if budget allows AND — in
         //    novelty-router mode — the item is routinized, not novel).
         //    Uses the geometrically correct fold line for this memory's Fano group.
-        if is_routine && self.callosum.passes_gate(importance) && self.callosum.has_budget() {
+        if is_routine && self.callosum.try_gate(importance) && self.callosum.has_budget() {
             let folded = self.fano.fold(
                 vector,
                 self.right.dims,
@@ -1171,7 +1171,7 @@ impl ChiralMedium {
             let mut spent = 0.0f32;
             for (left_id, energy) in candidates {
                 if spent >= budget { break; }
-                if !self.callosum.passes_gate(energy) { continue; }
+                if !self.callosum.try_gate(energy) { continue; }
 
                 // Already has a right-side pair? Boost it
                 if let Some(&right_id) = self.left_to_right.get(&left_id) {
