@@ -4446,21 +4446,13 @@ fn main() {
                         );
                     }
 
-                    // #582: register in the QUEEN_AGENTS KV bucket. `discover_peers`
-                    // reads this bucket but nothing ever wrote it, so trust-weighted
-                    // QueenSync had no registrations and stayed at default trust.
-                    let registration = serde_json::json!({
-                        "agent_id": my_agent_id,
-                        "display_name": display_name,
-                        "kannaka_version": kannaka_memory::config::VERSION,
-                        "registered_at": session_joined_at,
-                    });
-                    if let Err(e) = transport.register_agent(&my_agent_id, &registration) {
-                        eprintln!(
-                            "[nats] Warning: QUEEN_AGENTS registration failed ({e}) — peers will \
-                             fall back to default trust for this agent"
-                        );
-                    }
+                    // #582 (resolved by removal): a QUEEN_AGENTS KV registration
+                    // was written here briefly, but nothing in production ever
+                    // read the bucket -- presence (KANNAKA.presence) is the peer
+                    // directory, and trust is reputation-derived
+                    // (collective/trust.rs), never registration-derived, because
+                    // a self-registration carries no trust signal a Sybil could
+                    // not forge. The vestigial write/read pair is gone.
 
                     let initial_phase = swarm_publish_heartbeat(
                         &mut sys,
