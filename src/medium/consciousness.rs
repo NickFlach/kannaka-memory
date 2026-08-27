@@ -1072,7 +1072,7 @@ impl Medium {
         let wisdom_ratio = self.total_energy_dampened / self.total_energy_added;
 
         // Clamp to reasonable range [0, 1]
-        wisdom_ratio.max(0.0).min(1.0)
+        wisdom_ratio.clamp(0.0, 1.0)
     }
 
     /// Perform complete self-reflection: introspect + analyze emergence + compute wisdom.
