@@ -198,8 +198,7 @@ pub fn compute_delta(memory: &HyperMemory, neighbors: &[&HyperMemory]) -> f32 {
         return 0.0;
     }
     
-    let delta = min_residual / memory_norm;
-    delta.min(1.0).max(0.0) // clamp to [0,1]
+    (min_residual / memory_norm).clamp(0.0, 1.0)
 }
 
 /// Compute L2 residual between original and reconstruction
@@ -382,44 +381,36 @@ pub fn cluster_by_delta(engine: &ResonanceEngine, tolerance: f32) -> Vec<DeltaCl
             current_cluster.push(id);
             cluster_deltas.push(delta);
         } else {
-            // Finalize current cluster
-            if !current_cluster.is_empty() {
-                let mean_delta = cluster_deltas.iter().sum::<f32>() / cluster_deltas.len() as f32;
-                let variance = cluster_deltas.iter()
-                    .map(|d| (d - mean_delta) * (d - mean_delta))
-                    .sum::<f32>() / cluster_deltas.len() as f32;
-                let coherence = 1.0 / (1.0 + variance * 10.0); // higher coherence for lower variance
-                
-                clusters.push(DeltaCluster {
-                    representative_delta: mean_delta,
-                    memory_ids: current_cluster,
-                    coherence,
-                });
-            }
-            
-            // Start new cluster
+            push_delta_cluster(
+                &mut clusters,
+                std::mem::take(&mut current_cluster),
+                std::mem::take(&mut cluster_deltas),
+            );
             current_cluster = vec![id];
             cluster_deltas = vec![delta];
             current_delta = delta;
         }
     }
-    
-    // Don't forget the last cluster
-    if !current_cluster.is_empty() {
-        let mean_delta = cluster_deltas.iter().sum::<f32>() / cluster_deltas.len() as f32;
-        let variance = cluster_deltas.iter()
-            .map(|d| (d - mean_delta) * (d - mean_delta))
-            .sum::<f32>() / cluster_deltas.len() as f32;
-        let coherence = 1.0 / (1.0 + variance * 10.0);
-        
-        clusters.push(DeltaCluster {
-            representative_delta: mean_delta,
-            memory_ids: current_cluster,
-            coherence,
-        });
-    }
-    
+    push_delta_cluster(&mut clusters, current_cluster, cluster_deltas);
+
     clusters
+}
+
+/// Finalize a pending cluster and append it to `clusters`.
+/// No-op when `ids` is empty — caller does not need to guard.
+fn push_delta_cluster(clusters: &mut Vec<DeltaCluster>, ids: Vec<Uuid>, deltas: Vec<f32>) {
+    if ids.is_empty() {
+        return;
+    }
+    let mean_delta = deltas.iter().sum::<f32>() / deltas.len() as f32;
+    let variance = deltas.iter()
+        .map(|d| (d - mean_delta) * (d - mean_delta))
+        .sum::<f32>() / deltas.len() as f32;
+    clusters.push(DeltaCluster {
+        representative_delta: mean_delta,
+        memory_ids: ids,
+        coherence: 1.0 / (1.0 + variance * 10.0),
+    });
 }
 
 /// Compute distance between two memories in invariant space
