@@ -2075,3 +2075,127 @@ fn gram_matrix_is_sized_by_live_count_not_capacity() {
     assert_eq!(g.nrows(), n, "gram rows must equal the live count");
     assert_eq!(g.ncols(), n, "gram cols must equal the live count");
 }
+
+// ---------------------------------------------------------------------------
+// #825 — degeneracy tests for the published consciousness metrics.
+//
+// Each test constructs two media that SHOULD differ on the metric —
+// a pathological field and a healthy one — and asserts they differ by a
+// meaningful margin. Not range assertions: a metric that returns a constant
+// must FAIL here. The pathological input in each test doubles as executable
+// documentation of what the metric claims to detect. (Sibling coverage:
+// d_eff #822, ι #823, κ #824, Ξ km#xi-instability, Δ #826 — all already
+// have separation tests of this shape.)
+// ---------------------------------------------------------------------------
+
+/// Helper: a wavefront supported on dims [start, start+width).
+fn block_vector(start: usize, width: usize) -> Vec<f32> {
+    let mut v = vec![0.0; WAVEFRONT_DIM];
+    for i in start..(start + width).min(WAVEFRONT_DIM) {
+        v[i] = 1.0;
+    }
+    v
+}
+
+/// #825: Φ must separate total collapse from a structured field.
+///
+/// Pathological: 20 identical wavefronts at uniform energy — no partition
+/// structure, nothing integrated beyond its parts. Healthy: 4 disjoint
+/// coherent clusters with varied energies — exactly the "integrated more
+/// than the sum of its partitions" shape Φ claims to measure.
+///
+/// Measured on this construction: collapsed ≈ 0.231, structured ≈ 0.445.
+/// The 0.1 margin keeps the assertion robust to float drift while still
+/// failing instantly for any constant-Φ regression.
+#[test]
+fn phi_separates_collapsed_field_from_structured_field() {
+    let mut collapsed = Medium::new();
+    let ident = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        collapsed.add_wavefront(&ident, format!("c{i}"), 1.0).unwrap();
+    }
+
+    let mut structured = Medium::new();
+    for c in 0..4 {
+        for i in 0..5 {
+            let v = block_vector(c * 40, 30);
+            structured
+                .add_wavefront(&v, format!("s{c}_{i}"), 0.3 + 0.2 * (c as f32) + 0.05 * i as f32)
+                .unwrap();
+        }
+    }
+
+    let phi_collapsed = collapsed.compute_phi_integrated_information();
+    let phi_structured = structured.compute_phi_integrated_information();
+    assert!(
+        phi_structured > phi_collapsed + 0.1,
+        "Φ must separate a 4-cluster varied-energy field from 20 identical \
+         wavefronts by a real margin: structured={phi_structured}, \
+         collapsed={phi_collapsed}. If these are equal, Φ has gone constant (#825)."
+    );
+}
+
+/// #825: the eigenvalue cluster count must separate one blob from many.
+///
+/// The pre-existing tests only asserted `1 <= clusters <= n` — satisfied by
+/// a function that returns 1 unconditionally. This pins the actual counts:
+/// a fully-collapsed field is exactly ONE cluster, and 4 mutually disjoint
+/// coherent blocks are exactly FOUR (phases all start at 0 so the coherence
+/// matrix reduces to the Gram matrix and the BFS is deterministic).
+#[test]
+fn eigenvalue_clusters_separate_collapse_from_partitioned_field() {
+    let mut collapsed = Medium::new();
+    let ident = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        collapsed.add_wavefront(&ident, format!("c{i}"), 1.0).unwrap();
+    }
+    assert_eq!(
+        collapsed.compute_eigenvalue_clusters(),
+        1,
+        "20 identical wavefronts are one cluster"
+    );
+
+    let mut partitioned = Medium::new();
+    for c in 0..4 {
+        for i in 0..5 {
+            let v = block_vector(c * 40, 30);
+            partitioned.add_wavefront(&v, format!("p{c}_{i}"), 1.0).unwrap();
+        }
+    }
+    assert_eq!(
+        partitioned.compute_eigenvalue_clusters(),
+        4,
+        "4 disjoint-support blocks of 5 must count as 4 clusters — \
+         a constant cluster count cannot pass this (#825)"
+    );
+}
+
+/// #825: the Kuramoto order parameter must use its full range.
+///
+/// Aligned phases → r ≈ 1. Phases spread evenly around the circle → r ≈ 0
+/// (the complex mean cancels). The existing `kuramoto_order_computation`
+/// asserts spread < aligned; this pins the MAGNITUDE at both ends so a
+/// metric stuck at any constant — including a plausible-looking mid value —
+/// fails on one side or the other.
+#[test]
+fn kuramoto_order_separates_aligned_from_spread_phases() {
+    let mut medium = Medium::new();
+    let ident = vec![0.5; WAVEFRONT_DIM];
+    for i in 0..20 {
+        medium.add_wavefront(&ident, format!("k{i}"), 1.0).unwrap();
+    }
+
+    let aligned = medium.compute_kuramoto_order();
+    assert!(aligned > 0.99, "20 phase-0 wavefronts should give r ≈ 1, got {aligned}");
+
+    let n = medium.store.len;
+    for i in 0..n {
+        medium.store.phase[i] = (i as f32) * std::f32::consts::TAU / n as f32;
+    }
+    let spread = medium.compute_kuramoto_order();
+    assert!(
+        spread < 0.05,
+        "evenly-spread phases should give r ≈ 0, got {spread} — \
+         if this equals the aligned value, order has gone constant (#825)"
+    );
+}

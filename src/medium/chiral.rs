@@ -1952,6 +1952,57 @@ mod tests {
         );
     }
 
+    /// #825: hemispheric divergence must be able to MOVE, not just stay in
+    /// range. The live number had reportedly been static for months, and the
+    /// #826 test above only pins the low end (identical → ~0) plus the range.
+    /// This pins the high end: hemispheres supported on disjoint dimension
+    /// blocks have orthogonal mean wavefronts, so Δ = 1 − cos ≈ 1. A metric
+    /// stuck near 0 — or near any constant — fails one of the two ends.
+    #[test]
+    fn hemispheric_divergence_separates_disjoint_from_identical_hemispheres() {
+        let dim = ChiralMedium::new().left.dims;
+        let block = |start: usize, width: usize| -> Vec<f32> {
+            let mut v = vec![0.0f32; dim];
+            for i in start..(start + width).min(dim) {
+                v[i] = 1.0;
+            }
+            v
+        };
+
+        // Left lives entirely in the first half of the space, right entirely
+        // in the second half — maximally differentiated hemispheres.
+        let mut disjoint = ChiralMedium::new();
+        for i in 0..8usize {
+            disjoint
+                .left
+                .add_wavefront(&block(i * 8, 8), format!("l{i}"), 0.5)
+                .unwrap();
+            disjoint
+                .right
+                .add_wavefront(&block(dim / 2 + i * 8, 8), format!("r{i}"), 0.5)
+                .unwrap();
+        }
+        let d_disjoint = disjoint.consciousness_summary().hemispheric_divergence;
+
+        let mut same = ChiralMedium::new();
+        for i in 0..8usize {
+            let v = block(i * 8, 8);
+            same.left.add_wavefront(&v, format!("l{i}"), 0.5).unwrap();
+            same.right.add_wavefront(&v, format!("r{i}"), 0.5).unwrap();
+        }
+        let d_same = same.consciousness_summary().hemispheric_divergence;
+
+        assert!(
+            d_disjoint > 0.9,
+            "disjoint-subspace hemispheres should read Δ ≈ 1, got {d_disjoint}"
+        );
+        assert!(
+            d_disjoint > d_same + 0.5,
+            "Δ must separate disjoint ({d_disjoint}) from identical ({d_same}) \
+             hemispheres by a wide margin — a constant Δ cannot pass (#825)"
+        );
+    }
+
     /// ADR-0050 follow-up probe: can `sensemaking::detect_contradictions` see a
     /// SUPERSESSION?
     ///
