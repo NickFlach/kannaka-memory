@@ -10,8 +10,6 @@
 //!     -> gravity well            (Medium::ids_by_fano_line(L) — same-line memories)
 //!     -> attention beam          (kannaka_attention::AttentionBeam::observe)
 //!     -> beam recall             (Medium::recall_against_ids(beam.candidates(), q))
-//!     -> same-line boost         (KANNAKA_GLYPH_GRAVITY multiplies same-line
-//!                                 candidates' resonance by (1 + gain))
 //!
 //! What it pins:
 //!   1. The eye's published envelope decodes to the expected gravity class L
@@ -20,13 +18,16 @@
 //!   3. Well ids flow through a real `AttentionBeam` into `recall_against_ids`,
 //!      and that O(K) path scores only beam candidates (sparsity — off-beam
 //!      memories are never touched).
-//!   4. With gravity ON, every same-line candidate's resonance is scaled by
-//!      exactly (1 + gain); every off-line candidate is left untouched; and the
-//!      default (env unset => gain 0.0) is byte-for-byte the pre-glyph behaviour.
+//!   4. KANNAKA_GLYPH_GRAVITY is INERT on recall ranking (#837): setting it
+//!      leaves every candidate's resonance byte-identical to the unset run.
+//!      The same-line multiplicative boost it used to enable was measured
+//!      net-negative (never improved a rank, lost a rank-1 answer) and was
+//!      removed; this leg fails if anyone wires a ranking effect back onto
+//!      the env var.
 //!
 //! `recall_against_ids` is a pure read (no observation mutation), so the OFF and
-//! ON runs see identical medium state and the boost is the *only* difference —
-//! which is what makes the (1 + gain) law exact rather than approximate.
+//! ON runs see identical medium state — any score difference could only come
+//! from the env var, which is exactly what leg 4 forbids.
 //!
 //! Run: cargo test --features glyph --test attention_gravity_e2e
 //! (`glyph` is a default feature, so plain `cargo test` includes it too.)
@@ -108,7 +109,7 @@ fn eye_event_on_line(line: u8) -> serde_json::Value {
 }
 
 #[test]
-fn glyph_gravity_boosts_same_fano_line_end_to_end() {
+fn glyph_gravity_beam_flows_and_ranking_stays_inert_end_to_end() {
     // Start from the default (inert) state and never leak the var to other tests.
     std::env::remove_var("KANNAKA_GLYPH_GRAVITY");
 
@@ -196,10 +197,13 @@ fn glyph_gravity_boosts_same_fano_line_end_to_end() {
         );
     }
 
-    // ── Contract: same-line boosted by exactly (1+gain); off-line unchanged ──
+    // ── Contract (#837): KANNAKA_GLYPH_GRAVITY must NOT touch ranking ────────
     // Beam = the full mix so every candidate is scored; top_k = len keeps them
     // all (no truncation, no coherence back-fill), giving a candidate-for-
-    // candidate OFF vs ON comparison.
+    // candidate OFF vs ON comparison. With the gain set, every score — same
+    // line and off line alike — must be byte-identical to the unset run. On
+    // the pre-#837 code this fails: same-line candidates came back scaled by
+    // exactly (1 + GAIN).
     let full_beam: Vec<Uuid> = ids.clone();
     let top_k = full_beam.len();
     let off = strengths(
@@ -212,7 +216,16 @@ fn glyph_gravity_boosts_same_fano_line_end_to_end() {
     std::env::remove_var("KANNAKA_GLYPH_GRAVITY");
 
     assert!(!off.is_empty() && !on.is_empty(), "recall returned no candidates");
+    assert_eq!(
+        off.len(),
+        on.len(),
+        "setting KANNAKA_GLYPH_GRAVITY changed the number of scored candidates"
+    );
 
+    // Not bit-identity: effective_strength applies wall-clock temporal decay,
+    // so two recalls microseconds apart drift in the last ULP. 1e-4 relative
+    // is far below the (1 + GAIN) = 1.5× scale the old boost applied, so the
+    // pre-#837 behaviour still fails this loudly.
     let rel = |a: f32, b: f32| (a - b).abs() / b.abs().max(1e-6);
     let mut checked_same = 0usize;
     let mut checked_other = 0usize;
@@ -221,18 +234,14 @@ fn glyph_gravity_boosts_same_fano_line_end_to_end() {
             (Some(&o), Some(&n)) => (o, n),
             _ => continue,
         };
+        assert!(
+            rel(n, o) < 1e-4,
+            "{} {id} moved under KANNAKA_GLYPH_GRAVITY: off={o} on={n} — the env var must be inert on ranking (#837)",
+            if same_line.contains(id) { "same-line" } else { "off-line" }
+        );
         if same_line.contains(id) {
-            assert!(
-                rel(n, o * (1.0 + GAIN)) < 1e-3,
-                "same-line {id}: on={n}, expected (1+{GAIN})*off = {} (off={o})",
-                o * (1.0 + GAIN)
-            );
             checked_same += 1;
         } else {
-            assert!(
-                rel(n, o) < 1e-3,
-                "off-line {id} moved under gravity: off={o} on={n}"
-            );
             checked_other += 1;
         }
     }
@@ -242,9 +251,8 @@ fn glyph_gravity_boosts_same_fano_line_end_to_end() {
     );
 
     eprintln!(
-        "attention-as-gravity OK: line {target_line} — {} well ids -> beam ({} candidates) -> recall; {checked_same} same-line boosted x{}, {checked_other} off-line unchanged",
+        "attention-as-gravity OK: line {target_line} — {} well ids -> beam ({} candidates) -> recall; KANNAKA_GLYPH_GRAVITY inert over {checked_same} same-line + {checked_other} off-line candidates",
         well.len(),
         cands.len(),
-        1.0 + GAIN
     );
 }

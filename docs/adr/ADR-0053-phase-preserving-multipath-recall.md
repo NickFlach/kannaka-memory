@@ -48,7 +48,7 @@ determine the output, because the output no longer carries what physics needs.
 | Flat medium | `core.rs::recall_against` | **Yes** — the only one |
 | Chiral hemispheres | `chiral.rs::recall_vector` → `left/right.resonate` | No |
 | Attention beam (sparse) | `core.rs::recall_against_ids` | No |
-| Glyph gravity | `chiral.rs::recall`, `KANNAKA_GLYPH_GRAVITY` (default 0.0) | No |
+| ~~Glyph gravity~~ | removed in #837 — `KANNAKA_GLYPH_GRAVITY` is inert on ranking (measured net-negative) | No |
 | Energy / temporal weighting | `hemisphere.rs::resonate_with_weights` | No |
 
 `HrmStore.medium` is constructed `Medium::new()` / `Medium::load(...)` — the flat

@@ -18,6 +18,17 @@ Fano gravity does not: it is a **post-fetch multiply** on an already-fetched poo
 (`core.rs:398-406`), so it cannot promote a target outside `top_k*2` and was
 empirically byte-identical on a real query.
 
+> **Erratum (2026-08-29, #837):** "empirically byte-identical on a real query"
+> was an n=1 measurement. Re-measured across six queries and four gain levels,
+> the Fano boost never improved a rank, degraded 2 of 4 rankable queries, and
+> dropped one rank-1 answer out of the top 5 entirely — a 7-bucket categorical
+> prior applied multiplicatively necessarily demotes the ~6/7 of correct answers
+> on a different line. The recall-side boost has been **removed**;
+> `KANNAKA_GLYPH_GRAVITY` is now inert on ranking (it still gates only the
+> additive same-line beam pull in `attention serve`). That strengthens this
+> ADR's case: the steering signal must live in embedding space, not in a
+> coarse categorical bucket.
+
 **v1 proposed to express prediction and learning as operations on wave *phase*.
 The adversarial review refuted this against the real kernel:**
 
