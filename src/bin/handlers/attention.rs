@@ -134,9 +134,9 @@ pub(crate) fn handle_attention_serve(
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(0.0);
         if gain > 0.0 {
-            eprintln!("[attention serve] glyph-gravity ENABLED (KANNAKA_GLYPH_GRAVITY={gain}) — same-Fano-line pull + recall boost active");
+            eprintln!("[attention serve] glyph-gravity ENABLED (KANNAKA_GLYPH_GRAVITY={gain}) — same-Fano-line beam pull active (recall-side ranking boost removed in #837: measured net-negative)");
         } else {
-            eprintln!("[attention serve] glyph-gravity DISABLED (KANNAKA_GLYPH_GRAVITY unset/0) — beam warms but same-line pull/boost are inert; set KANNAKA_GLYPH_GRAVITY=0.5 to enable");
+            eprintln!("[attention serve] glyph-gravity DISABLED (KANNAKA_GLYPH_GRAVITY unset/0) — beam warms but the same-line pull is inert");
         }
     }
 
@@ -307,7 +307,9 @@ pub(crate) fn handle_attention_serve(
         // The eye saw a glyph on a dominant Fano line. Pull the SAME-line
         // memories into the beam so this perception's whole neighborhood is
         // "in attention" for O(K) recall — folded information acting as gravity.
-        // Gated by the same switch as recall-side gravity (KANNAKA_GLYPH_GRAVITY).
+        // Gated by KANNAKA_GLYPH_GRAVITY. This pull only ADDS candidates to
+        // the beam; the recall-side same-line ranking boost that the same var
+        // used to enable was removed in #837 (measured to degrade recall).
         #[cfg(feature = "glyph")]
         {
             let gravity_on = std::env::var("KANNAKA_GLYPH_GRAVITY")
@@ -336,10 +338,9 @@ pub(crate) fn handle_attention_serve(
                     } else if !warned_no_hrm {
                         // Degradation visibility: gravity is ON but the backing
                         // store can't serve a same-line well, so the beam pull
-                        // silently no-ops. Say so once; recall-side boost still
-                        // applies. (#14)
+                        // silently no-ops. Say so once. (#14)
                         warned_no_hrm = true;
-                        eprintln!("[attention serve] WARN: glyph-gravity ON but backing store is not HrmStore — same-line beam pull unavailable (recall-side boost still applies)");
+                        eprintln!("[attention serve] WARN: glyph-gravity ON but backing store is not HrmStore — same-line beam pull unavailable");
                     }
                 }
             }

@@ -1326,6 +1326,30 @@ mod tests {
         assert!(r < 0.1, "opposite phases -> r~0, got {r}");
     }
 
+    /// #825: per-hemisphere Kuramoto order feeds the published
+    /// `left_coherence` / `right_coherence` readings. Pin both ends of its
+    /// range so a constant reading fails: aligned phases → r ≈ 1, phases
+    /// spread evenly around the circle → r ≈ 0.
+    #[test]
+    fn hemisphere_kuramoto_order_separates_aligned_from_spread() {
+        let n = 12usize;
+        let aligned = ndarray::Array1::from(vec![0.7f32; n]);
+        let r_aligned = QueenSync::hemisphere_kuramoto_order(&aligned, n);
+        assert!(r_aligned > 0.99, "aligned hemisphere phases -> r~1, got {r_aligned}");
+
+        let spread = ndarray::Array1::from(
+            (0..n)
+                .map(|i| (i as f32) * std::f32::consts::TAU / n as f32)
+                .collect::<Vec<_>>(),
+        );
+        let r_spread = QueenSync::hemisphere_kuramoto_order(&spread, n);
+        assert!(
+            r_spread < 0.05,
+            "evenly-spread hemisphere phases -> r~0, got {r_spread} — a constant \
+             coherence cannot pass both ends (#825)"
+        );
+    }
+
     #[test]
     fn order_parameter_evenly_spaced() {
         let n = 5;

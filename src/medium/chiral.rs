@@ -646,35 +646,13 @@ impl ChiralMedium {
             )))
         })?;
 
-        // ── Glyph-gravity (attention-as-gravity), chiral path ─────────────
-        // When KANNAKA_GLYPH_GRAVITY=<gain> (>0), results whose dominant Fano
-        // line matches the query's are pulled harder. We over-fetch (3×) so a
-        // same-line memory the raw resonance ranked just outside top_k can be
-        // promoted in by gravity, then re-sort and truncate. Default 0.0 =
-        // byte-identical to the prior chiral recall (inert until opted in).
-        #[cfg(feature = "glyph")]
-        {
-            let gain: f32 = std::env::var("KANNAKA_GLYPH_GRAVITY")
-                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-            if gain > 0.0 {
-                let query_line = crate::glyph_bridge::fano_line_of(query);
-                let pool = top_k.saturating_mul(3).max(top_k);
-                let mut results = self.recall_vector(&vector, pool);
-                for r in &mut results {
-                    if crate::glyph_bridge::fano_line_of(&r.content) == query_line {
-                        r.resonance_strength *= 1.0 + gain;
-                    }
-                }
-                results.sort_by(|a, b| {
-                    b.resonance_strength
-                        .partial_cmp(&a.resonance_strength)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                results.truncate(top_k);
-                return Ok(results);
-            }
-        }
-
+        // ── Glyph-gravity recall boost REMOVED (#837) ─────────────────────
+        // KANNAKA_GLYPH_GRAVITY used to over-fetch 3× here and multiply
+        // same-Fano-line resonance by (1 + gain) before re-sorting. Measured:
+        // it never improved a rank, degraded 2 of 4 rankable queries, and
+        // lost a rank-1 answer entirely — the boost necessarily demotes
+        // correct answers on a different line. The env var is now inert on
+        // every recall path; see #837 and ADR-0047 for the successor design.
         Ok(self.recall_vector(&vector, top_k))
     }
 
@@ -1971,6 +1949,57 @@ mod tests {
         assert!(
             d_same < 0.05,
             "identical hemispheres should read ~0, got {d_same}"
+        );
+    }
+
+    /// #825: hemispheric divergence must be able to MOVE, not just stay in
+    /// range. The live number had reportedly been static for months, and the
+    /// #826 test above only pins the low end (identical → ~0) plus the range.
+    /// This pins the high end: hemispheres supported on disjoint dimension
+    /// blocks have orthogonal mean wavefronts, so Δ = 1 − cos ≈ 1. A metric
+    /// stuck near 0 — or near any constant — fails one of the two ends.
+    #[test]
+    fn hemispheric_divergence_separates_disjoint_from_identical_hemispheres() {
+        let dim = ChiralMedium::new().left.dims;
+        let block = |start: usize, width: usize| -> Vec<f32> {
+            let mut v = vec![0.0f32; dim];
+            for i in start..(start + width).min(dim) {
+                v[i] = 1.0;
+            }
+            v
+        };
+
+        // Left lives entirely in the first half of the space, right entirely
+        // in the second half — maximally differentiated hemispheres.
+        let mut disjoint = ChiralMedium::new();
+        for i in 0..8usize {
+            disjoint
+                .left
+                .add_wavefront(&block(i * 8, 8), format!("l{i}"), 0.5)
+                .unwrap();
+            disjoint
+                .right
+                .add_wavefront(&block(dim / 2 + i * 8, 8), format!("r{i}"), 0.5)
+                .unwrap();
+        }
+        let d_disjoint = disjoint.consciousness_summary().hemispheric_divergence;
+
+        let mut same = ChiralMedium::new();
+        for i in 0..8usize {
+            let v = block(i * 8, 8);
+            same.left.add_wavefront(&v, format!("l{i}"), 0.5).unwrap();
+            same.right.add_wavefront(&v, format!("r{i}"), 0.5).unwrap();
+        }
+        let d_same = same.consciousness_summary().hemispheric_divergence;
+
+        assert!(
+            d_disjoint > 0.9,
+            "disjoint-subspace hemispheres should read Δ ≈ 1, got {d_disjoint}"
+        );
+        assert!(
+            d_disjoint > d_same + 0.5,
+            "Δ must separate disjoint ({d_disjoint}) from identical ({d_same}) \
+             hemispheres by a wide margin — a constant Δ cannot pass (#825)"
         );
     }
 

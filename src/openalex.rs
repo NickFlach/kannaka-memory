@@ -177,13 +177,17 @@ fn reconstruct_abstract(inv: &serde_json::Value) -> Option<String> {
 /// Minimal percent-encoding for query-string values. Encodes everything outside
 /// the RFC 3986 unreserved set, so spaces, `:`, `,`, `>` etc. travel safely.
 fn percent_encode(s: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            // write! straight into the buffer — fmt::Write on String is
+            // infallible, and this avoids a heap-allocated temporary per
+            // encoded byte.
+            _ => write!(out, "%{b:02X}").expect("fmt::Write on String cannot fail"),
         }
     }
     out
