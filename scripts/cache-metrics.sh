@@ -1,13 +1,30 @@
 #!/bin/bash
-# Cron: */5 * * * * /home/opc/kannaka-memory/scripts/cache-metrics.sh
+# Cron: */5 * * * * <checkout>/scripts/cache-metrics.sh
 #
 # Refreshes the disk cache of consciousness metrics every 5 minutes.
 # The binary is the source of truth for Phi/Xi/Order — this cache
 # lets the Observatory and other clients read metrics without spawning
 # the binary on every request.
+#
+# Overrides: KANNAKA_BIN (binary to run), KANNAKA_DATA_DIR (cache dir —
+# same contract as the Rust KannakaConfig::data_dir resolver).
 
-KANNAKA_BIN="/home/opc/kannaka-memory/target/release/kannaka"
-CACHE_DIR="/home/opc/.kannaka"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Binary: explicit override > this checkout's release build > PATH.
+if [ -z "${KANNAKA_BIN:-}" ]; then
+  if [ -x "$SCRIPT_DIR/../target/release/kannaka" ]; then
+    KANNAKA_BIN="$SCRIPT_DIR/../target/release/kannaka"
+  else
+    KANNAKA_BIN="$(command -v kannaka || true)"
+  fi
+fi
+if [ -z "$KANNAKA_BIN" ] || [ ! -x "$KANNAKA_BIN" ]; then
+  echo "cache-metrics: no kannaka binary found (set KANNAKA_BIN)" >&2
+  exit 1
+fi
+
+CACHE_DIR="${KANNAKA_DATA_DIR:-$HOME/.kannaka}"
 
 # Ensure cache directory exists
 mkdir -p "$CACHE_DIR"

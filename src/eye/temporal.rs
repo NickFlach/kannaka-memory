@@ -90,12 +90,11 @@ fn encode_shot_stats(stats: &ShotStats, total_frames: usize) -> Vec<f32> {
 /// Color flow: temporal derivative of HSV histograms (24 dims).
 /// Measures how the color palette evolves over time.
 fn color_flow(per_frame: &[Vec<f32>]) -> Vec<f32> {
-    let hist_dim = 48.min(per_frame[0].len());
     let n = per_frame.len();
-
     if n < 2 {
         return vec![0.0; 24];
     }
+    let hist_dim = 48.min(per_frame[0].len());
 
     // Compute frame-to-frame histogram differences
     let mut diffs: Vec<Vec<f32>> = Vec::with_capacity(n - 1);
@@ -286,6 +285,10 @@ fn visual_tempo(per_frame: &[Vec<f32>]) -> (Vec<f32>, f32) {
 
 /// Complexity evolution (16 dims) — how visual complexity changes over time.
 fn complexity_evolution(per_frame: &[Vec<f32>]) -> Vec<f32> {
+    if per_frame.is_empty() {
+        return vec![0.0; 16];
+    }
+
     // Use edge density (indices 48+32=80 to 80+36=116) as complexity proxy
     let edge_start = 80.min(per_frame[0].len());
     let edge_end = 116.min(per_frame[0].len());
@@ -332,6 +335,10 @@ fn complexity_evolution(per_frame: &[Vec<f32>]) -> Vec<f32> {
 
 /// Brightness arc (16 dims) — luminance trajectory over time.
 fn brightness_arc(per_frame: &[Vec<f32>]) -> (Vec<f32>, f32) {
+    if per_frame.is_empty() {
+        return (vec![0.0; 16], 0.0);
+    }
+
     // Mean brightness is at index 168 (after HSV+freq+edges+regions+flow)
     let bright_idx = 168.min(per_frame[0].len().saturating_sub(1));
 
@@ -421,6 +428,10 @@ fn stillness_ratio(per_frame: &[Vec<f32>]) -> Vec<f32> {
 
 /// Entropy flow (8 dims) — Shannon entropy of frame features over time.
 fn entropy_flow(per_frame: &[Vec<f32>]) -> Vec<f32> {
+    if per_frame.is_empty() {
+        return vec![0.0; 8];
+    }
+
     // Compute per-frame entropy of the HSV histogram (first 48 dims)
     let hist_dim = 48.min(per_frame[0].len());
 
@@ -502,5 +513,42 @@ fn linear_trend(values: &[f32]) -> f32 {
         0.0
     } else {
         num / den
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A zero-frame clip (corrupt input, single-image files) must yield neutral
+    // features, never an index panic (#865).
+
+    #[test]
+    fn color_flow_empty_input_returns_neutral() {
+        assert_eq!(color_flow(&[]), vec![0.0; 24]);
+    }
+
+    #[test]
+    fn complexity_evolution_empty_input_returns_neutral() {
+        assert_eq!(complexity_evolution(&[]), vec![0.0; 16]);
+    }
+
+    #[test]
+    fn brightness_arc_empty_input_returns_neutral() {
+        let (features, trend) = brightness_arc(&[]);
+        assert_eq!(features, vec![0.0; 16]);
+        assert_eq!(trend, 0.0);
+    }
+
+    #[test]
+    fn entropy_flow_empty_input_returns_neutral() {
+        assert_eq!(entropy_flow(&[]), vec![0.0; 8]);
+    }
+
+    #[test]
+    fn extract_temporal_features_empty_input_does_not_panic() {
+        let tf = extract_temporal_features(&[], &[]);
+        assert_eq!(tf.vector.len(), TEMPORAL_FEATURE_DIM);
+        assert!(tf.vector.iter().all(|v| v.is_finite()));
     }
 }
