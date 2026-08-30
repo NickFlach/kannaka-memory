@@ -1,0 +1,1 @@
+No new hypothesis: recent commits (glyph gravity removal, callosal/hemispheric fixes) leave L5 research space unchanged — glyph gain was env-var gated and never active in research runs; callosal_efficiency and hemispheric_divergence do not appear in the L5 fitness formula. Floor remains ~0.019.
