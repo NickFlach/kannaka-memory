@@ -323,7 +323,7 @@ impl AuthClient {
     pub fn user(&self, access_token: &str) -> Result<UserInfo, IdentityError> {
         let url = format!("{}/auth/user", self.base);
         let resp = ureq::get(&url)
-            .set("Authorization", &format!("Bearer {}", access_token))
+            .set("Authorization", &format!("Bearer {access_token}"))
             .timeout(HTTP_TIMEOUT)
             .call();
         let v = Self::handle_response(resp)?;

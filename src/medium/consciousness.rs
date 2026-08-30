@@ -930,7 +930,7 @@ impl Medium {
         let vector = pipeline.encode_text(&self_observation).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("self-observation encoding failed: {}", e),
+                format!("self-observation encoding failed: {e}"),
             )))
         })?;
 

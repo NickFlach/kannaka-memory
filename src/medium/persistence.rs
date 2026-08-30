@@ -33,7 +33,7 @@ impl Medium {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{}.{}", pid, nanos));
+        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{pid}.{nanos}"));
         let file = File::create(&tmp_path)?;
         let mut writer = BufWriter::new(file);
 
@@ -147,7 +147,7 @@ impl Medium {
             .args(&["add", &path_ref.to_string_lossy()])
             .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
             .output()
-            .map_err(|e| MediumError::Git(format!("Failed to run git add: {}", e)))?;
+            .map_err(|e| MediumError::Git(format!("Failed to run git add: {e}")))?;
 
         if !output.status.success() {
             return Err(MediumError::Git(format!(
@@ -161,7 +161,7 @@ impl Medium {
             .args(&["commit", "-m", message])
             .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
             .output()
-            .map_err(|e| MediumError::Git(format!("Failed to run git commit: {}", e)))?;
+            .map_err(|e| MediumError::Git(format!("Failed to run git commit: {e}")))?;
 
         if !output.status.success() {
             return Err(MediumError::Git(format!(
@@ -175,7 +175,7 @@ impl Medium {
             .args(&["rev-parse", "HEAD"])
             .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
             .output()
-            .map_err(|e| MediumError::Git(format!("Failed to get commit hash: {}", e)))?;
+            .map_err(|e| MediumError::Git(format!("Failed to get commit hash: {e}")))?;
 
         if !output.status.success() {
             return Err(MediumError::Git(format!(
@@ -192,7 +192,7 @@ impl Medium {
                 .args(&["push", "origin", "master"])
                 .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
                 .output()
-                .map_err(|e| MediumError::Git(format!("Failed to run git push: {}", e)))?;
+                .map_err(|e| MediumError::Git(format!("Failed to run git push: {e}")))?;
 
             if !output.status.success() {
                 // Push failure is non-fatal, just log it
@@ -230,7 +230,7 @@ impl Medium {
                     .args(&["show", &git_path])
                     .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
                     .output()
-                    .map_err(|e| MediumError::Git(format!("Failed to run git show: {}", e)))?;
+                    .map_err(|e| MediumError::Git(format!("Failed to run git show: {e}")))?;
 
                 if !output.status.success() {
                     return Err(MediumError::Git(format!(
@@ -243,7 +243,7 @@ impl Medium {
                 use std::env;
 
                 let temp_dir = env::temp_dir();
-                let temp_path = temp_dir.join(format!("hrm_git_show_{}", commit_hash));
+                let temp_path = temp_dir.join(format!("hrm_git_show_{commit_hash}"));
 
                 {
                     let mut temp_file =
@@ -279,13 +279,13 @@ impl Medium {
             .args(&[
                 "log",
                 "--format=%H|%s|%ct", // hash|subject|timestamp
-                &format!("-{}", limit),
+                &format!("-{limit}"),
                 "--",
                 &path_ref.to_string_lossy(),
             ])
             .current_dir(path_ref.parent().unwrap_or(Path::new(".")))
             .output()
-            .map_err(|e| MediumError::Git(format!("Failed to run git log: {}", e)))?;
+            .map_err(|e| MediumError::Git(format!("Failed to run git log: {e}")))?;
 
         if !output.status.success() {
             return Err(MediumError::Git(format!(
@@ -330,8 +330,7 @@ impl Medium {
             return Err(MediumError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
-                    "HRM file too small ({} bytes, minimum {}): likely truncated",
-                    file_size, MIN_HRM_SIZE
+                    "HRM file too small ({file_size} bytes, minimum {MIN_HRM_SIZE}): likely truncated"
                 ),
             )));
         }
@@ -439,8 +438,7 @@ impl Medium {
         const MAX_META_BYTES: usize = 256 * 1024 * 1024;
         if metadata_len > MAX_META_BYTES {
             return Err(MediumError::CorruptHrm(format!(
-                "implausible metadata_len={} (max {}) — v1 medium layout desync",
-                metadata_len, MAX_META_BYTES
+                "implausible metadata_len={metadata_len} (max {MAX_META_BYTES}) — v1 medium layout desync"
             )));
         }
         let mut metadata_bytes = vec![0u8; metadata_len];
@@ -507,9 +505,8 @@ impl Medium {
             // Partial checksum — file was likely truncated between data and checksum write.
             // Warn but don't fail: the data portion parsed successfully.
             eprintln!(
-                "Warning: HRM file has partial checksum ({}/32 bytes) — skipping verification. \
-                 File may have been saved by an older version or interrupted during write.",
-                checksum_bytes_read
+                "Warning: HRM file has partial checksum ({checksum_bytes_read}/32 bytes) — skipping verification. \
+                 File may have been saved by an older version or interrupted during write."
             );
         }
         // If no checksum present (old format / 0 bytes read), skip verification gracefully

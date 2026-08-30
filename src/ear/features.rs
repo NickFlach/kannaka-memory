@@ -104,7 +104,7 @@ pub fn extract_features(samples: &[f32]) -> Result<AudioFeatures, EarError> {
     // Build tags
     let mut feature_tags = Vec::new();
     if tempo > 0.0 {
-        feature_tags.push(format!("{:.0}bpm", tempo));
+        feature_tags.push(format!("{tempo:.0}bpm"));
     }
     if centroid > 3.0 {
         feature_tags.push("bright".into());

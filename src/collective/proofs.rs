@@ -674,7 +674,7 @@ mod tests {
         // Prove each Fano line
         for i in 0..7 {
             let fano_proof = prove_existence(&commitments.fano[i], &openings.fano[i]);
-            assert!(verify_existence(&fano_proof), "Fano line {} proof failed", i);
+            assert!(verify_existence(&fano_proof), "Fano line {i} proof failed");
         }
     }
 

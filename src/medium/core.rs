@@ -86,7 +86,7 @@ impl Medium {
         let vector = pipeline.encode_text(content).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("encoding failed: {}", e),
+                format!("encoding failed: {e}"),
             )))
         })?;
 
@@ -320,7 +320,7 @@ impl Medium {
         let query_vector = pipeline.encode_text(query).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("query encoding failed: {}", e),
+                format!("query encoding failed: {e}"),
             )))
         })?;
 

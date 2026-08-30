@@ -856,7 +856,7 @@ mod tests {
             ];
             if let Resolution::Projection { information_preserved: ip_opposed, .. } = resolver.project_states(&opposed) {
                 assert!(ip_aligned > ip_opposed,
-                    "aligned ({}) should preserve more info than opposed ({})", ip_aligned, ip_opposed);
+                    "aligned ({ip_aligned}) should preserve more info than opposed ({ip_opposed})");
             }
         }
     }
@@ -873,7 +873,7 @@ mod tests {
         if let Resolution::Projection { amplitude, .. } = resolver.project_states(&states) {
             // For aligned phases (Δφ = 0), should get A = √(0.8² + 0.6² + 2*0.8*0.6*cos(0))
             // = √(0.64 + 0.36 + 0.96) = √1.96 = 1.4
-            assert!((amplitude - 1.4).abs() < 0.01, "expected ~1.4, got {}", amplitude);
+            assert!((amplitude - 1.4).abs() < 0.01, "expected ~1.4, got {amplitude}");
         } else {
             panic!("expected projection resolution");
         }
@@ -961,6 +961,6 @@ mod tests {
         
         println!("Parallel dream completed successfully!");
         println!("Consolidation reports: {}", consolidation_reports.len());
-        println!("Resolution report: {:#?}", resolution_report);
+        println!("Resolution report: {resolution_report:#?}");
     }
 }

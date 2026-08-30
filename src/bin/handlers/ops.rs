@@ -34,7 +34,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
                     process::exit(s.code().unwrap_or(1));
                 }
                 Err(e) => {
-                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    eprintln!("  Failed to run kannaktopus: {e}");
                     process::exit(1);
                 }
                 _ => {}
@@ -49,7 +49,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
                     process::exit(s.code().unwrap_or(1));
                 }
                 Err(e) => {
-                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    eprintln!("  Failed to run kannaktopus: {e}");
                     process::exit(1);
                 }
                 _ => {}
@@ -64,7 +64,7 @@ pub(crate) fn handle_orchestrate(args: &[String]) {
                     process::exit(s.code().unwrap_or(1));
                 }
                 Err(e) => {
-                    eprintln!("  Failed to run kannaktopus: {}", e);
+                    eprintln!("  Failed to run kannaktopus: {e}");
                     process::exit(1);
                 }
                 _ => {}
@@ -166,7 +166,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     match parse_bool(value) {
                         Ok(b) => new_cfg.swarm.enabled = b,
                         Err(()) => {
-                            eprintln!("swarm.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            eprintln!("swarm.enabled expects true/false/1/0/yes/no/on/off, got: {value}");
                             process::exit(1);
                         }
                     }
@@ -187,7 +187,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     match parse_bool(value) {
                         Ok(b) => new_cfg.ghostsignals.enabled = b,
                         Err(()) => {
-                            eprintln!("ghostsignals.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            eprintln!("ghostsignals.enabled expects true/false/1/0/yes/no/on/off, got: {value}");
                             process::exit(1);
                         }
                     }
@@ -202,7 +202,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     match parse_bool(value) {
                         Ok(b) => new_cfg.updates.auto_check = b,
                         Err(()) => {
-                            eprintln!("updates.auto_check expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            eprintln!("updates.auto_check expects true/false/1/0/yes/no/on/off, got: {value}");
                             process::exit(1);
                         }
                     }
@@ -215,7 +215,7 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     match value.parse::<u32>() {
                         Ok(n) if n > 0 => new_cfg.hrm.wavefront_dim = n,
                         _ => {
-                            eprintln!("hrm.wavefront_dim expects a positive integer, got: {}", value);
+                            eprintln!("hrm.wavefront_dim expects a positive integer, got: {value}");
                             process::exit(1);
                         }
                     }
@@ -225,40 +225,40 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     match parse_bool(value) {
                         Ok(b) => new_cfg.triage.enabled = b,
                         Err(()) => {
-                            eprintln!("triage.enabled expects true/false/1/0/yes/no/on/off, got: {}", value);
+                            eprintln!("triage.enabled expects true/false/1/0/yes/no/on/off, got: {value}");
                             process::exit(1);
                         }
                     }
                 }
                 "triage.redundancy" => match value.parse::<f32>() {
                     Ok(n) if (0.0..=1.0).contains(&n) => new_cfg.triage.redundancy = n,
-                    _ => { eprintln!("triage.redundancy expects a float in [0,1], got: {}", value); process::exit(1); }
+                    _ => { eprintln!("triage.redundancy expects a float in [0,1], got: {value}"); process::exit(1); }
                 },
                 "triage.min_amplitude" => match value.parse::<f32>() {
                     Ok(n) if n >= 0.0 => new_cfg.triage.min_amplitude = n,
-                    _ => { eprintln!("triage.min_amplitude expects a non-negative float, got: {}", value); process::exit(1); }
+                    _ => { eprintln!("triage.min_amplitude expects a non-negative float, got: {value}"); process::exit(1); }
                 },
                 "triage.min_age_hours" => match value.parse::<i64>() {
                     Ok(n) if n >= 0 => new_cfg.triage.min_age_hours = n,
-                    _ => { eprintln!("triage.min_age_hours expects a non-negative integer, got: {}", value); process::exit(1); }
+                    _ => { eprintln!("triage.min_age_hours expects a non-negative integer, got: {value}"); process::exit(1); }
                 },
                 "triage.max_evict" => match value.parse::<usize>() {
                     Ok(n) => new_cfg.triage.max_evict = n,
-                    _ => { eprintln!("triage.max_evict expects a non-negative integer, got: {}", value); process::exit(1); }
+                    _ => { eprintln!("triage.max_evict expects a non-negative integer, got: {value}"); process::exit(1); }
                 },
                 "triage.xi_trigger" => match value.parse::<f32>() {
                     Ok(n) if (0.0..=1.0).contains(&n) => new_cfg.triage.xi_trigger = n,
-                    _ => { eprintln!("triage.xi_trigger expects a float in [0,1] (0 disables auto-trigger), got: {}", value); process::exit(1); }
+                    _ => { eprintln!("triage.xi_trigger expects a float in [0,1] (0 disables auto-trigger), got: {value}"); process::exit(1); }
                 },
                 other => {
-                    eprintln!("Unknown config key: {}", other);
+                    eprintln!("Unknown config key: {other}");
                     process::exit(1);
                 }
             }
             match new_cfg.save() {
-                Ok(()) => println!("  \u{2713} Set {} = {}", key, value),
+                Ok(()) => println!("  \u{2713} Set {key} = {value}"),
                 Err(e) => {
-                    eprintln!("Error saving config: {}", e);
+                    eprintln!("Error saving config: {e}");
                     process::exit(1);
                 }
             }
@@ -332,7 +332,7 @@ pub(crate) fn handle_search(sys: &kannaka_memory::openclaw::KannakaMemorySystem,
                 return;
             }
             if results.is_empty() {
-                println!("  No results for \"{}\"", query);
+                println!("  No results for \"{query}\"");
                 return;
             }
             println!("  \u{1f50d} Search: \"{}\" ({} results)", query, results.len());
@@ -388,7 +388,7 @@ pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
     }
 
     let all_mems = sys.engine.store.all_memories()
-        .unwrap_or_else(|e| { eprintln!("Error: {}", e); process::exit(1); });
+        .unwrap_or_else(|e| { eprintln!("Error: {e}"); process::exit(1); });
 
     let output: Vec<serde_json::Value> = all_mems.iter().map(|m| {
         serde_json::json!({
@@ -423,7 +423,7 @@ pub(crate) fn handle_export(sys: &mut kannaka_memory::openclaw::KannakaMemorySys
                 println!("  \u{2713} Exported {} memories to {}", all_mems.len(), path);
             }
             Err(e) => {
-                eprintln!("Error writing {}: {}", path, e);
+                eprintln!("Error writing {path}: {e}");
                 process::exit(1);
             }
         }
@@ -455,9 +455,9 @@ pub(crate) fn import_memories_from_file(
     path: &str,
 ) -> ImportSummary {
     let file_data = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| { eprintln!("Failed to read {}: {}", path, e); process::exit(1); });
+        .unwrap_or_else(|e| { eprintln!("Failed to read {path}: {e}"); process::exit(1); });
     let memories: Vec<serde_json::Value> = serde_json::from_str(&file_data)
-        .unwrap_or_else(|e| { eprintln!("Failed to parse JSON: {}", e); process::exit(1); });
+        .unwrap_or_else(|e| { eprintln!("Failed to parse JSON: {e}"); process::exit(1); });
 
     let existing_ids: std::collections::HashSet<uuid::Uuid> = sys.engine.store.all_memories()
         .unwrap_or_default().iter().map(|m| m.id).collect();
@@ -542,7 +542,7 @@ pub(crate) fn import_memories_from_file(
                     }
                     Err(e) => {
                         if errors < 5 {
-                            eprintln!("  Error absorbing {}: {}", id_str, e);
+                            eprintln!("  Error absorbing {id_str}: {e}");
                         }
                         errors += 1;
                         continue;
@@ -619,14 +619,14 @@ pub(crate) fn import_memories_from_file(
                         }
                         Err(e2) => {
                             if errors < 5 {
-                                eprintln!("  Error re-encoding {}: {}", id_str, e2);
+                                eprintln!("  Error re-encoding {id_str}: {e2}");
                             }
                             errors += 1;
                         }
                     }
                 } else {
                     if errors < 5 {
-                        eprintln!("  Error importing {}: {}", id_str, e);
+                        eprintln!("  Error importing {id_str}: {e}");
                     }
                     errors += 1;
                 }
@@ -637,7 +637,7 @@ pub(crate) fn import_memories_from_file(
     // Save
     if imported > 0 {
         if let Err(e) = sys.save() {
-            eprintln!("Failed to save: {}", e);
+            eprintln!("Failed to save: {e}");
             process::exit(1);
         }
         // #730: refresh Observatory's cached counts ONCE for the whole import.

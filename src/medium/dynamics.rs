@@ -718,8 +718,7 @@ impl Medium {
                     let energy = (self.store.energy[idx1] + self.store.energy[idx2]) / 2.0 * 0.8; // Slightly reduced
                     let phase = (self.store.phase[idx1] + self.store.phase[idx2]) / 2.0;
                     
-                    let content = format!("HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]", 
-                                         idx1, idx2, temperature);
+                    let content = format!("HALLUCINATION: superposition of patterns {idx1}-{idx2} [temp={temperature:.2}]");
                     
                     if self.add_wavefront(&new_vector, content, energy).is_ok() {
                         // Set the phase for the newly added wavefront

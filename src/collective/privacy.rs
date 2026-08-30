@@ -719,7 +719,7 @@ fn sha256_bytes(data: &[u8]) -> [u8; 32] {
 
 fn sha256_hex(data: &[u8]) -> String {
     let hash = sha256_bytes(data);
-    hash.iter().map(|b| format!("{:02x}", b)).collect()
+    hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Hashcash hash: H(nonce || glyph_hash || salt)
@@ -926,70 +926,70 @@ mod tests {
     fn test_auto_classify_public() {
         let mem = test_memory("Rust is a systems programming language");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty <= 8, "Technical content should be low difficulty, got {}", difficulty);
+        assert!(difficulty <= 8, "Technical content should be low difficulty, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_email() {
         let mem = test_memory("Contact alice@example.com for details");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 32, "Email should raise difficulty to 32+, got {}", difficulty);
+        assert!(difficulty >= 32, "Email should raise difficulty to 32+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_legal() {
         let mem = test_memory("The plaintiff filed a motion regarding the confidential settlement");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 48, "Legal content should raise difficulty to 48+, got {}", difficulty);
+        assert!(difficulty >= 48, "Legal content should raise difficulty to 48+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_financial() {
         let mem = test_memory("Account number 1234 5678 9012 3456 was compromised");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 40, "Financial data should raise difficulty to 40+, got {}", difficulty);
+        assert!(difficulty >= 40, "Financial data should raise difficulty to 40+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_api_key() {
         let mem = test_memory("Use the key sk-1234567890abcdef1234567890abcdef");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 48, "API keys should raise difficulty to 48+, got {}", difficulty);
+        assert!(difficulty >= 48, "API keys should raise difficulty to 48+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_file_paths() {
         let mem = test_memory("Check the config at /Users/nick/.ssh/id_rsa");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 20, "File paths should raise difficulty to 20+, got {}", difficulty);
+        assert!(difficulty >= 20, "File paths should raise difficulty to 20+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_ip_address() {
         let mem = test_memory("Server is at 192.168.1.100 on port 8080");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 20, "IP addresses should raise difficulty to 20+, got {}", difficulty);
+        assert!(difficulty >= 20, "IP addresses should raise difficulty to 20+, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_ssn() {
         let mem = test_memory("SSN: 123-45-6789");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 40, "SSN should raise difficulty significantly, got {}", difficulty);
+        assert!(difficulty >= 40, "SSN should raise difficulty significantly, got {difficulty}");
     }
 
     #[test]
     fn test_auto_classify_medical() {
         let mem = test_memory("Patient diagnosis indicates chronic condition, prescription required");
         let difficulty = suggest_difficulty(&mem, 0);
-        assert!(difficulty >= 32, "Medical terms should raise difficulty, got {}", difficulty);
+        assert!(difficulty >= 32, "Medical terms should raise difficulty, got {difficulty}");
     }
 
     #[test]
     fn test_agent_default_is_floor() {
         let mem = test_memory("Just a normal memory");
         let difficulty = suggest_difficulty(&mem, 20);
-        assert!(difficulty >= 20, "Agent default should be the floor, got {}", difficulty);
+        assert!(difficulty >= 20, "Agent default should be the floor, got {difficulty}");
     }
 
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
         let vector = vec![1.0f32; 700]; // 7 chunks of 100
         let proj = compute_fano_from_vector(&vector);
         let total: f64 = proj.iter().sum();
-        assert!((total - 1.0).abs() < 0.01, "Fano projection should be normalized, got {}", total);
+        assert!((total - 1.0).abs() < 0.01, "Fano projection should be normalized, got {total}");
     }
 
     #[test]

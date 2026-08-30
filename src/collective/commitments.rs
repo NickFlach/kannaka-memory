@@ -612,8 +612,7 @@ mod tests {
         let total: f64 = energies.iter().sum();
         assert!(
             (total - 1.0).abs() < 0.01,
-            "Fano energies should be normalized, got {}",
-            total
+            "Fano energies should be normalized, got {total}"
         );
     }
 
@@ -638,7 +637,7 @@ mod tests {
     #[test]
     fn test_commitment_display() {
         let (c, _) = PedersenCommitment::commit(42);
-        let s = format!("{}", c);
+        let s = format!("{c}");
         assert!(s.starts_with("C("));
         assert!(s.ends_with(")"));
     }
@@ -666,8 +665,7 @@ mod tests {
         for i in 0..7 {
             assert!(
                 commitments.fano[i].verify(&openings.fano[i]),
-                "Fano line {} commitment verification failed",
-                i
+                "Fano line {i} commitment verification failed"
             );
         }
     }

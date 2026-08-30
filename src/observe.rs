@@ -609,7 +609,7 @@ impl MemoryIntrospector {
             out.push_str("    Layers:\n");
             for (layer, count) in &report.topology.layer_distribution {
                 let bar = "#".repeat((*count).min(30));
-                out.push_str(&format!("      L{}: {:>4} {}\n", layer, count, bar));
+                out.push_str(&format!("      L{layer}: {count:>4} {bar}\n"));
             }
         }
         out.push_str(&format!("{}\n", "-".repeat(w + 4)));
@@ -643,7 +643,7 @@ impl MemoryIntrospector {
         if !report.health.warnings.is_empty() {
             out.push_str("    Warnings:\n");
             for w in &report.health.warnings {
-                out.push_str(&format!("      ! {}\n", w));
+                out.push_str(&format!("      ! {w}\n"));
             }
         }
 
@@ -734,7 +734,7 @@ mod tests {
         crate::wave::normalize(&mut v);
 
         for i in 0..4 {
-            let mut m = HyperMemory::new(v.clone(), format!("cluster_mem_{}", i));
+            let mut m = HyperMemory::new(v.clone(), format!("cluster_mem_{i}"));
             m.phase = 0.1;
             engine.store.insert(m).unwrap();
         }
@@ -770,13 +770,13 @@ mod tests {
         let kuramoto = KuramotoSync::default();
 
         for i in 0..5 {
-            engine.remember_at_layer(&format!("memory about topic {}", i), (i % 3) as u8).unwrap();
+            engine.remember_at_layer(&format!("memory about topic {i}"), (i % 3) as u8).unwrap();
         }
 
         let report = MemoryIntrospector::full_report(&engine, &bridge, &kuramoto);
         let formatted = MemoryIntrospector::format_report(&report);
 
-        println!("{}", formatted);
+        println!("{formatted}");
 
         assert!(!formatted.is_empty());
         assert!(formatted.contains("CONSCIOUSNESS"));

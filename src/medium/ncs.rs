@@ -965,10 +965,10 @@ mod tests {
         let gate = GateParams::default();
         // Low resonance → gate nearly closed
         let g_low = gate.gate_value(0.0, 0.0);
-        assert!(g_low < 0.2, "Low resonance should keep gate mostly closed, got {}", g_low);
+        assert!(g_low < 0.2, "Low resonance should keep gate mostly closed, got {g_low}");
         // High resonance → gate nearly open
         let g_high = gate.gate_value(1.0, 1.0);
-        assert!(g_high > 0.8, "High resonance should open gate, got {}", g_high);
+        assert!(g_high > 0.8, "High resonance should open gate, got {g_high}");
     }
 
     #[test]
@@ -1008,6 +1008,6 @@ mod tests {
 
         // Overlap with self should be 1.0
         let overlap = spec.overlap(&spec);
-        assert!((overlap - 1.0).abs() < 0.01, "Self-overlap should be ~1.0, got {}", overlap);
+        assert!((overlap - 1.0).abs() < 0.01, "Self-overlap should be ~1.0, got {overlap}");
     }
 }

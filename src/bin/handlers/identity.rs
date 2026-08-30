@@ -71,7 +71,7 @@ fn handle_register(args: &[String]) {
             } else if out.requires_verification {
                 println!("  \u{2713} Registered {} — email verification required.", out.email);
                 if let Some(m) = out.message {
-                    println!("  {}", m);
+                    println!("  {m}");
                 }
                 println!("  After verifying, run: kannaka identity login --email {}", out.email);
             } else {
@@ -463,7 +463,7 @@ fn print_whoami(user: &UserInfo, access_token: &str) {
         println!("  Verified: {}", if verified { "yes" } else { "no" });
     }
     if let Some(created) = &user.created_at {
-        println!("  Created:  {}", created);
+        println!("  Created:  {created}");
     }
     match identity::jwt_exp_unix(access_token)
         .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))

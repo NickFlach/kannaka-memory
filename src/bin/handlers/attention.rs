@@ -77,18 +77,17 @@ pub(crate) fn handle_attention_serve(
             // dead socket. The landmark/ear subscriptions below are best-effort
             // and already WARN on their own if NATS is only partially up.
             eprintln!(
-                "[attention serve] FATAL: NATS unavailable at {} ({}) — \
+                "[attention serve] FATAL: NATS unavailable at {nats_url} ({e}) — \
                  attention-as-gravity OFFLINE (no eye glyphs will be consumed); \
-                 exiting for supervisor restart",
-                nats_url, e
+                 exiting for supervisor restart"
             );
             process::exit(1);
         }
     };
 
-    eprintln!("[attention serve] subject={} top_k={}", subject, top_k);
+    eprintln!("[attention serve] subject={subject} top_k={top_k}");
     eprintln!("[attention serve] landmarks=KANNAKA.exemplar.>  (best-effort)");
-    eprintln!("[attention serve] nats={} press Ctrl+C to stop", nats_url);
+    eprintln!("[attention serve] nats={nats_url} press Ctrl+C to stop");
 
     let mut sub = match transport.subscribe(&subject) {
         Ok(s) => s,
@@ -188,12 +187,12 @@ pub(crate) fn handle_attention_serve(
                                 .unwrap_or("?");
                             let agent = env.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?");
                             if let (Some(id), Some(cid)) = (exemplar_id, cluster_id) {
-                                let label = format!("{}/{}", agent, cid);
+                                let label = format!("{agent}/{cid}");
                                 let weight = env.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
                                 beam.upsert_landmark(Landmark {
                                     id, cluster_label: label.clone(), weight,
                                 });
-                                eprintln!("[attention serve] landmark + {} theme=\"{}\"", label, theme);
+                                eprintln!("[attention serve] landmark + {label} theme=\"{theme}\"");
                             }
                         }
                     }
@@ -226,8 +225,8 @@ pub(crate) fn handle_attention_serve(
                             let commercial = env.get("track").and_then(|t| t.get("commercial")).and_then(|v| v.as_bool()).unwrap_or(false);
                             if !title.is_empty() && !commercial {
                                 let perc = env.get("perception").cloned().unwrap_or(serde_json::json!({}));
-                                let tempo = perc.get("tempo_bpm").and_then(|v| v.as_f64()).map(|v| format!(" tempo={:.0}", v)).unwrap_or_default();
-                                let query = format!("ear track \"{}\" album=\"{}\"{}", title, album, tempo);
+                                let tempo = perc.get("tempo_bpm").and_then(|v| v.as_f64()).map(|v| format!(" tempo={v:.0}")).unwrap_or_default();
+                                let query = format!("ear track \"{title}\" album=\"{album}\"{tempo}");
                                 let beam_cands = beam.candidates();
                                 let results = if beam_cands.len() >= 8 {
                                     sys.recall_with_beam(&beam_cands, &query, top_k).unwrap_or_default()
@@ -279,7 +278,7 @@ pub(crate) fn handle_attention_serve(
         let fold = glyph.get("fold_sequence").and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_u64()).take(8).map(|x| x.to_string()).collect::<Vec<_>>().join(","))
             .unwrap_or_default();
-        let query = format!("glyph dom={} fano=[{}] fold=[{}]", dom, fano, fold);
+        let query = format!("glyph dom={dom} fano=[{fano}] fold=[{fold}]");
 
         // Two-stage warmup: cold beam falls back to full recall; warm beam
         // (≥ 8 candidates) runs recall against the beam only — O(K) end to end.
@@ -297,7 +296,7 @@ pub(crate) fn handle_attention_serve(
             }
         };
 
-        let source = format!("eye:{}", hemisphere);
+        let source = format!("eye:{hemisphere}");
         for r in &results {
             let ev = ObservationEvent::now(r.id, source.clone());
             beam.observe(&ev);

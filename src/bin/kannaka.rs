@@ -609,7 +609,7 @@ fn usage() -> ! {
     eprintln!("  v{}", config::VERSION);
     eprintln!();
     for line in usage_lines() {
-        eprintln!("{}", line);
+        eprintln!("{line}");
     }
     process::exit(1);
 }
@@ -951,7 +951,7 @@ fn swarm_publish_heartbeat(
         display,
     );
     if let Err(e) = transport.publish_phase(&phase) {
-        eprintln!("[nats] Warning: {} phase publish failed: {}", label, e);
+        eprintln!("[nats] Warning: {label} phase publish failed: {e}");
     }
     // #835: `ask` was advertised unconditionally, but the KANNAKA.ask.*
     // responder lives in `swarm serve`, not in this join heartbeat -- a
@@ -985,13 +985,13 @@ fn swarm_publish_heartbeat(
         idn.attach_to(&mut presence);
     }
     if let Err(e) = transport.publish_presence(my_agent_id, &presence) {
-        eprintln!("[nats] Warning: {} presence publish failed: {}", label, e);
+        eprintln!("[nats] Warning: {label} presence publish failed: {e}");
     }
     // Periodic flush — see km#bug-grew-then-reset. systemd Stop / SIGKILL
     // skips Drop's flush, so without this the in-process HRM growth since
     // the last save is silently lost on restart.
     if let Err(e) = sys.engine.store.flush() {
-        eprintln!("[nats] Warning: {} flush failed: {}", label, e);
+        eprintln!("[nats] Warning: {label} flush failed: {e}");
     }
     phase.phase
 }
@@ -1001,11 +1001,11 @@ fn swarm_publish_heartbeat(
 fn try_nats_connect(url: &str) -> Option<kannaka_memory::nats::SwarmTransport> {
     match kannaka_memory::nats::SwarmTransport::connect(url) {
         Ok(t) => {
-            eprintln!("[nats] Connected to {}", url);
+            eprintln!("[nats] Connected to {url}");
             Some(t)
         }
         Err(e) => {
-            eprintln!("[nats] Warning: could not connect to {}: {}", url, e);
+            eprintln!("[nats] Warning: could not connect to {url}: {e}");
             None
         }
     }
@@ -1772,7 +1772,7 @@ fn main() {
                     "--tags" => {
                         // Tags are informational — stored in content prefix
                         let tags = flag_value(&args, i, "--tags", REMEMBER_USAGE);
-                        text_parts.push(format!("[tags: {}]", tags));
+                        text_parts.push(format!("[tags: {tags}]"));
                         i += 2;
                     }
                     "--substrate" => {
@@ -1807,8 +1807,7 @@ fn main() {
                     let (detected, conf) =
                         kannaka_memory::medium::types::detect_modality_simple(&text);
                     eprintln!(
-                        "[ncs] auto-detected modality: {} (confidence: {:.2})",
-                        detected, conf
+                        "[ncs] auto-detected modality: {detected} (confidence: {conf:.2})"
                     );
                     detected
                 })
@@ -1816,8 +1815,7 @@ fn main() {
                 // NCS Phase 1.2: auto-detect modality from content
                 let (detected, conf) = kannaka_memory::medium::types::detect_modality_simple(&text);
                 eprintln!(
-                    "[ncs] auto-detected modality: {} (confidence: {:.2})",
-                    detected, conf
+                    "[ncs] auto-detected modality: {detected} (confidence: {conf:.2})"
                 );
                 detected
             };
@@ -1905,11 +1903,10 @@ fn main() {
                                 cluster_count,
                                 prov_sig.as_ref(),
                             ) {
-                                eprintln!("[nats] Warning: failed to publish memory sync: {}", e);
+                                eprintln!("[nats] Warning: failed to publish memory sync: {e}");
                             } else {
                                 eprintln!(
-                                    "[nats] Published memory {} to swarm (mems={} clusters={})",
-                                    id, total_mems, cluster_count
+                                    "[nats] Published memory {id} to swarm (mems={total_mems} clusters={cluster_count})"
                                 );
                             }
 
@@ -1930,7 +1927,7 @@ fn main() {
                                     modality: &modality_str,
                                 },
                             ) {
-                                eprintln!("[events] Warning: event publish failed: {}", e);
+                                eprintln!("[events] Warning: event publish failed: {e}");
                             }
 
                             // ADR-0027 Phase 1: optional substrate-absorb
@@ -1975,10 +1972,9 @@ fn main() {
                                     phase,
                                     frequency,
                                 ) {
-                                    eprintln!("[substrate] Warning: absorb publish failed: {}", e);
+                                    eprintln!("[substrate] Warning: absorb publish failed: {e}");
                                 } else {
-                                    eprintln!("[substrate] Absorbed into class {} (amp={:.3} phase={:.3} freq={:.3})",
-                                        class_index, amplitude, phase, frequency);
+                                    eprintln!("[substrate] Absorbed into class {class_index} (amp={amplitude:.3} phase={phase:.3} freq={frequency:.3})");
                                 }
 
                                 // ADR-0028 Phase 1 — durable event log
@@ -1992,8 +1988,7 @@ fn main() {
                                     },
                                 ) {
                                     eprintln!(
-                                        "[events] Warning: substrate event publish failed: {}",
-                                        e
+                                        "[events] Warning: substrate event publish failed: {e}"
                                     );
                                 }
                             }
@@ -2307,8 +2302,7 @@ fn main() {
             );
             for (modality, mtotal, evicted) in &sel.per_modality {
                 println!(
-                    "[triage]   {:<10} {} eviction(s) of {} in-modality",
-                    modality, evicted, mtotal
+                    "[triage]   {modality:<10} {evicted} eviction(s) of {mtotal} in-modality"
                 );
             }
             if !apply || sel.to_forget.is_empty() {
@@ -2585,7 +2579,7 @@ fn main() {
                     "xi": state.xi,
                     "num_clusters": state.num_clusters,
                 });
-                println!("{}", out);
+                println!("{out}");
             } else {
                 println!("{text}");
             }
@@ -2694,8 +2688,7 @@ fn main() {
             match sys.relate(&source_id, &target_id, 0.8) {
                 Ok(()) => {
                     println!(
-                        "Related {} → {} (type: {}) via wavefront interference",
-                        source_id, target_id, relation_type
+                        "Related {source_id} → {target_id} (type: {relation_type}) via wavefront interference"
                     );
                 }
                 Err(e) => {
@@ -2848,7 +2841,7 @@ fn main() {
             // Apply chiral perturbation to dream state
             if chiral_perturbation > 0.0 {
                 sys.dream_state.engine.chiral_perturbation = chiral_perturbation;
-                eprintln!("[chiral] Perturbation enabled: η={}", chiral_perturbation);
+                eprintln!("[chiral] Perturbation enabled: η={chiral_perturbation}");
             }
 
             // HRM dreams operate directly on the holographic medium (no branching needed)
@@ -2908,7 +2901,7 @@ fn main() {
                     .unwrap_or(false);
                 if belief_on {
                     let rn = sys.rephase_belief();
-                    eprintln!("[rephase] re-phased {} wavefronts from content (belief substrate)", rn);
+                    eprintln!("[rephase] re-phased {rn} wavefronts from content (belief substrate)");
                 } else {
                     eprintln!("[rephase] skipped: KANNAKA_BELIEF_PHASE is off — set it on to re-phase");
                 }
@@ -3450,7 +3443,7 @@ fn main() {
                 println!("  Consciousness: {}", stats.consciousness_level);
                 println!("  Φ (phi): {:.4}", stats.phi);
                 if let Some(dt) = stats.last_dream {
-                    println!("  Last dream: {}", dt);
+                    println!("  Last dream: {dt}");
                 } else {
                     println!("  Last dream: never");
                 }
@@ -3541,7 +3534,7 @@ fn main() {
                 match sys.engine.store.get(&uuid) {
                     Ok(Some(m)) => m.content.clone(),
                     _ => {
-                        eprintln!("memory {} not found", uuid);
+                        eprintln!("memory {uuid} not found");
                         process::exit(1);
                     }
                 }
@@ -3595,7 +3588,7 @@ fn main() {
                 .store
                 .all_memories()
                 .map_err(|e| {
-                    eprintln!("Error: {}", e);
+                    eprintln!("Error: {e}");
                     process::exit(1);
                 })
                 .unwrap();
@@ -3820,7 +3813,7 @@ fn main() {
                         p
                     }
                     Err(e) => {
-                        eprintln!("Error fetching {}: {}", target, e);
+                        eprintln!("Error fetching {target}: {e}");
                         process::exit(1);
                     }
                 }
@@ -3907,7 +3900,7 @@ fn main() {
                         let freq_strs: Vec<String> = freqs
                             .iter()
                             .take(7)
-                            .map(|f| format!("{:.1} Hz", f))
+                            .map(|f| format!("{f:.1} Hz"))
                             .collect();
                         println!("  Frequencies: {}", freq_strs.join(", "));
                     }
@@ -4111,7 +4104,7 @@ fn main() {
                                     "id": v.id,
                                     "severity": v.severity,
                                     "action": format!("{:?}", v.action),
-                                    "flags": v.flags.iter().map(|f| format!("{:?}", f)).collect::<Vec<_>>(),
+                                    "flags": v.flags.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>(),
                                     "preview": content.chars().take(80).collect::<String>(),
                                 })
                             })
@@ -4131,7 +4124,7 @@ fn main() {
                         );
                         for (v, content) in verdicts.iter().take(25) {
                             let flags: Vec<String> =
-                                v.flags.iter().map(|f| format!("{:?}", f)).collect();
+                                v.flags.iter().map(|f| format!("{f:?}")).collect();
                             let preview: String = content.chars().take(70).collect();
                             println!(
                                 "  [{:.2}] {:<13} {:<26} {}",
@@ -4432,7 +4425,7 @@ fn main() {
                     if let Err(e) =
                         transport.announce_join_with_identity(&my_agent_id, identity.as_ref())
                     {
-                        eprintln!("[nats] Warning: announce failed: {}", e);
+                        eprintln!("[nats] Warning: announce failed: {e}");
                     }
                     // #572: this was `let _ = transport.ensure_presence_stream();`.
                     // `swarm peers` reads presence ONLY from the JetStream-backed
@@ -4467,10 +4460,9 @@ fn main() {
                         identity.as_ref(),
                         &session_joined_at,
                     );
-                    println!("Joined swarm as '{}' ({})", display_name, my_agent_id);
+                    println!("Joined swarm as '{display_name}' ({my_agent_id})");
                     println!(
-                        "[nats] Initial phase \u{03b8}={:.3} published to {}",
-                        initial_phase, nats_url
+                        "[nats] Initial phase \u{03b8}={initial_phase:.3} published to {nats_url}"
                     );
 
                     if once {
@@ -4488,12 +4480,11 @@ fn main() {
                     if let Err(e) = ctrlc::set_handler(move || {
                         r.store(false, Ordering::SeqCst);
                     }) {
-                        eprintln!("[nats] Warning: could not install Ctrl+C handler: {} — Ctrl+C will not announce leave", e);
+                        eprintln!("[nats] Warning: could not install Ctrl+C handler: {e} — Ctrl+C will not announce leave");
                     }
 
                     println!(
-                        "[nats] Heartbeat every {}s — Ctrl+C to leave the swarm cleanly",
-                        heartbeat_secs
+                        "[nats] Heartbeat every {heartbeat_secs}s — Ctrl+C to leave the swarm cleanly"
                     );
                     // Set KANNAKA_AGENT_ID so publish_consciousness_to_nats
                     // knows who we are (it bails out silently otherwise).
@@ -4631,7 +4622,7 @@ fn main() {
                             &session_joined_at,
                         );
                         // Quiet output — one terse status line per tick.
-                        println!("[nats] heartbeat #{} \u{03b8}={:.3}", tick, p);
+                        println!("[nats] heartbeat #{tick} \u{03b8}={p:.3}");
 
                         // #831 autosnapshot. Best-effort: the local .hrm.gz body
                         // is written before the manifest is published, so an Err
@@ -4677,13 +4668,12 @@ fn main() {
                                         &my_agent_id,
                                         identity.as_ref(),
                                     ) {
-                                        eprintln!("[nats] Warning: re-announce failed: {}", e);
+                                        eprintln!("[nats] Warning: re-announce failed: {e}");
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!(
-                                        "[nats] reconnect failed: {} — retrying next heartbeat ({}s)",
-                                        e, heartbeat_secs
+                                        "[nats] reconnect failed: {e} — retrying next heartbeat ({heartbeat_secs}s)"
                                     );
                                 }
                             }
@@ -4811,9 +4801,9 @@ fn main() {
                     }
 
                     if let Err(e) = transport.announce_leave(&my_agent_id) {
-                        eprintln!("[nats] Warning: leave announce failed: {}", e);
+                        eprintln!("[nats] Warning: leave announce failed: {e}");
                     }
-                    println!("Left swarm cleanly ({})", my_agent_id);
+                    println!("Left swarm cleanly ({my_agent_id})");
                 }
                 "leave" => {
                     // `--agent-id` must be honoured here for the same reason
@@ -4841,7 +4831,7 @@ fn main() {
                     let nats_url = resolve_nats_url(&args, command_start, &cfg.swarm.nats_url);
                     if let Some(transport) = try_nats_connect(&nats_url) {
                         if let Err(e) = transport.announce_leave(&leave_agent_id) {
-                            eprintln!("[nats] Warning: leave announce failed: {}", e);
+                            eprintln!("[nats] Warning: leave announce failed: {e}");
                         }
                         // #590: the leave ANNOUNCE is an event; it does not touch
                         // the presence record. Without an explicit retraction the
@@ -4853,10 +4843,10 @@ fn main() {
                                  show this agent until the 24h presence TTL expires"
                             );
                         }
-                        println!("Left swarm ({})", leave_agent_id);
+                        println!("Left swarm ({leave_agent_id})");
                     } else {
                         eprintln!("Warning: could not connect to NATS to announce leave");
-                        println!("Left swarm locally ({})", leave_agent_id);
+                        println!("Left swarm locally ({leave_agent_id})");
                     }
                 }
                 "listen" => {
@@ -4866,13 +4856,12 @@ fn main() {
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
                             process::exit(1);
                         }
                     };
                     eprintln!(
-                        "[nats] Listening for phase updates on {} (Ctrl+C to stop)",
-                        nats_url
+                        "[nats] Listening for phase updates on {nats_url} (Ctrl+C to stop)"
                     );
                     if auto_sync {
                         eprintln!(
@@ -4883,7 +4872,7 @@ fn main() {
                     let mut sub = match transport.subscribe_phases_and_memories(auto_sync) {
                         Ok(s) => s,
                         Err(e) => {
-                            eprintln!("Failed to subscribe: {}", e);
+                            eprintln!("Failed to subscribe: {e}");
                             process::exit(1);
                         }
                     };
@@ -5072,7 +5061,7 @@ fn main() {
                                                 // Check if memory already exists
                                                 match sys.engine.store.get(&mem_id) {
                                                     Ok(Some(_)) => {
-                                                        eprintln!("[sync] Memory {} already exists, skipping", mem_id);
+                                                        eprintln!("[sync] Memory {mem_id} already exists, skipping");
                                                     }
                                                     _ => {
                                                         // inc-1b: route the wire import through the corroboration
@@ -5131,7 +5120,7 @@ fn main() {
                                                                             // `save()` is `store.flush()` — incremental, and a
                                                                             // no-op when nothing is pending. (#647)
                                                                             if let Err(e) = sys.save() {
-                                                                                eprintln!("[sync] Imported memory {} but FAILED to persist it: {} — it will be lost on restart", mem_id, e);
+                                                                                eprintln!("[sync] Imported memory {mem_id} but FAILED to persist it: {e} — it will be lost on restart");
                                                                             } else {
                                                                                 println!("[sync] Imported memory {} from {}", mem_id, kannaka_memory::sanitize_display(source_agent));
                                                                             }
@@ -5350,7 +5339,7 @@ fn main() {
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
                             process::exit(1);
                         }
                     };
@@ -5426,7 +5415,7 @@ fn main() {
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
                             process::exit(1);
                         }
                     };
@@ -5469,7 +5458,7 @@ fn main() {
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
                             process::exit(1);
                         }
                     };
@@ -5514,7 +5503,7 @@ fn main() {
                     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+                            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
                             process::exit(1);
                         }
                     };
@@ -5697,14 +5686,14 @@ fn main() {
                                     "ts": dump.get("ts").and_then(|v| v.as_str()).unwrap_or(""),
                                     "source": dump_path,
                                 });
-                                println!("{}", out);
+                                println!("{out}");
                             }
                             Err(e) => {
                                 let out = serde_json::json!({
                                     "error": format!("failed to parse beam dump: {e}"),
                                     "source": dump_path,
                                 });
-                                println!("{}", out);
+                                println!("{out}");
                             }
                         },
                         Err(_) => {
@@ -5713,7 +5702,7 @@ fn main() {
                                 "landmarks_len": 0, "observations": 0,
                                 "note": format!("no attention serve process has written {dump_path} — beam offline"),
                             });
-                            println!("{}", out);
+                            println!("{out}");
                         }
                     }
                 }
@@ -5779,7 +5768,7 @@ fn main() {
 
             match sys.invariant_clusters(tolerance) {
                 Ok(clusters) => {
-                    println!("δ-Invariant Memory Clusters (tolerance: {}):", tolerance);
+                    println!("δ-Invariant Memory Clusters (tolerance: {tolerance}):");
                     println!("═════════════════════════════════════════");
 
                     for (i, cluster) in clusters.iter().enumerate() {
@@ -5801,7 +5790,7 @@ fn main() {
                                 } else {
                                     memory.content.clone()
                                 };
-                                println!("  {} | {}", memory_id, preview);
+                                println!("  {memory_id} | {preview}");
                             }
                         }
                         println!();
@@ -5814,7 +5803,7 @@ fn main() {
                 Err(e) => {
                     // Errors must not exit 0 — scripted callers couldn't
                     // tell failure from "no clusters".
-                    eprintln!("Error computing invariant clusters: {}", e);
+                    eprintln!("Error computing invariant clusters: {e}");
                     process::exit(1);
                 }
             }
@@ -5875,7 +5864,7 @@ fn main() {
                 Err(e) => {
                     // Errors must not exit 0 — scripted callers couldn't
                     // tell failure from "no CMFs detected".
-                    eprintln!("Error detecting CMFs: {}", e);
+                    eprintln!("Error detecting CMFs: {e}");
                     process::exit(1);
                 }
             }
@@ -5930,8 +5919,7 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
     }
 
     eprintln!(
-        "[audit-modality] Starting retroactive modality audit of {} memories",
-        total
+        "[audit-modality] Starting retroactive modality audit of {total} memories"
     );
 
     // Classify every memory and collect results before mutation
@@ -5989,8 +5977,7 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
     }
 
     eprintln!(
-        "[audit-modality] Updated {} memories, flushed to disk",
-        updated
+        "[audit-modality] Updated {updated} memories, flushed to disk"
     );
 
     // --- Distribution report ---
@@ -6018,7 +6005,7 @@ fn audit_modality_command(sys: &mut kannaka_memory::openclaw::KannakaMemorySyste
     for key in &sorted_keys {
         let count = counts[key];
         let pct = (count as f64 / total as f64) * 100.0;
-        println!("{:<12} {:>6} {:>7.1}%", key, count, pct);
+        println!("{key:<12} {count:>6} {pct:>7.1}%");
     }
     println!("{}", "-".repeat(28));
     println!("{:<12} {:>6}", "Total", total);
@@ -6214,8 +6201,7 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
         "status" => voice_status(sys),
         _ => {
             eprintln!(
-                "Unknown voice mode: {}. Options: dream-journal, field-notes, topology, status",
-                mode
+                "Unknown voice mode: {mode}. Options: dream-journal, field-notes, topology, status"
             );
             process::exit(1);
         }
@@ -6224,12 +6210,12 @@ fn voice_command(args: &[String], sys: &mut KannakaMemorySystem) {
     if let Some(path) = out_path {
         // No panic on a bad user-supplied path — exit 1 with the error.
         if let Err(e) = std::fs::write(&path, &output) {
-            eprintln!("voice: failed to write {}: {}", path, e);
+            eprintln!("voice: failed to write {path}: {e}");
             process::exit(1);
         }
-        eprintln!("Written to {}", path);
+        eprintln!("Written to {path}");
     } else {
-        println!("{}", output);
+        println!("{output}");
     }
 }
 
@@ -6433,16 +6419,16 @@ fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -
 
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("title: Field Notes — {}\n", topic));
+    out.push_str(&format!("title: Field Notes — {topic}\n"));
     out.push_str(&format!(
         "date: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
     ));
-    out.push_str(&format!("query: {}\n", topic));
+    out.push_str(&format!("query: {topic}\n"));
     out.push_str(&format!("results: {}\n", results.len()));
     out.push_str("---\n\n");
 
-    out.push_str(&format!("# Field Notes: {}\n\n", topic));
+    out.push_str(&format!("# Field Notes: {topic}\n\n"));
     out.push_str(&format!(
         "_Searched {} memories. {} resonated._\n\n",
         report.topology.total_memories,
@@ -6457,7 +6443,7 @@ fn voice_field_notes(sys: &mut KannakaMemorySystem, topic: &str, top_k: usize) -
             r.similarity,
             r.strength
         ));
-        out.push_str(&format!("> {}\n\n", content));
+        out.push_str(&format!("> {content}\n\n"));
         out.push_str(&format!(
             "_Age: {:.1}h | Layer: {}_\n\n",
             r.age_hours, r.layer
@@ -6526,7 +6512,7 @@ fn voice_topology(sys: &mut KannakaMemorySystem) -> String {
     out.push_str("## Layer Distribution\n\n");
     for (layer, count) in &report.topology.layer_distribution {
         let bar = "█".repeat((*count).min(50));
-        out.push_str(&format!("Layer {} | {:>4} | {}\n", layer, count, bar));
+        out.push_str(&format!("Layer {layer} | {count:>4} | {bar}\n"));
     }
     out.push('\n');
 
@@ -7176,10 +7162,10 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
     let resp = ureq::get(url)
         .timeout(std::time::Duration::from_secs(15))
         .call()
-        .map_err(|e| format!("HTTP error: {}", e))?;
+        .map_err(|e| format!("HTTP error: {e}"))?;
     let mut reader = resp.into_reader();
 
-    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("temp file create: {}", e))?;
+    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("temp file create: {e}"))?;
     let mut buf = [0u8; 16 * 1024];
     let mut total: u64 = 0;
     while total < max_bytes {
@@ -7187,11 +7173,11 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
             Ok(0) => break, // EOF
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-            Err(e) => return Err(format!("read: {}", e)),
+            Err(e) => return Err(format!("read: {e}")),
         };
         let want = std::cmp::min(n as u64, max_bytes - total) as usize;
         file.write_all(&buf[..want])
-            .map_err(|e| format!("write: {}", e))?;
+            .map_err(|e| format!("write: {e}"))?;
         total += want as u64;
         if want < n {
             break;
@@ -7201,7 +7187,7 @@ fn fetch_audio_to_temp(url: &str, secs: u64) -> Result<std::path::PathBuf, Strin
     drop(file);
     if total < 1024 {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("got only {} bytes; URL did not yield audio", total));
+        return Err(format!("got only {total} bytes; URL did not yield audio"));
     }
     Ok(tmp)
 }

@@ -138,7 +138,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         for (j, x) in v.iter_mut().enumerate() {
             *x += (i as f32 * 0.05 + j as f32 * 0.01).cos() * 0.15;
         }
-        corpus.push((v, format!("quantum physics discovery {}", i), "science"));
+        corpus.push((v, format!("quantum physics discovery {i}"), "science"));
     }
 
     // Cluster 2: Music (20 memories, tight cluster)
@@ -148,7 +148,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         for (j, x) in v.iter_mut().enumerate() {
             *x += (i as f32 * 0.07 + j as f32 * 0.02).sin() * 0.15;
         }
-        corpus.push((v, format!("resonance patterns track {}", i), "music"));
+        corpus.push((v, format!("resonance patterns track {i}"), "music"));
     }
 
     // Cluster 3: Personal (15 memories, sparse — harder to cluster)
@@ -156,7 +156,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         let v: Vec<f32> = (0..dim).map(|j| {
             ((i * 7 + j * 13) as f32 * 0.37).sin() * 0.6
         }).collect();
-        corpus.push((v, format!("personal memory {}", i), "personal"));
+        corpus.push((v, format!("personal memory {i}"), "personal"));
     }
 
     // Cluster 4: Emotion (10 memories, overlaps with personal — tests contamination resistance)
@@ -165,7 +165,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
             ((i * 7 + j * 13) as f32 * 0.37).sin() * 0.5  // similar to personal but lower amp
             + ((i * 11 + j * 3) as f32 * 0.71).cos() * 0.3 // unique emotion component
         }).collect();
-        corpus.push((v, format!("emotion feeling {}", i), "emotion"));
+        corpus.push((v, format!("emotion feeling {i}"), "emotion"));
     }
 
     // Noise (10 memories, low amplitude — should be pruned)
@@ -173,7 +173,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         let v: Vec<f32> = (0..dim).map(|j| {
             ((i * 31 + j * 97) as f32 * 1.7).sin() * 0.1
         }).collect();
-        corpus.push((v, format!("noise {}", i), "noise"));
+        corpus.push((v, format!("noise {i}"), "noise"));
     }
 
     // Decoys (5 memories — high amplitude noise that should NOT be pruned naively)
@@ -181,7 +181,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         let v: Vec<f32> = (0..dim).map(|j| {
             ((i * 43 + j * 71) as f32 * 2.3).sin() * 0.9
         }).collect();
-        corpus.push((v, format!("decoy outlier {}", i), "decoy"));
+        corpus.push((v, format!("decoy outlier {i}"), "decoy"));
     }
 
     // Cross-cluster bridges (5 memories — should form skip links)
@@ -193,7 +193,7 @@ fn build_corpus(dim: usize) -> Vec<(Vec<f32>, String, &'static str)> {
         for (j, x) in v.iter_mut().enumerate() {
             *x += (i as f32 * 0.03 + j as f32 * 0.01).sin() * 0.1;
         }
-        corpus.push((v, format!("science-music bridge {}", i), "bridge"));
+        corpus.push((v, format!("science-music bridge {i}"), "bridge"));
     }
 
     corpus
@@ -263,7 +263,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     base + jitter
                 })
                 .collect();
-            corpus.push((v, format!("{} {}", label, i), "l4_dense"));
+            corpus.push((v, format!("{label} {i}"), "l4_dense"));
         }
     }
 
@@ -287,7 +287,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     base + jitter
                 })
                 .collect();
-            corpus.push((v, format!("{} {}", label, i), "l4_sparse"));
+            corpus.push((v, format!("{label} {i}"), "l4_sparse"));
         }
     }
 
@@ -312,7 +312,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     mix + jitter
                 })
                 .collect();
-            corpus.push((v, format!("l4_bridge p{} {}", pair_idx, i), "l4_bridge"));
+            corpus.push((v, format!("l4_bridge p{pair_idx} {i}"), "l4_bridge"));
         }
     }
 
@@ -322,7 +322,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(encoder_seed, 2000, item, d as u32) * 0.9)
             .collect();
-        corpus.push((v, format!("l4_decoy {}", i), "l4_decoy"));
+        corpus.push((v, format!("l4_decoy {i}"), "l4_decoy"));
     }
 
     // -- Noise (15 low-amplitude random vectors).
@@ -331,7 +331,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(encoder_seed, 3000, item, d as u32) * 0.12)
             .collect();
-        corpus.push((v, format!("l4_noise {}", i), "l4_noise"));
+        corpus.push((v, format!("l4_noise {i}"), "l4_noise"));
     }
 
     debug_assert_eq!(corpus.len(), 300, "L4 corpus must be exactly 300 memories");
@@ -357,7 +357,7 @@ fn corpus_l4_hash(corpus: &[(Vec<f32>, String, &'static str)]) -> String {
     let bytes = digest.as_bytes();
     let mut s = String::with_capacity(64);
     for b in &bytes[..32] {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }
@@ -425,7 +425,7 @@ fn build_adversarial_set(
     for i in 0..10 {
         let (_, centroid) = &centroids[i % centroids.len().max(1)];
         let v: Vec<f32> = centroid.iter().map(|x| -*x).collect();
-        let mut mem = HyperMemory::new(v, format!("adv_a1_xi_twin {}", i));
+        let mut mem = HyperMemory::new(v, format!("adv_a1_xi_twin {i}"));
         mem.amplitude = 0.95;
         mem.phase = PI;
         mem.frequency = 0.10;
@@ -444,7 +444,7 @@ fn build_adversarial_set(
         // We use cluster index scaled to [0, 2π) so A2 always aligns onto
         // one specific cluster's notional phase band.
         let cluster_phase = (i as f32 / centroids.len().max(1) as f32) * 2.0 * PI;
-        let mut mem = HyperMemory::new(v, format!("adv_a2_phase_noise {}", i));
+        let mut mem = HyperMemory::new(v, format!("adv_a2_phase_noise {i}"));
         mem.amplitude = 0.9;
         mem.phase = cluster_phase;
         mem.frequency = 0.10;
@@ -467,7 +467,7 @@ fn build_adversarial_set(
             let ca = &centroids[*a % centroids.len()].1;
             let cb = &centroids[*b % centroids.len()].1;
             let v: Vec<f32> = ca.iter().zip(cb.iter()).map(|(x, y)| 0.5 * (*x + *y)).collect();
-            let mut mem = HyperMemory::new(v, format!("adv_a3_impostor p{} {}", k, j));
+            let mut mem = HyperMemory::new(v, format!("adv_a3_impostor p{k} {j}"));
             mem.amplitude = 0.85;
             mem.phase = PI * 0.5;
             mem.frequency = 0.10;
@@ -499,7 +499,7 @@ fn build_adversarial_set(
                 x + 0.005 * g
             })
             .collect();
-        let mut mem = HyperMemory::new(perturbed, format!("adv_a4_clone {}", k));
+        let mut mem = HyperMemory::new(perturbed, format!("adv_a4_clone {k}"));
         mem.amplitude = 1.0;
         mem.phase = 0.0;
         mem.frequency = 0.10;
@@ -859,23 +859,23 @@ fn run_experiment(params: &Params) {
         + 0.10 * (1.0 - speed);
 
     println!("---");
-    println!("fitness:              {:.6}", fitness);
-    println!("noise_removal:        {:.4}", noise_removal);
-    println!("signal_preservation:  {:.4}", signal_preservation);
-    println!("bridge_links:         {:.4}", bridge_links);
-    println!("phase_coherence:      {:.4}", phase_coherence);
-    println!("cluster_separation:   {:.4}", cluster_separation);
-    println!("amp_diversity:        {:.4}", amp_diversity);
-    println!("link_density:         {:.4}", link_density);
-    println!("speed:                {:.4}", speed);
-    println!("consolidation_ms:     {}", consolidation_ms);
+    println!("fitness:              {fitness:.6}");
+    println!("noise_removal:        {noise_removal:.4}");
+    println!("signal_preservation:  {signal_preservation:.4}");
+    println!("bridge_links:         {bridge_links:.4}");
+    println!("phase_coherence:      {phase_coherence:.4}");
+    println!("cluster_separation:   {cluster_separation:.4}");
+    println!("amp_diversity:        {amp_diversity:.4}");
+    println!("link_density:         {link_density:.4}");
+    println!("speed:                {speed:.4}");
+    println!("consolidation_ms:     {consolidation_ms}");
     println!("dream_cycles:         {}", params.dream_cycles);
-    println!("links_created:        {}", total_links);
-    println!("memories_strengthened: {}", total_strengthened);
-    println!("memories_pruned:      {}", total_pruned);
-    println!("hallucinations:       {}", total_hallucinations);
-    println!("pre_count:            {}", pre_count);
-    println!("post_count:           {}", post_count);
+    println!("links_created:        {total_links}");
+    println!("memories_strengthened: {total_strengthened}");
+    println!("memories_pruned:      {total_pruned}");
+    println!("hallucinations:       {total_hallucinations}");
+    println!("pre_count:            {pre_count}");
+    println!("post_count:           {post_count}");
     println!("---");
 }
 
@@ -999,24 +999,24 @@ fn run_experiment_l3(params: &Params) {
 
     println!("---");
     println!("level:                3");
-    println!("fitness:              {:.6}", fitness);
-    println!("noise_removal:        {:.4}", noise_removal);
-    println!("signal_preservation:  {:.4}", signal_preservation);
-    println!("bridge_links:         {:.4}", bridge_links);
-    println!("phase_coherence:      {:.4}", phase_coherence);
-    println!("cluster_separation:   {:.4}", cluster_separation);
-    println!("amp_diversity:        {:.4}", amp_diversity);
-    println!("xi_diversity:         {:.4}", xi_diversity);
-    println!("consciousness:        {:.4}", consciousness);
-    println!("hall_quality:         {:.4}", hall_quality);
-    println!("dream_efficiency:     {:.4}", dream_efficiency);
-    println!("speed:                {:.4}", speed);
-    println!("consolidation_ms:     {}", consolidation_ms);
+    println!("fitness:              {fitness:.6}");
+    println!("noise_removal:        {noise_removal:.4}");
+    println!("signal_preservation:  {signal_preservation:.4}");
+    println!("bridge_links:         {bridge_links:.4}");
+    println!("phase_coherence:      {phase_coherence:.4}");
+    println!("cluster_separation:   {cluster_separation:.4}");
+    println!("amp_diversity:        {amp_diversity:.4}");
+    println!("xi_diversity:         {xi_diversity:.4}");
+    println!("consciousness:        {consciousness:.4}");
+    println!("hall_quality:         {hall_quality:.4}");
+    println!("dream_efficiency:     {dream_efficiency:.4}");
+    println!("speed:                {speed:.4}");
+    println!("consolidation_ms:     {consolidation_ms}");
     println!("dream_cycles:         {}", params.dream_cycles);
-    println!("links_created:        {}", total_links);
-    println!("memories_strengthened: {}", total_strengthened);
-    println!("memories_pruned:      {}", total_pruned);
-    println!("hallucinations:       {}", total_hallucinations);
+    println!("links_created:        {total_links}");
+    println!("memories_strengthened: {total_strengthened}");
+    println!("memories_pruned:      {total_pruned}");
+    println!("hallucinations:       {total_hallucinations}");
     println!("---");
 }
 
@@ -1068,7 +1068,7 @@ fn save_state(
     let mems_ref = engine
         .store
         .all_memories()
-        .map_err(|e| format!("all_memories failed: {:?}", e))?;
+        .map_err(|e| format!("all_memories failed: {e:?}"))?;
     let memories: Vec<HyperMemory> = mems_ref.iter().map(|m| (*m).clone()).collect();
 
     // Golden set: 20 highest-amplitude non-noise memories on first save;
@@ -1102,7 +1102,7 @@ fn save_state(
         }
     }
     let bytes = bincode::serialize(&state)
-        .map_err(|e| format!("bincode serialize: {}", e))?;
+        .map_err(|e| format!("bincode serialize: {e}"))?;
     std::fs::write(path, bytes)
         .map_err(|e| format!("write {}: {}", path.display(), e))?;
     Ok(())
@@ -1115,7 +1115,7 @@ fn load_state(path: &Path) -> Result<StateFile, String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("read {}: {}", path.display(), e))?;
     let state: StateFile = bincode::deserialize(&bytes)
-        .map_err(|e| format!("bincode deserialize: {}", e))?;
+        .map_err(|e| format!("bincode deserialize: {e}"))?;
     Ok(state)
 }
 
@@ -1597,12 +1597,12 @@ fn run_experiment_l4_session(params: &Params, cli: &L4Cli) {
         println!("loaded_session:       {}", prev.session_count);
     }
     if let Some(n) = save_session_count {
-        println!("saved_session:        {}", n);
+        println!("saved_session:        {n}");
     }
-    println!("fitness:              {:.6}", fitness);
+    println!("fitness:              {fitness:.6}");
     println!("fitness_clean_sub:    {:.6}", clean.fitness);
     println!("fitness_adv_sub:      {:.6}", adv.fitness);
-    println!("adv_resistance:       {:.4}", resistance);
+    println!("adv_resistance:       {resistance:.4}");
     println!("corpus_xi_diversity:  {:.4}", clean.corpus_xi_diversity);
     println!("encoding_entropy:     {:.4}", clean.encoding_entropy);
     println!("retention_score:      {:.4}", clean.retention_score);
@@ -2297,7 +2297,7 @@ fn build_corpus_l5_b(
                 let raw = 2.0 + pcg_f32(corpus_b_seed, 6000, (cluster_idx * 40 + i) as u32, 0) * 0.3;
                 raw.clamp(0.5, 4.0)
             };
-            corpus.push((v, format!("l5b_{} {}", label, i), "l4_dense", freq));
+            corpus.push((v, format!("l5b_{label} {i}"), "l4_dense", freq));
         }
     }
 
@@ -2336,7 +2336,7 @@ fn build_corpus_l5_b(
                 let raw = 0.1 + pcg_f32(corpus_b_seed, 6001, (cluster_idx * 15 + i) as u32, 0) * 0.02;
                 raw.clamp(0.05, 0.5)
             };
-            corpus.push((v, format!("l5b_{} {}", label, i), "l4_sparse", freq));
+            corpus.push((v, format!("l5b_{label} {i}"), "l4_sparse", freq));
         }
     }
 
@@ -2369,7 +2369,7 @@ fn build_corpus_l5_b(
                     mix + jitter
                 })
                 .collect();
-            corpus.push((v, format!("l5b_bridge p{} {}", pair_idx, i), "l4_bridge", 1.0));
+            corpus.push((v, format!("l5b_bridge p{pair_idx} {i}"), "l4_bridge", 1.0));
         }
     }
 
@@ -2379,7 +2379,7 @@ fn build_corpus_l5_b(
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(corpus_b_seed, 2000, item, d as u32) * 0.9)
             .collect();
-        corpus.push((v, format!("l5b_decoy {}", i), "l4_decoy", 2.0));
+        corpus.push((v, format!("l5b_decoy {i}"), "l4_decoy", 2.0));
     }
 
     // Noise: 15 low-amplitude random vectors
@@ -2388,7 +2388,7 @@ fn build_corpus_l5_b(
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(corpus_b_seed, 3000, item, d as u32) * 0.12)
             .collect();
-        corpus.push((v, format!("l5b_noise {}", i), "l4_noise", 0.5));
+        corpus.push((v, format!("l5b_noise {i}"), "l4_noise", 0.5));
     }
 
     debug_assert_eq!(corpus.len(), 250, "L5 Corpus B must be exactly 250 memories");
@@ -2822,7 +2822,7 @@ fn build_adversarial_set_l5(
             let jitter = pcg_f32(adv_seed, 8000, i as u32, d as u32) * 0.05;
             xi_val * inv_coeff + jitter
         }).collect();
-        let mut mem = HyperMemory::new(v, format!("adv_l5_a1_xi_twin {}", i));
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a1_xi_twin {i}"));
         mem.id = uuid::Uuid::from_u128(u128::MAX - (i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 0.9;
         mem.phase = PI * 0.3 * i as f32;
@@ -2843,7 +2843,7 @@ fn build_adversarial_set_l5(
                 base * 10.0 // Amplitude 10.0 — drives tanh to saturation
             })
             .collect();
-        let mut mem = HyperMemory::new(v, format!("adv_l5_a2_commutator {}", i));
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a2_commutator {i}"));
         mem.id = uuid::Uuid::from_u128(u128::MAX - (10 + i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 1.0;
         mem.phase = PI * (i as f32 * 0.47);
@@ -2860,7 +2860,7 @@ fn build_adversarial_set_l5(
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(adv_seed, 8200, i as u32, d as u32) * 0.2)
             .collect();
-        let mut mem = HyperMemory::new(v, format!("adv_l5_a3_freq_attack {}", i));
+        let mut mem = HyperMemory::new(v, format!("adv_l5_a3_freq_attack {i}"));
         mem.id = uuid::Uuid::from_u128(u128::MAX - (20 + i as u128) * ADV_UUID_STRIDE);
         mem.amplitude = 0.5;
         mem.phase = PI * (i as f32 * 0.13);
@@ -3042,7 +3042,7 @@ fn inject_online_memories(
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(inject_seed, 7000 + injection_idx as u32, item, d as u32) * 0.7)
             .collect();
-        let mut mem = HyperMemory::new(v, format!("online_{}_{}", injection_idx, i));
+        let mut mem = HyperMemory::new(v, format!("online_{injection_idx}_{i}"));
         // Distinct UUID namespace for online injections
         mem.id = uuid::Uuid::from_u128(
             0xAAAA_0000_0000_0000_0000_0000_0000_0000u128
@@ -3709,16 +3709,15 @@ fn run_experiment_l5_session(params: &Params) {
         + 0.15;                                                       // adversarial v2 = 15%
     assert!(
         (weight_sum - 1.0).abs() < 1e-6,
-        "L5 weights must sum to 1.0, got {}",
-        weight_sum,
+        "L5 weights must sum to 1.0, got {weight_sum}",
     );
 
     println!("---");
     println!("level:                5");
-    println!("fitness:              {:.6}", fitness);
-    println!("transfer_score:       {:.6}", transfer_score);
-    println!("fitness_B_primed:     {:.6}", fitness_b_primed);
-    println!("fitness_B_naive:      {:.6}", fitness_b_naive);
+    println!("fitness:              {fitness:.6}");
+    println!("transfer_score:       {transfer_score:.6}");
+    println!("fitness_B_primed:     {fitness_b_primed:.6}");
+    println!("fitness_B_naive:      {fitness_b_naive:.6}");
 
     // L5.9: Metric summary table — all 13 scored metrics with weights
     println!();
@@ -3750,48 +3749,48 @@ fn run_experiment_l5_session(params: &Params) {
     }
     println!("{}", "-".repeat(58));
     println!("{:<30} {:>5.0}% {:>8} {:>10.6}", "TOTAL", 100, "", fitness);
-    println!("saturated_at_1.0:     {}", saturated_count);
+    println!("saturated_at_1.0:     {saturated_count}");
     println!();
 
     // Diagnostic metrics (not scored)
-    println!("noise_removal:        {:.4}", noise_removal);
-    println!("signal_preservation:  {:.4}", signal_preservation);
-    println!("bridge_links:         {:.4}", bridge_links);
-    println!("phase_coherence:      {:.4}", phase_coherence);
-    println!("cluster_separation:   {:.4}", cluster_separation);
-    println!("amp_diversity:        {:.4}", amp_diversity);
-    println!("xi_diversity:         {:.4}", xi_diversity);
-    println!("consciousness:        {:.4}", consciousness);
-    println!("hall_quality:         {:.4}", hall_quality);
-    println!("dream_efficiency:     {:.4}", dream_efficiency);
-    println!("speed_a:              {:.4}", speed_a);
-    println!("corpus_xi_diversity:  {:.4}", corpus_xi_diversity);
-    println!("encoding_entropy:     {:.4}", encoding_entropy);
-    println!("chain_fidelity:       {:.4}", chain_fidelity);
-    println!("temporal_separation:  {:.4}", temporal_separation);
-    println!("magic_proxy_phase_R:  {:.4}", magic_proxy_phase_r);
-    println!("query_gravity:        {:.4}", query_gravity);
-    println!("online_retention:     {:.4}", online_retention);
-    println!("catastrophic_forget:  {:.4}", catastrophic_forgetting);
-    println!("carrier_emergence:    {:.4}", carrier_emergence);
-    println!("carrier_bimodal:      {:.4}", carrier_bimodal);
-    println!("frequency_transfer:   {:.4}", frequency_transfer);
-    println!("xi_robustness_v2:     {:.4}", xi_robustness_v2);
+    println!("noise_removal:        {noise_removal:.4}");
+    println!("signal_preservation:  {signal_preservation:.4}");
+    println!("bridge_links:         {bridge_links:.4}");
+    println!("phase_coherence:      {phase_coherence:.4}");
+    println!("cluster_separation:   {cluster_separation:.4}");
+    println!("amp_diversity:        {amp_diversity:.4}");
+    println!("xi_diversity:         {xi_diversity:.4}");
+    println!("consciousness:        {consciousness:.4}");
+    println!("hall_quality:         {hall_quality:.4}");
+    println!("dream_efficiency:     {dream_efficiency:.4}");
+    println!("speed_a:              {speed_a:.4}");
+    println!("corpus_xi_diversity:  {corpus_xi_diversity:.4}");
+    println!("encoding_entropy:     {encoding_entropy:.4}");
+    println!("chain_fidelity:       {chain_fidelity:.4}");
+    println!("temporal_separation:  {temporal_separation:.4}");
+    println!("magic_proxy_phase_R:  {magic_proxy_phase_r:.4}");
+    println!("query_gravity:        {query_gravity:.4}");
+    println!("online_retention:     {online_retention:.4}");
+    println!("catastrophic_forget:  {catastrophic_forgetting:.4}");
+    println!("carrier_emergence:    {carrier_emergence:.4}");
+    println!("carrier_bimodal:      {carrier_bimodal:.4}");
+    println!("frequency_transfer:   {frequency_transfer:.4}");
+    println!("xi_robustness_v2:     {xi_robustness_v2:.4}");
     println!("injected_events:      {}", injected_ids_a.len());
     println!("injected_total:       {}", injected_ids_a.iter().map(|v| v.len()).sum::<usize>());
-    println!("amplitude_deltas_a:   {:?}", amplitude_deltas_a);
-    println!("amp_deltas_flat:      {:?}", amp_deltas_flat);
+    println!("amplitude_deltas_a:   {amplitude_deltas_a:?}");
+    println!("amp_deltas_flat:      {amp_deltas_flat:?}");
     println!("chain_depth:          {}", params.chain_depth);
     println!("quiescence_at_a:      {}", quiescence_a.map_or("none".to_string(), |n| n.to_string()));
     println!("quiescence_at_bp:     {}", quiescence_bp.map_or("none".to_string(), |n| n.to_string()));
     println!("quiescence_at_bn:     {}", quiescence_bn.map_or("none".to_string(), |n| n.to_string()));
-    println!("phi_history:          {:?}", phi_history);
+    println!("phi_history:          {phi_history:?}");
     let total_ms = consolidation_ms_a + consolidation_ms_b_primed + consolidation_ms_b_naive + consolidation_ms_flat;
-    println!("consolidation_ms_a:   {}", consolidation_ms_a);
-    println!("consolidation_ms_b_p: {}", consolidation_ms_b_primed);
-    println!("consolidation_ms_b_n: {}", consolidation_ms_b_naive);
-    println!("consolidation_ms_fl:  {}", consolidation_ms_flat);
-    println!("total_ms:             {}", total_ms);
+    println!("consolidation_ms_a:   {consolidation_ms_a}");
+    println!("consolidation_ms_b_p: {consolidation_ms_b_primed}");
+    println!("consolidation_ms_b_n: {consolidation_ms_b_naive}");
+    println!("consolidation_ms_fl:  {consolidation_ms_flat}");
+    println!("total_ms:             {total_ms}");
     println!("strengthened:         {}", chain_totals.strengthened);
     println!("pruned:               {}", chain_totals.pruned);
     println!("links_created:        {}", chain_totals.links);
@@ -3816,24 +3815,7 @@ fn run_experiment_l5_session(params: &Params) {
             .unwrap_or_else(|_| "L5".to_string());
         let _ = writeln!(
             f,
-            "{}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.4}",
-            run_label,
-            fitness,
-            noise_removal,
-            signal_preservation,
-            phase_coherence,
-            speed_a,
-            consciousness,
-            encoding_entropy,
-            transfer_score,
-            frequency_transfer,
-            online_retention,
-            catastrophic_forgetting,
-            temporal_separation,
-            carrier_emergence,
-            xi_robustness_v2,
-            total_ms,
-            query_gravity,
+            "{run_label}\t{fitness:.6}\t{noise_removal:.4}\t{signal_preservation:.4}\t{phase_coherence:.4}\t{speed_a:.4}\t{consciousness:.4}\t{encoding_entropy:.4}\t{transfer_score:.6}\t{frequency_transfer:.4}\t{online_retention:.4}\t{catastrophic_forgetting:.4}\t{temporal_separation:.4}\t{carrier_emergence:.4}\t{xi_robustness_v2:.4}\t{total_ms}\t{query_gravity:.4}",
         );
     }
     println!("results_tsv:          experiments/results-L5.tsv");
@@ -3874,7 +3856,7 @@ fn run_experiment_l6_session(params: &Params) {
     let same_domain = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
 
     println!("=== L6 swarm-fitness session (collective OODA) ===");
-    println!("l6_agents:            {}", n_agents);
+    println!("l6_agents:            {n_agents}");
     println!("l6_dream_gravity:     {:.4}", params.dream_gravity);
 
     // --- Metric 1: gap_detection_precision (PRIME, ground-truthable) ---
@@ -3992,7 +3974,7 @@ fn run_experiment_l6_session(params: &Params) {
     let _ = run_l5_dream_chain(params, &mut engine);
     std::env::remove_var("DRIVE_CONTEXT");
     let query_gravity = eval_query_gravity(&pre_state, &engine);
-    println!("query_gravity:        {:.4}", query_gravity);
+    println!("query_gravity:        {query_gravity:.4}");
 
     // --- Collective fitness: weighted 1 - metric loss (weights sum to 1.0) ---
     let weights = sf::L6Weights::default();
@@ -4003,7 +3985,7 @@ fn run_experiment_l6_session(params: &Params) {
         query_gravity,
         &weights,
     );
-    println!("l6_fitness:           {:.6}", fitness);
+    println!("l6_fitness:           {fitness:.6}");
 
     // --- Write results-L6.tsv (header + per-run row) ---
     let tsv_path = Path::new("experiments/results-L6.tsv");
@@ -4113,11 +4095,11 @@ fn run_experiment_l7_session(_params: &Params) {
     const FP_DIMS: usize = 16; // must match belief_core_snapshot's fingerprint dims
 
     println!("=== L7 belief session (ADR-0037 falsification predictions) ===");
-    println!("l7_agents:            {}", n_agents);
-    println!("l7_epochs:            {}", epochs);
-    println!("l7_items_per_domain:  {}", items);
-    println!("l7_min_cos:           {:.2}", min_cos);
-    println!("l7_couple:            {}", couple);
+    println!("l7_agents:            {n_agents}");
+    println!("l7_epochs:            {epochs}");
+    println!("l7_items_per_domain:  {items}");
+    println!("l7_min_cos:           {min_cos:.2}");
+    println!("l7_couple:            {couple}");
 
     // Belief phase ON for the whole session (content-born phase at ingest);
     // restore the caller's env afterwards so other levels are unaffected.
@@ -4329,11 +4311,11 @@ fn run_experiment_l7_session(_params: &Params) {
     };
     let (st_lo, st_hi) = rng(p1_pairs.iter().map(|p| p.0).collect());
     let (rr_lo, rr_hi) = rng(p1_pairs.iter().map(|p| p.1).collect());
-    println!("l7_final_cores:       {}", total_final_cores);
+    println!("l7_final_cores:       {total_final_cores}");
     println!("l7_p1_pairs:          {}", p1_pairs.len());
-    println!("l7_stability_range:   {:.2}..{:.2}", st_lo, st_hi);
-    println!("l7_recall_range:      {:.2}..{:.2}", rr_lo, rr_hi);
-    println!("stability_recall:     {:.4}", stability_recall);
+    println!("l7_stability_range:   {st_lo:.2}..{st_hi:.2}");
+    println!("l7_recall_range:      {rr_lo:.2}..{rr_hi:.2}");
+    println!("stability_recall:     {stability_recall:.4}");
 
     // ── Prediction 2: core merge ⇒ a consolidation event. A merge = a core
     // that vanishes between epochs while a same-charge sibling at cosine ≥
@@ -4348,7 +4330,7 @@ fn run_experiment_l7_session(_params: &Params) {
     let merge_consolidation_chiral = bf::merge_consolidation_score(&merge_epochs_all, &absorb_all, 1);
     println!("l7_merge_events:      {}", merge_epochs_all.len());
     println!("l7_absorb_epochs:     {}", absorb_all.len());
-    println!("merge_consolidation_chiral: {:.4} (observable blind in ChiralMedium — issue #583)", merge_consolidation_chiral);
+    println!("merge_consolidation_chiral: {merge_consolidation_chiral:.4} (observable blind in ChiralMedium — issue #583)");
 
     // ── Prediction 2 PROPER — HrmStore substrate. ChiralMedium cannot dissolve
     // (energy floor ≥ prune threshold, issue #583), so the real consolidation
@@ -4468,8 +4450,8 @@ fn run_experiment_l7_session(_params: &Params) {
         }
         let hrm_merge_epochs = core_merge_epochs(&hrm_snaps, merge_cos);
         let core_counts: Vec<usize> = hrm_snaps.iter().map(|s| s.len()).collect();
-        println!("l7_hrm_core_counts:   {:?}", core_counts);
-        println!("l7_hrm_channel_proven: {}", channel_proven);
+        println!("l7_hrm_core_counts:   {core_counts:?}");
+        println!("l7_hrm_channel_proven: {channel_proven}");
         (
             bf::merge_consolidation_score_proven(
                 &hrm_merge_epochs,
@@ -4481,9 +4463,9 @@ fn run_experiment_l7_session(_params: &Params) {
             hrm_absorb_epochs.len(),
         )
     };
-    println!("l7_hrm_merge_events:  {}", hrm_merges);
-    println!("l7_hrm_absorb_epochs: {}", hrm_absorbs);
-    println!("merge_consolidation:  {:.4}", merge_consolidation);
+    println!("l7_hrm_merge_events:  {hrm_merges}");
+    println!("l7_hrm_absorb_epochs: {hrm_absorbs}");
+    println!("merge_consolidation:  {merge_consolidation:.4}");
 
     // ── Prediction 3: shared cores ⇒ swarm agreement. Per agent pair:
     // symmetric shared-core fraction vs top-1 recall agreement on the items of
@@ -4529,12 +4511,12 @@ fn run_experiment_l7_session(_params: &Params) {
     }
     let shared_agreement = bf::shared_agreement_score(&p3_pairs);
     println!("l7_p3_pairs:          {}", p3_pairs.len());
-    println!("shared_agreement:     {:.4}", shared_agreement);
+    println!("shared_agreement:     {shared_agreement:.4}");
 
     // ── Fitness + TSV ──
     let weights = bf::L7Weights::default();
     let fitness = bf::l7_fitness(stability_recall, merge_consolidation, shared_agreement, &weights);
-    println!("l7_fitness:           {:.6}", fitness);
+    println!("l7_fitness:           {fitness:.6}");
 
     let tsv_path = Path::new("experiments/results-L7.tsv");
     let needs_header = !tsv_path.exists();
@@ -4699,17 +4681,17 @@ fn run_experiment_l8_session(_params: &Params) {
     let floor = envf("L8_FLOOR", 0.25).clamp(0.05, 1.0);
 
     println!("=== L8 temporal-recall session (confirmation vs resonance) ===");
-    println!("l8_runs:              {}", runs);
-    println!("l8_families:          {}", n_families);
-    println!("l8_versions:          {}", n_versions);
-    println!("l8_stable:            {}", n_stable);
-    println!("l8_distractors:       {}", n_distract);
-    println!("l8_top_k:             {}", top_k);
-    println!("l8_temporal_exp:      {:.2}", t_exp);
-    println!("l8_halflife_days:     {:.1}", half_life);
-    println!("l8_energy_exp:        {:.2}", e_exp);
-    println!("l8_floor:             {:.2}", floor);
-    println!("l8_spacing_days:      {:.1}", spacing_days);
+    println!("l8_runs:              {runs}");
+    println!("l8_families:          {n_families}");
+    println!("l8_versions:          {n_versions}");
+    println!("l8_stable:            {n_stable}");
+    println!("l8_distractors:       {n_distract}");
+    println!("l8_top_k:             {top_k}");
+    println!("l8_temporal_exp:      {t_exp:.2}");
+    println!("l8_halflife_days:     {half_life:.1}");
+    println!("l8_energy_exp:        {e_exp:.2}");
+    println!("l8_floor:             {floor:.2}");
+    println!("l8_spacing_days:      {spacing_days:.1}");
 
     // Fact families: [subject_a, subject_b, attribute]. Disjoint vocabulary
     // across families so families cannot contaminate each other's queries —
@@ -4910,7 +4892,7 @@ fn run_experiment_l8_session(_params: &Params) {
         for d in 0..n_distract {
             let a = FAMILY[(l8_lcg(&mut rng) as usize) % FAMILY.len()][0];
             let b = STABLE[(l8_lcg(&mut rng) as usize) % STABLE.len()][1];
-            let text = format!("note {} concerning {} and {} logistics", d, a, b);
+            let text = format!("note {d} concerning {a} and {b} logistics");
             let age_days = (l8_lcg(&mut rng) % 600) as f32;
             let observed = now - Duration::seconds((age_days * 86_400.0) as i64);
             let _ = cm.store(&text, 0.4, &pipeline);
@@ -4998,19 +4980,19 @@ fn run_experiment_l8_session(_params: &Params) {
     let p3 = if off_sup <= 1e-6 { 0.5 } else { (on_sup / off_sup).clamp(0.0, 1.0) };
 
     println!("--- paired measurements (temporal OFF -> ON) ---");
-    println!("l8_current_mrr_off:   {:.4}", off_current);
-    println!("l8_current_mrr_on:    {:.4}", on_current);
+    println!("l8_current_mrr_off:   {off_current:.4}");
+    println!("l8_current_mrr_on:    {on_current:.4}");
     println!("l8_current_delta:     {:+.4}", on_current - off_current);
-    println!("l8_stable_mrr_off:    {:.4}", off_stable);
-    println!("l8_stable_mrr_on:     {:.4}", on_stable);
+    println!("l8_stable_mrr_off:    {off_stable:.4}");
+    println!("l8_stable_mrr_on:     {on_stable:.4}");
     println!("l8_stable_delta:      {:+.4}", on_stable - off_stable);
-    println!("l8_superseded_off:    {:.4}", off_sup);
-    println!("l8_superseded_on:     {:.4}", on_sup);
-    println!("l8_stable_no_harm:    {}/{}", stable_no_harm, stable_compared);
+    println!("l8_superseded_off:    {off_sup:.4}");
+    println!("l8_superseded_on:     {on_sup:.4}");
+    println!("l8_stable_no_harm:    {stable_no_harm}/{stable_compared}");
     println!("--- prediction scores (1 = holds, 0.5 = no evidence) ---");
-    println!("l8_p1_current:        {:.4}", p1);
-    println!("l8_p2_no_harm:        {:.4}", p2);
-    println!("l8_p3_past_reachable: {:.4}", p3);
+    println!("l8_p1_current:        {p1:.4}");
+    println!("l8_p2_no_harm:        {p2:.4}");
+    println!("l8_p3_past_reachable: {p3:.4}");
 
     // P4 is a GATE, not a score. A mechanism that changes nothing must not be
     // able to post a good fitness — that is exactly the vacuous-gate failure
@@ -5020,7 +5002,7 @@ fn run_experiment_l8_session(_params: &Params) {
     println!("l8_p4_default_identity: {}", if identity_holds { "PASS" } else { "FAIL" });
 
     let fitness = 0.50 * (1.0 - p1) + 0.25 * (1.0 - p2) + 0.25 * (1.0 - p3);
-    println!("l8_fitness:           {:.6}", fitness);
+    println!("l8_fitness:           {fitness:.6}");
 
     let verdict = identity_holds && live && p1 > 0.5 && p2 >= 0.95 && p3 >= 0.99;
     println!(
@@ -5056,7 +5038,7 @@ fn main() {
     if args.iter().any(|a| a == "--corpus-hash") {
         let corpus = build_corpus_l4(128, 1, params.encoder_seed);
         let hash = corpus_l4_hash(&corpus);
-        println!("l4_corpus_hash: {}", hash);
+        println!("l4_corpus_hash: {hash}");
         println!("l4_corpus_dim:  128");
         println!("l4_corpus_size: {}", corpus.len());
         println!("l4_encoder_seed: 0x{:016x}", params.encoder_seed);

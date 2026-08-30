@@ -81,12 +81,12 @@ pub(crate) fn handle_swarm_serve(
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Failed to connect to NATS at {}: {}", nats_url, e);
+            eprintln!("Failed to connect to NATS at {nats_url}: {e}");
             process::exit(1);
         }
     };
     let agent_id = agent_id_override.unwrap_or_else(|| cfg.agent.id.clone());
-    let directed = format!("KANNAKA.ask.{}", agent_id);
+    let directed = format!("KANNAKA.ask.{agent_id}");
 
     // Capability gate (see the subscription block below): decided BEFORE the
     // banner so the banner cannot announce subjects this node then declines to
@@ -97,12 +97,10 @@ pub(crate) fn handle_swarm_serve(
     eprintln!("[swarm serve] agent_id={agent_id}");
     if llm_ok {
         eprintln!(
-            "[swarm serve] subscribing to {} and KANNAKA.ask.broadcast",
-            directed
+            "[swarm serve] subscribing to {directed} and KANNAKA.ask.broadcast"
         );
         eprintln!(
-            "[swarm serve] broadcast resonance threshold: {:.2}",
-            threshold
+            "[swarm serve] broadcast resonance threshold: {threshold:.2}"
         );
     } else {
         eprintln!(
@@ -122,7 +120,7 @@ pub(crate) fn handle_swarm_serve(
     // With a single instance the semantics are identical to a plain SUB.
     // The group must be per-identity (not global): ask.broadcast is a shared
     // subject, and a global group would split broadcasts BETWEEN identities.
-    let serve_group = format!("serve_{}", agent_id);
+    let serve_group = format!("serve_{agent_id}");
 
     // Capability gate: only join the ask queue group if this node can actually
     // answer. O1 and O3 both served `kannaka-prime` in `serve_kannaka-prime`,
@@ -192,7 +190,7 @@ pub(crate) fn handle_swarm_serve(
     // (O(beam), sub-second) — the same path the substrate responder uses. swarm
     // serve runs read-only (enforced above), so the observation mutation never
     // persists.
-    let recall_subject = format!("KANNAKA.recall.{}", agent_id);
+    let recall_subject = format!("KANNAKA.recall.{agent_id}");
     let recall_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
     let mut recall_sub = recall_transport
         .as_ref()
@@ -219,7 +217,7 @@ pub(crate) fn handle_swarm_serve(
     // Own connection, matching recall: the transport documents a
     // one-subscription-per-connection model, and sharing would have the two
     // readers steal each other's bytes.
-    let neighbors_subject = format!("KANNAKA.neighbors.{}", agent_id);
+    let neighbors_subject = format!("KANNAKA.neighbors.{agent_id}");
     let neighbors_transport = kannaka_memory::nats::SwarmTransport::connect(&nats_url).ok();
     let mut neighbors_sub = neighbors_transport
         .as_ref()
@@ -882,7 +880,7 @@ pub(crate) fn handle_swarm_exemplars(
                     cid,
                     amp
                 );
-                println!("       {}", preview);
+                println!("       {preview}");
             }
             println!();
             println!("Total: {} exemplars", exemplars.len());
@@ -1143,7 +1141,7 @@ pub(crate) fn handle_swarm_absorb(
         eprintln!(
             "No exemplars found in stream{}.",
             from.as_ref()
-                .map(|f| format!(" (from {})", f))
+                .map(|f| format!(" (from {f})"))
                 .unwrap_or_default()
         );
         eprintln!("Hint: a peer must run 'kannaka swarm exemplars publish' first.");
@@ -1195,8 +1193,7 @@ pub(crate) fn handle_swarm_absorb(
             // Already in our medium with high resonance — skip duplicates.
             // (The match suggests we've heard this before.)
             eprintln!(
-                "  ✓ already resonant: {} c{} strength={:.3} — skip",
-                source, cluster_id, top_strength
+                "  ✓ already resonant: {source} c{cluster_id} strength={top_strength:.3} — skip"
             );
             continue;
         }
@@ -1212,8 +1209,7 @@ pub(crate) fn handle_swarm_absorb(
         }
 
         eprintln!(
-            "  + new wavefront: {} c{} amp={:.3} resonance={:.3}",
-            source, cluster_id, amp, top_strength
+            "  + new wavefront: {source} c{cluster_id} amp={amp:.3} resonance={top_strength:.3}"
         );
         eprintln!(
             "      \"{}\"",
@@ -1253,7 +1249,7 @@ pub(crate) fn handle_swarm_absorb(
             match decision {
                 Live => {
                     // Tag with provenance so we can identify swarm-origin memories later.
-                    let category = format!("swarm:{}", source);
+                    let category = format!("swarm:{source}");
                     match sys.remember_with_category(content, &category, clean.amplitude as f64) {
                         Ok(id) => {
                             // #8: commit the pending promotion ONLY after the medium
@@ -1264,7 +1260,7 @@ pub(crate) fn handle_swarm_absorb(
                                 &mut staging,
                                 cfg,
                             );
-                            eprintln!("      remembered as {}", id);
+                            eprintln!("      remembered as {id}");
                             absorbed += 1;
                         }
                         // #8: write failed — drop the pending, do not commit.
@@ -1290,9 +1286,9 @@ pub(crate) fn handle_swarm_absorb(
         "Absorb complete{}:",
         if dry_run { " (DRY RUN)" } else { "" }
     );
-    println!("  absorbed:    {}", absorbed);
-    println!("  skipped (threshold/length): {}", skipped_threshold);
-    println!("  skipped (self-origin):      {}", skipped_self);
+    println!("  absorbed:    {absorbed}");
+    println!("  skipped (threshold/length): {skipped_threshold}");
+    println!("  skipped (self-origin):      {skipped_self}");
 }
 
 #[cfg(not(feature = "nats"))]
@@ -1439,7 +1435,7 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
         let mut label = if display.is_empty() || display == agent {
             agent.clone()
         } else {
-            format!("{} ({})", display, agent)
+            format!("{display} ({agent})")
         };
         // Optional identity block (swarm agent identity, step 2): agents
         // that joined while logged in via `kannaka identity` carry
@@ -1461,7 +1457,7 @@ pub(crate) fn handle_swarm_peers(cfg: &KannakaConfig, args: &[String]) {
                 None => label.push_str(" (stale)"),
             }
         }
-        println!("{:<24} {:<8} {:<8} {}", label, mem, ver, caps);
+        println!("{label:<24} {mem:<8} {ver:<8} {caps}");
     }
     println!();
     if show_all {
@@ -1563,8 +1559,7 @@ pub(crate) fn handle_swarm_autoabsorb(
         let drop = prev - current_phi;
         if drop > max_phi_drop {
             eprintln!(
-                "[autoabsorb] PAUSED: Phi dropped {:.3} → {:.3} (Δ={:.3} > {:.3})",
-                prev, current_phi, drop, max_phi_drop
+                "[autoabsorb] PAUSED: Phi dropped {prev:.3} → {current_phi:.3} (Δ={drop:.3} > {max_phi_drop:.3})"
             );
             eprintln!(
                 "[autoabsorb] manual intervention required: review recent absorbs in {}",
@@ -1658,8 +1653,7 @@ pub(crate) fn handle_swarm_autoabsorb(
 
         let cluster_id = e.get("cluster_id").and_then(|v| v.as_u64()).unwrap_or(0);
         eprintln!(
-            "[autoabsorb] absorb from {} c{} amp={:.3} resonance={:.3}",
-            source, cluster_id, amp, top_strength
+            "[autoabsorb] absorb from {source} c{cluster_id} amp={amp:.3} resonance={top_strength:.3}"
         );
 
         if !dry_run {
@@ -1694,7 +1688,7 @@ pub(crate) fn handle_swarm_autoabsorb(
             use kannaka_memory::AdmitDecision::*;
             match decision {
                 Live => {
-                    let category = format!("swarm:{}", source);
+                    let category = format!("swarm:{source}");
                     match sys.remember_with_category(content, &category, clean.amplitude as f64) {
                         Ok(id) => {
                             // #8: commit the pending promotion ONLY after the medium
@@ -1705,7 +1699,7 @@ pub(crate) fn handle_swarm_autoabsorb(
                                 &mut staging,
                                 cfg,
                             );
-                            eprintln!("[autoabsorb]   remembered {}", id);
+                            eprintln!("[autoabsorb]   remembered {id}");
                             state.record_absorb(&today_key, &source);
                             absorbed += 1;
                         }
@@ -1885,10 +1879,9 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
         "text": text,
     });
     let bytes = serde_json::to_vec(&payload).unwrap();
-    let subject = format!("KANNAKA.work.{}", kind);
+    let subject = format!("KANNAKA.work.{kind}");
     eprintln!(
-        "[enqueue] {} task {} (waiting up to {}s for a worker reply)",
-        subject, task_id, timeout_secs
+        "[enqueue] {subject} task {task_id} (waiting up to {timeout_secs}s for a worker reply)"
     );
 
     match transport.request_one(&subject, &bytes, Duration::from_secs(timeout_secs)) {
@@ -1897,11 +1890,11 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
                 |_| serde_json::json!({"raw": String::from_utf8_lossy(&reply).to_string()}),
             );
             let from = parsed.get("from").and_then(|v| v.as_str()).unwrap_or("?");
-            eprintln!("[enqueue] reply from {}", from);
+            eprintln!("[enqueue] reply from {from}");
             if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
-                eprintln!("[enqueue] worker error: {}", err);
+                eprintln!("[enqueue] worker error: {err}");
                 if let Some(tid) = parsed.get("task_id").and_then(|v| v.as_str()) {
-                    eprintln!("[enqueue] task_id: {}", tid);
+                    eprintln!("[enqueue] task_id: {tid}");
                 }
                 process::exit(1);
             }
@@ -1909,7 +1902,7 @@ pub(crate) fn handle_swarm_enqueue(cfg: &KannakaConfig, args: &[String]) {
                 .get("text")
                 .and_then(|v| v.as_str())
                 .unwrap_or("(no text)");
-            println!("{}", text);
+            println!("{text}");
         }
         Err(e) => {
             eprintln!("enqueue: {e}");
@@ -1967,7 +1960,7 @@ pub(crate) fn handle_swarm_worker(
 
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
 
-    eprintln!("[worker] kinds: {:?}, queue group: {}", kinds, queue_group);
+    eprintln!("[worker] kinds: {kinds:?}, queue group: {queue_group}");
 
     if kinds.len() == 1 {
         let kind = &kinds[0];
@@ -1978,8 +1971,8 @@ pub(crate) fn handle_swarm_worker(
                 process::exit(1);
             }
         };
-        let subject = format!("KANNAKA.work.{}", kind);
-        let group = format!("{}_{}", queue_group, kind);
+        let subject = format!("KANNAKA.work.{kind}");
+        let group = format!("{queue_group}_{kind}");
         let mut sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
             Ok(s) => s,
             Err(e) => {
@@ -1987,7 +1980,7 @@ pub(crate) fn handle_swarm_worker(
                 process::exit(1);
             }
         };
-        eprintln!("[worker] subscribed to {} (group {})", subject, group);
+        eprintln!("[worker] subscribed to {subject} (group {group})");
         loop {
             match sub.next_event() {
                 SubEvent::Msg(msg) => {
@@ -2022,8 +2015,8 @@ pub(crate) fn handle_swarm_worker(
                     process::exit(1);
                 }
             };
-            let subject = format!("KANNAKA.work.{}", kind);
-            let group = format!("{}_{}", queue_group, kind);
+            let subject = format!("KANNAKA.work.{kind}");
+            let group = format!("{queue_group}_{kind}");
             let sub = match transport.subscribe_with_queue(&subject, Some(&group)) {
                 Ok(s) => s,
                 Err(e) => {
@@ -2032,7 +2025,7 @@ pub(crate) fn handle_swarm_worker(
                 }
             };
             let _ = sub.set_timeout(Some(Duration::from_millis(500)));
-            eprintln!("[worker] subscribed to {} (group {})", subject, group);
+            eprintln!("[worker] subscribed to {subject} (group {group})");
             subs.push((kind.clone(), transport, sub));
         }
         loop {
@@ -2192,8 +2185,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
     }
 
     eprintln!(
-        "[tail] connecting to {} — subjects: {:?}",
-        nats_url, subjects
+        "[tail] connecting to {nats_url} — subjects: {subjects:?}"
     );
 
     // One dedicated transport per subject — the transport documents a
@@ -2210,9 +2202,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                 Err(e) => {
                     let _ = writeln!(
                         std::io::stderr(),
-                        "[tail] {} connect failed: {} (retry 5s)",
-                        subj,
-                        e
+                        "[tail] {subj} connect failed: {e} (retry 5s)"
                     );
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     continue;
@@ -2223,9 +2213,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                 Err(e) => {
                     let _ = writeln!(
                         std::io::stderr(),
-                        "[tail] {} subscribe failed: {} (retry 5s)",
-                        subj,
-                        e
+                        "[tail] {subj} subscribe failed: {e} (retry 5s)"
                     );
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     continue;
@@ -2233,7 +2221,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             };
             // Block indefinitely; Ctrl+C terminates the process.
             let _ = sub.set_timeout(None);
-            eprintln!("[tail] {} subscribed", subj);
+            eprintln!("[tail] {subj} subscribed");
             loop {
                 match sub.next_event() {
                     SubEvent::Msg(msg) => {
@@ -2256,7 +2244,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
                             "payload": payload_json,
                         });
                         let _guard = mu.lock();
-                        println!("{}", line);
+                        println!("{line}");
                         let _ = std::io::stdout().flush();
                     }
                     // No timeout is set; defensive — keep polling.
@@ -2267,8 +2255,7 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             }
             let _ = writeln!(
                 std::io::stderr(),
-                "[tail] {} disconnected — reconnecting in 2s",
-                subj
+                "[tail] {subj} disconnected — reconnecting in 2s"
             );
             std::thread::sleep(std::time::Duration::from_secs(2));
         }));

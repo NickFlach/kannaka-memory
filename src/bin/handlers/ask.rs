@@ -541,7 +541,7 @@ pub(crate) fn handle_ask_remote(
     }
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+        Err(e) => { eprintln!("Failed to connect to NATS at {nats_url}: {e}"); process::exit(1); }
     };
 
     // #746: `mode` is additive — a pre-#746 server ignores the field and
@@ -561,11 +561,11 @@ pub(crate) fn handle_ask_remote(
     let timeout = Duration::from_secs(timeout_secs);
     if target == "broadcast" {
         let subject = "KANNAKA.ask.broadcast";
-        eprintln!("[ask --remote broadcast] published; collecting replies for {}s...", timeout_secs);
+        eprintln!("[ask --remote broadcast] published; collecting replies for {timeout_secs}s...");
         match transport.request_many(subject, &payload, timeout) {
             Ok(replies) => {
                 if replies.is_empty() {
-                    eprintln!("(no replies within {}s)", timeout_secs);
+                    eprintln!("(no replies within {timeout_secs}s)");
                     process::exit(2);
                 }
                 let mut answered = 0usize;
@@ -630,7 +630,7 @@ pub(crate) fn handle_ask_remote(
             Err(e) => { eprintln!("request_many: {e}"); process::exit(1); }
         }
     } else {
-        let subject = format!("KANNAKA.ask.{}", target);
+        let subject = format!("KANNAKA.ask.{target}");
         match transport.request_one(&subject, &payload, timeout) {
             Ok(reply) => {
                 let parsed: serde_json::Value = serde_json::from_slice(&reply)

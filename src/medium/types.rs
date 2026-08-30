@@ -330,7 +330,7 @@ impl std::str::FromStr for Modality {
             "network" => Ok(Modality::Network),
             "mixed" => Ok(Modality::Mixed),
             "unknown" => Ok(Modality::Unknown),
-            _ => Err(format!("unknown modality: '{}' (expected: audio, visual, semantic, network, mixed, unknown)", s)),
+            _ => Err(format!("unknown modality: '{s}' (expected: audio, visual, semantic, network, mixed, unknown)")),
         }
     }
 }
@@ -1042,7 +1042,7 @@ mod chiral_tests {
         // Every point (0-6) should appear in exactly 3 lines
         for point in 0u8..7 {
             let count = FANO_LINES.iter().filter(|line| line.contains(&point)).count();
-            assert_eq!(count, 3, "Point {} appears in {} lines, expected 3", point, count);
+            assert_eq!(count, 3, "Point {point} appears in {count} lines, expected 3");
         }
     }
 

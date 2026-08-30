@@ -52,7 +52,7 @@ mod sga_tests {
         let data = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
         serde_json::from_str(&data)
-            .unwrap_or_else(|e| panic!("Failed to parse reference vectors: {}", e))
+            .unwrap_or_else(|e| panic!("Failed to parse reference vectors: {e}"))
     }
 
     /// Convert input to the same f64 representation the classify binary uses:
@@ -70,7 +70,7 @@ mod sga_tests {
                 .as_ref()
                 .expect("byte vector must have `input_bytes` field")
                 .clone(),
-            other => panic!("Unknown input_type: {}", other),
+            other => panic!("Unknown input_type: {other}"),
         };
         raw_bytes.iter().map(|&b| b as f64 / 255.0).collect()
     }

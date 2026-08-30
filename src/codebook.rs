@@ -77,7 +77,7 @@ mod tests {
         let embedding = vec![1.0f32; 384];
         let hv = cb.project(&embedding);
         let norm: f32 = hv.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-4, "norm was {}", norm);
+        assert!((norm - 1.0).abs() < 1e-4, "norm was {norm}");
     }
 
     #[test]
@@ -96,7 +96,7 @@ mod tests {
         let cb = Codebook::new(128, 10_000, 42);
         let v = cb.random_vector();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-4, "norm was {}", norm);
+        assert!((norm - 1.0).abs() < 1e-4, "norm was {norm}");
     }
 
     #[test]

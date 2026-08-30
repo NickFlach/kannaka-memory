@@ -7,7 +7,7 @@ fn main() {
     
     // 1. Create some sample data
     let data = vec![1.0, 0.5, -0.3, 0.8, 0.1, -0.9, 0.0, 0.6, 0.4, -0.2];
-    println!("Original data: {:?}", data);
+    println!("Original data: {data:?}");
     
     // 2. Encode data as a glyph using SGA-guided folding
     let encoder = GlyphEncoder::default();
@@ -23,7 +23,7 @@ fn main() {
     let frequencies = glyph.to_frequencies();
     println!("\n🎵 Musical frequencies (432 Hz × φⁿ):");
     for (i, freq) in frequencies.iter().take(5).enumerate() {
-        println!("  Step {}: {:.2} Hz", i, freq);
+        println!("  Step {i}: {freq:.2} Hz");
     }
     
     // 4. Decode glyph back to data
@@ -45,7 +45,7 @@ fn main() {
     let path = glyph.render_path();
     println!("\n🎨 2D Path trajectory ({} points):", path.len());
     for (i, (x, y)) in path.iter().take(3).enumerate() {
-        println!("  Point {}: ({:.3}, {:.3})", i, x, y);
+        println!("  Point {i}: ({x:.3}, {y:.3})");
     }
     
     println!("\n✅ OGC ↔ SGA Bridge operational!");

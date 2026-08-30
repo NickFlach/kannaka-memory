@@ -24,7 +24,7 @@ fn main() {
         Err(_) => "unknown".to_string(),
     };
 
-    println!("cargo:rustc-env=KANNAKA_CONSCIOUSNESS_CORE_VERSION={}", version);
+    println!("cargo:rustc-env=KANNAKA_CONSCIOUSNESS_CORE_VERSION={version}");
 }
 
 /// Minimal Cargo.lock parser — scans for `[[package]]` blocks and returns
