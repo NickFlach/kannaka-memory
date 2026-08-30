@@ -540,7 +540,7 @@ impl std::fmt::Display for GlyphError {
             GlyphError::TooShort => write!(f, "wire format too short"),
             GlyphError::InvalidMagic => write!(f, "invalid magic bytes (expected GLYF)"),
             GlyphError::InvalidSource => write!(f, "invalid source JSON"),
-            GlyphError::UnsupportedVersion(v) => write!(f, "unsupported spec version: {}", v),
+            GlyphError::UnsupportedVersion(v) => write!(f, "unsupported spec version: {v}"),
         }
     }
 }
@@ -1500,14 +1500,14 @@ mod tests {
         g_audio.fano = [0.14, 0.14, 0.15, 0.14, 0.14, 0.15, 0.14];
 
         let sim = glyph_similarity(&g_mem, &g_audio);
-        assert!(sim > 0.9, "cross-modal similarity should be high for matching Fano: {}", sim);
+        assert!(sim > 0.9, "cross-modal similarity should be high for matching Fano: {sim}");
     }
 
     #[test]
     fn test_sga_class_roundtrip() {
         for idx in 0..84u8 {
             let cls = SgaClass::from_class_index(idx);
-            assert_eq!(cls.to_class_index(), idx, "SGA class index roundtrip failed for {}", idx);
+            assert_eq!(cls.to_class_index(), idx, "SGA class index roundtrip failed for {idx}");
         }
     }
 
@@ -1535,7 +1535,7 @@ mod tests {
 
         // Fano should be normalized
         let fano_sum: f64 = glyph.fano.iter().sum();
-        assert!((fano_sum - 1.0).abs() < 1e-6, "Fano not normalized: sum={}", fano_sum);
+        assert!((fano_sum - 1.0).abs() < 1e-6, "Fano not normalized: sum={fano_sum}");
 
         match &glyph.source {
             GlyphSource::Memory { layer_depth, hallucinated } => {
@@ -1600,7 +1600,7 @@ mod tests {
         let vec = vec![0.1f32; 700];
         let fano = compute_fano_from_vector_f32(&vec);
         let sum: f64 = fano.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-6, "Fano should be normalized, got sum={}", sum);
+        assert!((sum - 1.0).abs() < 1e-6, "Fano should be normalized, got sum={sum}");
     }
 
     #[test]
@@ -1616,7 +1616,7 @@ mod tests {
         let mfcc = vec![0.5; 70]; // 70 MFCC coefficients
         let fano = compute_fano_from_mfcc(&mfcc);
         let sum: f64 = fano.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-6, "MFCC Fano should be normalized, got {}", sum);
+        assert!((sum - 1.0).abs() < 1e-6, "MFCC Fano should be normalized, got {sum}");
     }
 
     #[test]
@@ -1645,7 +1645,7 @@ mod tests {
         let features = vec![0.2; 56];
         let fano = compute_fano_from_visual(&features);
         let sum: f64 = fano.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-6, "Visual Fano should be normalized, got {}", sum);
+        assert!((sum - 1.0).abs() < 1e-6, "Visual Fano should be normalized, got {sum}");
     }
 
     #[test]
@@ -1672,7 +1672,7 @@ mod tests {
 
         // Both should have uniform-ish Fano → decent similarity
         let sim = glyph_similarity(&audio_glyph, &text_glyph);
-        assert!(sim > 0.3, "cross-modal similarity too low: {}", sim);
+        assert!(sim > 0.3, "cross-modal similarity too low: {sim}");
     }
 
     // ── Phase 4: SCADA Adapter ──
@@ -1801,7 +1801,7 @@ mod tests {
         let hall = &result.hallucinations[0];
         // Fano should be normalized
         let sum: f64 = hall.fano.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-6, "hallucinated Fano should be normalized: {}", sum);
+        assert!((sum - 1.0).abs() < 1e-6, "hallucinated Fano should be normalized: {sum}");
     }
 }
 

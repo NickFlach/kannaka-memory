@@ -867,11 +867,11 @@ mod tests {
         
         // Test that similarity function works correctly:
         // 1. Self-similarity should be perfect (or very close)
-        assert!(sim_11 > 0.9, "Self-similarity should be high, got {}", sim_11);
+        assert!(sim_11 > 0.9, "Self-similarity should be high, got {sim_11}");
         
         // 2. All similarities should be in valid range [0, 1]
-        assert!(sim_12 >= 0.0 && sim_12 <= 1.0, "Similarity out of range: {}", sim_12);
-        assert!(sim_13 >= 0.0 && sim_13 <= 1.0, "Similarity out of range: {}", sim_13);
+        assert!(sim_12 >= 0.0 && sim_12 <= 1.0, "Similarity out of range: {sim_12}");
+        assert!(sim_13 >= 0.0 && sim_13 <= 1.0, "Similarity out of range: {sim_13}");
         
         // 3. The glyphs should be different (not identical)
         assert_ne!(glyph1.sga_centroid, glyph2.sga_centroid, "Glyphs should have different centroids");

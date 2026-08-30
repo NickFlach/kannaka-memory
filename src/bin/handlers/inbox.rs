@@ -485,8 +485,7 @@ pub(crate) fn handle_inbox_serve(cfg: &KannakaConfig, args: &[String]) {
                 let _ = transport.publish(&rt, &envelope_bytes);
             } else {
                 eprintln!(
-                    "[inbox serve] rejecting reply_to '{}' from {} — replies only go to {}<msg_id>",
-                    rt, from, REPLY_SUBJECT_PREFIX
+                    "[inbox serve] rejecting reply_to '{rt}' from {from} — replies only go to {REPLY_SUBJECT_PREFIX}<msg_id>"
                 );
             }
         }

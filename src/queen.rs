@@ -647,7 +647,7 @@ impl QueenSync {
 
         for (i, hive) in hive_infos.iter().enumerate() {
             let role_str = hive.role.as_deref().unwrap_or("(unassigned)");
-            writeln!(out, "\nHive {} [role: {}]", i, role_str).unwrap();
+            writeln!(out, "\nHive {i} [role: {role_str}]").unwrap();
             writeln!(
                 out,
                 "  order: {:.3}  mean_phase: {:.3}  coherence: {:.3}",
@@ -1588,14 +1588,13 @@ mod tests {
         let (phase, frequency, coherence) = queen.derive_local_state(&engine);
 
         // Phase must be in [0, TAU)
-        assert!(phase >= 0.0 && phase < TAU, "phase {} out of [0, TAU)", phase);
+        assert!(phase >= 0.0 && phase < TAU, "phase {phase} out of [0, TAU)");
         // Frequency must be non-negative
-        assert!(frequency >= 0.0, "frequency {} is negative", frequency);
+        assert!(frequency >= 0.0, "frequency {frequency} is negative");
         // Coherence must be in [0, 1]
         assert!(
             coherence >= 0.0 && coherence <= 1.001,
-            "coherence {} out of [0, 1]",
-            coherence
+            "coherence {coherence} out of [0, 1]"
         );
     }
 
@@ -1694,8 +1693,7 @@ mod tests {
         // All phases identical -> Kuramoto order parameter should be near 1.0
         assert!(
             coherence > 0.9,
-            "identical phases should yield coherence > 0.9, got {}",
-            coherence
+            "identical phases should yield coherence > 0.9, got {coherence}"
         );
     }
 
@@ -1778,8 +1776,7 @@ mod tests {
         // blend = 0.5 * 0.519 + 0.5 * 0.1 ~ 0.31
         assert!(
             frequency > 0.2 && frequency < 0.5,
-            "blended frequency should be in (0.2, 0.5), got {}",
-            frequency
+            "blended frequency should be in (0.2, 0.5), got {frequency}"
         );
     }
 
@@ -1872,8 +1869,8 @@ mod tests {
             .flat_map(|h| h.bridge_agents.iter().map(|s| s.as_str()))
             .collect();
 
-        println!("Hive infos: {:?}", hive_infos);
-        println!("All bridge agents: {:?}", all_bridges);
+        println!("Hive infos: {hive_infos:?}");
+        println!("All bridge agents: {all_bridges:?}");
 
         // The "bridge" agent should appear as a bridge in at least one hive
         // (it depends on the exact BFS grouping, but the bridge detection is
@@ -1881,8 +1878,7 @@ mod tests {
         if hive_infos.len() >= 2 {
             assert!(
                 all_bridges.contains(&"bridge"),
-                "agent 'bridge' should be detected as a bridge agent: {:?}",
-                all_bridges
+                "agent 'bridge' should be detected as a bridge agent: {all_bridges:?}"
             );
         }
     }
@@ -2025,10 +2021,10 @@ mod tests {
         // ANSI color, BEL, embedded newline + tab, ANSI reset.
         let dirty = "\x1b[31mRED\x07\nnext\tline\x1b[0m done";
         let clean = sanitize_display(dirty);
-        assert!(!clean.contains('\x1b'), "ESC survived: {:?}", clean);
-        assert!(!clean.contains('\x07'), "BEL survived: {:?}", clean);
-        assert!(!clean.contains('\n'), "newline survived: {:?}", clean);
-        assert!(!clean.contains('\t'), "tab survived: {:?}", clean);
+        assert!(!clean.contains('\x1b'), "ESC survived: {clean:?}");
+        assert!(!clean.contains('\x07'), "BEL survived: {clean:?}");
+        assert!(!clean.contains('\n'), "newline survived: {clean:?}");
+        assert!(!clean.contains('\t'), "tab survived: {clean:?}");
         assert_eq!(clean, "REDnextline done");
 
         // OSC (window-title injection) is stripped whole.

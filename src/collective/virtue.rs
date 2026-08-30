@@ -109,7 +109,7 @@ impl std::fmt::Display for VirtueOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VirtueOutcome::Passed => write!(f, "passed"),
-            VirtueOutcome::Rejected { severity } => write!(f, "rejected({:.2})", severity),
+            VirtueOutcome::Rejected { severity } => write!(f, "rejected({severity:.2})"),
             VirtueOutcome::Tension => write!(f, "tension"),
         }
     }
@@ -176,7 +176,7 @@ pub fn evaluate_three_gates(
         reason: if truth_passed {
             "claim aligns with evidence".to_string()
         } else {
-            format!("entropy gap {:.3} exceeds threshold", truth_gap)
+            format!("entropy gap {truth_gap:.3} exceeds threshold")
         },
     };
 
@@ -210,9 +210,9 @@ pub fn evaluate_three_gates(
         passed: beauty_passed,
         score: beauty_ratio,
         reason: if beauty_passed {
-            format!("complexity ratio {:.2} (elegant)", beauty_ratio)
+            format!("complexity ratio {beauty_ratio:.2} (elegant)")
         } else {
-            format!("complexity ratio {:.2} (creates problems)", beauty_ratio)
+            format!("complexity ratio {beauty_ratio:.2} (creates problems)")
         },
     };
 
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn test_virtue_efficiency_catastrophic() {
         let eta = compute_virtue_efficiency(2.0, 1.0);
-        assert!(eta < 0.0, "catastrophic harm should be negative: {}", eta);
+        assert!(eta < 0.0, "catastrophic harm should be negative: {eta}");
     }
 
     #[test]
@@ -1139,7 +1139,7 @@ mod tests {
     #[test]
     fn test_moral_inventory_display() {
         let inv = moral_inventory(&[]);
-        let s = format!("{}", inv);
+        let s = format!("{inv}");
         assert!(s.contains("MoralInventory"));
         assert!(s.contains("drift=no"));
     }

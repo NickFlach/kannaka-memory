@@ -526,19 +526,18 @@ impl HrmStore {
                 Ok(store)
             }
             Err(chiral_err) => {
-                eprintln!("[hrm] ChiralMedium::load failed: {}", chiral_err);
+                eprintln!("[hrm] ChiralMedium::load failed: {chiral_err}");
                 if is_v2 {
                     // For v2 files the v1 fallback would always fail with
                     // InvalidMagic — report the real error instead of layering
                     // a misleading magic-bytes message on top.
                     return Err(StoreError::Other(format!(
-                        "Failed to load HRM file: {}",
-                        chiral_err
+                        "Failed to load HRM file: {chiral_err}"
                     )));
                 }
                 // Legacy v1 path: re-try as plain Medium
                 let medium = Medium::load(&hrm_path)
-                    .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {}", e)))?;
+                    .map_err(|e| StoreError::Other(format!("Failed to load HRM file: {e}")))?;
                 let mut store = Self {
                     medium,
                     chiral: None,
@@ -773,10 +772,10 @@ impl HrmStore {
 
         if let Some(ref chiral) = self.chiral {
             chiral.save(&self.hrm_path)
-                .map_err(|e| StoreError::Other(format!("Failed to save chiral HRM file: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("Failed to save chiral HRM file: {e}")))?;
         } else {
             self.medium.save(&self.hrm_path)
-                .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("Failed to save HRM file: {e}")))?;
         }
 
         // Save link graph sidecar (connections not stored in HRM binary)
@@ -979,10 +978,10 @@ impl HrmStore {
         // stale counts to the observatory's status shell-out.
         let id = if let Some(ref mut chiral) = self.chiral {
             chiral.store_vector(&vector, content.clone(), importance)
-                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {}", e)))?
+                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {e}")))?
         } else {
             self.medium.add_wavefront(&vector, content.clone(), importance)
-                .map_err(|e| StoreError::Other(format!("add_wavefront failed: {}", e)))?
+                .map_err(|e| StoreError::Other(format!("add_wavefront failed: {e}")))?
         };
         // The medium has the wavefront for tensor/vector math, but the
         // higher-level `all_memories()` / `assess()` paths read from
@@ -1041,7 +1040,7 @@ impl HrmStore {
     /// you change it. This is the holographic equivalent of quantum measurement.
     pub fn recall_resonance(&mut self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
         let results = self.medium.recall(query, top_k, &self.pipeline)
-            .map_err(|e| StoreError::Other(format!("Resonance recall failed: {}", e)))?;
+            .map_err(|e| StoreError::Other(format!("Resonance recall failed: {e}")))?;
 
         // Observation: attention shapes the field
         self.apply_observation(&results);
@@ -1058,7 +1057,7 @@ impl HrmStore {
     /// consistent with [`consciousness_metrics`](Self::consciousness_metrics).
     pub fn recall_resonance_readonly(&self, query: &str, top_k: usize) -> Result<Vec<Resonance>, StoreError> {
         self.medium.recall(query, top_k, &self.pipeline)
-            .map_err(|e| StoreError::Other(format!("readonly resonance recall failed: {}", e)))
+            .map_err(|e| StoreError::Other(format!("readonly resonance recall failed: {e}")))
     }
 
     /// Beam-aware recall — score only the memories in the attention beam.
@@ -1077,7 +1076,7 @@ impl HrmStore {
         top_k: usize,
     ) -> Result<Vec<Resonance>, StoreError> {
         let results = self.medium.recall_against_ids(beam, query, top_k, &self.pipeline)
-            .map_err(|e| StoreError::Other(format!("beam-aware recall failed: {}", e)))?;
+            .map_err(|e| StoreError::Other(format!("beam-aware recall failed: {e}")))?;
         // Observation still shapes the field — sparse recall doesn't excuse
         // a passive read. Same intensity formula as the dense path.
         self.apply_observation(&results);
@@ -1760,7 +1759,7 @@ impl HrmStore {
         self.rebuild_cache().ok();
         self.mark_dirty();
         if let Err(e) = self.save_medium() {
-            eprintln!("[hrm] apply_consolidation: save_medium failed: {}", e);
+            eprintln!("[hrm] apply_consolidation: save_medium failed: {e}");
         }
 
         report.projected_memories = self.authoritative_len();
@@ -1827,7 +1826,7 @@ impl HrmStore {
 
         // Save the .hrm file
         if let Err(e) = self.save_medium() {
-            eprintln!("Warning: Failed to save after dream_native: {}", e);
+            eprintln!("Warning: Failed to save after dream_native: {e}");
         }
 
         report
@@ -1849,7 +1848,7 @@ impl HrmStore {
             self.rebuild_cache().ok();
             self.mark_dirty();
             if let Err(e) = self.save_medium() {
-                eprintln!("Warning: Failed to save after rephase: {}", e);
+                eprintln!("Warning: Failed to save after rephase: {e}");
             }
         }
         n
@@ -1884,7 +1883,7 @@ impl HrmStore {
         let saved_ok = match self.save_medium() {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("Warning: Failed to save after couple: {}", e);
+                eprintln!("Warning: Failed to save after couple: {e}");
                 false
             }
         };
@@ -1956,7 +1955,7 @@ impl HrmStore {
             // the in-memory hemispheres, so a dry run leaves the store untouched.
             chiral
                 .re_encode_all(pipeline, dry_run)
-                .map_err(|e| StoreError::Other(format!("re-encode failed: {}", e)))?
+                .map_err(|e| StoreError::Other(format!("re-encode failed: {e}")))?
         };
         if dry_run {
             return Ok((scanned, updated));
@@ -2220,13 +2219,13 @@ impl HrmStore {
     /// and nudging their phases toward alignment.
     pub fn relate_wavefronts(&mut self, id_a: Uuid, id_b: Uuid) -> Result<Uuid, StoreError> {
         let idx_a = self.medium.get_wavefront_index(&id_a)
-            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {}", id_a)))?;
+            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {id_a}")))?;
         
         let idx_b = self.medium.get_wavefront_index(&id_b)
-            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {}", id_b)))?;
+            .ok_or_else(|| StoreError::Other(format!("Wavefront not found: {id_b}")))?;
 
         let associative_id = self.medium.relate_wavefronts(idx_a, idx_b)
-            .map_err(|e| StoreError::Other(format!("Failed to relate wavefronts: {}", e)))?;
+            .map_err(|e| StoreError::Other(format!("Failed to relate wavefronts: {e}")))?;
 
         // Rebuild cache to include the new associative wavefront
         self.rebuild_cache()?;
@@ -2333,10 +2332,10 @@ impl MediumBackend for HrmStore {
             let chiral = self.chiral.as_mut().expect("chiral checked present");
             let minted = chiral
                 .store_vector(&memory.vector, memory.content.clone(), memory.amplitude)
-                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("chiral.store_vector failed: {e}")))?;
             chiral
                 .update_right_id(&minted, id)
-                .map_err(|e| StoreError::Other(format!("chiral id rewrite failed: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("chiral id rewrite failed: {e}")))?;
             if let Some(&index) = chiral.right.id_to_index.get(&id) {
                 chiral.right.energy[index] = memory.amplitude;
                 chiral.right.frequency[index] = memory.frequency;
@@ -2356,10 +2355,10 @@ impl MediumBackend for HrmStore {
         } else {
             // Flat-medium path, unchanged.
             let wavefront_id = self.medium.add_wavefront(&memory.vector, memory.content.clone(), memory.amplitude)
-                .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("Failed to add wavefront to medium: {e}")))?;
 
             self.medium.update_wavefront_id(&wavefront_id, id)
-                .map_err(|e| StoreError::Other(format!("Failed to update wavefront ID: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("Failed to update wavefront ID: {e}")))?;
 
             if let Some(index) = self.medium.get_wavefront_index(&id) {
                 self.medium.store.energy[index] = memory.amplitude;
@@ -2428,7 +2427,7 @@ impl MediumBackend for HrmStore {
             // Remove from flat medium (best-effort).
             if let Err(e) = self.medium.remove_wavefront(id) {
                 // Log error but don't fail - cache was already updated
-                eprintln!("Warning: Failed to remove wavefront from medium: {}", e);
+                eprintln!("Warning: Failed to remove wavefront from medium: {e}");
             }
 
             // Remove from the chiral hemispheres if present. Without this the
@@ -2554,13 +2553,13 @@ impl MediumBackend for HrmStore {
             // exactly the previous `store_with_category` call. Returns the PARENT
             // id either way, so `remember`'s contract is unchanged.
             let id = chiral.store_with_facets(content, importance, &self.pipeline, category)
-                .map_err(|e| StoreError::Other(format!("chiral store failed: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("chiral store failed: {e}")))?;
             self.rebuild_cache().ok();
             self.mark_dirty();
             Ok(id)
         } else {
             let id = self.medium.store(content, importance, &self.pipeline)
-                .map_err(|e| StoreError::Other(format!("store failed: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("store failed: {e}")))?;
             self.rebuild_cache().ok();
             self.mark_dirty();
             Ok(id)
@@ -2583,7 +2582,7 @@ impl MediumBackend for HrmStore {
                 if !candidates.is_empty() {
                     let resonances = self.medium.recall_against(
                         Some(&candidates), query, top_k, &self.pipeline,
-                    ).map_err(|e| StoreError::Other(format!("prefiltered recall failed: {}", e)))?;
+                    ).map_err(|e| StoreError::Other(format!("prefiltered recall failed: {e}")))?;
                     self.apply_observation(&resonances);
                     return Ok(resonances.iter().map(|r| (r.id, r.resonance_strength)).collect());
                 }
@@ -2599,7 +2598,7 @@ impl MediumBackend for HrmStore {
             // into the chiral path; for v1 chiral users skip the prefilter
             // and get the existing bilateral observation flow.
             let results = chiral.recall(query, top_k, &self.pipeline)
-                .map_err(|e| StoreError::Other(format!("chiral recall failed: {}", e)))?;
+                .map_err(|e| StoreError::Other(format!("chiral recall failed: {e}")))?;
 
             // Observation: recall reshapes the field — attention IS computation.
             // Batched: one field-settle pass per recall, not per result.
@@ -2647,7 +2646,7 @@ impl Drop for HrmStore {
         // Auto-save on drop if dirty
         if self.dirty {
             if let Err(e) = self.save_medium() {
-                eprintln!("Warning: Failed to auto-save HRM store on drop: {}", e);
+                eprintln!("Warning: Failed to auto-save HRM store on drop: {e}");
             }
         }
     }
@@ -3255,7 +3254,7 @@ mod tests {
         // Insert memories for dreaming
         for i in 0..5 {
             let memory = HyperMemory::new(vec![0.1 + i as f32 * 0.2; WAVEFRONT_DIM], 
-                                        format!("dream memory {}", i));
+                                        format!("dream memory {i}"));
             store.insert(memory).unwrap();
         }
         
@@ -3270,7 +3269,7 @@ mod tests {
         // Store should be marked dirty after dreaming
         assert!(store.dirty);
 
-        println!("Dream report: {:?}", report);
+        println!("Dream report: {report:?}");
     }
 
     // -----------------------------------------------------------------------

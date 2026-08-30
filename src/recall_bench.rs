@@ -29,7 +29,7 @@ pub fn hash_label(content: &str) -> String {
     let mut s = String::with_capacity(16);
     for b in digest.iter().take(8) {
         use std::fmt::Write;
-        let _ = write!(s, "{:02x}", b);
+        let _ = write!(s, "{b:02x}");
     }
     s
 }

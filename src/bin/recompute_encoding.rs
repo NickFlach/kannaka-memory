@@ -72,7 +72,7 @@ fn main() {
 
     let pipeline = make_pipeline();
     let mut store = HrmStore::load(pipeline, hrm_path).unwrap_or_else(|e| {
-        eprintln!("Failed to load HRM: {}", e);
+        eprintln!("Failed to load HRM: {e}");
         std::process::exit(1);
     });
 
@@ -86,7 +86,7 @@ fn main() {
             }
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }

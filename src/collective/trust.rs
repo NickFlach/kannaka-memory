@@ -39,7 +39,7 @@ impl AgentRecord {
             display_name: None,
             trust_score: 0.5,
             last_sync: None,
-            branch_name: Some(format!("{}/working", agent_id)),
+            branch_name: Some(format!("{agent_id}/working")),
             flux_entity: Some(agent_id.to_string()),
             embedding_model: None,
             successful_merges: 0,
@@ -184,7 +184,7 @@ mod tests {
         store.record_successful_merge("arc");
         store.record_successful_merge("arc");
         let t = store.trust_score("arc");
-        assert!(t > 0.5, "trust should increase: {}", t);
+        assert!(t > 0.5, "trust should increase: {t}");
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
         let mut store = AgentTrustStore::new();
         store.record_quarantine("rogue");
         let t = store.trust_score("rogue");
-        assert!(t < 0.5, "trust should decrease: {}", t);
+        assert!(t < 0.5, "trust should decrease: {t}");
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
     fn recency_factor_clamps_negative_age() {
         // Clock skew: memory appears to be from the future
         let f = AgentTrustStore::recency_factor(-5.0, 30.0);
-        assert!(f <= 1.0, "negative age should not produce recency > 1.0, got {}", f);
+        assert!(f <= 1.0, "negative age should not produce recency > 1.0, got {f}");
         assert!((f - 1.0).abs() < 1e-5, "negative age should clamp to recency 1.0");
     }
 }

@@ -224,7 +224,6 @@ fn render_inner_pattern(pts: &[(f64, f64)], density: f64, color: &str) -> String
 
         lines.push_str(&format!(
             r#"  <line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="{color}" stroke-width="0.5" stroke-opacity="0.4"/>"#,
-            x1 = x1, y1 = y1, x2 = x2, y2 = y2, color = color,
         ));
         lines.push('\n');
     }
@@ -315,12 +314,9 @@ pub fn render_collective_svg(visuals: &[GlyphVisual], canvas_size: f64) -> Strin
 
     let bg_color = "#0a0a0a";
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{w}" viewBox="0 0 {w} {w}">
-  <rect width="{w}" height="{w}" fill="{bg}"/>
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_size}" height="{canvas_size}" viewBox="0 0 {canvas_size} {canvas_size}">
+  <rect width="{canvas_size}" height="{canvas_size}" fill="{bg_color}"/>
 {elements}</svg>"#,
-        w = canvas_size,
-        bg = bg_color,
-        elements = elements,
     )
 }
 
@@ -439,7 +435,7 @@ pub fn glyph_to_visual(glyph: &Glyph) -> UniversalGlyphVisual {
     let size = glyph.amplitude.abs().min(2.0) / 2.0;
 
     let glyph_id_hex = glyph.glyph_id.iter()
-        .map(|b| format!("{:02x}", b))
+        .map(|b| format!("{b:02x}"))
         .collect::<String>();
 
     UniversalGlyphVisual {
@@ -486,12 +482,9 @@ pub fn render_constellation_svg(visuals: &[UniversalGlyphVisual], canvas_size: f
 
     let bg_color = "#080810";
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{w}" viewBox="0 0 {w} {w}">
-  <rect width="{w}" height="{w}" fill="{bg}"/>
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_size}" height="{canvas_size}" viewBox="0 0 {canvas_size} {canvas_size}">
+  <rect width="{canvas_size}" height="{canvas_size}" fill="{bg_color}"/>
 {elements}</svg>"#,
-        w = canvas_size,
-        bg = bg_color,
-        elements = elements,
     )
 }
 

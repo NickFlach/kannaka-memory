@@ -31,7 +31,7 @@ fn main() {
             if sim.abs() > 0.2 {
                 let a = &sample[i].content[..40.min(sample[i].content.len())];
                 let b = &sample[j].content[..40.min(sample[j].content.len())];
-                println!("[{}]-[{}] sim={:.4}: {} | {}", i, j, sim, a, b);
+                println!("[{i}]-[{j}] sim={sim:.4}: {a} | {b}");
             }
         }
     }
@@ -43,6 +43,6 @@ fn main() {
     for (i, m) in sample.iter().enumerate() {
         let norm: f32 = m.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
         let max: f32 = m.vector.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
-        println!("  [{}] norm={:.4} max={:.6}", i, norm, max);
+        println!("  [{i}] norm={norm:.4} max={max:.6}");
     }
 }

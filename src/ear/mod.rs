@@ -107,7 +107,7 @@ impl AudioPipeline {
         let af = extract_features(samples)?;
         let hv = self.codebook.project(&af.vector);
 
-        let mut mem = HyperMemory::new(hv, format!("audio:{}", label));
+        let mut mem = HyperMemory::new(hv, format!("audio:{label}"));
         mem.frequency = 0.05;
         mem.phase = PI / 4.0;
         mem.decay_rate = 5e-7;

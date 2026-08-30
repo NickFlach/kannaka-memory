@@ -554,7 +554,7 @@ impl ConsolidationEngine {
             let summary = engine.pipeline.bundle(&vectors);
             let mut summary_mem = crate::memory::HyperMemory::new(
                 summary,
-                format!("__consolidation_summary_layer_{}", layer),
+                format!("__consolidation_summary_layer_{layer}"),
             );
             // Deterministic UUID for bundle summaries to ensure reproducible consolidation.
             // Derived from layer index to avoid random UUID nondeterminism.
@@ -3473,8 +3473,8 @@ mod tests {
         let amp_after_2 = engine.get_memory(&id2).unwrap().unwrap().amplitude;
 
         assert!(report.constructive_pairs > 0, "should detect constructive pairs");
-        assert!(amp_after_1 > amp_before_1, "amplitude should increase: {} -> {}", amp_before_1, amp_after_1);
-        assert!(amp_after_2 > amp_before_2, "amplitude should increase: {} -> {}", amp_before_2, amp_after_2);
+        assert!(amp_after_1 > amp_before_1, "amplitude should increase: {amp_before_1} -> {amp_after_1}");
+        assert!(amp_after_2 > amp_before_2, "amplitude should increase: {amp_before_2} -> {amp_after_2}");
     }
 
     #[test]
@@ -3496,7 +3496,7 @@ mod tests {
         let amp_after_1 = engine.get_memory(&id1).unwrap().unwrap().amplitude;
 
         assert!(report.destructive_pairs > 0, "should detect destructive pairs");
-        assert!(amp_after_1 < amp_before_1, "amplitude should decrease: {} -> {}", amp_before_1, amp_after_1);
+        assert!(amp_after_1 < amp_before_1, "amplitude should decrease: {amp_before_1} -> {amp_after_1}");
     }
 
     #[test]
@@ -3519,7 +3519,7 @@ mod tests {
         // At least one should be ghosted (amplitude 0)
         assert!(
             amp1 == 0.0 || amp2 == 0.0,
-            "at least one should be pruned to 0: amp1={}, amp2={}", amp1, amp2
+            "at least one should be pruned to 0: amp1={amp1}, amp2={amp2}"
         );
     }
 
@@ -3550,7 +3550,7 @@ mod tests {
         // Summary should have positive similarity to components
         let cat_vec = engine.pipeline.encode_text("cats are fluffy animals").unwrap();
         let sim = cosine_similarity(&summary.vector, &cat_vec);
-        assert!(sim > 0.0, "summary should be similar to components, got {}", sim);
+        assert!(sim > 0.0, "summary should be similar to components, got {sim}");
     }
 
     #[test]
@@ -3696,22 +3696,20 @@ mod tests {
         // Related memories should be strengthened
         assert!(
             amp_related1_after > amp_related1_before,
-            "related memory should be stronger: {} -> {}",
-            amp_related1_before, amp_related1_after
+            "related memory should be stronger: {amp_related1_before} -> {amp_related1_after}"
         );
 
         // Opposed memories should be weakened
         assert!(
             amp_opposed1_after < amp_opposed1_before,
-            "opposed memory should be weaker: {} -> {}",
-            amp_opposed1_before, amp_opposed1_after
+            "opposed memory should be weaker: {amp_opposed1_before} -> {amp_opposed1_after}"
         );
 
         println!("\n=== Amplitude Changes ===");
-        println!("Related 1: {} -> {}", amp_related1_before, amp_related1_after);
-        println!("Related 2: {}", amp_related2_after);
-        println!("Opposed 1: {} -> {}", amp_opposed1_before, amp_opposed1_after);
-        println!("Opposed 2: {}", amp_opposed2_after);
+        println!("Related 1: {amp_related1_before} -> {amp_related1_after}");
+        println!("Related 2: {amp_related2_after}");
+        println!("Opposed 1: {amp_opposed1_before} -> {amp_opposed1_after}");
+        println!("Opposed 2: {amp_opposed2_after}");
 
         // First cycle should have done real work
         assert!(reports[0].memories_replayed > 0);
@@ -3801,15 +3799,14 @@ mod tests {
         
         let final_amplitude = engine.get_memory(&bridge_id).unwrap().unwrap().amplitude;
         
-        println!("Bridge node amplitude: {} -> {}", initial_amplitude, final_amplitude);
+        println!("Bridge node amplitude: {initial_amplitude} -> {final_amplitude}");
         
         // Bridge node should receive amplitude boost if it connects to multiple clusters
         // Note: The exact boost depends on how many clusters it actually gets connected to
         // so we just check that it didn't decrease
         assert!(
             final_amplitude >= initial_amplitude,
-            "Bridge node should not lose amplitude: {} -> {}",
-            initial_amplitude, final_amplitude
+            "Bridge node should not lose amplitude: {initial_amplitude} -> {final_amplitude}"
         );
     }
 
@@ -3831,14 +3828,14 @@ mod tests {
         
         // Cluster A: high amplitude memories
         for i in 0..3 {
-            let mut mem = crate::memory::HyperMemory::new(va.clone(), format!("animal {}", i));
+            let mut mem = crate::memory::HyperMemory::new(va.clone(), format!("animal {i}"));
             mem.amplitude = 0.8; // High amplitude to be hallucination candidates
             engine.store.insert(mem).unwrap();
         }
         
         // Cluster B: high amplitude memories
         for i in 0..3 {
-            let mut mem = crate::memory::HyperMemory::new(vb.clone(), format!("tech {}", i));
+            let mut mem = crate::memory::HyperMemory::new(vb.clone(), format!("tech {i}"));
             mem.amplitude = 0.8; // High amplitude to be hallucination candidates
             engine.store.insert(mem).unwrap();
         }
@@ -3987,7 +3984,7 @@ mod tests {
         if amp2 > 0.0 {
             let ratio_after = amp1 / amp2;
             assert!((ratio_after - ratio_before).abs() < 0.5,
-                "ratio should be approximately preserved: before={}, after={}", ratio_before, ratio_after);
+                "ratio should be approximately preserved: before={ratio_before}, after={ratio_after}");
         }
         // Both should have decreased
         assert!(amp1 < 2.0, "amplitude should decrease");

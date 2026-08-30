@@ -876,8 +876,7 @@ impl Hemisphere {
                     let phase = (self.phase[idx1] + self.phase[idx2]) / 2.0;
 
                     let content = format!(
-                        "HALLUCINATION: superposition of patterns {}-{} [temp={:.2}]",
-                        idx1, idx2, temperature
+                        "HALLUCINATION: superposition of patterns {idx1}-{idx2} [temp={temperature:.2}]"
                     );
 
                     if self.add_wavefront(&new_vector, content, energy).is_ok() {
@@ -969,7 +968,7 @@ mod tests {
         // Left hemisphere should not lose energy to dampening
         // (may gain from constructive interference)
         assert!(energy_after >= energy_before - 0.001,
-            "Left hemisphere energy should not decrease: before={}, after={}", energy_before, energy_after);
+            "Left hemisphere energy should not decrease: before={energy_before}, after={energy_after}");
     }
 
     #[test]
@@ -991,7 +990,7 @@ mod tests {
         let energy_after: f32 = right.energy.sum();
 
         assert!(energy_after < energy_before,
-            "Right hemisphere should lose energy to dampening: before={}, after={}", energy_before, energy_after);
+            "Right hemisphere should lose energy to dampening: before={energy_before}, after={energy_after}");
     }
 
     /// ADR-0046 energy-neutral ranking: a high-energy "favorite" (frequently

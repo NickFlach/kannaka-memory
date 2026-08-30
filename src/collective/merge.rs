@@ -159,8 +159,7 @@ pub fn merge_guard(
     if let (Some(local_model), Some(remote_model)) = (local_embedding_model, remote_embedding_model) {
         if local_model != remote_model {
             return Some(format!(
-                "embedding model mismatch: local={}, remote={}",
-                local_model, remote_model
+                "embedding model mismatch: local={local_model}, remote={remote_model}"
             ));
         }
     }
@@ -398,7 +397,7 @@ mod tests {
         assert_eq!(local.sync_version, 1);
         // Vector should be re-normalized to unit length
         let norm: f32 = local.vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-4, "vector should be unit length after merge, got {}", norm);
+        assert!((norm - 1.0).abs() < 1e-4, "vector should be unit length after merge, got {norm}");
     }
 
     #[test]

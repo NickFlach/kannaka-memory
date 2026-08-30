@@ -100,7 +100,7 @@ pub fn evaluate_policy(
                 Some(RevelationAction {
                     glyph_hash: policy.glyph_hash.clone(),
                     new_difficulty: *new_difficulty,
-                    reason: format!("time_based: {} days elapsed", after_days),
+                    reason: format!("time_based: {after_days} days elapsed"),
                 })
             } else {
                 None
@@ -116,7 +116,7 @@ pub fn evaluate_policy(
                     let action = RevelationAction {
                         glyph_hash: policy.glyph_hash.clone(),
                         new_difficulty: *diff,
-                        reason: format!("staged: {} days, difficulty → {}", days, diff),
+                        reason: format!("staged: {days} days, difficulty → {diff}"),
                     };
                     match &best_action {
                         Some(existing) if existing.new_difficulty <= *diff => {}

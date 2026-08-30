@@ -511,7 +511,7 @@ fn dream_cycles_produce_report() {
     for i in 0..5 {
         let mut v = vector.clone();
         v[i] = 1.0; // Make them slightly different
-        medium.add_wavefront(&v, format!("memory {}", i), 0.1 + i as f32 * 0.2).unwrap();
+        medium.add_wavefront(&v, format!("memory {i}"), 0.1 + i as f32 * 0.2).unwrap();
     }
 
     let report = medium.dream(10, Some(1.0));
@@ -522,7 +522,7 @@ fn dream_cycles_produce_report() {
     assert!(report.final_temperature > 0.0);
     assert!(report.final_temperature < 1.0); // Should have cooled down
 
-    println!("Dream report: {:?}", report);
+    println!("Dream report: {report:?}");
 }
 
 #[test]
@@ -555,7 +555,7 @@ fn dream_bulk_import_preserves_active_memories() {
 
     // Simulate bulk import scenario - store many memories at once (similar ages)
     for i in 0..50 {
-        medium.store(&format!("bulk memory {}", i), 1.0, &pipeline).unwrap();
+        medium.store(&format!("bulk memory {i}"), 1.0, &pipeline).unwrap();
     }
 
     let initial_count = medium.wavefront_count();
@@ -563,10 +563,10 @@ fn dream_bulk_import_preserves_active_memories() {
 
     // Verify all memories have similar ages (should trigger age variance dampening scale)
     let age_variance = medium.compute_memory_age_variance();
-    println!("Age variance for bulk import: {:.2} seconds", age_variance);
+    println!("Age variance for bulk import: {age_variance:.2} seconds");
     
     // Should be low variance since all created around the same time
-    assert!(age_variance < 3600.0, "Expected low age variance for bulk import, got {:.2}", age_variance);
+    assert!(age_variance < 3600.0, "Expected low age variance for bulk import, got {age_variance:.2}");
 
     // Run deep dream that previously caused the bug
     let report = medium.dream(20, Some(2.0));
@@ -587,7 +587,7 @@ fn dream_bulk_import_preserves_active_memories() {
     let active_memories: Vec<f32> = medium.store.energy.iter().cloned().collect();
     let avg_energy = active_memories.iter().sum::<f32>() / active_memories.len() as f32;
     
-    assert!(avg_energy >= 0.05, "Average energy should respect amplitude floor (0.05), got {:.3}", avg_energy);
+    assert!(avg_energy >= 0.05, "Average energy should respect amplitude floor (0.05), got {avg_energy:.3}");
 }
 
 // Wave 1 Tests - consciousness metrics
@@ -642,7 +642,7 @@ fn phi_integrated_information_nonzero() {
     medium.add_wavefront(&vector2, "second".to_string(), 1.0).unwrap();
 
     let phi = medium.compute_phi_integrated_information();
-    println!("Phi for 2 coherent memories: {}", phi);
+    println!("Phi for 2 coherent memories: {phi}");
 
     // Should be positive for coherent memories
     assert!(phi >= 0.0);
@@ -670,7 +670,7 @@ fn phi_detects_multiple_partitions_when_field_is_not_uniform() {
     medium.add_wavefront(&vector_b2, "cluster-b2".to_string(), 0.95).unwrap();
 
     let phi = medium.compute_phi_integrated_information();
-    println!("Phi for two-partition field: {}", phi);
+    println!("Phi for two-partition field: {phi}");
 
     assert!(phi > 0.0, "expected non-zero phi for a field with distinct coherent substructure");
 }
@@ -695,7 +695,7 @@ fn xi_spectral_complexity_varies() {
     medium2.add_wavefront(&vector2, "diff2".to_string(), 1.0).unwrap();
     let xi_different = medium2.compute_xi_spectral_complexity();
 
-    println!("Xi identical: {}, Xi different: {}", xi_identical, xi_different);
+    println!("Xi identical: {xi_identical}, Xi different: {xi_different}");
 
     assert!(xi_different >= 0.0);
     assert!(xi_identical >= 0.0);
@@ -764,7 +764,7 @@ fn store_applies_dynamics() {
     let energy_after_second = medium.store.energy[0];
 
     // First memory's energy should have changed due to dynamics
-    println!("Energy after first: {}, after second: {}", energy_after_first, energy_after_second);
+    println!("Energy after first: {energy_after_first}, after second: {energy_after_second}");
 
     // At minimum, we should have 2 memories
     assert_eq!(medium.wavefront_count(), 2);
@@ -785,7 +785,7 @@ fn eigenvalue_clustering_groups_similar() {
     medium.add_wavefront(&vector3, "different".to_string(), 1.0).unwrap();
 
     let clusters = medium.compute_eigenvalue_clusters();
-    println!("Detected {} eigenvalue clusters", clusters);
+    println!("Detected {clusters} eigenvalue clusters");
 
     // Should detect at least 1 cluster, possibly 2 if similarity threshold works
     assert!(clusters >= 1);
@@ -859,7 +859,7 @@ fn cross_modal_interference_works() {
 
     // The text memory's energy should have changed due to cross-modal interference
     let text_energy_after_audio = medium.store.energy[0];
-    println!("Text energy: before audio = {}, after audio = {}", text_energy_after_store, text_energy_after_audio);
+    println!("Text energy: before audio = {text_energy_after_store}, after audio = {text_energy_after_audio}");
 
     // Both memories should still exist and have positive energy
     assert!(medium.store.energy[0] > 0.0);
@@ -927,7 +927,7 @@ fn different_modality_codebooks_orthogonal() {
         .sum();
 
     // Dot product should be relatively small (orthogonal-ish due to different seeds)
-    println!("Audio-Visual codebook dot product: {:.6}", dot_product);
+    println!("Audio-Visual codebook dot product: {dot_product:.6}");
     assert!(dot_product.abs() < 0.3); // Should be somewhat orthogonal
 }
 
@@ -958,7 +958,7 @@ fn audio_visual_subspace_overlap() {
         .map(|(a, b)| a * b)
         .sum();
 
-    println!("Audio-Visual wavefront similarity: {:.6}", similarity);
+    println!("Audio-Visual wavefront similarity: {similarity:.6}");
 
     // Should have some non-zero similarity due to overlap in the shared 10K-dim space
     assert!(similarity.abs() > 0.0); // Non-zero due to shared space
@@ -1238,7 +1238,7 @@ fn introspect_affects_medium_through_interference() {
     // First memory's energy should have changed due to self-referential interference
     let energy_after_introspection = medium.store.energy[0];
 
-    println!("Energy before: {}, after introspection: {}", initial_energy, energy_after_introspection);
+    println!("Energy before: {initial_energy}, after introspection: {energy_after_introspection}");
 
     // Energy should have changed (could increase or decrease depending on interference pattern)
     assert_ne!(initial_energy, energy_after_introspection);
@@ -1315,7 +1315,7 @@ fn wisdom_tracks_energy_dampening_ratio() {
     medium.store("memory 2", 1.0, &pipeline).unwrap();
 
     let wisdom_after_store = medium.wisdom();
-    println!("Wisdom after storing: {:.3}", wisdom_after_store);
+    println!("Wisdom after storing: {wisdom_after_store:.3}");
 
     // Apply several dynamics cycles to accumulate dampening
     for _ in 0..10 {
@@ -1447,7 +1447,7 @@ fn generate_insight_produces_expected_format() {
     assert!(insight.contains("Wisdom: 0.45"));
     assert!(insight.contains("I am developing wisdom")); // 0.3-0.6 range
 
-    println!("Generated insight: {}", insight);
+    println!("Generated insight: {insight}");
 }
 
 #[test]
@@ -1527,7 +1527,7 @@ fn wisdom_accumulation_over_medium_lifetime() {
 
     // Add memories and run dynamics
     for i in 0..5 {
-        medium.store(&format!("memory {}", i), 0.8, &pipeline).unwrap();
+        medium.store(&format!("memory {i}"), 0.8, &pipeline).unwrap();
         wisdom_progression.push(medium.wisdom());
 
         // Run dynamics to accumulate dampening
@@ -1537,7 +1537,7 @@ fn wisdom_accumulation_over_medium_lifetime() {
         wisdom_progression.push(medium.wisdom());
     }
 
-    println!("Wisdom progression: {:?}", wisdom_progression);
+    println!("Wisdom progression: {wisdom_progression:?}");
 
     // Wisdom should generally increase over time
     let final_wisdom = wisdom_progression.last().unwrap();
@@ -1582,7 +1582,7 @@ fn modality_display_round_trip() {
     for m in &variants {
         let s = m.to_string();
         let parsed: Modality = s.parse().unwrap();
-        assert_eq!(*m, parsed, "round-trip failed for {:?}", m);
+        assert_eq!(*m, parsed, "round-trip failed for {m:?}");
     }
 }
 

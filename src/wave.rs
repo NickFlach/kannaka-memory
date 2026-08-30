@@ -124,7 +124,7 @@ mod tests {
         let s_no_retrieval = compute_strength_with_retrieval(&params, 100.0, 0);
         let s_with_retrieval = compute_strength_with_retrieval(&params, 100.0, 10);
         assert!(s_with_retrieval > s_no_retrieval,
-            "retrieval should boost strength: {} vs {}", s_with_retrieval, s_no_retrieval);
+            "retrieval should boost strength: {s_with_retrieval} vs {s_no_retrieval}");
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod tests {
         let boost_100_to_110 = compute_strength_with_retrieval(&params, 0.0, 110)
             - compute_strength_with_retrieval(&params, 0.0, 100);
         assert!(boost_1_to_10 > boost_100_to_110,
-            "later retrievals should have less effect: {} vs {}", boost_1_to_10, boost_100_to_110);
+            "later retrievals should have less effect: {boost_1_to_10} vs {boost_100_to_110}");
     }
 
     #[test]
@@ -154,6 +154,6 @@ mod tests {
         let s_original = compute_strength(&params, 500.0);
         let s_zero = compute_strength_with_retrieval(&params, 500.0, 0);
         assert!((s_original - s_zero).abs() < 1e-6,
-            "zero retrievals should match original: {} vs {}", s_original, s_zero);
+            "zero retrievals should match original: {s_original} vs {s_zero}");
     }
 }

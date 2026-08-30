@@ -72,7 +72,7 @@ fn http_get(url: &str) -> Result<String, String> {
 
 fn http_get_with_token(url: &str, token: &str) -> Result<String, String> {
     ureq::get(url)
-        .set("Authorization", &format!("Bearer {}", token))
+        .set("Authorization", &format!("Bearer {token}"))
         .timeout(std::time::Duration::from_secs(5))
         .call()
         .map_err(|e| format!("HTTP error: {e}"))?
@@ -83,7 +83,7 @@ fn http_get_with_token(url: &str, token: &str) -> Result<String, String> {
 fn http_post_json_with_token(url: &str, body: &str, token: &str) -> Result<String, String> {
     ureq::post(url)
         .set("Content-Type", "application/json")
-        .set("Authorization", &format!("Bearer {}", token))
+        .set("Authorization", &format!("Bearer {token}"))
         .timeout(std::time::Duration::from_secs(5))
         .send_string(body)
         .map_err(|e| format!("HTTP error: {e}"))?
@@ -142,7 +142,7 @@ fn persist_kax_token(token: &str) {
     let mut on_disk = KannakaConfig::load_unmodified();
     on_disk.ghostsignals.kax_token = token.to_string();
     if let Err(e) = on_disk.save() {
-        eprintln!("  warning: could not persist KAX token to config: {}", e);
+        eprintln!("  warning: could not persist KAX token to config: {e}");
     }
 }
 
@@ -206,19 +206,19 @@ fn exchange_spacechild_for_kax(cfg: &KannakaConfig) -> Option<String> {
                             Some(tok)
                         }
                         Err((code, m)) => {
-                            eprintln!("  SpaceChild exchange failed after refresh ({}): {}", code, m);
+                            eprintln!("  SpaceChild exchange failed after refresh ({code}): {m}");
                             None
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("  SpaceChild session expired ({}). Run: kannaka identity login", e);
+                    eprintln!("  SpaceChild session expired ({e}). Run: kannaka identity login");
                     None
                 }
             }
         }
         Err((code, m)) => {
-            eprintln!("  SpaceChild exchange failed ({}): {}", code, m);
+            eprintln!("  SpaceChild exchange failed ({code}): {m}");
             None
         }
     }
@@ -260,10 +260,10 @@ fn ensure_fresh_kax_token(cfg: &KannakaConfig) -> Option<String> {
         Err(e) => {
             if exp > now {
                 // Still valid — use it and let a later run retry the refresh.
-                eprintln!("  warning: KAX token refresh failed ({}); using current token", e);
+                eprintln!("  warning: KAX token refresh failed ({e}); using current token");
                 Some(tok.to_string())
             } else {
-                eprintln!("  KAX token expired and refresh failed: {}", e);
+                eprintln!("  KAX token expired and refresh failed: {e}");
                 // Dead lineage — federation can mint a fresh one if a
                 // SpaceChild session is on disk.
                 exchange_spacechild_for_kax(cfg).or_else(remint_help)
@@ -286,7 +286,7 @@ fn resolve_outcome_index(base: &str, market_id: &str, outcome: &str) -> Result<(
     if let Ok(n) = outcome.parse::<u64>() {
         return Ok((n, outcome.to_string()));
     }
-    let url = format!("{}/api/markets/{}", base, market_id);
+    let url = format!("{base}/api/markets/{market_id}");
     let body = http_get(&url)?;
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("bad market JSON: {e}"))?;
     let outcomes = v["market"]["outcomes"].as_array()
@@ -326,7 +326,7 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
 
     match sub {
         "status" => {
-            let url = format!("{}/api/state", base);
+            let url = format!("{base}/api/state");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -338,40 +338,40 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
                         let listeners = v["listeners"].as_u64()
                             .or_else(|| v["listener_count"].as_u64())
                             .unwrap_or(0);
-                        println!("  \u{1f3b5} Now Playing: \"{}\" \u{2014} {}", track, album);
+                        println!("  \u{1f3b5} Now Playing: \"{track}\" \u{2014} {album}");
                         println!("  \u{1f4fb} {} | {}", block,
                             chrono::Local::now().format("%I:%M %p"));
-                        println!("  \u{1f465} {} listeners", listeners);
+                        println!("  \u{1f465} {listeners} listeners");
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Radio not reachable: {}", e);
-                    eprintln!("  URL: {}", url);
+                    eprintln!("  Radio not reachable: {e}");
+                    eprintln!("  URL: {url}");
                     process::exit(1);
                 }
             }
         }
         "now" => {
-            let url = format!("{}/api/state", base);
+            let url = format!("{base}/api/state");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                         let (track, album) = pick_track(&v);
-                        println!("  \u{1f3b5} \"{}\" \u{2014} {}", track, album);
+                        println!("  \u{1f3b5} \"{track}\" \u{2014} {album}");
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Radio not reachable: {}", e);
+                    eprintln!("  Radio not reachable: {e}");
                     process::exit(1);
                 }
             }
         }
         "schedule" => {
-            let url = format!("{}/api/programming", base);
+            let url = format!("{base}/api/programming");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -391,20 +391,20 @@ pub(crate) fn handle_radio(cfg: &KannakaConfig, args: &[String]) {
                                 // is the closest human-readable field. (#591)
                                 let desc = block_description(block);
                                 if desc.is_empty() {
-                                    println!("  {:>8}  {}", time, name);
+                                    println!("  {time:>8}  {name}");
                                 } else {
-                                    println!("  {:>8}  {} \u{2014} {}", time, name, desc);
+                                    println!("  {time:>8}  {name} \u{2014} {desc}");
                                 }
                             }
                         } else {
                             println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
                         }
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Radio not reachable: {}", e);
+                    eprintln!("  Radio not reachable: {e}");
                     process::exit(1);
                 }
             }
@@ -471,9 +471,9 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             if kind == "agent" {
                 println!("  Principal: kax:agent:{}", claims["bot_id"].as_str().unwrap_or("?"));
             } else {
-                println!("  Principal: kax:{}:{}", kind, sub_c);
+                println!("  Principal: kax:{kind}:{sub_c}");
             }
-            println!("  Token expires in ~{} min — the CLI auto-refreshes it before market calls.", mins);
+            println!("  Token expires in ~{mins} min — the CLI auto-refreshes it before market calls.");
         }
         "link" => {
             // Force a SpaceChild -> KAX federation exchange right now.
@@ -508,7 +508,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     let now = now_epoch();
                     let exp = c["exp"].as_i64().unwrap_or(0);
                     let oat = c["oat"].as_i64().or_else(|| c["iat"].as_i64()).unwrap_or(now);
-                    println!("  Principal:      {}", principal);
+                    println!("  Principal:      {principal}");
                     println!("  Token expires:  {} min (auto-refreshed before market calls)", (exp - now).max(0) / 60);
                     println!("  Lineage age:    {} day(s) (server refuses refresh past its max lifetime)", (now - oat).max(0) / 86400);
                     if let Some(scopes) = c["scopes"].as_array() {
@@ -520,7 +520,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
         }
         "list" => {
-            let url = format!("{}/api/markets", base);
+            let url = format!("{base}/api/markets");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -552,18 +552,17 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                                 } else {
                                     q.to_string()
                                 };
-                                println!("  {:<14} {:<44} {:>5.2} {:>6}",
-                                    id, q_trunc, price, vol);
+                                println!("  {id:<14} {q_trunc:<44} {price:>5.2} {vol:>6}");
                             }
                         } else {
                             println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
                         }
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  GhostSignals not reachable: {}", e);
+                    eprintln!("  GhostSignals not reachable: {e}");
                     process::exit(1);
                 }
             }
@@ -576,7 +575,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     process::exit(1);
                 }
             };
-            let url = format!("{}/api/markets/{}", base, market_id);
+            let url = format!("{base}/api/markets/{market_id}");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -595,12 +594,12 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                         let created = m["created_at"].as_str().unwrap_or("?");
                         let resolved = m["resolved"].as_bool().unwrap_or(false);
 
-                        println!("  \u{1f4ca} Market: {}", market_id);
+                        println!("  \u{1f4ca} Market: {market_id}");
                         println!("  {}", "\u{2500}".repeat(50));
-                        println!("  Question: {}", q);
-                        println!("  Price:    {:.2}", price);
-                        println!("  Volume:   {}", vol);
-                        println!("  Created:  {}", created);
+                        println!("  Question: {q}");
+                        println!("  Price:    {price:.2}");
+                        println!("  Volume:   {vol}");
+                        println!("  Created:  {created}");
                         println!("  Resolved: {}", if resolved { "Yes" } else { "No" });
 
                         if let Some(outcomes) = v["outcomes"].as_array() {
@@ -609,15 +608,15 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             for o in outcomes {
                                 let name = o["name"].as_str().unwrap_or("?");
                                 let p = o["price"].as_f64().unwrap_or(0.0);
-                                println!("    {}: {:.2}", name, p);
+                                println!("    {name}: {p:.2}");
                             }
                         }
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  GhostSignals not reachable: {}", e);
+                    eprintln!("  GhostSignals not reachable: {e}");
                     process::exit(1);
                 }
             }
@@ -656,7 +655,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             let (outcome_idx, outcome_label) = match resolve_outcome_index(base, market_id, outcome) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("  {}", e);
+                    eprintln!("  {e}");
                     process::exit(1);
                 }
             };
@@ -674,7 +673,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                 }
             };
 
-            let url = format!("{}/api/markets/{}/trade", base, market_id);
+            let url = format!("{base}/api/markets/{market_id}/trade");
             // trader_id rides along for play-tier markets; on labs-tier the hub
             // overwrites it with the KAX-derived principal.
             let body = serde_json::json!({
@@ -690,12 +689,12 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             process::exit(1);
                         }
                         let cost = v["cost"].as_f64().unwrap_or(0.0);
-                        println!("  \u{2713} Bought {} share(s) of '{}' on {}", shares, outcome_label, market_id);
-                        println!("  Cost: {:.4} credits", cost);
+                        println!("  \u{2713} Bought {shares} share(s) of '{outcome_label}' on {market_id}");
+                        println!("  Cost: {cost:.4} credits");
                         if let Some(prices) = v["prices"].as_array() {
                             let p: Vec<String> = prices.iter()
                                 .filter_map(|x| x.as_f64())
-                                .map(|x| format!("{:.2}", x))
+                                .map(|x| format!("{x:.2}"))
                                 .collect();
                             println!("  New prices: [{}]", p.join(", "));
                         }
@@ -703,11 +702,11 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             println!("  Ledger: debit posted on the KAX credit ledger (labs-tier).");
                         }
                     } else {
-                        println!("{}", resp);
+                        println!("{resp}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Trade failed: {}", e);
+                    eprintln!("  Trade failed: {e}");
                     if e.contains("401") {
                         eprintln!("  (labs-tier markets need a KAX identity token: kannaka market auth <jwt>)");
                     } else if e.contains("409") {
@@ -745,7 +744,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     }
                     other => {
                         if other.starts_with("--") {
-                            eprintln!("[market propose] ignoring unknown flag: {}", other);
+                            eprintln!("[market propose] ignoring unknown flag: {other}");
                         }
                         i += 1;
                     }
@@ -753,7 +752,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
             }
             if settles_by.is_none() {
                 eprintln!("  market propose: a settle-by date is required (--by YYYY-MM-DD).");
-                eprintln!("  {}", PROPOSE_USAGE);
+                eprintln!("  {PROPOSE_USAGE}");
                 process::exit(1);
             }
             // Proof-forward (multichannel-ingress-design.md): the observatory door
@@ -785,12 +784,12 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             .unwrap_or_else(|| "?".to_string());
                         let status = p["status"].as_str().unwrap_or("proposed");
                         if v["duplicate"].as_bool() == Some(true) {
-                            println!("  \u{2713} That claim is already an active market (prediction \u{2116}{}).", num);
+                            println!("  \u{2713} That claim is already an active market (prediction \u{2116}{num}).");
                         } else {
-                            println!("  \u{2713} Proposed prediction \u{2116}{} \u{2014} status: {}", num, status);
-                            println!("  \"{}\"", statement);
+                            println!("  \u{2713} Proposed prediction \u{2116}{num} \u{2014} status: {status}");
+                            println!("  \"{statement}\"");
                             if let Some(sb) = &settles_by {
-                                println!("  Settles by: {}", sb);
+                                println!("  Settles by: {sb}");
                             }
                             println!(
                                 "  You can't trade this one (anti-self-dealing); watch it at {}",
@@ -798,11 +797,11 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             );
                         }
                     } else {
-                        println!("{}", resp);
+                        println!("{resp}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Proposal failed: {}", e);
+                    eprintln!("  Proposal failed: {e}");
                     if e.contains("401") {
                         eprintln!("  (proposing needs a KAX identity token: kannaka market auth <jwt>)");
                     }
@@ -832,7 +831,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                     i += 1;
                 }
             }
-            let url = format!("{}/api/markets", base);
+            let url = format!("{base}/api/markets");
             let body = serde_json::json!({
                 "question": question,
                 "ttl_seconds": ttl,
@@ -843,15 +842,15 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                         let id = v["id"].as_str()
                             .or_else(|| v["market_id"].as_str())
                             .unwrap_or("?");
-                        println!("  \u{2713} Market created: {}", id);
-                        println!("  Question: {}", question);
-                        println!("  TTL: {} seconds", ttl);
+                        println!("  \u{2713} Market created: {id}");
+                        println!("  Question: {question}");
+                        println!("  TTL: {ttl} seconds");
                     } else {
-                        println!("{}", resp);
+                        println!("{resp}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Market creation failed: {}", e);
+                    eprintln!("  Market creation failed: {e}");
                     process::exit(1);
                 }
             }
@@ -869,8 +868,8 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
 
                         println!("  \u{1f4b0} Portfolio for {}", cfg.agent.id);
                         println!("  {}", "\u{2500}".repeat(40));
-                        println!("  Capital:    {:.2} ghost coins", capital);
-                        println!("  Reputation: {:.2}", reputation);
+                        println!("  Capital:    {capital:.2} ghost coins");
+                        println!("  Reputation: {reputation:.2}");
 
                         if let Some(positions) = v["positions"].as_array() {
                             if !positions.is_empty() {
@@ -880,16 +879,16 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                                     let mid = p["market_id"].as_str().unwrap_or("?");
                                     let outcome = p["outcome"].as_str().unwrap_or("?");
                                     let shares = p["shares"].as_u64().unwrap_or(0);
-                                    println!("    {} | {} | {} shares", mid, outcome, shares);
+                                    println!("    {mid} | {outcome} | {shares} shares");
                                 }
                             }
                         }
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  GhostSignals not reachable: {}", e);
+                    eprintln!("  GhostSignals not reachable: {e}");
                     process::exit(1);
                 }
             }
@@ -897,7 +896,7 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
         "leaderboard" => {
             // GhostSignals serves this at /api/leaderboard. /api/agents/leaderboard
             // does not exist on kannaka-radio, so this 404'd every time. (#593)
-            let url = format!("{}/api/leaderboard", base);
+            let url = format!("{base}/api/leaderboard");
             match http_get(&url) {
                 Ok(body) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -925,11 +924,11 @@ pub(crate) fn handle_market(cfg: &KannakaConfig, args: &[String]) {
                             println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
                         }
                     } else {
-                        println!("{}", body);
+                        println!("{body}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("  GhostSignals not reachable: {}", e);
+                    eprintln!("  GhostSignals not reachable: {e}");
                     process::exit(1);
                 }
             }
@@ -976,9 +975,9 @@ pub(crate) fn handle_constellation(cfg: &KannakaConfig) {
                             "\u{2717}"
                         };
                         if detail.is_empty() {
-                            println!("  {} {:<16} {:<34}", mark, name, url);
+                            println!("  {mark} {name:<16} {url:<34}");
                         } else {
-                            println!("  {} {:<16} {:<34} {}", mark, name, url, detail);
+                            println!("  {mark} {name:<16} {url:<34} {detail}");
                         }
                     }
                 } else {
@@ -986,7 +985,7 @@ pub(crate) fn handle_constellation(cfg: &KannakaConfig) {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or(body));
                 }
             } else {
-                println!("{}", body);
+                println!("{body}");
             }
         }
         Err(_) => {
@@ -1019,7 +1018,7 @@ pub(crate) fn handle_constellation(cfg: &KannakaConfig) {
             } else {
                 &cfg.ghostsignals.hub_url
             };
-            let gs_url = format!("{}/api/markets", gs_base);
+            let gs_url = format!("{gs_base}/api/markets");
             let gs_ok = http_get(&gs_url).is_ok();
             println!("  {} {:<16} {:<34}",
                 if gs_ok { "\u{2713}" } else { "\u{2717}" },

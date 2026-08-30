@@ -53,7 +53,7 @@ impl CliffordElement {
     /// Create a basis vector eᵢ
     pub fn basis_vector(i: u8) -> Self {
         if !(1..=7).contains(&i) {
-            panic!("Basis vector index must be 1..7, got {}", i);
+            panic!("Basis vector index must be 1..7, got {i}");
         }
         let mut grades = BTreeMap::new();
         grades.insert(1 << (i - 1), 1.0);
@@ -860,7 +860,7 @@ pub fn components_to_class_index(comp: ClassComponents) -> u8 {
 /// Decode class index to components
 pub fn decode_class_index(class_index: u8) -> ClassComponents {
     if class_index > 95 {
-        panic!("Class index {} out of range [0..95]", class_index);
+        panic!("Class index {class_index} out of range [0..95]");
     }
     
     let h2 = class_index / 24;
@@ -878,7 +878,7 @@ pub fn decode_class_index(class_index: u8) -> ClassComponents {
 /// Lift a class index to an SGA rank-1 basis element
 pub fn lift(class_index: u8) -> SgaElement {
     if class_index > 95 {
-        panic!("Invalid class index: {}. Must be 0..95.", class_index);
+        panic!("Invalid class index: {class_index}. Must be 0..95.");
     }
     
     let comp = decode_class_index(class_index);

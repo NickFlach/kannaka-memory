@@ -230,7 +230,7 @@ impl FluxPublisher {
         {
             Ok(_) => {},
             Err(e) => {
-                eprintln!("[flux] publish event failed (non-fatal): {}", e);
+                eprintln!("[flux] publish event failed (non-fatal): {e}");
             }
         }
 
@@ -298,7 +298,7 @@ impl FluxPublisher {
                 .set("Content-Type", "application/json")
                 .send_json(&body)
                 .map_err(|e2| {
-                    eprintln!("[flux] update entity failed (non-fatal): PATCH={}, PUT={}", e, e2);
+                    eprintln!("[flux] update entity failed (non-fatal): PATCH={e}, PUT={e2}");
                 });
         }
     }
@@ -414,7 +414,7 @@ impl FluxSubscriber {
         let resp = match ureq::get(&url).call() {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[flux] poll failed (non-fatal): {}", e);
+                eprintln!("[flux] poll failed (non-fatal): {e}");
                 return Vec::new();
             }
         };
@@ -448,7 +448,7 @@ impl FluxSubscriber {
                                 .to_string(),
                             tags: Vec::new(),
                             summary: summary.to_string(),
-                            branch: format!("{}/working", entity_id),
+                            branch: format!("{entity_id}/working"),
                         });
                     }
                 }

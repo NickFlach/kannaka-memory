@@ -40,7 +40,7 @@ fn prune_snapshot_dir(dir: &std::path::Path, agent_id: &str, retain: usize) {
         Ok(e) => e,
         Err(_) => return,
     };
-    let suffix = format!("-{}.hrm.gz", agent_id);
+    let suffix = format!("-{agent_id}.hrm.gz");
     let mut bodies: Vec<std::path::PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -63,7 +63,7 @@ fn prune_snapshot_dir(dir: &std::path::Path, agent_id: &str, retain: usize) {
             eprintln!("[snapshot prune] failed to remove {}: {}", p.display(), e);
         }
     }
-    eprintln!("[snapshot prune] removed {} old snapshot(s) for {}", drop_count, agent_id);
+    eprintln!("[snapshot prune] removed {drop_count} old snapshot(s) for {agent_id}");
 }
 
 /// Capture HRM snapshot: gzip the HRM file to `<data_dir>/snapshots/`,
@@ -100,7 +100,7 @@ pub(crate) fn capture_and_publish_snapshot(
     std::fs::create_dir_all(&snapshots_dir)
         .map_err(|e| format!("mkdir snapshots/: {e}"))?;
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let filename = format!("{}-{}.hrm.gz", ts, agent_id);
+    let filename = format!("{ts}-{agent_id}.hrm.gz");
     let body_path = snapshots_dir.join(&filename);
     std::fs::write(&body_path, &compressed)
         .map_err(|e| format!("write snapshot body: {e}"))?;
@@ -202,7 +202,7 @@ pub(crate) fn handle_events_snapshot(
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[snapshot] NATS connect failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[snapshot] NATS connect failed: {e}"); process::exit(1); }
     };
     let agent_id = cfg.agent.id.as_str();
 
@@ -210,16 +210,16 @@ pub(crate) fn handle_events_snapshot(
         None => {
             // One-shot
             if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys, None) {
-                eprintln!("[snapshot] failed: {}", e);
+                eprintln!("[snapshot] failed: {e}");
                 process::exit(1);
             }
         }
         Some(secs) => {
             // Daemon
-            eprintln!("[snapshot] daemon ready — cadence {}s, Ctrl+C to stop", secs);
+            eprintln!("[snapshot] daemon ready — cadence {secs}s, Ctrl+C to stop");
             loop {
                 if let Err(e) = capture_and_publish_snapshot(&transport, agent_id, sys, None) {
-                    eprintln!("[snapshot] warning: {}", e);
+                    eprintln!("[snapshot] warning: {e}");
                 }
                 std::thread::sleep(Duration::from_secs(secs));
             }
@@ -258,15 +258,15 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[list-snapshots] NATS connect failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[list-snapshots] NATS connect failed: {e}"); process::exit(1); }
     };
     let subject_filter = match &agent_filter {
-        Some(a) => format!("KANNAKA.snapshots.{}.full", a),
+        Some(a) => format!("KANNAKA.snapshots.{a}.full"),
         None => "KANNAKA.snapshots.>".to_string(),
     };
     let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject_filter, 500) {
         Ok(v) => v,
-        Err(e) => { eprintln!("[list-snapshots] read failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[list-snapshots] read failed: {e}"); process::exit(1); }
     };
     if manifests.is_empty() {
         if json_mode {
@@ -361,27 +361,27 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
     // with no reachable NATS / no manifests — the exact scenario --from-url
     // exists for.
     let gz_bytes: Vec<u8> = if let Some(url) = from_url {
-        eprintln!("[restore] source (url): {}", url);
+        eprintln!("[restore] source (url): {url}");
         let resp = match ureq::get(&url).timeout(std::time::Duration::from_secs(120)).call() {
             Ok(r) => r,
-            Err(e) => { eprintln!("[restore] HTTP fetch failed: {}", e); process::exit(1); }
+            Err(e) => { eprintln!("[restore] HTTP fetch failed: {e}"); process::exit(1); }
         };
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = resp.into_reader().read_to_end(&mut buf) {
-            eprintln!("[restore] HTTP body read failed: {}", e);
+            eprintln!("[restore] HTTP body read failed: {e}");
             process::exit(1);
         }
         // Cache the downloaded body to <data_dir>/snapshots/ so list-snapshots
         // can find it on subsequent runs.
         let snapshots_dir = data_dir().join("snapshots");
         if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
-            eprintln!("[restore] mkdir snapshots/: {}", e);
+            eprintln!("[restore] mkdir snapshots/: {e}");
         } else {
             // Filename comes from the last URL segment.
             let name = url.rsplit('/').next().unwrap_or("downloaded.hrm.gz");
             let dst = snapshots_dir.join(name);
             if let Err(e) = std::fs::write(&dst, &buf) {
-                eprintln!("[restore] cache body locally failed: {}", e);
+                eprintln!("[restore] cache body locally failed: {e}");
             } else {
                 eprintln!("[restore] cached body to {}", dst.display());
             }
@@ -395,16 +395,16 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
                 let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
                 let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
                     Ok(t) => t,
-                    Err(e) => { eprintln!("[restore] NATS connect failed: {}", e); process::exit(1); }
+                    Err(e) => { eprintln!("[restore] NATS connect failed: {e}"); process::exit(1); }
                 };
                 let target_agent = agent_filter.unwrap_or_else(|| cfg.agent.id.clone());
-                let subject = format!("KANNAKA.snapshots.{}.full", target_agent);
+                let subject = format!("KANNAKA.snapshots.{target_agent}.full");
                 let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject, 500) {
                     Ok(v) => v,
-                    Err(e) => { eprintln!("[restore] read manifests failed: {}", e); process::exit(1); }
+                    Err(e) => { eprintln!("[restore] read manifests failed: {e}"); process::exit(1); }
                 };
                 if manifests.is_empty() {
-                    eprintln!("[restore] no snapshots found for agent={}", target_agent);
+                    eprintln!("[restore] no snapshots found for agent={target_agent}");
                     process::exit(1);
                 }
                 let mut latest = manifests;
@@ -424,16 +424,16 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
                 }
             }
         };
-        eprintln!("[restore] source: {}", body_path);
+        eprintln!("[restore] source: {body_path}");
         match std::fs::read(&body_path) {
             Ok(b) => b,
-            Err(e) => { eprintln!("[restore] read body failed: {}", e); process::exit(1); }
+            Err(e) => { eprintln!("[restore] read body failed: {e}"); process::exit(1); }
         }
     };
     let mut decoder = GzDecoder::new(gz_bytes.as_slice());
     let mut decoded: Vec<u8> = Vec::with_capacity(gz_bytes.len() * 4);
     if let Err(e) = decoder.read_to_end(&mut decoded) {
-        eprintln!("[restore] gunzip failed: {}", e);
+        eprintln!("[restore] gunzip failed: {e}");
         process::exit(1);
     }
 
@@ -448,7 +448,7 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
         eprintln!("[restore]   would write   : {}", hrm_path.display());
         if hrm_path.exists() {
             let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-            let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{}", ts));
+            let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{ts}"));
             eprintln!("[restore]   would backup  : {} -> {}", hrm_path.display(), backup_path.display());
         } else {
             eprintln!("[restore]   no existing HRM to back up");
@@ -458,15 +458,15 @@ pub(crate) fn handle_events_restore(cfg: &KannakaConfig, args: &[String]) {
 
     if hrm_path.exists() {
         let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{}", ts));
+        let backup_path = data_dir().join(format!("kannaka.hrm.pre-restore-{ts}"));
         if let Err(e) = std::fs::rename(&hrm_path, &backup_path) {
-            eprintln!("[restore] backup rename failed: {} (is the HRM in use? stop substrate/swarm daemon first)", e);
+            eprintln!("[restore] backup rename failed: {e} (is the HRM in use? stop substrate/swarm daemon first)");
             process::exit(1);
         }
         eprintln!("[restore] backed up existing HRM to {}", backup_path.display());
     }
     if let Err(e) = std::fs::write(&hrm_path, &decoded) {
-        eprintln!("[restore] write decoded HRM failed: {}", e);
+        eprintln!("[restore] write decoded HRM failed: {e}");
         process::exit(1);
     }
     eprintln!("[restore] wrote {} bytes to {}", decoded.len(), hrm_path.display());
@@ -505,14 +505,14 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[substrate status] NATS connect failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[substrate status] NATS connect failed: {e}"); process::exit(1); }
     };
     let mut sub = match transport.subscribe("KANNAKA.substrate.phi") {
         Ok(s) => s,
-        Err(e) => { eprintln!("[substrate status] subscribe failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[substrate status] subscribe failed: {e}"); process::exit(1); }
     };
     let _ = sub.set_timeout(Some(Duration::from_secs(2)));
-    eprintln!("[substrate status] waiting up to {}s for next KANNAKA.substrate.phi …", wait_secs);
+    eprintln!("[substrate status] waiting up to {wait_secs}s for next KANNAKA.substrate.phi …");
     let deadline = Instant::now() + Duration::from_secs(wait_secs);
     while Instant::now() < deadline {
         let msg = match sub.next_event() {
@@ -526,7 +526,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
         {
             let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
                 Ok(v) => v,
-                Err(e) => { eprintln!("[substrate status] bad payload: {}", e); continue; }
+                Err(e) => { eprintln!("[substrate status] bad payload: {e}"); continue; }
             };
             let phi = v.get("phi").and_then(|x| x.as_f64()).unwrap_or(0.0);
             let xi = v.get("xi").and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -560,12 +560,12 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
                 });
                 println!("{payload}");
             } else {
-                println!("collective substrate @ {}", ts);
-                println!("  Φ           {:.3}", phi);
-                println!("  Ξ           {:.3}", xi);
-                println!("  order       {:.3}", order);
-                println!("  clusters    {}", clusters);
-                println!("  memories    {}", mems);
+                println!("collective substrate @ {ts}");
+                println!("  Φ           {phi:.3}");
+                println!("  Ξ           {xi:.3}");
+                println!("  order       {order:.3}");
+                println!("  clusters    {clusters}");
+                println!("  memories    {mems}");
                 println!("  contributors  {} ({})", contribs.len(),
                     if contribs.is_empty() { "none yet".to_string() } else { contribs.join(", ") });
             }
@@ -580,7 +580,7 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
         });
         eprintln!("{payload}");
     } else {
-        eprintln!("[substrate status] no phi event within {}s — is `kannaka substrate run` alive?", wait_secs);
+        eprintln!("[substrate status] no phi event within {wait_secs}s — is `kannaka substrate run` alive?");
     }
     process::exit(2);
 }
@@ -606,12 +606,12 @@ pub(crate) fn handle_substrate_run(
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[substrate] Failed to connect to NATS at {}: {}", nats_url, e); process::exit(1); }
+        Err(e) => { eprintln!("[substrate] Failed to connect to NATS at {nats_url}: {e}"); process::exit(1); }
     };
-    eprintln!("[substrate] subscribing to KANNAKA.substrate.absorb.> on {}", nats_url);
+    eprintln!("[substrate] subscribing to KANNAKA.substrate.absorb.> on {nats_url}");
     let mut sub = match transport.subscribe("KANNAKA.substrate.absorb.>") {
         Ok(s) => s,
-        Err(e) => { eprintln!("[substrate] subscribe failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[substrate] subscribe failed: {e}"); process::exit(1); }
     };
     let _ = sub.set_timeout(Some(Duration::from_secs(5)));
 
@@ -742,7 +742,7 @@ pub(crate) fn handle_substrate_run(
         if let Some(msg) = absorb_msg {
             let v: serde_json::Value = match serde_json::from_slice(&msg.payload) {
                 Ok(v) => v,
-                Err(e) => { eprintln!("[substrate] skip malformed event: {}", e); continue; }
+                Err(e) => { eprintln!("[substrate] skip malformed event: {e}"); continue; }
             };
             let agent_id = v["agent_id"].as_str().unwrap_or("unknown");
             let class_index = v["class_index"].as_u64().unwrap_or(0);
@@ -793,8 +793,7 @@ pub(crate) fn handle_substrate_run(
                 for v in vector.iter_mut() { *v /= norm; }
             }
             let content = format!(
-                "substrate-absorb[class={}] from {} amp={:.3} phase={:.3} freq={:.3}",
-                class_index, agent_id, amplitude, phase, frequency
+                "substrate-absorb[class={class_index}] from {agent_id} amp={amplitude:.3} phase={phase:.3} freq={frequency:.3}"
             );
 
             let hrm = match sys.engine.store
@@ -809,10 +808,10 @@ pub(crate) fn handle_substrate_run(
             };
             match hrm.insert_raw_wavefront(vector, content, amplitude) {
                 Ok(id) => {
-                    eprintln!("[substrate] absorbed from {} class {} -> {}", agent_id, class_index, id);
+                    eprintln!("[substrate] absorbed from {agent_id} class {class_index} -> {id}");
                 }
                 Err(e) => {
-                    eprintln!("[substrate] absorb failed: {}", e);
+                    eprintln!("[substrate] absorb failed: {e}");
                 }
             }
         }
@@ -822,7 +821,7 @@ pub(crate) fn handle_substrate_run(
             // Flush to disk so the observatory's `kannaka status`
             // shell-out sees the live count.
             if let Err(e) = sys.engine.store.flush() {
-                eprintln!("[substrate] flush warning: {}", e);
+                eprintln!("[substrate] flush warning: {e}");
             }
             let state = sys.assess();
             let contribs: Vec<String> = contributors.iter().cloned().collect();
@@ -838,8 +837,7 @@ pub(crate) fn handle_substrate_run(
                 }
                 Err(e) => {
                     consecutive_failures += 1;
-                    eprintln!("[substrate] phi publish failed ({}/{}): {}",
-                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                    eprintln!("[substrate] phi publish failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): {e}");
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                         eprintln!("[substrate] NATS connection unrecoverable — exiting for systemd restart");
                         process::exit(1);
@@ -865,7 +863,7 @@ pub(crate) fn handle_substrate_run(
             // (previously null) with the aggregate π/φ bridge-operator summary.
             phase.xi_signature = sys.engine.xi_bridge_summary();
             if let Err(e) = transport.publish_phase(&phase) {
-                eprintln!("[substrate] swarm phase publish failed: {}", e);
+                eprintln!("[substrate] swarm phase publish failed: {e}");
             }
             last_phi_pub = Instant::now();
         }
@@ -883,8 +881,7 @@ pub(crate) fn handle_substrate_run(
                 }
                 Err(e) => {
                     consecutive_failures += 1;
-                    eprintln!("[substrate] snapshot failed ({}/{}): {}",
-                        consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                    eprintln!("[substrate] snapshot failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): {e}");
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                         eprintln!("[substrate] NATS connection unrecoverable — exiting for systemd restart");
                         process::exit(1);
@@ -941,7 +938,7 @@ pub(crate) fn handle_substrate_backfill(
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("[backfill] NATS connect failed: {}", e);
+            eprintln!("[backfill] NATS connect failed: {e}");
             process::exit(1);
         }
     };
@@ -949,7 +946,7 @@ pub(crate) fn handle_substrate_backfill(
     let memories = match sys.all_memories() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("[backfill] failed to read local HRM: {}", e);
+            eprintln!("[backfill] failed to read local HRM: {e}");
             process::exit(1);
         }
     };
@@ -1008,19 +1005,19 @@ pub(crate) fn handle_events_init(cfg: &KannakaConfig, args: &[String]) {
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
-        Err(e) => { eprintln!("[events init] NATS connect failed: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("[events init] NATS connect failed: {e}"); process::exit(1); }
     };
-    eprintln!("[events init] creating JetStream streams on {}", nats_url);
+    eprintln!("[events init] creating JetStream streams on {nats_url}");
     let mut failed = 0;
     for kind in kannaka_memory::nats::StreamKind::ALL {
         let name = kind.spec().name;
         match transport.ensure_event_stream(*kind) {
-            Ok(()) => eprintln!("[events init]   {}  ok", name),
-            Err(e) => { eprintln!("[events init]   {}  FAILED: {}", name, e); failed += 1; }
+            Ok(()) => eprintln!("[events init]   {name}  ok"),
+            Err(e) => { eprintln!("[events init]   {name}  FAILED: {e}"); failed += 1; }
         }
     }
     if failed > 0 {
-        eprintln!("[events init] {} stream(s) failed — check NATS JetStream config + ACLs", failed);
+        eprintln!("[events init] {failed} stream(s) failed — check NATS JetStream config + ACLs");
         process::exit(1);
     }
     eprintln!("[events init] done — event-sourced history is now durable. Replay (Phase 3) and snapshots (Phase 2) ship in subsequent slices.");
@@ -1091,13 +1088,13 @@ pub(crate) fn handle_substrate_init(
         for v in vector.iter_mut() {
             *v /= norm;
         }
-        let content = format!("anchor[{}] {} (class-orthogonal seed)", class, word);
+        let content = format!("anchor[{class}] {word} (class-orthogonal seed)");
         match hrm.insert_raw_wavefront(vector, content, 1.0) {
             Ok(_) => seeded += 1,
             Err(e) => {
                 failed += 1;
                 if failed <= 3 {
-                    eprintln!("[init] anchor class {} failed: {}", class, e);
+                    eprintln!("[init] anchor class {class} failed: {e}");
                 }
             }
         }

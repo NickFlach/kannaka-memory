@@ -264,12 +264,12 @@ pub enum NatsError {
 impl std::fmt::Display for NatsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Connect(msg) => write!(f, "NATS connect: {}", msg),
-            Self::Io(e) => write!(f, "NATS I/O: {}", e),
-            Self::Protocol(msg) => write!(f, "NATS protocol: {}", msg),
-            Self::Serialize(msg) => write!(f, "NATS serialize: {}", msg),
-            Self::Disconnected(msg) => write!(f, "NATS disconnected: {}", msg),
-            Self::KvNotFound(key) => write!(f, "NATS KV key not found: {}", key),
+            Self::Connect(msg) => write!(f, "NATS connect: {msg}"),
+            Self::Io(e) => write!(f, "NATS I/O: {e}"),
+            Self::Protocol(msg) => write!(f, "NATS protocol: {msg}"),
+            Self::Serialize(msg) => write!(f, "NATS serialize: {msg}"),
+            Self::Disconnected(msg) => write!(f, "NATS disconnected: {msg}"),
+            Self::KvNotFound(key) => write!(f, "NATS KV key not found: {key}"),
         }
     }
 }
@@ -534,8 +534,7 @@ fn read_control_line<R: BufRead>(reader: &mut R, out: &mut String) -> Result<usi
     };
     if n as u64 >= MAX_CONTROL_LINE && !out.ends_with('\n') {
         return Err(NatsError::Protocol(format!(
-            "control line exceeds {} bytes without newline — protocol desync",
-            MAX_CONTROL_LINE
+            "control line exceeds {MAX_CONTROL_LINE} bytes without newline — protocol desync"
         )));
     }
     Ok(n)
@@ -950,7 +949,7 @@ fn handshake(url: &str, explicit: Option<&(String, String)>) -> Result<Conn, Nat
                 .to_string()
         }
     };
-    write!(writer, "CONNECT {}\r\n", connect_payload)?;
+    write!(writer, "CONNECT {connect_payload}\r\n")?;
     write!(writer, "PING\r\n")?;
     writer.flush()?;
 
@@ -1545,7 +1544,7 @@ impl SwarmTransport {
                     let _ = conn.pong();
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
-                    eprintln!("[nats] server error: {}", m);
+                    eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         fatal = true;
                         break Err(NatsError::Disconnected(m));
@@ -2417,7 +2416,7 @@ impl SwarmTransport {
                     let _ = conn.pong();
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
-                    eprintln!("[nats] server error: {}", m);
+                    eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         fatal = Some(NatsError::Disconnected(m));
                         break;
@@ -2707,7 +2706,7 @@ impl SwarmTransport {
                         let _ = conn.pong();
                     }
                     Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
-                        eprintln!("[nats] server error: {}", m);
+                        eprintln!("[nats] server error: {m}");
                         if is_auth_error(&m) {
                             return Err(NatsError::Disconnected(m));
                         }
@@ -2788,7 +2787,7 @@ impl SwarmTransport {
                     let _ = conn.pong();
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
-                    eprintln!("[nats] server error: {}", m);
+                    eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         fatal = true;
                         break Err(NatsError::Disconnected(m));
@@ -2863,7 +2862,7 @@ impl SwarmTransport {
                     let _ = conn.pong();
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
-                    eprintln!("[nats] server error: {}", m);
+                    eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         fatal = true;
                         break;
@@ -2878,7 +2877,7 @@ impl SwarmTransport {
                 }
                 Err(e) => {
                     // Hard error (desync, reset) — do NOT spin on it.
-                    eprintln!("[nats] request_many read error: {}", e);
+                    eprintln!("[nats] request_many read error: {e}");
                     fatal = true;
                     break;
                 }
@@ -3253,7 +3252,7 @@ impl NatsSubscription {
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
                     self.mark_frame();
-                    eprintln!("[nats] server error: {}", m);
+                    eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         return SubEvent::Closed;
                     }
@@ -3289,7 +3288,7 @@ impl NatsSubscription {
                 }
                 Ok(ReadOutcome::Closed) => return SubEvent::Closed,
                 Err(e) => {
-                    eprintln!("[nats] subscription protocol error: {}", e);
+                    eprintln!("[nats] subscription protocol error: {e}");
                     return SubEvent::Closed;
                 }
             }
@@ -3824,8 +3823,7 @@ mod tests {
                 let msg = format!("{e}");
                 assert!(
                     msg.contains("connect") || msg.contains("Connect"),
-                    "error should mention connect: {}",
-                    msg
+                    "error should mention connect: {msg}"
                 );
             }
         }
@@ -4081,7 +4079,7 @@ mod tests {
         // Accept either value (old bucket: "world", fresh bucket: "updated")
         assert!(
             val2 == "updated" || val2 == "world",
-            "expected 'updated' or 'world', got: {}", val2
+            "expected 'updated' or 'world', got: {val2}"
         );
     }
 
@@ -4103,8 +4101,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let keys = transport.kv_keys("TEST_KEYS").expect("kv_keys");
-        assert!(keys.contains(&"a".to_string()), "keys should contain 'a': {:?}", keys);
-        assert!(keys.contains(&"b".to_string()), "keys should contain 'b': {:?}", keys);
+        assert!(keys.contains(&"a".to_string()), "keys should contain 'a': {keys:?}");
+        assert!(keys.contains(&"b".to_string()), "keys should contain 'b': {keys:?}");
     }
 
     #[test]
@@ -4121,7 +4119,7 @@ mod tests {
         transport.create_kv_bucket("TEST_MISSING", 60).expect("create bucket");
         match transport.kv_get("TEST_MISSING", "nonexistent") {
             Err(NatsError::KvNotFound(_)) => {}
-            other => panic!("expected KvNotFound, got: {:?}", other),
+            other => panic!("expected KvNotFound, got: {other:?}"),
         }
     }
 

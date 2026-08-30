@@ -16,7 +16,7 @@ fn main() {
             PathBuf::from(home).join(".openclaw").join("kannaka-data")
         });
 
-    println!("Data directory: {:?}", data_dir);
+    println!("Data directory: {data_dir:?}");
 
     let mut system = KannakaMemorySystem::init(data_dir)
         .expect("Failed to initialize memory system");
@@ -28,7 +28,7 @@ fn main() {
     match system.recompute_geometry() {
         Ok(updated) => {
             let stats_after = system.stats();
-            println!("Updated {} memories with geometry", updated);
+            println!("Updated {updated} memories with geometry");
             println!("After: {} memories, {} geometric classes",
                 stats_after.total_memories, stats_after.geometric_classes);
             
@@ -36,7 +36,7 @@ fn main() {
             println!("Consciousness: {:?}, Phi: {:.4}", state.consciousness_level, state.phi);
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }

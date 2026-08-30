@@ -239,7 +239,7 @@ impl AttentionField {
                 let preview = if turn.content.len() > 120 { &turn.content[..turn.content.floor_char_boundary(120)] } else { &turn.content };
                 if !existing.iter().any(|e| e == &preview) {
                     // Don't auto-add; just note it in summary
-                    parts.push(format!("[task-hint] {}", preview));
+                    parts.push(format!("[task-hint] {preview}"));
                 }
             }
         }
@@ -258,8 +258,7 @@ impl AttentionField {
         let prompt = format!(
             "Summarize this conversation concisely. Focus on: what was discussed, \
              any decisions made, open questions, and pending tasks.\n\n\
-             Conversation:\n{}\n\nSummary:",
-            conversation
+             Conversation:\n{conversation}\n\nSummary:"
         );
 
         let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
@@ -460,7 +459,7 @@ mod tests {
         let mut af = make_af();
         // Add AUTO_SUMMARY_INTERVAL turns to trigger auto-summary
         for i in 0..AUTO_SUMMARY_INTERVAL {
-            af.add_turn("user", &format!("message {}", i));
+            af.add_turn("user", &format!("message {i}"));
         }
         // Summary should have been triggered
         assert!(!af.session_state().conversation_summary.is_empty());

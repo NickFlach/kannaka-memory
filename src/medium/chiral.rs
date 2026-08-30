@@ -216,10 +216,9 @@ pub(crate) fn chiral_recall_mode() -> ChiralRecall {
         static WARNED: std::sync::Once = std::sync::Once::new();
         WARNED.call_once(|| {
             eprintln!(
-                "[kannaka] WARNING: KANNAKA_CHIRAL_RECALL={:?} is an EXPERIMENTAL read-side \
+                "[kannaka] WARNING: KANNAKA_CHIRAL_RECALL={mode:?} is an EXPERIMENTAL read-side \
                  recall mode; beeman is measured-catastrophic (exp-2) pending exp-2b. Unset \
-                 KANNAKA_CHIRAL_RECALL to restore default recall.",
-                mode
+                 KANNAKA_CHIRAL_RECALL to restore default recall."
             );
         });
     }
@@ -465,7 +464,7 @@ impl ChiralMedium {
         let vector = pipeline.encode_text(content).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("encoding failed: {}", e),
+                format!("encoding failed: {e}"),
             )))
         })?;
 
@@ -642,7 +641,7 @@ impl ChiralMedium {
         let vector = pipeline.encode_text(query).map_err(|e| {
             MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("encoding failed: {}", e),
+                format!("encoding failed: {e}"),
             )))
         })?;
 
@@ -946,7 +945,7 @@ impl ChiralMedium {
             let new_vec = pipeline.encode_text(&content).map_err(|e| {
                 MediumError::Serialization(bincode::Error::from(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("encoding failed: {}", e),
+                    format!("encoding failed: {e}"),
                 )))
             })?;
             // Replace the right wavefront in place (adapts to dims like
@@ -2323,8 +2322,7 @@ mod tests {
 
         // Left hemisphere energy should be UNCHANGED
         assert!((left_energy_after - left_energy_before).abs() < 0.001,
-            "Deep dream should not affect left hemisphere: before={}, after={}",
-            left_energy_before, left_energy_after);
+            "Deep dream should not affect left hemisphere: before={left_energy_before}, after={left_energy_after}");
     }
 
     #[test]

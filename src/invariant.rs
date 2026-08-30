@@ -480,7 +480,7 @@ mod tests {
         // Uniform distribution = max entropy = high irrationality
         let memory = HyperMemory::new(vec![1.0; 10], "test".to_string());
         let irrationality = compute_irrationality(&memory);
-        assert!(irrationality > 0.9, "uniform vector should have high irrationality: {}", irrationality);
+        assert!(irrationality > 0.9, "uniform vector should have high irrationality: {irrationality}");
     }
 
     #[test]
@@ -490,7 +490,7 @@ mod tests {
         vec[0] = 1.0;
         let memory = HyperMemory::new(vec, "test".to_string());
         let irrationality = compute_irrationality(&memory);
-        assert!(irrationality < 0.5, "sparse vector should have low irrationality: {}", irrationality);
+        assert!(irrationality < 0.5, "sparse vector should have low irrationality: {irrationality}");
     }
 
     #[test]

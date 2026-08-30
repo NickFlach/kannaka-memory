@@ -294,10 +294,9 @@ impl KannakaMemorySystem {
                     // existing file is preserved for offline recovery and never
                     // overwritten by an empty medium.
                     eprintln!(
-                        "[init] Failed to load HRM: {}. Starting fresh in READ-ONLY mode \
+                        "[init] Failed to load HRM: {e}. Starting fresh in READ-ONLY mode \
                          (existing file preserved, NOT overwritten). Move it aside and \
-                         restart to begin a clean store.",
-                        e
+                         restart to begin a clean store."
                     );
                     let pipeline = make_pipeline();
                     let mut fresh = crate::hrm_store::HrmStore::new(pipeline, data_dir.join("kannaka.hrm"));
@@ -1012,7 +1011,7 @@ impl KannakaMemorySystem {
         // strengthened (post-triage, so redundant extras are already gone).
         let promoted = self.promote_strengthened_short_term(&short_term_before);
         if promoted > 0 {
-            eprintln!("[dream] promoted {} strengthened short-term memory(ies) → long-term", promoted);
+            eprintln!("[dream] promoted {promoted} strengthened short-term memory(ies) → long-term");
         }
 
         // Self-bounding size cap — the dream's own growth backstop. When
@@ -1034,8 +1033,7 @@ impl KannakaMemorySystem {
             if !ids.is_empty() {
                 match self.triage_forget(&ids) {
                     Ok(n) if n > 0 => eprintln!(
-                        "[dream] size cap (max={}): evicted {} lowest effective-strength memory(ies)",
-                        max_total, n),
+                        "[dream] size cap (max={max_total}): evicted {n} lowest effective-strength memory(ies)"),
                     Ok(_) => {}
                     Err(e) => eprintln!("[dream] size cap failed: {e}"),
                 }
@@ -1210,7 +1208,7 @@ impl KannakaMemorySystem {
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         if let Err(e) = transport.publish_dreams(&payload) {
-            eprintln!("[nats] Warning: failed to publish dream report: {}", e);
+            eprintln!("[nats] Warning: failed to publish dream report: {e}");
         }
     }
 
@@ -1309,7 +1307,7 @@ impl KannakaMemorySystem {
             stats.callosal_efficiency,
         );
         if let Err(e) = transport.publish_consciousness(&payload) {
-            eprintln!("[nats] Warning: failed to publish consciousness metrics: {}", e);
+            eprintln!("[nats] Warning: failed to publish consciousness metrics: {e}");
         } else {
             eprintln!("[nats] Published consciousness metrics: phi={:.3}, xi={:.4}, order={:.4}",
                 state.phi, state.xi, state.mean_order);
@@ -1417,7 +1415,7 @@ impl KannakaMemorySystem {
         let flushed = self.engine.store.flush()
             .map_err(|e| SystemError::Engine(crate::store::EngineError::Store(e)))?;
         if flushed > 0 {
-            eprintln!("[hrm] Flushed {} memories to medium", flushed);
+            eprintln!("[hrm] Flushed {flushed} memories to medium");
         }
         Ok(())
     }

@@ -762,8 +762,8 @@ mod tests {
         let m2 = HyperMemory::new(random_vec(1000, 2), "second".into());
         let m3 = HyperMemory::new(random_vec(1000, 3), "third".into());
         let xi = bridge.compute_xi(&[&m1, &m2, &m3]);
-        println!("Xi for ordered sequence: {}", xi);
-        assert!(xi > 0.0, "ordered sequence should have non-zero Xi, got {}", xi);
+        println!("Xi for ordered sequence: {xi}");
+        assert!(xi > 0.0, "ordered sequence should have non-zero Xi, got {xi}");
     }
 
     #[test]
@@ -775,11 +775,10 @@ mod tests {
 
         let xi_forward = bridge.compute_xi(&[&m1, &m2, &m3]);
         let xi_reverse = bridge.compute_xi(&[&m3, &m2, &m1]);
-        println!("Xi forward: {}, reverse: {}", xi_forward, xi_reverse);
+        println!("Xi forward: {xi_forward}, reverse: {xi_reverse}");
         assert!(
             (xi_forward - xi_reverse).abs() < 1e-5,
-            "reversed sequence should have same magnitude Xi: {} vs {}",
-            xi_forward, xi_reverse
+            "reversed sequence should have same magnitude Xi: {xi_forward} vs {xi_reverse}"
         );
     }
 
@@ -794,7 +793,7 @@ mod tests {
         engine.remember_at_layer("fact three", 0).unwrap();
 
         let report = bridge.compute_phi(&engine);
-        println!("Phi for isolated memories: {:?}", report);
+        println!("Phi for isolated memories: {report:?}");
         assert!(
             report.phi < 0.3,
             "isolated memories should have low Phi, got {}",
@@ -812,7 +811,7 @@ mod tests {
         for i in 0..5 {
             let mut mem = engine_no_links
                 .pipeline
-                .encode_memory(&format!("memory {}", i), chrono::Utc::now())
+                .encode_memory(&format!("memory {i}"), chrono::Utc::now())
                 .unwrap();
             mem.layer_depth = (i % 3) as u8;
             engine_no_links.store.insert(mem).unwrap();
@@ -824,7 +823,7 @@ mod tests {
         engine_links.similarity_threshold = 0.0; // link everything across layers
         for i in 0..5 {
             engine_links
-                .remember_at_layer(&format!("memory {}", i), (i % 3) as u8)
+                .remember_at_layer(&format!("memory {i}"), (i % 3) as u8)
                 .unwrap();
         }
         let phi_links = bridge.compute_phi(&engine_links);
@@ -927,7 +926,7 @@ mod tests {
     fn stratified_sampling_works() {
         let bridge = ConsciousnessBridge::default();
         let mems: Vec<HyperMemory> = (0..20).map(|i| {
-            let mut m = HyperMemory::new(random_vec(100, i), format!("memory {}", i));
+            let mut m = HyperMemory::new(random_vec(100, i), format!("memory {i}"));
             m.amplitude = i as f32 / 20.0; // Different amplitudes
             m
         }).collect();
@@ -960,7 +959,7 @@ mod tests {
         let m3 = HyperMemory::new(v3, "text three".into());
 
         let xi = bridge.compute_xi(&[&m1, &m2, &m3]);
-        println!("Xi with operator blending: {}", xi);
+        println!("Xi with operator blending: {xi}");
         assert!(xi > 0.0, "Xi should be positive for distinct memories");
     }
 
@@ -981,8 +980,8 @@ mod tests {
             let all = engine.store.all_memories().unwrap_or_default();
             let modularity = bridge.compute_modularity(&all, &clusters);
 
-            println!("Modularity Q: {}", modularity);
-            assert!(modularity >= 0.0 && modularity <= 1.0, "Modularity should be in [0,1], got {}", modularity);
+            println!("Modularity Q: {modularity}");
+            assert!(modularity >= 0.0 && modularity <= 1.0, "Modularity should be in [0,1], got {modularity}");
         }
     }
 

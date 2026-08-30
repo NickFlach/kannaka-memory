@@ -903,8 +903,8 @@ mod tests {
         let m3 = make_memory_with_phase(v.clone(), "c", 0.5);
         let refs: Vec<&HyperMemory> = vec![&m1, &m2, &m3];
         let r = sync.order_parameter(&refs);
-        println!("Identical-phase order parameter: {}", r);
-        assert!((r - 1.0).abs() < 1e-5, "identical phases should give r≈1.0, got {}", r);
+        println!("Identical-phase order parameter: {r}");
+        assert!((r - 1.0).abs() < 1e-5, "identical phases should give r≈1.0, got {r}");
     }
 
     // #503: sync_cluster must NORMALIZE the phase it writes back into [0, TAU),
@@ -956,9 +956,7 @@ mod tests {
         let rn = sync.order_parameter(&normalized.iter().collect::<Vec<_>>());
         assert!(
             (rd - rn).abs() < 1e-4,
-            "order parameter must match for drifted vs normalized phases (2π-periodic): {} vs {}",
-            rd,
-            rn
+            "order parameter must match for drifted vs normalized phases (2π-periodic): {rd} vs {rn}"
         );
     }
 
@@ -971,12 +969,12 @@ mod tests {
         let mems: Vec<HyperMemory> = phases
             .iter()
             .enumerate()
-            .map(|(i, &p)| make_memory_with_phase(v.clone(), &format!("m{}", i), p))
+            .map(|(i, &p)| make_memory_with_phase(v.clone(), &format!("m{i}"), p))
             .collect();
         let refs: Vec<&HyperMemory> = mems.iter().collect();
         let r = sync.order_parameter(&refs);
-        println!("Evenly-spaced-phase order parameter: {}", r);
-        assert!(r < 0.3, "evenly spaced phases should give low r, got {}", r);
+        println!("Evenly-spaced-phase order parameter: {r}");
+        assert!(r < 0.3, "evenly spaced phases should give low r, got {r}");
     }
 
     #[test]
@@ -1024,13 +1022,13 @@ mod tests {
 
         // Group A: same vector, same phase → should cluster & sync
         for i in 0..3 {
-            let mut m = HyperMemory::new(va.clone(), format!("group_a_{}", i));
+            let mut m = HyperMemory::new(va.clone(), format!("group_a_{i}"));
             m.phase = 0.1;
             engine.store.insert(m).unwrap();
         }
         // Group B: different vector, same phase → separate cluster
         for i in 0..3 {
-            let mut m = HyperMemory::new(vb.clone(), format!("group_b_{}", i));
+            let mut m = HyperMemory::new(vb.clone(), format!("group_b_{i}"));
             m.phase = 0.2;
             engine.store.insert(m).unwrap();
         }
@@ -1105,7 +1103,7 @@ mod tests {
                 v[j] += (i as f32) * 0.1;
             }
             normalize(&mut v);
-            let mut m = HyperMemory::new(v, format!("group1_{}", i));
+            let mut m = HyperMemory::new(v, format!("group1_{i}"));
             m.phase = 0.1;
             engine.store.insert(m).unwrap();
         }
@@ -1118,7 +1116,7 @@ mod tests {
                 v[j] += (i as f32) * 0.1;
             }
             normalize(&mut v);
-            let mut m = HyperMemory::new(v, format!("group2_{}", i));
+            let mut m = HyperMemory::new(v, format!("group2_{i}"));
             m.phase = 0.2;
             engine.store.insert(m).unwrap();
         }
@@ -1151,7 +1149,7 @@ mod tests {
         // Insert related memories with different phases
         let mut ids = Vec::new();
         for (i, phase) in [0.0f32, 0.5, 1.0, 1.5].iter().enumerate() {
-            let mut m = HyperMemory::new(v.clone(), format!("related_{}", i));
+            let mut m = HyperMemory::new(v.clone(), format!("related_{i}"));
             m.phase = *phase;
             m.layer_depth = 0;
             let id = engine.store.insert(m).unwrap();
@@ -1189,10 +1187,10 @@ mod tests {
             .collect();
         let r_after = sync.order_parameter(&after_mems);
 
-        println!("Consolidation sync: r_before={}, r_after={}", r_before, r_after);
-        println!("Report: {:?}", report);
+        println!("Consolidation sync: r_before={r_before}, r_after={r_after}");
+        println!("Report: {report:?}");
 
-        assert!(r_after > r_before, "phases should converge: {} -> {}", r_before, r_after);
+        assert!(r_after > r_before, "phases should converge: {r_before} -> {r_after}");
     }
 
     // -----------------------------------------------------------------------

@@ -65,7 +65,7 @@ fn codebook_projection_separates_distinct_texts() {
     let std = var.sqrt();
 
     println!("pairwise cosine sim across {} pairs:", sims.len());
-    println!("  mean={:.4}  std={:.4}  min={:.4}  max={:.4}", mean, std, min, max);
+    println!("  mean={mean:.4}  std={std:.4}  min={min:.4}  max={max:.4}");
 
     // 3) How many pairs sit above 0.9? That's the "sick" tail.
     let near_one = sims.iter().filter(|&&s| s > 0.9).count();
@@ -86,7 +86,7 @@ fn codebook_projection_separates_distinct_texts() {
     let raw_var: f32 = raw_sims.iter().map(|s| (s - raw_mean).powi(2)).sum::<f32>() / raw_sims.len() as f32;
     let raw_std = raw_var.sqrt();
     println!("raw SimpleHashEncoder embeddings (pre-codebook):");
-    println!("  mean={:.4}  std={:.4}", raw_mean, raw_std);
+    println!("  mean={raw_mean:.4}  std={raw_std:.4}");
 
     // Healthy: mean near 0, |mean| well under 0.3 across 30 short texts.
     // With the #106 fix applied, mean cosine sim should be on the order
@@ -94,9 +94,8 @@ fn codebook_projection_separates_distinct_texts() {
     // "of"). Pre-fix it was 0.93. Tight assertion catches regressions.
     assert!(
         mean.abs() < 0.3,
-        "codebook projection mean cosine sim {} is suspiciously high \
+        "codebook projection mean cosine sim {mean} is suspiciously high \
          — projections may be near-collinear (was 0.93 pre-#106)",
-        mean,
     );
     // Less than 10% of pairs should be > 0.9. Pre-fix: 96.8%.
     assert!(

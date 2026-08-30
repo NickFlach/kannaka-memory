@@ -330,7 +330,7 @@ impl ChiralMedium {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{}.{}", pid, nanos));
+        let tmp_path = path_ref.with_extension(format!("hrm.tmp.{pid}.{nanos}"));
         let file = File::create(&tmp_path)?;
         let mut w = BufWriter::new(file);
 
@@ -399,7 +399,7 @@ impl ChiralMedium {
             path_ref.parent(),
             path_ref.file_name().and_then(|s| s.to_str()),
         ) {
-            let tmp_prefix = format!("{}.tmp.", stem);
+            let tmp_prefix = format!("{stem}.tmp.");
             if let Ok(entries) = std::fs::read_dir(dir) {
                 let now = std::time::SystemTime::now();
                 for entry in entries.flatten() {
@@ -673,8 +673,7 @@ impl ChiralMedium {
         const MAX_META_BYTES: usize = 256 * 1024 * 1024;
         if meta_len > MAX_META_BYTES {
             return Err(MediumError::CorruptHrm(format!(
-                "implausible meta_len={} (max {}) — file layout desync at hemisphere {:?}",
-                meta_len, MAX_META_BYTES, hand
+                "implausible meta_len={meta_len} (max {MAX_META_BYTES}) — file layout desync at hemisphere {hand:?}"
             )));
         }
         let mut meta_bytes = vec![0u8; meta_len];
@@ -1112,7 +1111,7 @@ mod tests {
         let mut cm = ChiralMedium::new();
         let pipeline = test_pipeline();
         for i in 0..10 {
-            cm.store(&format!("ts-drift test {}", i), 0.8, &pipeline).unwrap();
+            cm.store(&format!("ts-drift test {i}"), 0.8, &pipeline).unwrap();
         }
         // Manually corrupt the right hemisphere: pop 3 timestamps without
         // touching len/metadata. This mirrors whatever past code path left
@@ -1145,7 +1144,7 @@ mod tests {
         let mut cm = ChiralMedium::new();
         let pipeline = test_pipeline();
         for i in 0..6 {
-            cm.store(&format!("desync probe {}", i), 0.8, &pipeline).unwrap();
+            cm.store(&format!("desync probe {i}"), 0.8, &pipeline).unwrap();
         }
         // Drop one metadata entry without touching `len` (count()). The writer
         // serializes n=count() rows of energy/timestamps but only metadata.len()
@@ -1161,7 +1160,7 @@ mod tests {
 
         match ChiralMedium::load(&path) {
             Err(MediumError::CorruptHrm(_)) => {}
-            other => panic!("expected CorruptHrm on section-size desync, got {:?}", other),
+            other => panic!("expected CorruptHrm on section-size desync, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -1191,7 +1190,7 @@ mod tests {
 
         match ChiralMedium::load(&path) {
             Err(MediumError::ChecksumMismatch) => {}
-            other => panic!("expected ChecksumMismatch, got {:?}", other),
+            other => panic!("expected ChecksumMismatch, got {other:?}"),
         }
 
         let _ = std::fs::remove_file(&path);
@@ -1224,11 +1223,11 @@ mod tests {
         // Verify energies match
         for i in 0..loaded.right.count() {
             assert!((loaded.right.energy[i] - cm.right.energy[i]).abs() < 0.001,
-                "Right energy mismatch at {}", i);
+                "Right energy mismatch at {i}");
         }
         for i in 0..loaded.left.count() {
             assert!((loaded.left.energy[i] - cm.left.energy[i]).abs() < 0.001,
-                "Left energy mismatch at {}", i);
+                "Left energy mismatch at {i}");
         }
 
         // Verify recall still works

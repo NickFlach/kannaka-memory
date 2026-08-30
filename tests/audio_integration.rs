@@ -35,8 +35,7 @@ fn same_sound_is_deterministic() {
     let sim = cosine_similarity(&mem1.vector, &mem2.vector);
     assert!(
         (sim - 1.0).abs() < 1e-4,
-        "same input should produce identical vectors, sim={}",
-        sim
+        "same input should produce identical vectors, sim={sim}"
     );
 }
 
@@ -53,8 +52,7 @@ fn different_frequencies_produce_different_vectors() {
     // The important thing is they're not identical.
     assert!(
         sim < 0.98,
-        "different frequencies should produce distinct vectors, sim={}",
-        sim
+        "different frequencies should produce distinct vectors, sim={sim}"
     );
 }
 
@@ -68,8 +66,7 @@ fn sine_vs_noise_are_distinct() {
     let sim = cosine_similarity(&mem_tone.vector, &mem_noise.vector);
     assert!(
         sim < 0.7,
-        "tone and noise should be distinct, sim={}",
-        sim
+        "tone and noise should be distinct, sim={sim}"
     );
 }
 
@@ -108,8 +105,7 @@ fn audio_orthogonal_to_text() {
     let sim = cosine_similarity(&audio_mem.vector, &text_hv);
     assert!(
         sim.abs() < 0.15,
-        "audio and text vectors should be nearly orthogonal, sim={}",
-        sim
+        "audio and text vectors should be nearly orthogonal, sim={sim}"
     );
 }
 
@@ -140,8 +136,7 @@ fn audio_orthogonal_to_multiple_texts() {
             let sim = cosine_similarity(&audio_mem.vector, &text_hv);
             assert!(
                 sim.abs() < 0.15,
-                "audio/text orthogonality violated: sim={}",
-                sim
+                "audio/text orthogonality violated: sim={sim}"
             );
         }
     }

@@ -369,7 +369,7 @@ mod tests {
             for j in 0..7u8 {
                 if i != j {
                     assert!(fp.line_through(i, j).is_some(),
-                        "Points {} and {} should be connected by a line", i, j);
+                        "Points {i} and {j} should be connected by a line");
                 }
             }
         }
@@ -412,7 +412,7 @@ mod tests {
             if orig_norm > 0.001 && recov_norm > 0.001 {
                 let dot: f32 = orig.iter().zip(recov.iter()).map(|(a, b)| a * b).sum();
                 let sim = dot / (orig_norm * recov_norm);
-                assert!(sim > 0.9, "Group {} roundtrip similarity {:.3} too low", group, sim);
+                assert!(sim > 0.9, "Group {group} roundtrip similarity {sim:.3} too low");
             }
         }
     }
@@ -441,7 +441,7 @@ mod tests {
         for group in 0..7u8 {
             let range = fp.group_range(group, dims);
             for i in range {
-                assert!(!covered[i], "Dimension {} covered by multiple groups", i);
+                assert!(!covered[i], "Dimension {i} covered by multiple groups");
                 covered[i] = true;
             }
         }
@@ -474,12 +474,12 @@ mod tests {
                 let dot: f32 = orig.iter().zip(recov.iter()).map(|(a, b)| a * b).sum();
                 let sim = dot / (on * rn);
                 assert!(sim > 0.5,
-                    "chiral round-trip on group {} dropped to sim={:.3}", g, sim);
+                    "chiral round-trip on group {g} dropped to sim={sim:.3}");
                 compared += 1;
             }
         }
         assert!(compared >= 2,
-            "fewer than 2 line-A groups had enough energy to compare ({})", compared);
+            "fewer than 2 line-A groups had enough energy to compare ({compared})");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
         let sim = dot / (sn * mn);
         // Cosine sim should be neither ~1 (identity) nor ~-1 (pure flip).
         assert!(sim.abs() < 0.95,
-            "chiral_mutate too close to identity/inverse: sim={:.3}", sim);
+            "chiral_mutate too close to identity/inverse: sim={sim:.3}");
     }
 
     #[test]

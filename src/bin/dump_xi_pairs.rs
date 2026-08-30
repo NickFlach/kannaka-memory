@@ -57,7 +57,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     base + jitter
                 })
                 .collect();
-            corpus.push((v, format!("{} {}", label, i), "l4_dense"));
+            corpus.push((v, format!("{label} {i}"), "l4_dense"));
         }
     }
 
@@ -79,7 +79,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     base + jitter
                 })
                 .collect();
-            corpus.push((v, format!("{} {}", label, i), "l4_sparse"));
+            corpus.push((v, format!("{label} {i}"), "l4_sparse"));
         }
     }
 
@@ -101,7 +101,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
                     mix + jitter
                 })
                 .collect();
-            corpus.push((v, format!("l4_bridge p{} {}", pair_idx, i), "l4_bridge"));
+            corpus.push((v, format!("l4_bridge p{pair_idx} {i}"), "l4_bridge"));
         }
     }
 
@@ -110,7 +110,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(encoder_seed, 2000, item, d as u32) * 0.9)
             .collect();
-        corpus.push((v, format!("l4_decoy {}", i), "l4_decoy"));
+        corpus.push((v, format!("l4_decoy {i}"), "l4_decoy"));
     }
 
     for i in 0..15 {
@@ -118,7 +118,7 @@ fn build_corpus_l4(dim: usize, _hardness: usize, encoder_seed: u64) -> Vec<(Vec<
         let v: Vec<f32> = (0..dim)
             .map(|d| pcg_f32(encoder_seed, 3000, item, d as u32) * 0.12)
             .collect();
-        corpus.push((v, format!("l4_noise {}", i), "l4_noise"));
+        corpus.push((v, format!("l4_noise {i}"), "l4_noise"));
     }
 
     debug_assert_eq!(corpus.len(), 300, "L4 corpus must be exactly 300 memories");
@@ -190,7 +190,6 @@ fn main() {
         out_path.display()
     );
     println!(
-        "mean sim={:.4} mean rep={:.4} mean boost={:.4} var boost={:.6}",
-        mean_sim, mean_rep, mean_boost, var_boost
+        "mean sim={mean_sim:.4} mean rep={mean_rep:.4} mean boost={mean_boost:.4} var boost={var_boost:.6}"
     );
 }
