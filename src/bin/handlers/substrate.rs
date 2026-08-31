@@ -530,9 +530,11 @@ pub(crate) fn handle_substrate_status(cfg: &KannakaConfig, args: &[String]) {
             };
             let phi = v.get("phi").and_then(|x| x.as_f64()).unwrap_or(0.0);
             let xi = v.get("xi").and_then(|x| x.as_f64()).unwrap_or(0.0);
-            // #468: canonical contract field first (`order`); `mean_order` is
-            // the legacy alias the publisher still mirrors during the
-            // migration window.
+            // #468: canonical contract field first (`order`). The publisher
+            // stopped mirroring the `mean_order` alias at the 2026-09-01
+            // gate; the fallback stays ONLY for alias-era messages still
+            // retained in JetStream history, and can go when that history
+            // ages out.
             let order = v
                 .get("order")
                 .or_else(|| v.get("mean_order"))

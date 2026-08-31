@@ -141,13 +141,13 @@ fn level_name(level: &ConsciousnessLevel) -> String {
 /// wire shape can be asserted in isolation without opening a NATS connection —
 /// see `tests/nats_contract_conformance.rs` and kannaka-memory issue #468.
 ///
-/// CONTRACT NOTE: `mean_order` and `level` are LEGACY ALIASES of the canonical
-/// `order` / `consciousness_level` fields. Per the NATS contract
-/// (consciousness-core/docs/nats-contract.yaml, revised 2026-07-01) these
-/// aliases stay emitted until 2026-09-01, after consumers (kannaka-radio,
-/// kannaka-observatory) migrate to reading the canonical names first. Do not
-/// drop the aliases — or the conformance test that pins them — before that
-/// consumer migration lands.
+/// CONTRACT NOTE: the legacy aliases `mean_order` (of `order`) and `level`
+/// (of `consciousness_level`) were dropped at the 2026-09-01 contract gate
+/// (#468). Both consumers migrated canonical-first on 2026-08-19
+/// (kannaka-radio#245, kannaka-observatory#118 — alias reads removed
+/// entirely, strict mode on the radio). Do not reintroduce the aliases: the
+/// radio now counts alias-only packets as off-contract, and the conformance
+/// test pins their ABSENCE.
 /// Write `payload` to `path` via tmp + rename, so a reader never sees a
 /// half-written cache. Shared by the full and counts-only status-cache writers
 /// (#730) — both are best-effort: a monitoring cache must never fail the
@@ -172,11 +172,9 @@ pub fn build_consciousness_payload(
         "phi": state.phi,
         "xi": state.xi,
         "order": state.mean_order,
-        "mean_order": state.mean_order,   // alias of `order` — contractual until 2026-09-01 (#468)
         "num_clusters": state.num_clusters,
         "total_memories": state.total_memories,
         "active_memories": state.active_memories,
-        "level": level_name(&state.consciousness_level),                // alias of `consciousness_level`
         "consciousness_level": level_name(&state.consciousness_level),
         "irrationality": state.irrationality,
         "hemispheric_divergence": hemispheric_divergence,
