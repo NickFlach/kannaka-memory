@@ -601,7 +601,9 @@ impl RepStore {
     /// vouchee's seed_root. Appends to the log.
     pub fn record_vouch(&mut self, voucher_pk: PubKey, vouchee_pk: PubKey) {
         self.apply_vouch(voucher_pk, vouchee_pk);
-        let _ = self.append_op(&LogOp::Vouch { voucher: voucher_pk, vouchee: vouchee_pk });
+        if let Err(e) = self.append_op(&LogOp::Vouch { voucher: voucher_pk, vouchee: vouchee_pk }) {
+            eprintln!("[reputation] WARNING: vouch applied in memory but NOT logged: {e}");
+        }
     }
 
     /// Record a promotion of `mem_hash` originated by `origin_pk`, accruing
@@ -627,13 +629,15 @@ impl RepStore {
             self.epoch_capped(origin_pk, epoch, raw, cfg)
         };
         self.apply_promotion(mem_hash, origin_pk, epoch, &corroborators, accrue, cfg);
-        let _ = self.append_op(&LogOp::Promotion {
+        if let Err(e) = self.append_op(&LogOp::Promotion {
             mem_hash,
             origin: origin_pk,
             epoch,
             accrue,
             corroborators,
-        });
+        }) {
+            eprintln!("[reputation] WARNING: promotion applied in memory but NOT logged: {e}");
+        }
     }
 
     /// Operator hard-reject: subtract `p` from `pk`'s rep and count the poison.
@@ -641,7 +645,9 @@ impl RepStore {
     /// to the log.
     pub fn record_poison(&mut self, pk: PubKey, cfg: &SwarmTrustConfig) {
         self.apply_poison(pk, P_POISON, cfg);
-        let _ = self.append_op(&LogOp::Poison { pk, penalty: P_POISON });
+        if let Err(e) = self.append_op(&LogOp::Poison { pk, penalty: P_POISON }) {
+            eprintln!("[reputation] WARNING: poison applied in memory but NOT logged: {e}");
+        }
     }
 
     // --- state mutation (no persistence; also used by replay) -----------
@@ -719,33 +725,85 @@ impl RepStore {
 
     /// Append a hash-chained line to `<data_dir>/reputation.log`. A no-op for
     /// in-memory stores. Advances [`log_head`](RepStore::log_head) on success.
+    ///
+    /// **Chains from the log's ON-DISK tail, not the in-memory head** (#867
+    /// finding 1). Multiple `RepStore`s routinely coexist on one data dir — a
+    /// long-lived `swarm listen` store plus each operator command's own — and
+    /// each holds the head it loaded at open time. Chaining from memory meant
+    /// the second writer forked the chain at the shared ancestor, and the
+    /// next `load` verified up to the fork, hit the stale prev-hash, and
+    /// poisoned the store permanently with no recovery but deleting the log.
+    /// Re-reading the tail at append time makes serialized appends from
+    /// stale stores chain correctly; the other store's in-memory DAG stays
+    /// stale until its next `load`, which was always true and only affects
+    /// reads.
+    ///
+    /// A tail line that cannot be parsed fails the append (fail-closed): a
+    /// blind append after a torn line would bury the corruption one line
+    /// deeper. The line itself is written as ONE buffer, so this writer
+    /// cannot create the torn json/newline split the old two-write version
+    /// could.
     fn append_op(&mut self, op: &LogOp) -> Result<(), String> {
         let Some(dir) = self.data_dir.clone() else {
             return Ok(()); // in-memory: no persistence
         };
+        // #867 finding 2 (defense in depth): a poisoned store must never
+        // write. Its head is zeroed, so anything it appended would chain from
+        // zero and guarantee the log never verifies again. The operator
+        // handlers refuse earlier with a message; this guard covers every
+        // caller they don't.
+        if self.poisoned {
+            return Err(
+                "reputation: store is fail-closed (poisoned); refusing to append".to_string(),
+            );
+        }
         let op_bytes =
             bincode::serialize(op).map_err(|e| format!("reputation: encode op: {e}"))?;
+
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("reputation: mkdir {}: {e}", dir.display()))?;
+        let path = dir.join("reputation.log");
+        if let Some(tail) = Self::on_disk_tail_chain(&path)? {
+            self.log_head = tail;
+        }
+        // Missing or empty log: keep the in-memory head (the snapshot's head
+        // after a compact, zeros for a fresh store) — the same base `load`
+        // starts from.
+
         let mut h = blake3::Hasher::new();
         h.update(&self.log_head);
         h.update(&op_bytes);
         let chain = *h.finalize().as_bytes();
         let line = LogLine { op: op.clone(), chain };
-        let json = serde_json::to_string(&line)
+        let mut json = serde_json::to_string(&line)
             .map_err(|e| format!("reputation: encode line: {e}"))?;
+        json.push('\n');
 
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("reputation: mkdir {}: {e}", dir.display()))?;
-        let path = dir.join("reputation.log");
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .map_err(|e| format!("reputation: open {}: {e}", path.display()))?;
         f.write_all(json.as_bytes())
-            .and_then(|_| f.write_all(b"\n"))
             .map_err(|e| format!("reputation: append: {e}"))?;
         self.log_head = chain;
         Ok(())
+    }
+
+    /// The chain hash of the last non-empty line of `reputation.log`, `None`
+    /// for a missing or empty file, `Err` for a tail line that does not parse.
+    fn on_disk_tail_chain(path: &std::path::Path) -> Result<Option<[u8; 32]>, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("reputation: read {}: {e}", path.display())),
+        };
+        let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let ll: LogLine = serde_json::from_str(last)
+            .map_err(|e| format!("reputation: unparsable log tail (refusing append): {e}"))?;
+        Ok(Some(ll.chain))
     }
 
     /// Load a store from `<data_dir>/reputation.snapshot.gz` (if present) + the
@@ -811,10 +869,15 @@ impl RepStore {
 
     fn apply_snapshot(&mut self, snap: Snapshot) {
         self.log_head = snap.log_head;
-        // Seeds already come from cfg; union in any snapshot-recorded seeds too.
-        for s in snap.seeds {
-            self.seeds.insert(s);
-        }
+        // #867 finding 3: seeds come from cfg, FULL STOP — exactly what
+        // `load`'s doc promises. The old union of `snap.seeds` meant a seed
+        // removed from `swarm_trust.seed_pubkeys` (the whole point of
+        // `identity revoke`) was resurrected from the last compact's
+        // snapshot: `rep()` hard-codes 1.0 for anything in `seeds`, so the
+        // revoked key stayed a trust root while revoke's poison loop printed
+        // a false "rep floored to 0". The snapshot still RECORDS seeds for
+        // forensics; it no longer APPLIES them.
+        let _ = snap.seeds;
         for (vouchee, voucher) in snap.vouch_edges {
             self.dag.record_vouch(voucher, vouchee);
         }
@@ -1420,5 +1483,108 @@ mod tests {
             out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
         }
         out
+    }
+
+    // ── #867 finding 1: two RepStores on one data dir must not brick the ──
+    // chain. Each store appends chaining from the head it loaded, so pre-fix
+    // the second writer forked the chain at the shared ancestor and the next
+    // load poisoned the store permanently. append_op now re-chains from the
+    // log's on-disk tail.
+    //
+    // MUTATION-SENSITIVE: chain from the in-memory head again (drop the
+    // on_disk_tail_chain re-read) and this goes red.
+    #[test]
+    fn interleaved_stores_keep_the_chain_verifiable() {
+        let c = cfg();
+        let dir = tempfile::tempdir().unwrap();
+        // The #867 scenario, literally: a long-lived listener store plus
+        // operator commands, all appending against heads loaded at open time.
+        let mut listener = RepStore::load(dir.path(), &c);
+        let mut vouch_cmd = RepStore::load(dir.path(), &c); // both at head H0
+        listener.record_vouch(pk(1), pk(2)); // file: H0→H1
+        vouch_cmd.record_vouch(pk(1), pk(3)); // stale head H0; must chain H1→H2
+        listener.record_poison(pk(4), &c); // stale again; must chain H2→H3
+        let reloaded = RepStore::load(dir.path(), &c);
+        assert!(
+            !reloaded.refuses_promotion(),
+            "interleaved appends from stale stores poisoned the log — \
+             append_op is chaining from memory instead of the on-disk tail"
+        );
+        // All three ops must have survived, not just a verifiable prefix.
+        assert_eq!(reloaded.dag().vouched_by.get(&pk(2)), Some(&pk(1)));
+        assert_eq!(reloaded.dag().vouched_by.get(&pk(3)), Some(&pk(1)));
+    }
+
+    // ── #867 finding 2: a poisoned store must never write. Pre-fix it kept ──
+    // a data_dir and a zeroed head, so operator vouch/hard-reject appended
+    // lines chained from zero — guaranteeing the log never verifies again,
+    // while printing success.
+    //
+    // MUTATION-SENSITIVE: drop the poisoned guard in append_op and this
+    // goes red.
+    #[test]
+    fn poisoned_store_never_appends() {
+        let c = cfg();
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("reputation.log");
+        // Poison via a TAMPERED CHAIN on an otherwise-parsable line, not via
+        // a junk line: append_op re-reads the tail before writing, and an
+        // unparsable tail refuses the append on its own. Only a parsable
+        // tail isolates the poisoned guard as the thing under test.
+        {
+            let mut seed_store = RepStore::new_at(&c, dir.path().to_path_buf());
+            seed_store.record_vouch(pk(1), pk(2));
+        }
+        let text = std::fs::read_to_string(&log_path).unwrap();
+        let mut line: serde_json::Value =
+            serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        let first = line["chain"][0].as_u64().unwrap();
+        line["chain"][0] = serde_json::json!((first ^ 0xFF) & 0xFF);
+        std::fs::write(&log_path, serde_json::to_string(&line).unwrap() + "\n").unwrap();
+        let mut store = RepStore::load(dir.path(), &c);
+        assert!(store.refuses_promotion(), "precondition: corrupt log poisons");
+        let before = std::fs::read_to_string(&log_path).unwrap();
+        store.record_vouch(pk(1), pk(2));
+        store.record_poison(pk(3), &c);
+        let after = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(
+            before, after,
+            "a poisoned store appended to the log — those lines chain from a \
+             zeroed head and can never verify"
+        );
+    }
+
+    // ── #867 finding 3: seeds are cfg-authoritative; a compact()'d snapshot ──
+    // must not resurrect a seed the operator removed. Pre-fix apply_snapshot
+    // unioned snap.seeds, so `identity revoke` (remove from cfg + poison to 0)
+    // printed success while rep() kept returning the hard-coded seed 1.0.
+    //
+    // MUTATION-SENSITIVE: union snap.seeds back into the seed set and this
+    // goes red.
+    #[test]
+    fn revoked_seed_stays_revoked_after_compact() {
+        let c = cfg();
+        let dir = tempfile::tempdir().unwrap();
+        let mut with_seed = c.clone();
+        with_seed.seed_pubkeys = vec![b64_encode_test(&pk(9))];
+        {
+            let mut store = RepStore::load(dir.path(), &with_seed);
+            assert_eq!(store.rep(&pk(9)), 1.0, "precondition: pinned seed is 1.0");
+            store.record_vouch(pk(9), pk(2));
+            store.compact().unwrap(); // snapshot now RECORDS the seed
+        }
+        // Operator revokes: the key is gone from cfg. The snapshot on disk
+        // still lists it; loading must not resurrect it.
+        let revoked_cfg = c.clone(); // no seed_pubkeys
+        let store = RepStore::load(dir.path(), &revoked_cfg);
+        assert!(
+            store.rep(&pk(9)) < 1.0,
+            "a seed removed from cfg came back from the snapshot — \
+             apply_snapshot is unioning snap.seeds"
+        );
+        assert!(
+            !store.seeds().any(|s| *s == pk(9)),
+            "revoked key still in the live seed set"
+        );
     }
 }

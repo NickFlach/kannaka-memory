@@ -217,6 +217,16 @@ fn handle_hard_reject(args: &[String]) {
     let cfg = KannakaConfig::load();
     let dir = KannakaConfig::data_dir();
     let mut store = RepStore::load(&dir, &cfg.swarm_trust);
+    // #867 finding 2: a poisoned store must refuse operator writes, not
+    // accept them while inert. Before this guard, hard-reject printed a
+    // successful "rep before -> after" against a store whose zeroed head
+    // meant the appended line could never verify.
+    if store.refuses_promotion() {
+        eprintln!(
+            "  hard-reject REFUSED: the reputation store is fail-closed (corrupt or              unverifiable log). Repair or remove reputation.log first; writing now              would make the log permanently unverifiable."
+        );
+        process::exit(1);
+    }
 
     let before = store.rep(&origin);
     store.record_poison(origin, &cfg.swarm_trust);
