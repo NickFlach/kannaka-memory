@@ -4803,6 +4803,19 @@ fn main() {
                     if let Err(e) = transport.announce_leave(&my_agent_id) {
                         eprintln!("[nats] Warning: leave announce failed: {e}");
                     }
+                    // Same retraction `swarm leave` performs (#590/#873): this
+                    // exit path is the one every Ctrl+C'd `swarm join` takes,
+                    // and it was the last clean-shutdown route that left the
+                    // durable presence record standing. Freshness filtering
+                    // (#737) caps the resulting ghost at ~5 minutes rather
+                    // than 24h, but a clean exit knows it is leaving and
+                    // should say so rather than lean on the staleness net.
+                    if let Err(e) = transport.publish_presence_left(&my_agent_id) {
+                        eprintln!(
+                            "[nats] Warning: presence retraction failed ({e}) — peers may \
+                             show this agent until the presence freshness window expires"
+                        );
+                    }
                     println!("Left swarm cleanly ({my_agent_id})");
                 }
                 "leave" => {
