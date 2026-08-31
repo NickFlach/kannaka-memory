@@ -464,6 +464,7 @@ mod real_corpus_tests {
 // something a caller can forget. The trait is the enforcement: a producer that
 // wants to return results at all has to hand them through here.
 
+use std::collections::HashSet;
 use uuid::Uuid;
 
 /// A recall result that can be rewritten from a facet to its parent.
@@ -533,7 +534,7 @@ where
     T: Resolvable,
     F: Fn(Uuid) -> Option<(Uuid, String)>,
 {
-    let mut seen: Vec<Uuid> = Vec::with_capacity(top_k.min(results.len()));
+    let mut seen: HashSet<Uuid> = HashSet::with_capacity(top_k.min(results.len()));
     let mut out: Vec<T> = Vec::with_capacity(top_k.min(results.len()));
 
     for mut r in results {
@@ -550,7 +551,7 @@ where
         if seen.contains(&canonical) {
             continue; // a sibling facet of an already-surfaced parent
         }
-        seen.push(canonical);
+        seen.insert(canonical);
         out.push(r);
     }
     out
