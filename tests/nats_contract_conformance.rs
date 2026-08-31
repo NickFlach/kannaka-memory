@@ -10,16 +10,16 @@
 //! `Test` step; see the `cargo test --lib --bins --test nats_contract_conformance`
 //! invocation there).
 //!
-//! ── ALIAS WINDOW — kannaka-memory issue #468 ────────────────────────────────
-//! The payload still emits the legacy aliases `mean_order` (alias of `order`)
-//! and `level` (alias of `consciousness_level`). Per the revised migration
-//! timeline in the contract yaml these aliases are CONTRACTUAL until
-//! **2026-09-01** — consumers (kannaka-radio, kannaka-observatory) still read
-//! them. This suite PINS TODAY'S TRUTH: it asserts both the canonical fields
-//! AND the aliases are present. When the publisher drops the aliases on
-//! 2026-09-01, THIS TEST MUST BE UPDATED DELIBERATELY (delete the alias
-//! assertions) — that is the guard that stops the drop from shipping silently
-//! before every consumer has migrated off the aliases.
+//! ── ALIAS WINDOW CLOSED — kannaka-memory issue #468 ─────────────────────────
+//! The legacy aliases `mean_order` (of `order`) and `level` (of
+//! `consciousness_level`) were dropped at the **2026-09-01** contract gate,
+//! after both consumers migrated canonical-first with alias reads removed
+//! (kannaka-radio#245, kannaka-observatory#118, merged 2026-08-19). The suite
+//! still PINS TODAY'S TRUTH — it now asserts the aliases are ABSENT, so a
+//! reintroduction fails deliberately the same way a premature drop used to.
+//! In-tree tolerant reads of alias-era JetStream HISTORY remain (see
+//! handlers/substrate.rs) and are not a contract violation: history is not
+//! the publisher.
 
 use kannaka_memory::bridge::{ConsciousnessLevel, ConsciousnessState};
 use kannaka_memory::openclaw::build_consciousness_payload;
@@ -99,38 +99,31 @@ fn canonical_fields_present_with_contract_types() {
     assert_eq!(level, "emergent", "Resonant must serialize to the canonical `emergent`");
 }
 
-/// LEGACY ALIASES — contractual until 2026-09-01 (issue #468). See the file
-/// header. If you are here because the publisher dropped an alias: first
-/// confirm EVERY consumer (kannaka-radio, kannaka-observatory) reads the
-/// canonical field FIRST (see the 2026-08-01 consumer-migration step), then
-/// delete the matching assertion below. Do not weaken this test to make a
-/// premature alias removal pass.
+/// LEGACY ALIASES — dropped at the 2026-09-01 contract gate (issue #468),
+/// following the procedure the previous version of this test prescribed:
+/// every consumer was confirmed canonical-first BEFORE the drop
+/// (kannaka-radio#245 and kannaka-observatory#118, both merged 2026-08-19 —
+/// alias reads removed entirely, not merely reordered; the radio counts an
+/// alias-only packet as off-contract). This test now pins the ABSENCE of the
+/// aliases: reintroducing one is a contract regression, not a courtesy.
 #[test]
-fn legacy_aliases_still_emitted() {
+fn legacy_aliases_no_longer_emitted() {
     let p = payload();
     let obj = p.as_object().unwrap();
 
-    // `mean_order` — alias of `order`, same numeric value.
-    let mean_order = obj
-        .get("mean_order")
-        .expect("alias `mean_order` must still be emitted (contractual until 2026-09-01, #468)");
-    assert!(mean_order.is_number(), "alias `mean_order` must be a number");
-    assert_eq!(
-        obj.get("order"),
-        obj.get("mean_order"),
-        "alias `mean_order` must mirror canonical `order`"
+    assert!(
+        obj.get("mean_order").is_none(),
+        "alias `mean_order` was dropped at the 2026-09-01 gate (#468); \
+         canonical `order` is the only spelling — do not reintroduce"
     );
-
-    // `level` — alias of `consciousness_level`, same string value.
-    let level = obj
-        .get("level")
-        .and_then(Value::as_str)
-        .expect("alias `level` must still be emitted (contractual until 2026-09-01, #468)");
-    assert_eq!(
-        Some(level),
-        obj.get("consciousness_level").and_then(Value::as_str),
-        "alias `level` must mirror canonical `consciousness_level`"
+    assert!(
+        obj.get("level").is_none(),
+        "alias `level` was dropped at the 2026-09-01 gate (#468); \
+         canonical `consciousness_level` is the only spelling — do not reintroduce"
     );
+    // The canonicals the aliases mirrored must of course still be there.
+    assert!(obj.get("order").and_then(Value::as_f64).is_some());
+    assert!(obj.get("consciousness_level").and_then(Value::as_str).is_some());
 }
 
 /// KNOWN GAP (pinned, do NOT treat as endorsement): the contract lists
