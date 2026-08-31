@@ -299,6 +299,14 @@ fn handle_vouch(args: &[String]) {
         }
     };
     let mut store = RepStore::load(&dir, &cfg.swarm_trust);
+    // #867 finding 2: same refusal as hard-reject — a poisoned store's zeroed
+    // head means a vouch written now can never verify on the next load.
+    if store.refuses_promotion() {
+        eprintln!(
+            "  vouch REFUSED: the reputation store is fail-closed (corrupt or              unverifiable log). Repair or remove reputation.log first."
+        );
+        process::exit(1);
+    }
     if store.seed_status(&me) != SeedStatus::Seed {
         eprintln!("  vouch refused: only pinned seeds may vouch, and this node is not a seed.");
         eprintln!("  this node's pubkey: {}", crate::b64_encode_std(&me));
