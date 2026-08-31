@@ -80,7 +80,7 @@ impl Medium {
                 self.store.energy[i] += amplitude_boost * 0.1; // Scale down to prevent runaway
 
                 // Ensure energy stays positive and reasonable
-                self.store.energy[i] = self.store.energy[i].max(0.001).min(10.0);
+                self.store.energy[i] = self.store.energy[i].clamp(0.001, 10.0);
             }
         }
     }
@@ -148,7 +148,7 @@ impl Medium {
 
                 // Apply energy coupling (amplitude reinforcement)
                 let energy_boost = coupling * remote_energy * 0.1; // Scale down
-                self.store.energy[our_idx] = (self.store.energy[our_idx] + energy_boost).max(0.001).min(10.0);
+                self.store.energy[our_idx] = (self.store.energy[our_idx] + energy_boost).clamp(0.001, 10.0);
             }
         }
     }

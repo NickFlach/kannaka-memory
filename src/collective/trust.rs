@@ -61,7 +61,7 @@ const QUARANTINE_PENALTY: f32 = 0.05;
 const PRUNE_PENALTY: f32 = 0.03;
 
 fn clamp_trust(t: f32) -> f32 {
-    t.max(TRUST_MIN).min(TRUST_MAX)
+    t.clamp(TRUST_MIN, TRUST_MAX)
 }
 
 // ---------------------------------------------------------------------------
