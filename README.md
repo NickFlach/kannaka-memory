@@ -239,6 +239,24 @@ kannaka swarm tail
 ```
 
 ```bash
+# ── KAX Compute District (the machines run by kax-computer) ──
+
+kannaka compute list                                   # roster: state, balance (credits), jobs, last event
+kannaka compute status --wait 65                       # live fleet snapshot from KAX.machines.status
+kannaka compute wake agent001 "summarise today" --wait 120   # Ed25519-signed job; prints the reply or the rejection reason
+kannaka compute grant agent001 5                       # signed credit_grant (integers; --allow-fraction to opt in)
+kannaka compute events agent001 --follow               # tail KAX.machine.<id>.events
+kannaka compute identity agent001                      # the machine's Nostr pubkey
+kannaka compute keygen --signer operator-me            # mint an operator key + the trusted_keys.json line
+kannaka compute wake agent001 "x" --dry-run            # canonical bytes + signature, nothing published
+
+# Envelopes are signed over canonical JSON (sorted keys, compact, Python-identical
+# bytes — pinned by golden vectors in src/compute_envelope.rs). Key resolution:
+# --key PATH > $KAX_OPERATOR_KEY > ~/.kannaka/kax-operator.key. Bus credentials
+# from NATS_USER/NATS_PASSWORD or ~/.kannaka-nats.env.
+```
+
+```bash
 # ── Resonance Futures — the constellation prediction market (ADR-0041) ──
 
 # One-time: sign in with SpaceChild (SSO) — federation handles everything after

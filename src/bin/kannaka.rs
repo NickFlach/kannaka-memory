@@ -32,6 +32,13 @@ use handlers_substrate::{
 mod handlers_facets;
 use handlers_facets::handle_facets;
 
+// KAX Compute District operator commands (`kannaka compute ...`): signed
+// wakes/grants, roster, fleet status, event tail, keygen. HTTP + NATS only —
+// never loads the HRM, mirrors the identity fast path.
+#[path = "handlers/compute.rs"]
+mod handlers_compute;
+use handlers_compute::handle_compute;
+
 #[path = "handlers/chat.rs"]
 mod handlers_chat;
 use handlers_chat::handle_chat;
@@ -650,6 +657,7 @@ fn usage_lines() -> &'static [&'static str] {
         "                            serve + listen --auto-sync need AUTHENTICATED NATS",
         "                            credentials (~/.kannaka-nats.env); anon is read-only",
         "  attention serve|stats     Attention beam (eye/ear → recall_against_ids)",
+        "  compute list|status|wake|grant|events|identity|keygen   KAX Compute District (signed Ed25519 wakes)",
         "",
         "Agent (LLM):",
         "  ask \"question\"             One-shot — memories surface via wave resonance",
@@ -1060,6 +1068,8 @@ fn is_builtin_subcommand(verb: &str) -> bool {
         | "swarm" | "events" | "substrate" | "attention" | "inbox"
         // identity (SpaceChild SSO + inc-1 crypto identity / trust root)
         | "identity"
+        // KAX Compute District (signed wakes/grants, roster, events)
+        | "compute"
         // inc-1 corroboration trust model — reputation-ledger inspection
         | "reputation"
         // constellation services
@@ -1586,6 +1596,12 @@ fn main() {
         }
         "config" => {
             handle_config(&cfg, &args[command_start..]);
+            return;
+        }
+        // KAX Compute District: roster (HTTP), signed wakes/grants + event
+        // tails (NATS). No HRM.
+        "compute" => {
+            handle_compute(&cfg, &args[command_start..]);
             return;
         }
         // SpaceChild SSO identity + inc-1 crypto identity/seed/vouch/revoke —

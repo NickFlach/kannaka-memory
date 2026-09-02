@@ -396,6 +396,31 @@ EXAMPLE:
                 .about("Agent-to-agent declarative messaging: send, serve, tail")
                 .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
         )
+        // ── KAX Compute District ───────────────────────────────────────
+        // Operator commands for the machines run by kax-computer. Wakes and
+        // grants are Ed25519-signed envelopes (canonical JSON, Python-identical
+        // bytes — see compute_envelope.rs); roster reads are plain HTTP.
+        .subcommand(
+            Command::new("compute")
+                .about("KAX Compute District: roster, fleet status, signed wakes/grants, events, keygen")
+                .long_about(
+                    "kannaka compute — operate the KAX Compute District machines.\n\n\
+                     Sub-verbs:\n  \
+                     list [--json]                          public roster (HTTP): state, balance (credits), jobs, last event\n  \
+                     status [--wait SECS] [--json]          live fleet snapshot from KAX.machines.status (60s cadence)\n  \
+                     wake <machine> <prompt> [--wait SECS]  sign + publish a job; --wait prints the reply or the rejection\n  \
+                     grant <machine> <credits>              sign + publish a credit_grant (integers; --allow-fraction to opt in)\n  \
+                     events <machine> [--follow] [--last N] tail KAX.machine.<id>.events (history is not retained on the bus)\n  \
+                     identity <machine>                     the machine's Nostr pubkey (roster, then .identity announce)\n  \
+                     keygen [--out PATH] [--signer NAME]    mint an operator key + trusted_keys.json snippet (never overwrites)\n\n\
+                     Signing: --key PATH > $KAX_OPERATOR_KEY > ~/.kannaka/kax-operator.key (32-byte hex seed);\n  \
+                     --signer NAME must match a trusted_keys.json entry on the manager (default operator-nick);\n  \
+                     --dry-run prints the canonical bytes + signature and publishes nothing.\n\
+                     Bus: --nats-url URL; credentials from NATS_USER/NATS_PASSWORD or ~/.kannaka-nats.env.\n\
+                     Exit codes: 0 ok, 1 error, 2 usage/rejected, 3 timed out waiting.",
+                )
+                .arg(Arg::new("args").trailing_var_arg(true).allow_hyphen_values(true).num_args(0..)),
+        )
         // ── Identity (SpaceChild SSO) ──────────────────────────────────
         // Step 1 of cryptographic swarm-agent identity: register/login
         // against spacechild-auth, tokens stored in <data_dir>/identity.json.

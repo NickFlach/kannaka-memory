@@ -117,6 +117,11 @@ pub mod dispatch;
 // attribution/integrity only — no absorb/trust/enrollment behaviour here.
 pub mod provenance;
 
+// KAX Compute District (NickFlach/kax-computer) wake/grant envelope contract:
+// Python-identical canonical JSON + Ed25519 signing, pinned by golden vectors.
+// Pure — the CLI handler in bin/handlers/compute.rs does the NATS/HTTP.
+pub mod compute_envelope;
+
 // pubkey-keyed swarm-trust decision core (inc-1b): pure corroboration formulas,
 // reputation store, append-only corroboration DAG, fail-closed persistence.
 // Adds a module + config fields; NO absorb-path wiring / admit() chokepoint yet.
