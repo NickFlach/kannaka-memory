@@ -1,0 +1,1 @@
+No new hypothesis: commits since Sep 2 (compute CLI #888/#889, NATS alias drop #468, reputation #867, swarm exit #873, lint refactors) leave L5 research space unchanged; all six questions remain closed per Aug 28 notes.
