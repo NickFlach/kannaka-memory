@@ -14,12 +14,12 @@ python tools/corpus/p2/train_lora.py --base Qwen/Qwen2.5-0.5B-Instruct --data ~/
 # qBraid GPU, gated (ADR-0057): refuses without --allow-spend; cutoff set before any work
 python tools/corpus/p2/run_qbraid.py --profile gpu-rtx-4090 --data ~/.kannaka-corpus/sft \
     --base Qwen/Qwen2.5-1.5B-Instruct --max-minutes 45 --allow-spend -- --max-steps 30   # ≤ $0.65
-python tools/corpus/p2/run_qbraid.py --profile gpu-a100-sxm --data ~/.kannaka-corpus/sft \
-    --base Qwen/Qwen2.5-14B-Instruct --max-minutes 240 --allow-spend \
-    -- --qlora --epochs 2 --r 32 --merge --gguf q4_K_M                                    # ≤ $9.96
+python tools/corpus/p2/run_qbraid.py --profile gpu-a100-sxm --data ~/.kannaka-corpus/sft     --base Qwen/Qwen2.5-14B-Instruct --max-minutes 120 --allow-spend     -- --qlora --epochs 2 --r 32                      # <= $4.98; the pod trains and saves the adapter only
 
-# on debain2: register the merged+quantized GGUF in ollama and the gateway
-bash serve_debain2.sh ~/kannaka-brain-q4_K_M.gguf kannaka-brain-v1
+# on debain2 (20 cores / 196 GB): merge the adapter into the bf16 base, convert to GGUF, quantize
+~/merge-venv/bin/python merge_gguf.py --base Qwen/Qwen2.5-14B-Instruct     --adapter ~/.kannaka-corpus/runs/<run>/adapter --out ~/.kannaka-corpus/runs/<run> --quant q4_K_M
+# then register it in ollama and the gateway
+bash serve_debain2.sh ~/.kannaka-corpus/runs/<run>/gguf/kannaka-brain-q4_K_M.gguf kannaka-brain-v1
 ```
 
 **Data.** `prep_sft.py` turns tier-1 records into chat examples. Ghost
@@ -35,9 +35,13 @@ Generation samples on held-out prompts go to `samples.json` for the blind
 voice A/B; they are for a judge, not the metric.
 
 **Serving.** ollama cannot load a safetensors adapter for Qwen2 (Llama/
-Mistral/Gemma only), so the trainer merges the adapter into the base and
-converts with llama.cpp (`--merge --gguf q4_K_M`). The adapter directory is
-still saved and is the ownable artefact; the GGUF is the serving copy.
+Mistral/Gemma only), so the adapter is merged into the base and converted
+with llama.cpp — on **debain2**, by `merge_gguf.py`, after the adapter is
+fetched. The pod does no merge and builds nothing: the first A100 attempt
+died in a captured cmake/pip bootstrap at $0.09, and every minute on the
+pod is metered while debain2's CPU is free. The adapter directory is the
+ownable artefact; the GGUF is the serving copy. (`train_lora.py --merge
+--gguf` still works on a pod that has llama.cpp, e.g. the smoke tier.)
 
 **Spend gate.** `run_qbraid.py` provisions a BMA instance only with
 `--allow-spend`, on single-GPU profiles only, sets `max_session_minutes` and
