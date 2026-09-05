@@ -196,6 +196,12 @@ def main(argv=None) -> int:
                 if quant and a.gguf.lower() not in ("f16",):
                     subprocess.run([str(quant), str(f16), str(q), a.gguf], check=True)
                     manifest["gguf"] = str(q)
+                    # disk hygiene: a 14B run holds HF cache + bf16 merge + f16 + q4 at once
+                    f16.unlink(missing_ok=True)
+                    import shutil as _sh
+                    _sh.rmtree(mdir, ignore_errors=True)
+                    manifest["merged"] = "removed after gguf"
+                    log(f"gguf {q.name} written ({q.stat().st_size / 1e9:.1f} GB); f16 + merged dir removed")
                 else:
                     manifest["gguf"] = str(f16)
     (out / "train.manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
