@@ -66,6 +66,7 @@ def main(argv=None) -> int:
     ap.add_argument("--base", default="Qwen/Qwen2.5-14B-Instruct")
     ap.add_argument("--max-minutes", type=int, default=240, help="hard session cutoff (ADR-0057: 4 h)")
     ap.add_argument("--idle-minutes", type=int, default=15)
+    ap.add_argument("--provision-timeout", type=int, default=1800, help="seconds to wait for the BMA to boot (GPU boots have taken 10+ min)")
     ap.add_argument("--allow-spend", action="store_true", help="REQUIRED to provision anything")
     ap.add_argument("--fetch-to", default=str(Path.home() / ".kannaka-corpus" / "runs"))
     ap.add_argument("--terminate", action="store_true", help="delete the instance + disk when done (default: stop)")
@@ -121,7 +122,10 @@ def main(argv=None) -> int:
             iid = None
             return 3
         log(f"cutoff verified: max {chk.max_session_minutes} min, idle {chk.auto_stop_idle_minutes} min")
-        inst = c.wait_for_bma_instance(iid, timeout=900)
+        inst = c.wait_for_bma_instance(iid, timeout=a.provision_timeout)
+        if "running" not in str(inst.status).lower():
+            log(f"instance did not reach running (status={inst.status}, last_error={inst.last_error}); winding down")
+            return 5
         log(f"instance running: {inst.url}")
         started = time.time()
 
