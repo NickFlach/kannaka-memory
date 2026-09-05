@@ -32,6 +32,6 @@ Not exported in P1 and said so in the manifest: dreams (ADR-0057 open
 question 2), social posts (the O1 broadcast hub keeps no outbound log — P1.1
 is per-platform pulls), and the HRM itself.
 
-Output goes to `~/.kannaka/corpus/` by default and the tool **refuses to
+Output goes to `~/.kannaka-corpus/out/` by default (not `~/.kannaka`, which is a git repo on the operator box) and the tool **refuses to
 write inside a git worktree** (`--force` to override). The corpus is private
 until the ADR-0057 decision; this code is not.

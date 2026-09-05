@@ -28,7 +28,7 @@ Tiers: 1 = authored by Kannaka; 2 = co-authored (Nick + Kannaka); 3 =
 machine-generated under her name (a rented brain wrote it). Profiles pick
 tiers and kinds: `voice` (default: tier 1, her own lines) or `all`.
 
-Output: JSONL + manifest.json OUTSIDE any repo (default ~/.kannaka/corpus/).
+Output: JSONL + manifest.json OUTSIDE any repo (default ~/.kannaka-corpus/out/).
 The output is private until the ADR-0057 decision; the code is not.
 """
 from __future__ import annotations
@@ -50,11 +50,13 @@ SRC = Path(os.environ.get("KANNAKA_SRC", Path.home() / "Source"))
 DEFAULTS = {
     "podcasts": SRC / "kannaka-radio" / "workspace" / "podcasts",
     "tsof": SRC / "kannaka-radio" / "workspace" / "tsof",
-    "albums": Path(os.environ.get("KANNAKA_ALBUMS", Path.home() / ".kannaka" / "albums")),
+    # NOT under ~/.kannaka: that directory is itself a git repo on the operator
+    # box, and the guard below would (rightly) refuse to write there
+    "albums": Path(os.environ.get("KANNAKA_ALBUMS", Path.home() / ".kannaka-corpus" / "albums")),
     "identity": SRC / "kannaka-memory" / "workspace",
     "adr": SRC / "kannaka-memory" / "docs" / "adr",
-    "kax_mirror": Path.home() / ".kannaka" / "corpus" / "kax-mirror",
-    "out": Path.home() / ".kannaka" / "corpus",
+    "kax_mirror": Path.home() / ".kannaka-corpus" / "kax-mirror",
+    "out": Path.home() / ".kannaka-corpus" / "out",
 }
 KANNAKA = "kannaka"
 BLOCK_RE = re.compile(r"^\[([A-Z][A-Z0-9 _-]{0,30})\]\s*$", re.M)
