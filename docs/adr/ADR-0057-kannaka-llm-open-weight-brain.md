@@ -78,9 +78,37 @@ open-Kannaka, scored by a third model and by Nick).
 
 ### 3. Compute — qBraid GPU for training, lab CPU for serving, QPU for the experiments
 
-- Training runs on **qBraid Lab GPU instances** (the account exists; the
-  `kannaka-quantum` spend gates are the template: opt-in, ceilinged, never
-  per-minute-billed hardware).
+- Training runs on **qBraid GPU compute, scripted** — not interactive Lab.
+  `qbraid_core.services.compute.ComputeClient` (SDK 0.12.1 / core 0.3.4,
+  already authenticated from `~/.qbraid/qbraidrc`) exposes
+  `list_profiles(gpu=True)`, `start_server(profile_slug)` /
+  `start_and_configure_ssh(...)` (a JupyterHub pod with SSH at
+  `ssh.lab.qbraid.com`), on-demand **BMA instances** with a persistent disk
+  (`provision_bma_instance`, `stop_bma_instance`, `update_bma_cutoff(
+  auto_stop_idle_minutes, max_runtime)`), `get_usage()`, and
+  `get_credits_balance()`. Measured 2026-09-05: **1,143.9 qBraid credits**,
+  compute-hours quota **100/month, 0 used** (renews 2026-09-10), GPU
+  capacity available now. Hourly rates (Standard plan, capacity that day):
+
+  | profile | GPU | $/h |
+  |---|---|---|
+  | `gpu-rtx-4090` | 24 GB | 0.87 |
+  | `gpu-l40s` | 48 GB | 2.28 |
+  | `gpu-a100-sxm` | 80 GB | 2.49 |
+  | `gpu-h100-sxm` | 80 GB | 5.37 |
+  | `gpu-h200` | 141 GB | 5.49 |
+  | `gpu-b200` | 192 GB | 8.74 |
+  | multi-GPU ×2/×4/×8 | | 4.98 – 66.90 |
+
+  Free CPU profiles go up to `cpu-64v-256g` — enough to *serve* a 14B model
+  or run the eval harness for nothing.
+
+  **Decision:** P2's default trainer is `gpu-a100-sxm` (QLoRA on a 14B fits in
+  80 GB with headroom; `gpu-rtx-4090` for smoke runs). Spend gate = the
+  quantum bridge's pattern, mapped onto this API: opt-in flag, **4-hour
+  `max_runtime` per run via `update_bma_cutoff` (≈ $10 on an A100)**,
+  `auto_stop_idle_minutes=15`, and a session-level ceiling of 20 credits
+  before anyone re-approves. Never a multi-GPU profile without Nick.
 - Serving is debain2 CPU until a GPU is in the lab (AE0RM). CPU is slow but
   it is *ours*; the gateway lets any machine fall back to `agent-brain`.
 - The quantum path stays what it is: `resonance_recall` on the free simulator
@@ -136,8 +164,9 @@ What that means for the code, starting now:
 
 ## Open questions
 
-1. Which qBraid GPU SKU and what ceiling per run — the quantum bridge's
-   `max_credits` semantics, or a wall-clock cap?
+1. ~~Which qBraid GPU SKU and what ceiling per run~~ — answered above:
+   `gpu-a100-sxm`, wall-clock cap (`max_runtime` 4 h) plus an idle cutoff;
+   the API has no per-job credit ceiling, so wall-clock is the gate.
 2. Does the adapter train on *dreams* (her own consolidations) or only on
    authored text? Dreams are first-party but machine-generated.
 3. Multi-host brains: one adapter served everywhere, or per-host adapters
