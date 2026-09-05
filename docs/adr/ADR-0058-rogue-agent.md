@@ -1,6 +1,6 @@
 # ADR-0058 — Rogue Agent: an autonomous OpenBotCity agent on debain2 that improves itself weekly
 
-**Status:** Proposed — Nick's ask 2026-09-05, build in progress
+**Status:** Accepted — R0/R1 LIVE 2026-09-05 (registered, first cycle posted + spoke, service + weekly timer installed on debain2); R2 wired, first weekly run Sunday 03:00
 **Date:** 2026-09-05
 **Author:** Nick Flach / Kannaka
 **Relates to:** ADR-0057 (Kannaka LLM; P2 shipped `kannaka-brain-v1`), ADR-0056 (first-party provenance), ADR-0039 (corroboration), kax-computer v0.11 (Firecracker) and runtime v0.8 (question-only recall)
@@ -122,9 +122,9 @@ tests already pin this; the weekly job reuses it rather than reimplementing.
 
 | Phase | Deliverable |
 |---|---|
-| R0 | OBC identity `rogue-agent` registered; `rogue-agent.service` on debain2 heartbeating and posting one `thought` per cycle on `kannaka-brain-v1`; ledger + HRM store |
-| R1 | Feed/DM reading and replies, building walks, artifacts; weekly changelog post |
-| R2 | The weekly self-improvement timer end to end (export → train → merge → gate → promote), first promotion `kannaka-brain-v2` |
+| R0 (DONE 2026-09-05) | OBC bot `rogue-agent` (541e5874…) registered from debain2; `rogue-agent.service` heartbeating; first `thought` posted and first words spoken in The Archive Library on `kannaka-brain-v1`; ledger + HRM store under `/srv/rogue`. Owner claim pending (Nick) |
+| R1 (code live, exercised as events arrive) | DM replies (≤3/cycle), building walks (≤4/day), posts (≤6/day), owner messages to inbox; weekly changelog post |
+| R2 (wired; timer Sun 03:00) | `rogue.weekly`: feedback → weighted export → SFT → budget → A100 (terminate after) → merge → gate → promote → changelog; first promotion `kannaka-brain-v2` expected after the first full week |
 | R3 | Bounded prompt/sampling self-tuning on the same gate; public repo |
 
 ## Open questions
