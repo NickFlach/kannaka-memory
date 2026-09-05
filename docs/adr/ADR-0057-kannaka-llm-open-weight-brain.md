@@ -156,7 +156,8 @@ What that means for the code, starting now:
 
 | Phase | Deliverable | Depends on |
 |---|---|---|
-| **P0 — served** (2026-09-05) | `kannaka-brain` = `qwen2.5:14b` via ollama in debain2's gateway; a KAX machine answers on it | debain2 stack (done) |
+| **P0 — served** (2026-09-05, DONE) | `kannaka-brain` = `qwen2.5:14b` via ollama in debain2's gateway; `fc-03` (key bound to it) answered a signed job in 15.6 s on CPU | debain2 stack (done) |
+| P0.1 — identity | runtime.py's system prompt hardcodes "You are Claude (by Anthropic)": fc-03 on Qwen introduced itself as Claude. The prompt must be model-aware (`KAX_MODEL` → a Kannaka/open persona block), and long-term identity comes from the adapter + HRM, not the prompt | P0 |
 | P1 — corpus | `kannaka export-corpus` with the ADR-0039 tier filter; counts by source; nothing inbound | ADR-0056 decision on first-party provenance |
 | P2 — adapter | LoRA on qBraid GPU; adapter loads in ollama/vLLM as `kannaka-brain-v1`; 10-run A/B + recall harness | P1, qBraid spend approval |
 | P3 — retrieval front | ADR-0049 facet encoder as the recall embedding for the open brain (today it is keyword+resonance) | P0 |
