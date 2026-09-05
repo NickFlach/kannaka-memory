@@ -48,7 +48,16 @@ def log(msg):
     print(f"[qbraid {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+# On Windows the SDK writes ssh config entries with backslash paths and a python
+# ProxyCommand; Git-Bash's MSYS ssh mangles those. Use the native OpenSSH.
+_WIN_SSH = Path("C:/WINDOWS/System32/OpenSSH")
+SSH = str(_WIN_SSH / "ssh.exe") if (_WIN_SSH / "ssh.exe").exists() else "ssh"
+SCP = str(_WIN_SSH / "scp.exe") if (_WIN_SSH / "scp.exe").exists() else "scp"
+
+
 def sh(cmd, check=True, capture=False, **kw):
+    if cmd and cmd[0] in ("ssh", "scp"):
+        cmd = [SSH if cmd[0] == "ssh" else SCP] + list(cmd[1:])
     if capture:
         return subprocess.run(cmd, check=check, capture_output=True, text=True, **kw)
     return subprocess.run(cmd, check=check, **kw)
@@ -144,14 +153,15 @@ def main(argv=None) -> int:
         log("shipped trainer + data")
 
         # 4. bootstrap + launch
+        want_gguf = "--gguf" in train_args
         boot = (
             "set -e; cd " + REMOTE + " && "
-            "python3 -m pip install -q --upgrade pip && "
             "python3 -m pip install -q 'transformers>=4.45' 'peft>=0.13' 'datasets>=3' 'accelerate>=1' 'trl>=0.12' bitsandbytes sentencepiece protobuf && "
-            "([ -d ~/llama.cpp ] || git clone -q --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp) && "
-            "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
-            "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null) && "
-            "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'"
+            + ("([ -d ~/llama.cpp ] || git clone -q --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp) && "
+               "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
+               "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null) && "
+               if want_gguf else "")
+            + "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'"
         )
         r = ssh(alias, boot, capture=True, timeout=1800)
         log("bootstrap: " + r.stdout.strip().splitlines()[-2:].__str__())

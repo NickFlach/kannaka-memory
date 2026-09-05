@@ -46,4 +46,12 @@ instance if that call fails), tails the log until `train.manifest.json`
 exists or the cutoff hits, fetches the outputs to `~/.kannaka-corpus/runs/`,
 and always stops the instance in `finally`. Prints credits before/after.
 
+**Run it from Linux.** The SDK's ssh ProxyCommand is a websocket-to-stdio
+bridge (`python -m qbraid_core.services.compute.ssh bridge …`) that crashes
+on Windows (`_ProactorReadPipeTransport … _empty_waiter`, Python 3.14) and
+Git-Bash's MSYS ssh mangles the backslash paths it writes into
+`~/.ssh/config.d/qbraid`. debain2 is the runner: `~/qbraid-venv`,
+`~/.qbraid/qbraidrc`, `~/kannaka-p2-runner/{p2,sft}`; outputs fetch to
+`~/.kannaka-corpus/runs/` there — which is where they get served anyway.
+
 Everything under `~/.kannaka-corpus/` is private until the ADR-0057 decision.
