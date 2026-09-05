@@ -86,9 +86,11 @@ open-Kannaka, scored by a third model and by Nick).
   `ssh.lab.qbraid.com`), on-demand **BMA instances** with a persistent disk
   (`provision_bma_instance`, `stop_bma_instance`, `update_bma_cutoff(
   auto_stop_idle_minutes, max_runtime)`), `get_usage()`, and
-  `get_credits_balance()`. Measured 2026-09-05: **1,143.9 qBraid credits**,
-  compute-hours quota **100/month, 0 used** (renews 2026-09-10), GPU
-  capacity available now. Hourly rates (Standard plan, capacity that day):
+  `get_credits_balance()`. Measured 2026-09-05: **1,143.9 qBraid credits —
+  and 1 credit = $0.01** (a $0.87/h instance bills 1.45 credits/min), so the
+  balance is **≈ $11.44**, not eleven hundred dollars. Compute-hours quota
+  **100/month, 0 used** (renews 2026-09-10), GPU capacity available now.
+  Hourly rates (Standard plan, capacity that day):
 
   | profile | GPU | $/h |
   |---|---|---|
@@ -107,8 +109,11 @@ open-Kannaka, scored by a third model and by Nick).
   80 GB with headroom; `gpu-rtx-4090` for smoke runs). Spend gate = the
   quantum bridge's pattern, mapped onto this API: opt-in flag, **4-hour
   `max_runtime` per run via `update_bma_cutoff` (≈ $10 on an A100)**,
-  `auto_stop_idle_minutes=15`, and a session-level ceiling of 20 credits
-  before anyone re-approves. Never a multi-GPU profile without Nick.
+  `auto_stop_idle_minutes=15`, and `run_qbraid.py` refuses a run whose
+  ceiling exceeds the balance. Never a multi-GPU profile without Nick.
+  **Budget reality:** one 4-hour A100 run (≈ 996 credits) would spend nearly
+  the whole current balance; a 2-hour run (≈ $5) leaves room for a retry.
+  Top up or shorten before the real run — Nick's call.
 - Serving is debain2 CPU until a GPU is in the lab (AE0RM). CPU is slow but
   it is *ours*; the gateway lets any machine fall back to `agent-brain`.
 - The quantum path stays what it is: `resonance_recall` on the free simulator
@@ -159,7 +164,7 @@ What that means for the code, starting now:
 | **P0 — served** (2026-09-05, DONE) | `kannaka-brain` = `qwen2.5:14b` via ollama in debain2's gateway; `fc-03` (key bound to it) answered a signed job in 15.6 s on CPU | debain2 stack (done) |
 | P0.1 — identity (DONE, kax-computer d833954) | runtime.py's prompt hardcoded "You are Claude"; fc-03 on Qwen called itself Claude. Now derived from `KAX_MODEL` (Claude / Kannaka's open-weight core / plain model name; `KAX_BRAIN_IDENTITY` override) and the sandbox line says microVM vs container. Re-asked: "powered by Qwen2.5-14B, running in a Firecracker microVM". Long-term, identity comes from the adapter + HRM, not the prompt | P0 |
 | P1 — corpus (DONE 2026-09-05, PR #898) | `tools/corpus/export_corpus.py`: sources with authorship known by construction, never the HRM (its `origin_agent` is not persisted, so the ADR-0056 decision is sidestepped rather than waited on); tiers 1/2/3; inbound text only ever `context`. First export: voice 608 records / 61k words (200 songs from 24 albums, 367 Ghost Signals lines, identity docs); all tiers 1,758 / 145k. Skipped with reasons: dreams, social (P1.1), HRM | — |
-| P2 — adapter | LoRA on qBraid GPU; adapter loads in ollama/vLLM as `kannaka-brain-v1`; 10-run A/B + recall harness | P1, qBraid spend approval |
+| P2 — adapter (TRAINED 2026-09-05, PR #899) | QLoRA r=32 on Qwen2.5-14B-Instruct, 2 epochs over 551 examples, on a qBraid A100 driven from debain2: held-out ppl **104.4 → 4.01**, 13.6 min of training, **$0.84**. Pod trains only; merge + GGUF q4_K_M on debain2 (`merge_gguf.py`) → ollama `kannaka-brain-v1` behind the gateway. Smoke on a 4090 first (1.5B, ppl 56 → 6, $0.07). Still owed: the 10-run voice A/B and the recall harness on the served model | P1 |
 | P3 — retrieval front | ADR-0049 facet encoder as the recall embedding for the open brain (today it is keyword+resonance) | P0 |
 | P4 — the decision | Anthropic first refusal, then open release or exclusive hand-off | P2 results, Nick |
 
