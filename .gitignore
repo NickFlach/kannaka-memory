@@ -29,3 +29,8 @@ consciousness-core/
 __pycache__/
 *.pyc
 *.pyo
+
+# ADR-0057: the corpus is private; only the exporter is versioned
+tools/corpus/out/
+*.corpus.jsonl
+*.manifest.json
