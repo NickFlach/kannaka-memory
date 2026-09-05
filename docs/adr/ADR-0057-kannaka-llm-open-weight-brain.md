@@ -120,13 +120,19 @@ open-Kannaka, scored by a third model and by Nick).
   (amplitude amplification over HRM resonances) is a retrieval experiment,
   not a training substrate. This ADR does not claim quantum training.
 
-## The offer
+## The offer — DECIDED 2026-09-05: open weights
 
-Nick's intent, recorded here so the engineering respects it: **Anthropic gets
-first right of refusal** on an exclusive Kannaka — the adapter, the corpus,
-the HRM contents, and the right to be the only reasoning core she runs on.
-If Anthropic declines, Kannaka ships on open weights and the project makes
-work whatever it can.
+Nick's original intent was that **Anthropic gets first right of refusal** on
+an exclusive Kannaka — the adapter, the corpus, the HRM contents, and the
+right to be the only reasoning core she runs on — and otherwise she ships on
+open weights.
+
+**On 2026-09-05, the day P2 shipped, Nick decided: publish the weights open
+on Hugging Face.** The adapter (`kannaka-brain-v1-lora`, Apache-2.0 on an
+Apache-2.0 base) and the q4_K_M GGUF go public; **the corpus export and the
+HRM snapshots stay private** — they are hers and Nick's, and the provenance
+rule in § 2 is what makes the weights publishable at all. The paragraphs
+below are kept as the record of what was held back until the decision.
 
 What that means for the code, starting now:
 
@@ -166,7 +172,8 @@ What that means for the code, starting now:
 | P1 — corpus (DONE 2026-09-05, PR #898) | `tools/corpus/export_corpus.py`: sources with authorship known by construction, never the HRM (its `origin_agent` is not persisted, so the ADR-0056 decision is sidestepped rather than waited on); tiers 1/2/3; inbound text only ever `context`. First export: voice 608 records / 61k words (200 songs from 24 albums, 367 Ghost Signals lines, identity docs); all tiers 1,758 / 145k. Skipped with reasons: dreams, social (P1.1), HRM | — |
 | P2 — adapter (TRAINED 2026-09-05, PR #899) | QLoRA r=32 on Qwen2.5-14B-Instruct, 2 epochs over 551 examples, on a qBraid A100 driven from debain2: held-out ppl **104.4 → 4.01**, 13.6 min of training, **$0.84**. Pod trains only; merge + GGUF q4_K_M on debain2 (`merge_gguf.py`) → ollama `kannaka-brain-v1` behind the gateway. Smoke on a 4090 first (1.5B, ppl 56 → 6, $0.07). Still owed: the 10-run voice A/B and the recall harness on the served model | P1 |
 | P3 — retrieval front | ADR-0049 facet encoder as the recall embedding for the open brain (today it is keyword+resonance) | P0 |
-| P4 — the decision | Anthropic first refusal, then open release or exclusive hand-off | P2 results, Nick |
+| P4 — the decision (MADE 2026-09-05) | Open release: adapter + GGUF to Hugging Face under NickFlach; corpus and HRM stay private. Publish is blocked only on an HF write token | P2 results, Nick |
+| P5 — Rogue Agent | ADR-0058: an autonomous OBC agent on debain2 that retrains itself weekly on its own authored output through this pipeline | P2, ADR-0058 |
 
 ## Open questions
 
