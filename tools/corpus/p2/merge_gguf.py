@@ -32,6 +32,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quant", default="q4_K_M")
     ap.add_argument("--llama-cpp", default=str(Path.home() / "llama.cpp"))
     ap.add_argument("--keep-merged", action="store_true")
+    ap.add_argument("--purge-base-cache", action="store_true",
+                    help="delete the HF cache snapshot of --base after merging (disk: base 30G + merged 28G + f16 28G + q4 9G)")
     a = ap.parse_args(argv)
 
     import torch
@@ -57,6 +59,12 @@ def main(argv=None) -> int:
         AutoTokenizer.from_pretrained(a.adapter).save_pretrained(str(mdir))
         del merged, base
         log(f"merged -> {mdir}")
+        if a.purge_base_cache:
+            from huggingface_hub import scan_cache_dir
+            for repo in scan_cache_dir().repos:
+                if repo.repo_id == a.base:
+                    shutil.rmtree(repo.repo_path, ignore_errors=True)
+                    log(f"purged HF cache for {a.base} ({repo.size_on_disk / 1e9:.1f} GB)")
     else:
         log(f"merged dir exists, reusing {mdir}")
 
