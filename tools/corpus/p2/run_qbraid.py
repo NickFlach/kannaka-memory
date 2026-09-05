@@ -33,6 +33,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ALLOWED = {"gpu-rtx-4090": 0.87, "gpu-l40s": 2.28, "gpu-a100-sxm": 2.49, "gpu-h100-sxm": 5.37}  # $/h, single GPU only
+# Measured 2026-09-05: a $0.87/h profile bills 1.45 credits/min => 1 qBraid credit = $0.01.
+CREDIT_USD = 0.01
 REMOTE = "~/kannaka-p2"
 
 
@@ -82,29 +84,41 @@ def main(argv=None) -> int:
     from qbraid_core.services.compute import ComputeClient
     c = ComputeClient()
     bal = c.get_credits_balance()
-    log(f"credits before: {bal.get('qbraidCredits')}")
+    credits = float(bal.get("qbraidCredits") or 0)
+    log(f"credits before: {credits:.1f} (≈ ${credits * CREDIT_USD:.2f})")
+    if ceiling > credits * CREDIT_USD:
+        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ≈ ${credits * CREDIT_USD:.2f}")
+        return 4
 
-    # 1-2. provision + cutoff first
-    if a.instance:
-        inst = c.get_bma_instance(a.instance)
-        if str(inst.status).lower().endswith("stopped"):
-            inst = c.start_bma_instance(a.instance)
-    else:
-        inst = c.provision_bma_instance(a.profile)
-    iid = inst.id if hasattr(inst, "id") else inst["id"]
-    log(f"instance {iid} status={getattr(inst, 'status', '?')}")
-    try:
-        c.update_bma_cutoff(iid, auto_stop_idle_minutes=a.idle_minutes, max_session_minutes=a.max_minutes)
-        log(f"cutoff set: max {a.max_minutes} min, idle {a.idle_minutes} min")
-    except Exception as e:
-        log(f"cutoff FAILED ({e}); terminating rather than run ungated")
-        c.terminate_bma_instance(iid)
-        return 3
-    inst = c.wait_for_bma_instance(iid, timeout=900)
-    log(f"instance running: {getattr(inst, 'url', '')}")
+    iid = None
     started = time.time()
-
     try:
+        # 1-2. provision + cutoff first (inside try: the finally ALWAYS stops what we started)
+        if a.instance:
+            inst = c.get_bma_instance(a.instance)
+            iid = inst.instance_id
+            if "stopped" in str(inst.status).lower():
+                c.start_bma_instance(iid)
+        else:
+            inst = c.provision_bma_instance(a.profile)
+            iid = inst.instance_id
+        log(f"instance {iid} status={inst.status}")
+        try:
+            c.update_bma_cutoff(iid, auto_stop_idle_minutes=a.idle_minutes, max_session_minutes=a.max_minutes)
+        except Exception as e:
+            # the SDK can fail to PARSE a successful cutoff response; trust the server, verify below
+            log(f"cutoff call raised {type(e).__name__}; verifying")
+        chk = c.get_bma_instance(iid)
+        if int(chk.max_session_minutes or 0) != a.max_minutes:
+            log(f"cutoff NOT applied (max_session_minutes={chk.max_session_minutes}); terminating rather than run ungated")
+            c.terminate_bma_instance(iid)
+            iid = None
+            return 3
+        log(f"cutoff verified: max {chk.max_session_minutes} min, idle {chk.auto_stop_idle_minutes} min")
+        inst = c.wait_for_bma_instance(iid, timeout=900)
+        log(f"instance running: {inst.url}")
+        started = time.time()
+
         # 3. ssh + ship
         cfg = c.configure_ssh_for_instance(iid)
         alias = cfg.get("alias") or c.bma_ssh_alias(iid)
@@ -167,7 +181,14 @@ def main(argv=None) -> int:
             sh(["scp", "-q", "-r", "-o", "BatchMode=yes", f"{alias}:{REMOTE}/{item}", str(dest)], check=False)
         log(f"fetched to {dest}: {sorted(p.name for p in dest.iterdir())}")
     finally:
-        # 6. stop or terminate — always
+        # 6. stop or terminate — always (also on a crash before/while provisioning)
+        if iid is not None:
+            _wind_down(c, a, iid, rate, started, credits)
+    return 0
+
+
+def _wind_down(c, a, iid, rate, started, credits):
+    if True:
         try:
             if a.terminate:
                 c.terminate_bma_instance(iid)
@@ -180,10 +201,10 @@ def main(argv=None) -> int:
         mins = (time.time() - started) / 60
         try:
             bal2 = c.get_credits_balance()
-            log(f"session {mins:.1f} min ≈ ${rate * mins / 60:.2f}; credits after: {bal2.get('qbraidCredits')} (before {bal.get('qbraidCredits')})")
+            c2 = float(bal2.get("qbraidCredits") or 0)
+            log(f"session {mins:.1f} min ≈ ${rate * mins / 60:.2f}; credits {credits:.1f} -> {c2:.1f} (spent {credits - c2:.1f} ≈ ${(credits - c2) * CREDIT_USD:.2f})")
         except Exception:
             log(f"session {mins:.1f} min ≈ ${rate * mins / 60:.2f}")
-    return 0
 
 
 if __name__ == "__main__":

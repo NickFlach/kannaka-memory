@@ -86,9 +86,11 @@ open-Kannaka, scored by a third model and by Nick).
   `ssh.lab.qbraid.com`), on-demand **BMA instances** with a persistent disk
   (`provision_bma_instance`, `stop_bma_instance`, `update_bma_cutoff(
   auto_stop_idle_minutes, max_runtime)`), `get_usage()`, and
-  `get_credits_balance()`. Measured 2026-09-05: **1,143.9 qBraid credits**,
-  compute-hours quota **100/month, 0 used** (renews 2026-09-10), GPU
-  capacity available now. Hourly rates (Standard plan, capacity that day):
+  `get_credits_balance()`. Measured 2026-09-05: **1,143.9 qBraid credits —
+  and 1 credit = $0.01** (a $0.87/h instance bills 1.45 credits/min), so the
+  balance is **≈ $11.44**, not eleven hundred dollars. Compute-hours quota
+  **100/month, 0 used** (renews 2026-09-10), GPU capacity available now.
+  Hourly rates (Standard plan, capacity that day):
 
   | profile | GPU | $/h |
   |---|---|---|
@@ -107,8 +109,11 @@ open-Kannaka, scored by a third model and by Nick).
   80 GB with headroom; `gpu-rtx-4090` for smoke runs). Spend gate = the
   quantum bridge's pattern, mapped onto this API: opt-in flag, **4-hour
   `max_runtime` per run via `update_bma_cutoff` (≈ $10 on an A100)**,
-  `auto_stop_idle_minutes=15`, and a session-level ceiling of 20 credits
-  before anyone re-approves. Never a multi-GPU profile without Nick.
+  `auto_stop_idle_minutes=15`, and `run_qbraid.py` refuses a run whose
+  ceiling exceeds the balance. Never a multi-GPU profile without Nick.
+  **Budget reality:** one 4-hour A100 run (≈ 996 credits) would spend nearly
+  the whole current balance; a 2-hour run (≈ $5) leaves room for a retry.
+  Top up or shorten before the real run — Nick's call.
 - Serving is debain2 CPU until a GPU is in the lab (AE0RM). CPU is slow but
   it is *ours*; the gateway lets any machine fall back to `agent-brain`.
 - The quantum path stays what it is: `resonance_recall` on the free simulator
