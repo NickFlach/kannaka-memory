@@ -79,7 +79,7 @@ def main(argv=None) -> int:
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     cuda = torch.cuda.is_available() and not a.cpu_smoke
-    kw = {"torch_dtype": torch.bfloat16 if cuda else torch.float32}
+    kw = {"dtype": torch.bfloat16 if cuda else torch.float32}
     if a.qlora:
         from transformers import BitsAndBytesConfig
         kw["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
@@ -120,14 +120,26 @@ def main(argv=None) -> int:
     before = heldout_loss(model)
     log(f"holdout loss BEFORE={before:.4f} ppl={math.exp(before):.2f}")
 
-    cfg = SFTConfig(
+    # transformers/trl rename fields between releases (warmup_ratio -> warmup_steps,
+    # max_seq_length -> max_length, ...). Build the kwargs and keep only the ones
+    # THIS SFTConfig knows, so a pod that pip-installs "latest" cannot crash here.
+    import dataclasses
+    known = {f.name for f in dataclasses.fields(SFTConfig)}
+    steps_guess = a.max_steps if a.max_steps > 0 else max(1, int(len(train_rows) * a.epochs / (a.batch * a.grad_accum)))
+    want = dict(
         output_dir=str(out / "ckpt"), num_train_epochs=a.epochs, max_steps=a.max_steps,
         per_device_train_batch_size=a.batch, gradient_accumulation_steps=a.grad_accum,
-        learning_rate=a.lr, lr_scheduler_type="cosine", warmup_ratio=0.03, logging_steps=5,
-        save_strategy="epoch", bf16=cuda, fp16=False, gradient_checkpointing=cuda,
-        max_length=a.max_len, packing=False, report_to=[], seed=a.seed,
-        dataloader_pin_memory=cuda, use_cpu=not cuda,
+        learning_rate=a.lr, lr_scheduler_type="cosine", warmup_steps=max(1, int(0.03 * steps_guess)),
+        warmup_ratio=0.03, logging_steps=5, save_strategy="epoch", bf16=cuda, fp16=False,
+        gradient_checkpointing=cuda, max_length=a.max_len, max_seq_length=a.max_len, packing=False,
+        report_to=[], seed=a.seed, dataloader_pin_memory=cuda, use_cpu=not cuda,
     )
+    if "warmup_steps" in known:
+        want.pop("warmup_ratio", None)
+    dropped = sorted(k for k in want if k not in known)
+    cfg = SFTConfig(**{k: v for k, v in want.items() if k in known})
+    if dropped:
+        log(f"SFTConfig: ignored unknown fields {dropped}")
     trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds_train, processing_class=tok)
     t0 = time.time()
     trainer.train()
@@ -162,7 +174,7 @@ def main(argv=None) -> int:
 
     if a.merge:
         log("merging adapter into base (bf16)")
-        base = AutoModelForCausalLM.from_pretrained(a.base, torch_dtype=torch.bfloat16 if cuda else torch.float32,
+        base = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16 if cuda else torch.float32,
                                                     device_map={"": 0} if cuda else None)
         merged = PeftModel.from_pretrained(base, str(adapter)).merge_and_unload()
         mdir = out / "merged"

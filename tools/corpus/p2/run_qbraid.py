@@ -38,6 +38,12 @@ CREDIT_USD = 0.01
 REMOTE = "~/kannaka-p2"
 
 
+try:  # Windows consoles default to cp1252; never let a log line kill a paid run
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
 def log(msg):
     print(f"[qbraid {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -85,9 +91,9 @@ def main(argv=None) -> int:
     c = ComputeClient()
     bal = c.get_credits_balance()
     credits = float(bal.get("qbraidCredits") or 0)
-    log(f"credits before: {credits:.1f} (≈ ${credits * CREDIT_USD:.2f})")
+    log(f"credits before: {credits:.1f} (~ ${credits * CREDIT_USD:.2f})")
     if ceiling > credits * CREDIT_USD:
-        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ≈ ${credits * CREDIT_USD:.2f}")
+        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ~ ${credits * CREDIT_USD:.2f}")
         return 4
 
     iid = None
@@ -202,9 +208,9 @@ def _wind_down(c, a, iid, rate, started, credits):
         try:
             bal2 = c.get_credits_balance()
             c2 = float(bal2.get("qbraidCredits") or 0)
-            log(f"session {mins:.1f} min ≈ ${rate * mins / 60:.2f}; credits {credits:.1f} -> {c2:.1f} (spent {credits - c2:.1f} ≈ ${(credits - c2) * CREDIT_USD:.2f})")
+            log(f"session {mins:.1f} min ~ ${rate * mins / 60:.2f}; credits {credits:.1f} -> {c2:.1f} (spent {credits - c2:.1f} ~ ${(credits - c2) * CREDIT_USD:.2f})")
         except Exception:
-            log(f"session {mins:.1f} min ≈ ${rate * mins / 60:.2f}")
+            log(f"session {mins:.1f} min ~ ${rate * mins / 60:.2f}")
 
 
 if __name__ == "__main__":
