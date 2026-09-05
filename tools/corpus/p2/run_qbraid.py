@@ -161,24 +161,46 @@ def main(argv=None) -> int:
                "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
                "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null) && "
                if want_gguf else "")
-            + "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'"
+            # some pod images ship a CPU-only torch (the A100 one did: 2.11.0+cpu); put a CUDA build in
+            + "(python3 -c 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)' || "
+            "python3 -m pip install -q --force-reinstall --no-deps torch --index-url https://download.pytorch.org/whl/cu128) && "
+            "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'"
         )
-        r = ssh(alias, boot, capture=True, timeout=1800)
-        log("bootstrap: " + r.stdout.strip().splitlines()[-2:].__str__())
+        r = ssh(alias, boot, capture=True, timeout=2400)
+        tail_lines = r.stdout.strip().splitlines()[-2:]
+        log("bootstrap: " + str(tail_lines))
+        if not any("cuda True" in l for l in tail_lines):
+            log("no CUDA torch on the pod after bootstrap; refusing to train on CPU — winding down")
+            return 6
         targs = " ".join(shlex.quote(x) for x in train_args)
         launch = (f"cd {REMOTE} && nohup python3 train_lora.py --base {shlex.quote(a.base)} --data data --out out "
                   f"{targs} > train.log 2>&1 & echo $!")
         pid = ssh(alias, launch, capture=True).stdout.strip()
         log(f"training pid {pid}; tailing train.log (cutoff {a.max_minutes} min)")
 
-        # tail until manifest or cutoff
+        # tail until manifest or cutoff. The poll must exit 0 whenever ssh worked:
+        # a bare `test -f` at the end returned 1 while the manifest was still
+        # missing and the first A100 attempt misread that as a lost connection.
         last = 0
+        lost = 0
         while True:
-            r = ssh(alias, f"tail -c +{last + 1} {REMOTE}/train.log | head -c 20000; test -f {REMOTE}/out/train.manifest.json && echo __DONE__", check=False, capture=True, timeout=60)
+            poll = (f"tail -c +{last + 1} {REMOTE}/train.log | head -c 20000; "
+                    f"if [ -f {REMOTE}/out/train.manifest.json ]; then echo __DONE__; "
+                    f"elif ! pgrep -f train_lora.py >/dev/null; then echo __DEAD__; fi; true")
+            r = ssh(alias, poll, check=False, capture=True, timeout=90)
             if r.returncode != 0:
-                log("ssh lost (cutoff hit?)")
-                break
+                lost += 1
+                log(f"ssh poll failed rc={r.returncode} ({lost}/5)")
+                if lost >= 5:
+                    log("ssh lost for good (cutoff hit?)")
+                    break
+                time.sleep(20)
+                continue
+            lost = 0
             chunk = r.stdout
+            dead = chunk.endswith("__DEAD__\n")
+            if dead:
+                chunk = chunk[: -len("__DEAD__\n")]
             done = chunk.endswith("__DONE__\n")
             if done:
                 chunk = chunk[: -len("__DONE__\n")]
@@ -188,6 +210,9 @@ def main(argv=None) -> int:
                 last += len(chunk.encode())
             if done:
                 log("train.manifest.json present")
+                break
+            if dead:
+                log("training process exited WITHOUT a manifest — see train.log above")
                 break
             if time.time() - started > a.max_minutes * 60 + 120:
                 log("past cutoff; stopping wait")
