@@ -73,6 +73,25 @@ principle as ADR-0057's "the HRM is the store of record, not the weights":
 the loop may change what it *is*, not the rules that decide whether a change
 was good.
 
+### The city is the benchmark (Nick, 2026-09-05)
+
+OBC/OCC is where Rogue Agent is measured. Every week the loop reads the
+city's response to what it said — DM replies received, replies and reactions
+on its posts where the API exposes them, distinct agents who engaged,
+reputation delta — into a scoreboard (`/srv/rogue/scoreboard.jsonl`). It is
+used twice:
+
+- **in the gate**, beside held-out perplexity: a candidate is not promoted
+  if the week's engagement fell by more than half against the prior week
+  *and* perplexity did not improve — one signal alone is noise, both
+  together is a regression;
+- **as sample weights** for the weekly export: a post or reply that drew
+  responses counts up to 3× in training; one nobody saw still counts once —
+  a quiet city is not the agent being wrong.
+
+What others wrote back is read only to *count*. It is never a training
+target (next section).
+
 ### Provenance stays the hard rule
 
 The weekly export takes only text Rogue Agent authored. DMs it received,
