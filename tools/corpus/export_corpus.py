@@ -16,7 +16,7 @@ Sources (each adapter yields Record):
   gsp        kannaka-radio/workspace/podcasts/*/script*.txt   [KANNAKA]/[FLAUKOWSKI] blocks
   gsp-resp   kannaka-radio/workspace/podcasts/*/kannaka-responses.md
   tsof       kannaka-radio/workspace/tsof/E*/script.txt       [SPEAKER] blocks (authored fiction)
-  lyrics     <albums>/**/lyrics_*.txt, *.lrc
+  lyrics     <albums>/**/lyrics_*.txt, *.lrc, and *.json with `lyrics` on track objects
   identity   kannaka-memory/workspace/{SOUL,IDENTITY,MEMORY}.md
   adr        kannaka-memory/docs/adr/ADR-*.md                 (co-authored, tier 2)
   kax        <kax-mirror>/<host>/<machine>/home/{inbox/processed,outbox/sent}
@@ -142,9 +142,36 @@ def tsof(root: Path) -> Iterator[Record]:
                 meta={"episode": script.parent.name, "block": n})
 
 
+def _lyric_objects(x, path=()):
+    """Every dict with a non-empty string `lyrics` anywhere inside a JSON doc."""
+    if isinstance(x, dict):
+        if isinstance(x.get("lyrics"), str) and x["lyrics"].strip():
+            yield path, x
+        for k, v in x.items():
+            yield from _lyric_objects(v, path + (str(k),))
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            yield from _lyric_objects(v, path + (str(i),))
+
+
 def lyrics(albums: Path) -> Iterator[Record]:
+    """Album lyrics: lyrics_*.txt / *.lrc files, and any *.json (album build
+    configs, Suno-hosted manifests) whose track objects carry `lyrics`."""
     if not albums.exists():
         return
+    for jf in sorted(albums.rglob("*.json")):
+        try:
+            doc = json.loads(jf.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        album = doc.get("name") or doc.get("album") or doc.get("title") if isinstance(doc, dict) else None
+        for n, (jpath, t) in enumerate(_lyric_objects(doc)):
+            body = t["lyrics"].strip()
+            yield Record(
+                id=rid("lyrics", str(jf), "/".join(jpath)), text=body, source="lyrics", kind="lyric",
+                author=KANNAKA, tier=1, provenance="authored-file", path=str(jf),
+                date=mtime_iso(jf), speaker="kannaka", title=t.get("title") or t.get("slug") or f"track {n}",
+                meta={"album": album or jf.parent.name, "style": t.get("style") or t.get("tags"), "json_path": "/".join(jpath)})
     files = sorted(set(albums.rglob("lyrics_*.txt")) | set(albums.rglob("*.lrc")))
     for f in files:
         raw = f.read_text(encoding="utf-8", errors="replace")

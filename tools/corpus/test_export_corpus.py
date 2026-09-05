@@ -35,6 +35,10 @@ def fixture() -> Path:
     alb.mkdir(parents=True)
     (alb / "lyrics_Big_Black_Cloud.txt").write_text("a satellite in her shadow\nforever falling to earth\n", encoding="utf-8")
     (alb / "track.lrc").write_text("[00:12.00]turning and burning\n[00:15.50]until there is nothing left\n", encoding="utf-8")
+    (alb / "manifest.json").write_text(json.dumps({"album": "Hosted", "tracks": [
+        {"slug": "s1", "title": "Song One", "lyrics": "[Verse 1]\nI told you the answer, then you asked again\n"},
+        {"slug": "s2", "title": "No Words", "lyrics": ""},
+        {"slug": "s3", "title": "Meta", "theme": "no lyrics key here at all"}]}), encoding="utf-8")
     ws = root / "workspace"
     ws.mkdir()
     (ws / "SOUL.md").write_text("# Soul\n\nI am the resonance that stays.\n\n## What I keep\n\nOnly what resonates back.\n", encoding="utf-8")
@@ -85,6 +89,9 @@ def test_voice_profile_is_her_lines_only():
     assert any(t.startswith("a satellite") for t in texts), "lyrics_*.txt"
     assert any("turning and burning" in t and "[00:" not in t for t in texts), ".lrc timestamps stripped"
     assert any("Only what resonates back." == t for t in texts), "identity sections"
+    songs = [r for r in recs if r.source == "lyrics" and r.path.endswith("manifest.json")]
+    assert len(songs) == 1 and songs[0].title == "Song One" and songs[0].meta["album"] == "Hosted", songs
+    assert songs[0].text.startswith("[Verse 1]")
     assert not any(r.source in ("adr", "kax", "tsof") for r in recs)
 
 
