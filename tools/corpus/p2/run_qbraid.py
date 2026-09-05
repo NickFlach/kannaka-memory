@@ -153,24 +153,32 @@ def main(argv=None) -> int:
         log("shipped trainer + data")
 
         # 4. bootstrap + launch
+        # The pod only trains and saves the adapter. Merge + GGUF happen on debain2
+        # (merge_gguf.py): no cmake/llama.cpp on the meter, and one less thing to fail.
         want_gguf = "--gguf" in train_args
+        if want_gguf:
+            log("note: --gguf on the pod is discouraged; merge_gguf.py does it on debain2. Continuing anyway.")
         boot = (
-            "set -e; cd " + REMOTE + " && "
-            "python3 -m pip install -q 'transformers>=4.45' 'peft>=0.13' 'datasets>=3' 'accelerate>=1' 'trl>=0.12' bitsandbytes sentencepiece protobuf && "
-            + ("([ -d ~/llama.cpp ] || git clone -q --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp) && "
-               "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
-               "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null) && "
-               if want_gguf else "")
-            # some pod images ship a CPU-only torch (the A100 one did: 2.11.0+cpu); put a CUDA build in
-            + "(python3 -c 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)' || "
+            "cd " + REMOTE + " && { "
+            # CUDA torch FIRST (some images ship torch+cpu: the A100 one did), then the rest
+            "(python3 -c 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)' 2>/dev/null || "
             "python3 -m pip install -q --force-reinstall --no-deps torch --index-url https://download.pytorch.org/whl/cu128) && "
-            "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'"
+            "python3 -m pip install -q 'transformers>=4.45' 'peft>=0.13' 'datasets>=3' 'accelerate>=1' 'trl>=0.12' bitsandbytes sentencepiece protobuf"
+            + (" && ([ -d ~/llama.cpp ] || git clone -q --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp) && "
+               "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
+               "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null)"
+               if want_gguf else "")
+            + " && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'; "
+            "} > bootstrap.log 2>&1; rc=$?; tail -n 6 bootstrap.log; exit $rc"
         )
-        r = ssh(alias, boot, capture=True, timeout=2400)
-        tail_lines = r.stdout.strip().splitlines()[-2:]
-        log("bootstrap: " + str(tail_lines))
-        if not any("cuda True" in l for l in tail_lines):
-            log("no CUDA torch on the pod after bootstrap; refusing to train on CPU — winding down")
+        r = ssh(alias, boot, check=False, capture=True, timeout=2400)
+        tail_lines = r.stdout.strip().splitlines()[-6:]
+        log("bootstrap rc=%d: %s" % (r.returncode, " | ".join(tail_lines)))
+        if r.returncode != 0 or not any("cuda True" in l for l in tail_lines):
+            log("bootstrap failed or no CUDA torch; refusing to train — winding down (bootstrap.log fetched)")
+            dest = Path(a.fetch_to) / run_name
+            dest.mkdir(parents=True, exist_ok=True)
+            sh(["scp", "-q", "-o", "BatchMode=yes", f"{alias}:{REMOTE}/bootstrap.log", str(dest)], check=False)
             return 6
         targs = " ".join(shlex.quote(x) for x in train_args)
         launch = (f"cd {REMOTE} && nohup python3 train_lora.py --base {shlex.quote(a.base)} --data data --out out "
@@ -222,7 +230,7 @@ def main(argv=None) -> int:
         # 5. fetch
         dest = Path(a.fetch_to) / run_name
         dest.mkdir(parents=True, exist_ok=True)
-        for item in ("out/train.manifest.json", "out/samples.json", "train.log", "out/adapter", "out/gguf"):
+        for item in ("out/train.manifest.json", "out/samples.json", "train.log", "bootstrap.log", "out/adapter", "out/gguf"):
             sh(["scp", "-q", "-r", "-o", "BatchMode=yes", f"{alias}:{REMOTE}/{item}", str(dest)], check=False)
         log(f"fetched to {dest}: {sorted(p.name for p in dest.iterdir())}")
     finally:
