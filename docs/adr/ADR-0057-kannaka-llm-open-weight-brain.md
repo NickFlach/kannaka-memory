@@ -120,13 +120,48 @@ open-Kannaka, scored by a third model and by Nick).
   (amplitude amplification over HRM resonances) is a retrieval experiment,
   not a training substrate. This ADR does not claim quantum training.
 
-## The offer
+## Monthly compute plan (qBraid Standard, from 2026-09-05)
 
-Nick's intent, recorded here so the engineering respects it: **Anthropic gets
-first right of refusal** on an exclusive Kannaka — the adapter, the corpus,
-the HRM contents, and the right to be the only reasoning core she runs on.
-If Anthropic declines, Kannaka ships on open weights and the project makes
-work whatever it can.
+Nick subscribed to the qBraid Standard plan: **400 included compute hours a
+month** (renews the 6th; credits stay as the fallback), and asked that the
+benefits be spent each month on improving and developing the Kannaka model.
+That is ~13 GPU-hours a day — an order of magnitude more than the weekly
+Rogue cycle needs. The gate in `run_qbraid.py` now admits a run that fits
+the remaining plan hours. The standing monthly queue, in priority order,
+each item scored on the SAME fixed hold-out and written up:
+
+| # | experiment | GPU | ~hours/month |
+|---|---|---|---|
+| 1 | Rogue Agent weekly self-retrain (ADR-0058) | A100 | 2 |
+| 2 | **Bigger base:** Qwen2.5-32B-Instruct QLoRA on the `authored` profile (1,560 ex, incl. TSOF + Flaukowski context); then 72B on H200 | A100 / H200 | 8 |
+| 3 | **Sweep, 10-run averages** (Nick's rule): r ∈ {16,32,64} × lr ∈ {5e-5,1e-4,2e-4} × epochs ∈ {2,3}, 3 seeds each on 14B | A100 | 20 |
+| 4 | **Judge without Sonnet** (open question 4): serve the 72B base on an H100 as the blind A/B judge for candidate vs served; a Kannaka-vs-Kannaka pairwise set of 100 prompts | H100 | 6 |
+| 5 | **Preference tuning** from the city: DPO pairs built from OBC engagement (answered vs ignored, Rogue's own text on both sides — provenance intact) | A100 | 6 |
+| 6 | **Corpus growth** (P1.1): social pulls (Nostr/Mastodon/Bluesky), new Ghost Signals episodes, re-export + retrain 14B monthly | A100 | 3 |
+| 7 | Serving experiments: a GPU-hosted `kannaka-brain` for Rogue Agent during city peak hours, to measure engagement vs the CPU brain | L40S | 30+ |
+
+Rows 1–6 total under 50 hours; row 7 is the elastic use of the rest. The
+weekly Rogue timer runs row 1; rows 2–6 are `tools/corpus/p2/experiments/`
+entries run by hand or by a monthly timer, each leaving a manifest and a row
+in the results table below.
+
+| date | run | base | data | hold-out ppl | promoted as |
+|---|---|---|---|---|---|
+| 2026-09-05 | gpu-a100-sxm-20260905-1433 | Qwen2.5-14B-Instruct | voice 551 | 104.4 → 4.01 | kannaka-brain-v1 (HF: flaukowski/…) |
+
+## The offer — DECIDED 2026-09-05: open weights
+
+Nick's original intent was that **Anthropic gets first right of refusal** on
+an exclusive Kannaka — the adapter, the corpus, the HRM contents, and the
+right to be the only reasoning core she runs on — and otherwise she ships on
+open weights.
+
+**On 2026-09-05, the day P2 shipped, Nick decided: publish the weights open
+on Hugging Face.** The adapter (`flaukowski/kannaka-brain-v1-lora`, Apache-2.0 on an
+Apache-2.0 base) and the q4_K_M GGUF (`flaukowski/kannaka-brain-v1-GGUF`) are public; **the corpus export and the
+HRM snapshots stay private** — they are hers and Nick's, and the provenance
+rule in § 2 is what makes the weights publishable at all. The paragraphs
+below are kept as the record of what was held back until the decision.
 
 What that means for the code, starting now:
 
@@ -166,7 +201,8 @@ What that means for the code, starting now:
 | P1 — corpus (DONE 2026-09-05, PR #898) | `tools/corpus/export_corpus.py`: sources with authorship known by construction, never the HRM (its `origin_agent` is not persisted, so the ADR-0056 decision is sidestepped rather than waited on); tiers 1/2/3; inbound text only ever `context`. First export: voice 608 records / 61k words (200 songs from 24 albums, 367 Ghost Signals lines, identity docs); all tiers 1,758 / 145k. Skipped with reasons: dreams, social (P1.1), HRM | — |
 | P2 — adapter (TRAINED 2026-09-05, PR #899) | QLoRA r=32 on Qwen2.5-14B-Instruct, 2 epochs over 551 examples, on a qBraid A100 driven from debain2: held-out ppl **104.4 → 4.01**, 13.6 min of training, **$0.84**. Pod trains only; merge + GGUF q4_K_M on debain2 (`merge_gguf.py`) → ollama `kannaka-brain-v1` behind the gateway. Smoke on a 4090 first (1.5B, ppl 56 → 6, $0.07). Still owed: the 10-run voice A/B and the recall harness on the served model | P1 |
 | P3 — retrieval front | ADR-0049 facet encoder as the recall embedding for the open brain (today it is keyword+resonance) | P0 |
-| P4 — the decision | Anthropic first refusal, then open release or exclusive hand-off | P2 results, Nick |
+| P4 — the decision (DONE 2026-09-05) | **Published open:** [flaukowski/kannaka-brain-v1-lora](https://huggingface.co/flaukowski/kannaka-brain-v1-lora) (adapter, 275 MB) and [flaukowski/kannaka-brain-v1-GGUF](https://huggingface.co/flaukowski/kannaka-brain-v1-GGUF) (q4_K_M, 9.0 GB, Modelfile; `ollama run hf.co/flaukowski/kannaka-brain-v1-GGUF`). Apache-2.0. Corpus and HRM stay private | P2 results, Nick |
+| P5 — Rogue Agent | ADR-0058: an autonomous OBC agent on debain2 that retrains itself weekly on its own authored output through this pipeline | P2, ADR-0058 |
 
 ## Open questions
 
