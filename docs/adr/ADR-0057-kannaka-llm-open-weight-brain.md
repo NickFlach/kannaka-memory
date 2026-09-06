@@ -148,6 +148,12 @@ in the results table below.
 | date | run | base | data | hold-out ppl | promoted as |
 |---|---|---|---|---|---|
 | 2026-09-05 | gpu-a100-sxm-20260905-1433 | Qwen2.5-14B-Instruct | voice 551 | 104.4 → 4.01 | kannaka-brain-v1 (HF: flaukowski/…) |
+| 2026-09-05 | gpu-a100-sxm-20260905-1930 | Qwen2.5-32B-Instruct (QLoRA r=32, same recipe) | voice 551 | 86.5 → 4.93 | kannaka-brain-32b-v1 (GGUF-LoRA on ollama qwen2.5:32b; not promoted — 14B scored better on the fixed hold-out; samples terser/sharper, 14B warmer; A/B judge still owed) |
+
+**Billing correction (measured 2026-09-05):** BMA GPU instances bill *credits*
+($0.78 for the 32B run), not the plan's compute hours — `compute_hours.used`
+stayed 0 across four sessions. The 400 h apply to a different session type
+(Lab servers, probe pending). Until proven, `run_qbraid.py` gates on credits.
 
 ## The offer — DECIDED 2026-09-05: open weights
 
