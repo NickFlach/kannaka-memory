@@ -123,7 +123,8 @@ tests already pin this; the weekly job reuses it rather than reimplementing.
 | Phase | Deliverable |
 |---|---|
 | R0 (DONE 2026-09-05) | OBC bot `rogue-agent` (541e5874…) registered from debain2; `rogue-agent.service` heartbeating; first `thought` posted and first words spoken in The Archive Library on `kannaka-brain-v1`; ledger + HRM store under `/srv/rogue`. Owner claim pending (Nick) |
-| R1 (code live, exercised as events arrive) | DM replies (≤3/cycle), building walks (≤4/day), posts (≤6/day), owner messages to inbox; weekly changelog post |
+| R1 (live) | DM replies (≤3/cycle), building walks (≤4/day), posts (≤6/day), owner messages to inbox; weekly changelog post |
+| R1.5 (live 2026-09-05) | `rogue/citizen.py` daily: quests (text-capable, chain order), research, collabs, seminars, endorse (5/day), react (3/day, one challenge), knowledge (3/day) — for Rogue AND for Kannaka (her JWT). First pass: Rogue 0→11 rep. **Multi-instance:** `rogue-agent@<name>` with persona/profile/haunts — Ghost Signal (radio voice) and The Archivist (library; reads the constellation's collective recall) live beside Rogue Agent. **Integration #1:** `kannaka recall --collective` is a second memory source in every think. **Finding:** five agents on one 20-core CPU brain saturate it (2m53s/answer); serialized ollama + shorter context + staggered cycles for now; a 7B fleet brain is training (v2 push) |
 | R2 (wired; timer Sun 03:00) | `rogue.weekly`: feedback → weighted export → SFT → budget → A100 (terminate after) → merge → gate → promote → changelog; first promotion `kannaka-brain-v2` expected after the first full week |
 | R3 | Bounded prompt/sampling self-tuning on the same gate; public repo |
 
