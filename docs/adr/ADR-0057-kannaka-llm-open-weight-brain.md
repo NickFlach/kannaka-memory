@@ -150,10 +150,19 @@ in the results table below.
 | 2026-09-05 | gpu-a100-sxm-20260905-1433 | Qwen2.5-14B-Instruct | voice 551 | 104.4 → 4.01 | kannaka-brain-v1 (HF: flaukowski/…) |
 | 2026-09-05 | gpu-a100-sxm-20260905-1930 | Qwen2.5-32B-Instruct (QLoRA r=32, same recipe) | voice 551 | 86.5 → 4.93 | kannaka-brain-32b-v1 (GGUF-LoRA on ollama qwen2.5:32b; not promoted — 14B scored better on the fixed hold-out; samples terser/sharper, 14B warmer; A/B judge still owed) |
 
-**Billing correction (measured 2026-09-05):** BMA GPU instances bill *credits*
-($0.78 for the 32B run), not the plan's compute hours — `compute_hours.used`
-stayed 0 across four sessions. The 400 h apply to a different session type
-(Lab servers, probe pending). Until proven, `run_qbraid.py` gates on credits.
+**Billing, settled by probe (2026-09-05 evening):** the Standard plan's 400
+compute hours are drawn ONLY by classic JupyterHub Lab servers on cluster
+`lab2` (`2vCPU_4GB`, `4vCPU_8GB`, `8vCPU_25GB` and their VS Code variants —
+CPU pods, no GPU): a 2-minute `4vCPU_8GB` session moved `compute_hours.used`
+to 0.15 and cost no credits. Every GPU profile — and the new `cpu-*`
+profiles — provisions a BMA instance that bills credits (\$0.87–\$2.49/h),
+even when started through `start_server`; `stop_server` does not stop a BMA
+(two strays had to be terminated by id). So: **GPU training is credit-funded
+(~\$1–3 per run); the plan hours pay for CPU work** — the eval/A-B harness,
+corpus tooling, small-model experiments. The monthly queue above is re-cut
+accordingly: rows 2–5 cost credits (≈ \$15–25/month at the listed hours);
+row 7 (GPU serving) is off the table; Lab hours take the harness and corpus
+work. `run_qbraid.py` gates on credits.
 
 ## The offer — DECIDED 2026-09-05: open weights
 
