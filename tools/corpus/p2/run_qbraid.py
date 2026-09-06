@@ -111,11 +111,12 @@ def main(argv=None) -> int:
     except Exception as e:
         log(f"plan hours unknown ({type(e).__name__})")
     log(f"credits before: {credits:.1f} (~ ${credits * CREDIT_USD:.2f})")
-    run_hours = a.max_minutes / 60
-    if plan_hours >= run_hours:
-        log(f"budget: {run_hours:.1f} h fits the plan's {plan_hours:.1f} remaining hours")
-    elif ceiling > credits * CREDIT_USD:
-        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ~ ${credits * CREDIT_USD:.2f} and plan hours are short")
+    # Measured 2026-09-05: BMA instances bill CREDITS, not the Standard plan's compute
+    # hours (compute_hours.used stayed 0 across four GPU sessions). Until a session
+    # type that draws plan hours is proven, the plan figure is informational and the
+    # credit ceiling is the gate.
+    if ceiling > credits * CREDIT_USD:
+        log(f"refusing: ceiling ${ceiling:.2f} exceeds the credit balance ~ ${credits * CREDIT_USD:.2f} (BMA bills credits; plan hours do not apply)")
         return 4
 
     iid = None
