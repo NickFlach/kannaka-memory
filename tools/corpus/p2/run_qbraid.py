@@ -166,11 +166,10 @@ def main(argv=None) -> int:
         log("shipped trainer + data")
 
         # 4. bootstrap + launch
-        # The pod only trains and saves the adapter. Merge + GGUF happen on debain2
-        # (merge_gguf.py): no cmake/llama.cpp on the meter, and one less thing to fail.
+        # With --merge --gguf the pod also merges + quantizes (train_lora.py). A 14B merge
+        # needs ~3x the model in free disk, which debain2's 112 GB disk does not have (the
+        # 2026-09-06 weekly died there); only the q4 (9 GB) comes back over scp.
         want_gguf = "--gguf" in train_args
-        if want_gguf:
-            log("note: --gguf on the pod is discouraged; merge_gguf.py does it on debain2. Continuing anyway.")
         boot = (
             "cd " + REMOTE + " && { "
             # CUDA torch FIRST (some images ship torch+cpu: the A100 one did), then the rest
@@ -178,7 +177,9 @@ def main(argv=None) -> int:
             "python3 -m pip install -q --force-reinstall --no-deps torch --index-url https://download.pytorch.org/whl/cu128) && "
             "python3 -m pip install -q 'transformers>=4.45' 'peft>=0.13' 'datasets>=3' 'accelerate>=1' 'trl>=0.12' bitsandbytes sentencepiece protobuf"
             + (" && ([ -d ~/llama.cpp ] || git clone -q --depth 1 https://github.com/ggml-org/llama.cpp ~/llama.cpp) && "
-               "python3 -m pip install -q -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt && "
+               # NOT llama.cpp's requirements file: it pins a CPU torch and undoes the CUDA install above.
+               # convert_hf_to_gguf.py puts its own gguf-py on sys.path; sentencepiece is already installed.
+               "(command -v cmake >/dev/null || python3 -m pip install -q cmake) && "
                "(cd ~/llama.cpp && cmake -B build -DGGML_CUDA=OFF -DLLAMA_CURL=OFF >/dev/null && cmake --build build --target llama-quantize -j >/dev/null)"
                if want_gguf else "")
             + " && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python3 -c 'import torch;print(\"torch\",torch.__version__,\"cuda\",torch.cuda.is_available())'; "
@@ -195,7 +196,7 @@ def main(argv=None) -> int:
             return 6
         targs = " ".join(shlex.quote(x) for x in train_args)
         launch = (f"cd {REMOTE} && nohup python3 train_lora.py --base {shlex.quote(a.base)} --data data --out out "
-                  f"{targs} > train.log 2>&1 & echo $!")
+                  f"{targs} > train.log 2>&1 < /dev/null & echo $!")  # stdin closed, else ssh waits for the trainer to exit
         pid = ssh(alias, launch, capture=True).stdout.strip()
         log(f"training pid {pid}; tailing train.log (cutoff {a.max_minutes} min)")
 
