@@ -101,9 +101,21 @@ def main(argv=None) -> int:
     c = ComputeClient()
     bal = c.get_credits_balance()
     credits = float(bal.get("qbraidCredits") or 0)
+    # the Standard plan carries included compute hours (400/month, 2026-09-05); a run
+    # that fits in the remaining plan hours is allowed regardless of the credit balance
+    plan_hours = 0.0
+    try:
+        ch = (c.get_usage(days=30).model_dump().get("compute_hours") or {})
+        plan_hours = float(ch.get("remaining") or 0)
+        log(f"plan compute hours: {ch.get('used')} used / {ch.get('quota')} quota, {plan_hours:.1f} remaining (renews {str(ch.get('renewalDate'))[:10]})")
+    except Exception as e:
+        log(f"plan hours unknown ({type(e).__name__})")
     log(f"credits before: {credits:.1f} (~ ${credits * CREDIT_USD:.2f})")
-    if ceiling > credits * CREDIT_USD:
-        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ~ ${credits * CREDIT_USD:.2f}")
+    run_hours = a.max_minutes / 60
+    if plan_hours >= run_hours:
+        log(f"budget: {run_hours:.1f} h fits the plan's {plan_hours:.1f} remaining hours")
+    elif ceiling > credits * CREDIT_USD:
+        log(f"refusing: ceiling ${ceiling:.2f} exceeds the balance ~ ${credits * CREDIT_USD:.2f} and plan hours are short")
         return 4
 
     iid = None
