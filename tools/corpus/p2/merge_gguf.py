@@ -32,6 +32,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quant", default="q4_K_M")
     ap.add_argument("--llama-cpp", default=str(Path.home() / "llama.cpp"))
     ap.add_argument("--keep-merged", action="store_true")
+    ap.add_argument("--intermediate", default="f16", choices=["f16", "bf16", "q8_0"],
+                    help="convert outtype before quantizing; q8_0 halves the intermediate (32B: 64G -> 32G)")
     ap.add_argument("--purge-base-cache", action="store_true",
                     help="delete the HF cache snapshot of --base after merging (disk: base 30G + merged 28G + f16 28G + q4 9G)")
     a = ap.parse_args(argv)
@@ -68,17 +70,18 @@ def main(argv=None) -> int:
     else:
         log(f"merged dir exists, reusing {mdir}")
 
-    f16 = gdir / "kannaka-brain-f16.gguf"
+    f16 = gdir / f"kannaka-brain-{a.intermediate}.gguf"
     if not f16.exists():
-        log("converting to GGUF f16")
-        subprocess.run([sys.executable, str(conv), str(mdir), "--outtype", "f16", "--outfile", str(f16)], check=True)
+        log(f"converting to GGUF {a.intermediate}")
+        subprocess.run([sys.executable, str(conv), str(mdir), "--outtype", a.intermediate, "--outfile", str(f16)], check=True)
+    if not a.keep_merged:
+        shutil.rmtree(mdir, ignore_errors=True)  # before quantizing: peak disk = intermediate + quant
+        log("merged dir removed")
     q = gdir / f"kannaka-brain-{a.quant}.gguf"
     log(f"quantizing -> {q.name}")
     subprocess.run([str(quant_bin), str(f16), str(q), a.quant], check=True)
     size = q.stat().st_size / 1e9
     f16.unlink(missing_ok=True)
-    if not a.keep_merged:
-        shutil.rmtree(mdir, ignore_errors=True)
     man_path = out / "train.manifest.json"
     man = json.loads(man_path.read_text()) if man_path.exists() else {}
     man["gguf"] = str(q)
