@@ -79,7 +79,12 @@ def main(argv=None) -> int:
         log("merged dir removed")
     q = gdir / f"kannaka-brain-{a.quant}.gguf"
     log(f"quantizing -> {q.name}")
-    subprocess.run([str(quant_bin), str(f16), str(q), a.quant], check=True)
+    cmd = [str(quant_bin)]
+    if a.intermediate not in ("f16", "bf16"):
+        cmd.append("--allow-requantize")  # llama-quantize refuses a q8_0 source otherwise (and writes a 6 MB stub)
+    subprocess.run(cmd + [str(f16), str(q), a.quant], check=True)
+    if q.stat().st_size < 100_000_000:
+        raise RuntimeError(f"quantized output is suspiciously small ({q.stat().st_size} bytes)")
     size = q.stat().st_size / 1e9
     f16.unlink(missing_ok=True)
     man_path = out / "train.manifest.json"
