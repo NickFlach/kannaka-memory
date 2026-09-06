@@ -189,21 +189,39 @@ def main(argv=None) -> int:
             else:
                 gdir = out / "gguf"
                 gdir.mkdir(exist_ok=True)
-                f16 = gdir / "kannaka-brain-f16.gguf"
-                subprocess.run([sys.executable, str(conv), str(mdir), "--outtype", "f16", "--outfile", str(f16)], check=True)
-                q = gdir / f"kannaka-brain-{a.gguf}.gguf"
+                import shutil as _sh
+                # Disk hygiene on the pod (the 2026-09-06 weekly died merging on debain2's full disk):
+                # the base cache goes as soon as the merge is saved, the intermediate is q8_0 (half of
+                # f16) and the merged dir goes before quantizing -- peak = merged + q8 instead of
+                # cache + merged + f16. The q4 that comes back is the only copy that matters.
+                del base, merged
+                if cuda:
+                    torch.cuda.empty_cache()
+                try:
+                    from huggingface_hub import scan_cache_dir
+                    for repo in scan_cache_dir().repos:
+                        if repo.repo_id == a.base:
+                            _sh.rmtree(repo.repo_path, ignore_errors=True)
+                            log(f"purged base cache {repo.repo_path}")
+                except Exception as e:  # best effort; the pod is ephemeral anyway
+                    log(f"base cache purge skipped: {e}")
                 quant = next((p for p in (lc / "build" / "bin" / "llama-quantize", lc / "llama-quantize") if p.exists()), None)
-                if quant and a.gguf.lower() not in ("f16",):
-                    subprocess.run([str(quant), str(f16), str(q), a.gguf], check=True)
-                    manifest["gguf"] = str(q)
-                    # disk hygiene: a 14B run holds HF cache + bf16 merge + f16 + q4 at once
-                    f16.unlink(missing_ok=True)
-                    import shutil as _sh
+                q = gdir / f"kannaka-brain-{a.gguf}.gguf"
+                if quant and a.gguf.lower() not in ("f16", "q8_0"):
+                    inter = gdir / "kannaka-brain-q8_0.gguf"
+                    subprocess.run([sys.executable, str(conv), str(mdir), "--outtype", "q8_0", "--outfile", str(inter)], check=True)
                     _sh.rmtree(mdir, ignore_errors=True)
-                    manifest["merged"] = "removed after gguf"
-                    log(f"gguf {q.name} written ({q.stat().st_size / 1e9:.1f} GB); f16 + merged dir removed")
+                    manifest["merged"] = "removed before quantize"
+                    subprocess.run([str(quant), "--allow-requantize", str(inter), str(q), a.gguf], check=True)
+                    if q.stat().st_size < 100_000_000:
+                        raise RuntimeError(f"quantized output is suspiciously small ({q.stat().st_size} bytes)")
+                    inter.unlink(missing_ok=True)
+                    manifest["gguf"] = str(q)
+                    log(f"gguf {q.name} written ({q.stat().st_size / 1e9:.1f} GB); q8_0 + merged dir removed")
                 else:
-                    manifest["gguf"] = str(f16)
+                    outtype = "q8_0" if a.gguf.lower() == "q8_0" else "f16"
+                    subprocess.run([sys.executable, str(conv), str(mdir), "--outtype", outtype, "--outfile", str(q)], check=True)
+                    manifest["gguf"] = str(q)
     (out / "train.manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     log(f"done: {json.dumps({k: manifest[k] for k in ('holdout_ppl', 'seconds', 'adapter')})}")
     return 0
