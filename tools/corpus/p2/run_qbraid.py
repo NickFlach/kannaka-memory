@@ -196,7 +196,7 @@ def main(argv=None) -> int:
             return 6
         targs = " ".join(shlex.quote(x) for x in train_args)
         launch = (f"cd {REMOTE} && nohup python3 train_lora.py --base {shlex.quote(a.base)} --data data --out out "
-                  f"{targs} > train.log 2>&1 & echo $!")
+                  f"{targs} > train.log 2>&1 < /dev/null & echo $!")  # stdin closed, else ssh waits for the trainer to exit
         pid = ssh(alias, launch, capture=True).stdout.strip()
         log(f"training pid {pid}; tailing train.log (cutoff {a.max_minutes} min)")
 
