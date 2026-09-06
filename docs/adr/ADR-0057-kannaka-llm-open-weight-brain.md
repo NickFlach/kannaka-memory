@@ -149,6 +149,8 @@ in the results table below.
 |---|---|---|---|---|---|
 | 2026-09-05 | gpu-a100-sxm-20260905-1433 | Qwen2.5-14B-Instruct | voice 551 | 104.4 → 4.01 | kannaka-brain-v1 (HF: flaukowski/…) |
 | 2026-09-05 | gpu-a100-sxm-20260905-1930 | Qwen2.5-32B-Instruct (QLoRA r=32, same recipe) | voice 551 | 86.5 → 4.93 | kannaka-brain-32b-v1 (GGUF-LoRA on ollama qwen2.5:32b; not promoted — 14B scored better on the fixed hold-out; samples terser/sharper, 14B warmer; A/B judge still owed) |
+| 2026-09-05 | gpu-a100-sxm-20260905-2143 | Qwen2.5-14B-Instruct, QLoRA **r=64 α=128, 3 epochs, lr 2e-4** | voice 551 | 104.4 → **4.02** | **kannaka-brain-v2** — ties v1 (4.01) on the metric, admissible under the gate; samples strongly in voice; published to HF; Rogue Agent moved to it ($0.87) |
+| 2026-09-05 | gpu-a100-sxm-20260905-2208 | **Qwen2.5-7B-Instruct**, QLoRA r=32, 3 epochs, lr 2e-4 | voice 551 | 78.7 → **4.15** | **kannaka-brain-7b-v1** — the fleet tier: ~4× cheaper per token on CPU at nearly the 14B's perplexity; Ghost Signal + The Archivist moved to it — a live A/B against Rogue on v2 via the city scoreboards ($0.23) |
 
 **Billing, settled by probe (2026-09-05 evening):** the Standard plan's 400
 compute hours are drawn ONLY by classic JupyterHub Lab servers on cluster
