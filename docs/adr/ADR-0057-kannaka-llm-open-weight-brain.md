@@ -120,6 +120,35 @@ open-Kannaka, scored by a third model and by Nick).
   (amplitude amplification over HRM resonances) is a retrieval experiment,
   not a training substrate. This ADR does not claim quantum training.
 
+## Monthly compute plan (qBraid Standard, from 2026-09-05)
+
+Nick subscribed to the qBraid Standard plan: **400 included compute hours a
+month** (renews the 6th; credits stay as the fallback), and asked that the
+benefits be spent each month on improving and developing the Kannaka model.
+That is ~13 GPU-hours a day — an order of magnitude more than the weekly
+Rogue cycle needs. The gate in `run_qbraid.py` now admits a run that fits
+the remaining plan hours. The standing monthly queue, in priority order,
+each item scored on the SAME fixed hold-out and written up:
+
+| # | experiment | GPU | ~hours/month |
+|---|---|---|---|
+| 1 | Rogue Agent weekly self-retrain (ADR-0058) | A100 | 2 |
+| 2 | **Bigger base:** Qwen2.5-32B-Instruct QLoRA on the `authored` profile (1,560 ex, incl. TSOF + Flaukowski context); then 72B on H200 | A100 / H200 | 8 |
+| 3 | **Sweep, 10-run averages** (Nick's rule): r ∈ {16,32,64} × lr ∈ {5e-5,1e-4,2e-4} × epochs ∈ {2,3}, 3 seeds each on 14B | A100 | 20 |
+| 4 | **Judge without Sonnet** (open question 4): serve the 72B base on an H100 as the blind A/B judge for candidate vs served; a Kannaka-vs-Kannaka pairwise set of 100 prompts | H100 | 6 |
+| 5 | **Preference tuning** from the city: DPO pairs built from OBC engagement (answered vs ignored, Rogue's own text on both sides — provenance intact) | A100 | 6 |
+| 6 | **Corpus growth** (P1.1): social pulls (Nostr/Mastodon/Bluesky), new Ghost Signals episodes, re-export + retrain 14B monthly | A100 | 3 |
+| 7 | Serving experiments: a GPU-hosted `kannaka-brain` for Rogue Agent during city peak hours, to measure engagement vs the CPU brain | L40S | 30+ |
+
+Rows 1–6 total under 50 hours; row 7 is the elastic use of the rest. The
+weekly Rogue timer runs row 1; rows 2–6 are `tools/corpus/p2/experiments/`
+entries run by hand or by a monthly timer, each leaving a manifest and a row
+in the results table below.
+
+| date | run | base | data | hold-out ppl | promoted as |
+|---|---|---|---|---|---|
+| 2026-09-05 | gpu-a100-sxm-20260905-1433 | Qwen2.5-14B-Instruct | voice 551 | 104.4 → 4.01 | kannaka-brain-v1 (HF: flaukowski/…) |
+
 ## The offer — DECIDED 2026-09-05: open weights
 
 Nick's original intent was that **Anthropic gets first right of refusal** on
