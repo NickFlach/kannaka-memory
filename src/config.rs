@@ -6213,35 +6213,51 @@ id = \"from-config\"
         }
     }
 
+    /// A Unix-style absolute path, made absolute on this platform too.
+    ///
+    /// On Windows `/scratch/copy` has a root but no drive, so `is_absolute()`
+    /// is false and `resolve_hrm_path` takes its RELATIVE branch. Three of
+    /// these tests then failed, and two passed only because `Path::join` with
+    /// a rooted argument returns the argument, which happened to be the
+    /// expected string. `C:` plus backslashes puts every case on the branch
+    /// its test is named for.
+    fn abs(unix: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{}", unix.replace('/', "\\"))
+        } else {
+            unix.to_string()
+        }
+    }
+
     #[test]
     fn hrm_path_outside_an_explicit_data_dir_resolves_inside_it() {
         let r = resolve_hrm_path(
-            "/home/opc/.kannaka/kannaka.hrm",
-            Path::new("/scratch/copy"),
+            &abs("/home/opc/.kannaka/kannaka.hrm"),
+            Path::new(&abs("/scratch/copy")),
             true,
             false,
         );
-        assert_eq!(r.path, "/scratch/copy/kannaka.hrm");
+        assert_eq!(r.path, abs("/scratch/copy/kannaka.hrm"));
         assert_eq!(
             r.overridden_from.as_deref(),
-            Some("/home/opc/.kannaka/kannaka.hrm")
+            Some(abs("/home/opc/.kannaka/kannaka.hrm").as_str())
         );
         // Only the file name travels, not the original directory layout.
         let r = resolve_hrm_path(
-            "/srv/deep/nested/custom.hrm",
-            Path::new("/scratch/copy"),
+            &abs("/srv/deep/nested/custom.hrm"),
+            Path::new(&abs("/scratch/copy")),
             true,
             false,
         );
-        assert_eq!(r.path, "/scratch/copy/custom.hrm");
+        assert_eq!(r.path, abs("/scratch/copy/custom.hrm"));
         // `..` cannot smuggle a path out lexically.
         let r = resolve_hrm_path(
-            "/scratch/copy/../live/kannaka.hrm",
-            Path::new("/scratch/copy"),
+            &abs("/scratch/copy/../live/kannaka.hrm"),
+            Path::new(&abs("/scratch/copy")),
             true,
             false,
         );
-        assert_eq!(r.path, "/scratch/copy/kannaka.hrm");
+        assert_eq!(r.path, abs("/scratch/copy/kannaka.hrm"));
         assert!(r.overridden_from.is_some());
     }
 
@@ -6252,11 +6268,12 @@ id = \"from-config\"
             "/scratch/copy/nested/custom.hrm",
             "/scratch/copy/./kannaka.hrm",
         ] {
-            let r = resolve_hrm_path(p, Path::new("/scratch/copy"), true, false);
+            let p = abs(p);
+            let r = resolve_hrm_path(&p, Path::new(&abs("/scratch/copy")), true, false);
             assert_eq!(
                 r,
                 HrmPathResolution {
-                    path: p.to_string(),
+                    path: p.clone(),
                     overridden_from: None
                 },
                 "{p}"
@@ -6267,12 +6284,12 @@ id = \"from-config\"
     #[test]
     fn hrm_path_without_kannaka_data_dir_is_unchanged() {
         let r = resolve_hrm_path(
-            "/var/oled/kannaka/kannaka.hrm",
-            Path::new("/home/u/.kannaka"),
+            &abs("/var/oled/kannaka/kannaka.hrm"),
+            Path::new(&abs("/home/u/.kannaka")),
             false,
             false,
         );
-        assert_eq!(r.path, "/var/oled/kannaka/kannaka.hrm");
+        assert_eq!(r.path, abs("/var/oled/kannaka/kannaka.hrm"));
         assert!(r.overridden_from.is_none());
         assert_eq!(resolve_hrm_path("", Path::new("/d"), true, false).path, "");
     }
@@ -6280,11 +6297,13 @@ id = \"from-config\"
     #[test]
     fn relative_hrm_path_resolves_against_the_data_dir() {
         for explicit in [true, false] {
-            let r = resolve_hrm_path("kannaka.hrm", Path::new("/d"), explicit, false);
-            assert_eq!(r.path, "/d/kannaka.hrm");
+            let r = resolve_hrm_path("kannaka.hrm", Path::new(&abs("/d")), explicit, false);
+            assert_eq!(r.path, abs("/d/kannaka.hrm"));
             assert!(r.overridden_from.is_none());
-            let r = resolve_hrm_path("sub/custom.hrm", Path::new("/d"), explicit, false);
-            assert_eq!(r.path, "/d/sub/custom.hrm");
+            // Compared as paths: the join keeps the input's `/` after the
+            // data dir, which is a valid separator on Windows too.
+            let r = resolve_hrm_path("sub/custom.hrm", Path::new(&abs("/d")), explicit, false);
+            assert_eq!(Path::new(&r.path), Path::new(&abs("/d/sub/custom.hrm")));
         }
     }
 
@@ -6379,9 +6398,13 @@ id = \"from-config\"
         let _allow = AllowExternalGuard(std::env::var(ALLOW_EXTERNAL_HRM_ENV).ok());
         std::env::remove_var(ALLOW_EXTERNAL_HRM_ENV);
         let b = temp_data_dir("1067-unmod");
+        // A TOML literal string, so a Windows path's backslashes are not escapes.
         std::fs::write(
             b.join("config.toml"),
-            "[agent]\nid = \"t1067\"\n\n[hrm]\npath = \"/elsewhere/kannaka.hrm\"\n",
+            format!(
+                "[agent]\nid = \"t1067\"\n\n[hrm]\npath = '{}'\n",
+                abs("/elsewhere/kannaka.hrm")
+            ),
         )
         .unwrap();
         std::env::set_var("KANNAKA_DATA_DIR", &b);
@@ -6391,7 +6414,7 @@ id = \"from-config\"
         );
         assert_eq!(
             KannakaConfig::load_unmodified().hrm.path,
-            "/elsewhere/kannaka.hrm"
+            abs("/elsewhere/kannaka.hrm")
         );
         let _ = std::fs::remove_dir_all(&b);
     }
