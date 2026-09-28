@@ -279,6 +279,8 @@ impl std::fmt::Display for NatsError {
             Self::Serialize(msg) => write!(f, "NATS serialize: {msg}"),
             Self::Disconnected(msg) => write!(f, "NATS disconnected: {msg}"),
             Self::KvNotFound(key) => write!(f, "NATS KV key not found: {key}"),
+            // Load-bearing wording: callers holding only a String (the
+            // remember sink) detect this variant by DENIED_AGAIN_SUFFIX.
             Self::DeniedAgain(subject) => write!(
                 f,
                 "NATS publish to \"{subject}\" not sent: the broker refused it earlier in this process {DENIED_AGAIN_SUFFIX}"
@@ -554,6 +556,31 @@ fn record_event_verdict(key: &str, verdict: EventVerdict) -> bool {
     }
     map.insert(key.to_string(), verdict);
     true
+}
+
+/// When each key's last probe went without a verdict (could not connect, or
+/// the PING went unanswered). Until [`EVENT_PROBE_RETRY`] has passed, events on
+/// that key take `publish_raw` instead of dialling again. Without this, an
+/// outage that refuses new connections made every memory write wait out a
+/// fresh connect timeout (up to DEFAULT_IO_TIMEOUT each). Review of #1072.
+static EVENT_PROBE_FAILED_AT: std::sync::OnceLock<Mutex<HashMap<String, Instant>>> =
+    std::sync::OnceLock::new();
+
+/// Minimum spacing between unanswered probes on one key. Same window as
+/// `try_revive_locked`'s redials.
+const EVENT_PROBE_RETRY: Duration = REVIVE_INTERVAL;
+
+fn event_probe_backing_off(key: &str) -> bool {
+    let map = EVENT_PROBE_FAILED_AT.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = map.lock().unwrap_or_else(|p| p.into_inner());
+    map.get(key).is_some_and(|t| t.elapsed() < EVENT_PROBE_RETRY)
+}
+
+fn note_event_probe_unanswered(key: &str) {
+    let map = EVENT_PROBE_FAILED_AT.get_or_init(|| Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key.to_string(), Instant::now());
 }
 
 /// Whether a subject carries memory events, the ones #1071 confirms.
@@ -1081,11 +1108,20 @@ impl Conn {
     /// kill the connection, and an unrelated `-ERR` is left to the paths that
     /// already interpret it.
     fn confirm(&mut self, op: &str, subject: &str) -> Result<(), NatsError> {
+        self.confirm_outcome(op, subject).map(|_| ())
+    }
+
+    /// [`Self::confirm`], saying whether the PONG actually came back.
+    /// `Ok(false)` means the confirmation went unanswered (timeout, or more
+    /// frames than the bound): not a refusal, and not an acceptance either.
+    /// #1071 needs the difference: a verdict learned once is kept for the
+    /// life of the process, so silence must not be filed as "accepted".
+    fn confirm_outcome(&mut self, op: &str, subject: &str) -> Result<bool, NatsError> {
         self.write_frames(b"PING\r\n")?;
         // Bounded: a handful of frames may be queued ahead of our PONG.
         for _ in 0..16 {
             match read_frame(&mut self.reader)? {
-                ReadOutcome::Frame(Frame::Pong) => return Ok(()),
+                ReadOutcome::Frame(Frame::Pong) => return Ok(true),
                 ReadOutcome::Frame(Frame::Ping) => self.pong()?,
                 ReadOutcome::Frame(Frame::ServerErr(m)) => {
                     if is_permissions_error(&m) {
@@ -1102,7 +1138,7 @@ impl Conn {
                 // Never fail an operation because confirmation was slow — the
                 // publish/subscribe itself already went out. Silence is not
                 // evidence of refusal.
-                ReadOutcome::TimedOut => return Ok(()),
+                ReadOutcome::TimedOut => return Ok(false),
                 ReadOutcome::Closed => {
                     return Err(NatsError::Disconnected(
                         "connection closed awaiting confirmation".to_string(),
@@ -1110,7 +1146,7 @@ impl Conn {
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// The single choke point for outbound bytes. Refuses to touch a
@@ -2454,8 +2490,12 @@ impl SwarmTransport {
     ///   refusal of its own subject. The verdict holds for the life of the
     ///   process, like `PROCESS_STREAM_CREATE_DENIED`; restart after fixing
     ///   the ACL.
-    /// - Probe could not connect: fall back to `publish_raw`, which buffers on
-    ///   disconnect, and ask again on the next event.
+    /// - No verdict (the probe could not connect, or its PING went
+    ///   unanswered): nothing is recorded, and events on the subject take
+    ///   `publish_raw`, which buffers on disconnect, until
+    ///   [`EVENT_PROBE_RETRY`] has passed. Then the next event probes again.
+    ///   The same applies while the shared transport is known disconnected, so
+    ///   an outage costs no connect timeouts at all.
     pub fn publish_memory_event(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
         let key = event_verdict_key(self.explicit_creds.as_ref(), subject);
         match event_verdict(&key) {
@@ -2465,14 +2505,27 @@ impl SwarmTransport {
             }
             None => {}
         }
+        if !self.is_connected() || event_probe_backing_off(&key) {
+            return self.publish_raw(subject, payload);
+        }
         let mut probe = match handshake(&self.url, self.explicit_creds.as_ref()) {
             Ok(conn) => conn,
-            Err(_) => return self.publish_raw(subject, payload),
+            Err(_) => {
+                note_event_probe_unanswered(&key);
+                return self.publish_raw(subject, payload);
+            }
         };
         write_pub(&mut probe, subject, payload)?;
-        match probe.confirm("publish", subject) {
-            Ok(()) => {
+        match probe.confirm_outcome("publish", subject) {
+            Ok(true) => {
                 record_event_verdict(&key, EventVerdict::Accepted);
+                Ok(())
+            }
+            // Sent, but unanswered. Silence is not a refusal, so the event
+            // counts as published; it is not an acceptance either, so no
+            // verdict. Ask again after the backoff.
+            Ok(false) => {
+                note_event_probe_unanswered(&key);
                 Ok(())
             }
             Err(NatsError::Protocol(m)) if is_permissions_error(&m) => {
@@ -5863,6 +5916,12 @@ mod memory_event_confirm_tests {
         /// Accept, but first deliver a request on connection 0's subscription,
         /// so it arrives between the event PUB and the confirm PONG.
         InjectRequestOnMain,
+        /// Serve connection 0 normally; drop every later connection before
+        /// INFO, like a hub refusing new clients.
+        RefuseProbes,
+        /// Serve connection 0 normally; on later connections, answer the
+        /// handshake PING but never the confirm PING after a PUB.
+        SilentProbes,
     }
 
     struct Broker {
@@ -5886,7 +5945,12 @@ mod memory_event_confirm_tests {
                 let Ok(mut sock) = stream else { return };
                 let idx = c.fetch_add(1, Ordering::SeqCst);
                 let (p, main) = (p.clone(), main.clone());
+                if idx > 0 && matches!(on_pub, OnPub::RefuseProbes) {
+                    drop(sock);
+                    continue;
+                }
                 std::thread::spawn(move || {
+                    let mut published = false;
                     let _ = sock.write_all(
                         b"INFO {\"server_id\":\"fake\",\"proto\":1,\"max_payload\":1048576}\r\n",
                     );
@@ -5900,6 +5964,9 @@ mod memory_event_confirm_tests {
                         }
                         let l = line.trim_end();
                         if l.starts_with("PING") {
+                            if published && idx > 0 && matches!(on_pub, OnPub::SilentProbes) {
+                                continue;
+                            }
                             if let Some(e) = pending_err.take() {
                                 let _ = sock.write_all(e.as_bytes());
                             }
@@ -5915,6 +5982,7 @@ mod memory_event_confirm_tests {
                             let mut body = String::new();
                             let _ = reader.read_line(&mut body);
                             p.lock().unwrap().push((idx, subject.clone()));
+                            published = true;
                             let event = subject.starts_with("KANNAKA.events.memory.");
                             match on_pub {
                                 OnPub::Accept => {}
@@ -5936,6 +6004,7 @@ mod memory_event_confirm_tests {
                                     std::thread::sleep(Duration::from_millis(50));
                                 }
                                 OnPub::InjectRequestOnMain => {}
+                                OnPub::RefuseProbes | OnPub::SilentProbes => {}
                             }
                         }
                         let _ = sock.flush();
@@ -6060,6 +6129,60 @@ mod memory_event_confirm_tests {
             "control failed: confirm on the subscribed socket did not eat the request, \
              so the mid-confirm test proves nothing"
         );
+    }
+
+    /// Review of #1072, finding 1: a probe that cannot connect must not be
+    /// retried on every event, or each memory write waits out a connect.
+    #[test]
+    fn an_unreachable_probe_is_not_redialled_on_every_event() {
+        let b = broker(OnPub::RefuseProbes);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let subject = "KANNAKA.events.memory.t1071-refused.recall";
+
+        for _ in 0..4 {
+            // The first falls back to publish_raw on the main connection; so
+            // do the rest, without dialling.
+            t.publish_event(recall("t1071-refused")).expect("writes still succeed");
+        }
+        assert_eq!(
+            b.conns.load(Ordering::SeqCst),
+            2,
+            "one refused probe, then backoff: main connection plus one dial"
+        );
+        let pubs = wait_for_pubs(&b, subject, 4);
+        assert!(
+            pubs.iter().filter(|(_, s)| s == subject).all(|(c, _)| *c == 0),
+            "every event went out on the main connection: {pubs:?}"
+        );
+        let key = event_verdict_key(None, subject);
+        assert_eq!(event_verdict(&key), None, "a refused dial is not a verdict");
+    }
+
+    /// Review of #1072, finding 2: an unanswered confirm must not be filed as
+    /// Accepted, or a late refusal is never learned.
+    #[test]
+    fn an_unanswered_confirm_records_no_verdict() {
+        let b = broker(OnPub::SilentProbes);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let subject = "KANNAKA.events.memory.t1071-silent.recall";
+        let key = event_verdict_key(None, subject);
+
+        t.publish_event(recall("t1071-silent")).expect("silence is not a refusal");
+        assert_eq!(event_verdict(&key), None, "silence is not an acceptance either");
+
+        // Within the backoff, the next event does not dial again.
+        t.publish_event(recall("t1071-silent")).expect("accepted");
+        assert_eq!(b.conns.load(Ordering::SeqCst), 2, "no second probe inside the backoff");
+
+        // After the backoff, it asks again.
+        EVENT_PROBE_FAILED_AT
+            .get()
+            .expect("the first probe noted itself")
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Instant::now() - EVENT_PROBE_RETRY - Duration::from_secs(1));
+        t.publish_event(recall("t1071-silent")).expect("accepted");
+        assert_eq!(b.conns.load(Ordering::SeqCst), 3, "probes again once the backoff passes");
     }
 
     #[test]
