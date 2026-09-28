@@ -608,6 +608,101 @@ impl Default for BeliefConfig {
 
 
 // ---------------------------------------------------------------------------
+// hrm.path resolution (#1067)
+// ---------------------------------------------------------------------------
+
+/// Opt-out for #1067: when truthy (`1`/`true`/`yes`/`on`), an absolute
+/// `hrm.path` outside an explicit `KANNAKA_DATA_DIR` is used as configured,
+/// the pre-#1067 behaviour.
+pub const ALLOW_EXTERNAL_HRM_ENV: &str = "KANNAKA_ALLOW_EXTERNAL_HRM";
+
+/// Result of [`resolve_hrm_path`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HrmPathResolution {
+    /// The path to use. Empty when `hrm.path` was empty (consumers default
+    /// to `<data_dir>/kannaka.hrm`).
+    pub path: String,
+    /// The configured path, when it was replaced because it escaped an
+    /// explicit data dir.
+    pub overridden_from: Option<String>,
+}
+
+/// Where `hrm.path` actually points, given the data dir.
+///
+/// - Empty: unchanged.
+/// - Relative: joined onto `data_dir`. That is what the store open already
+///   did; making it absolute here keeps `store_dir()` and the CLI's store
+///   directory in agreement with it.
+/// - Absolute, `data_dir_explicit` (KANNAKA_DATA_DIR is set), not inside
+///   `data_dir`, and not `allow_external`: `<data_dir>/<file name>`. A
+///   store dir copied elsewhere carries its original absolute path in
+///   config.toml; honouring it would read, and write, the original.
+/// - Anything else: unchanged.
+pub fn resolve_hrm_path(
+    configured: &str,
+    data_dir: &Path,
+    data_dir_explicit: bool,
+    allow_external: bool,
+) -> HrmPathResolution {
+    let unchanged = || HrmPathResolution {
+        path: configured.to_string(),
+        overridden_from: None,
+    };
+    if configured.is_empty() {
+        return unchanged();
+    }
+    let p = Path::new(configured);
+    let Some(name) = p.file_name() else {
+        // A bare directory: the store open falls back to the default name.
+        return unchanged();
+    };
+    if !p.is_absolute() {
+        return HrmPathResolution {
+            path: data_dir.join(p).to_string_lossy().into_owned(),
+            overridden_from: None,
+        };
+    }
+    if !data_dir_explicit || allow_external || path_is_within(p, data_dir) {
+        return unchanged();
+    }
+    HrmPathResolution {
+        path: data_dir.join(name).to_string_lossy().into_owned(),
+        overridden_from: Some(configured.to_string()),
+    }
+}
+
+/// Whether file `p` sits inside `dir`. Lexical first, with `..` folded so
+/// `<dir>/../x` does not count. Then with both directories canonicalized, so
+/// a symlinked data dir (or macOS `/tmp` vs `/private/tmp`) still matches.
+/// Only `p`'s parent is canonicalized, never `p` itself: a data dir holding
+/// a symlink to an `.hrm` elsewhere is the caller's explicit choice.
+fn path_is_within(p: &Path, dir: &Path) -> bool {
+    fn fold(p: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other),
+            }
+        }
+        out
+    }
+    let Some(parent) = p.parent() else {
+        return false;
+    };
+    if fold(parent).starts_with(fold(dir)) {
+        return true;
+    }
+    match (parent.canonicalize(), dir.canonicalize()) {
+        (Ok(parent), Ok(dir)) => parent.starts_with(dir),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core API
 // ---------------------------------------------------------------------------
 
@@ -626,6 +721,42 @@ impl KannakaConfig {
     /// Path to `config.toml` inside the data directory.
     pub fn config_path() -> PathBuf {
         Self::data_dir().join("config.toml")
+    }
+
+    /// Resolve `hrm.path` in place against the data dir (#1067). `load()`
+    /// calls this after the env overrides, so every consumer of the loaded
+    /// config (store open, `store_dir`, sidecars, gc) sees one answer.
+    ///
+    /// See [`resolve_hrm_path`] for the rules. The stderr notice is printed
+    /// at most once per process: `load()` runs several times per command.
+    fn resolve_hrm_path_in_place(&mut self) {
+        let explicit = std::env::var("KANNAKA_DATA_DIR")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let allow_external = std::env::var(ALLOW_EXTERNAL_HRM_ENV)
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let data_dir = Self::data_dir();
+        let resolved = resolve_hrm_path(&self.hrm.path, &data_dir, explicit, allow_external);
+        if let Some(configured) = &resolved.overridden_from {
+            static NOTICE: std::sync::Once = std::sync::Once::new();
+            NOTICE.call_once(|| {
+                eprintln!(
+                    "[config] hrm.path {} is outside KANNAKA_DATA_DIR {}; using {} instead, \
+                     so a copied store never reads or writes the original (#1067). \
+                     Set {ALLOW_EXTERNAL_HRM_ENV}=1 to use the configured path.",
+                    configured,
+                    data_dir.display(),
+                    resolved.path,
+                );
+            });
+        }
+        self.hrm.path = resolved.path;
     }
 
     /// Load config from `~/.kannaka/config.toml`.
@@ -700,6 +831,9 @@ impl KannakaConfig {
         // After the file fallback, so the documented precedence holds:
         // env var > config.toml > persisted file > generate new.
         cfg.apply_env_overrides();
+        // An explicit KANNAKA_DATA_DIR outranks an hrm.path that escapes it
+        // (#1067). In-memory only, like the env overrides above.
+        cfg.resolve_hrm_path_in_place();
         cfg
     }
 
@@ -6021,4 +6155,244 @@ id = \"from-config\"
         assert_eq!(cfg.encoder.base_url, "http://localhost:11434");
     }
 
+    // ── #1067 an explicit KANNAKA_DATA_DIR outranks an escaping hrm.path ──
+
+    fn hrm_1067_store(path: &std::path::Path, contents: &[&str]) {
+        use crate::store::MediumBackend;
+        let pipeline = || {
+            crate::encoding::EncodingPipeline::new(
+                Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
+                crate::codebook::Codebook::new(384, crate::medium::WAVEFRONT_DIM, 42),
+            )
+        };
+        let mut store = if path.exists() {
+            crate::hrm_store::HrmStore::load(pipeline(), path.to_path_buf()).expect("load store")
+        } else {
+            crate::hrm_store::HrmStore::new(pipeline(), path.to_path_buf())
+        };
+        let p = pipeline();
+        for c in contents {
+            let v = p.encode_text(c).expect("encode");
+            store
+                .insert(crate::memory::HyperMemory::new(v, c.to_string()))
+                .expect("insert");
+        }
+        store.flush().expect("flush");
+    }
+
+    fn hrm_1067_count(path: &std::path::Path) -> usize {
+        use crate::store::MediumBackend;
+        let pipeline = crate::encoding::EncodingPipeline::new(
+            Box::new(crate::encoding::SimpleHashEncoder::new(384, 42)),
+            crate::codebook::Codebook::new(384, crate::medium::WAVEFRONT_DIM, 42),
+        );
+        let store =
+            crate::hrm_store::HrmStore::load(pipeline, path.to_path_buf()).expect("load store");
+        store.count()
+    }
+
+    fn copy_flat_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    /// Restores KANNAKA_DATA_DIR / KANNAKA_AGENT_ID (via IdEnvGuard) and the
+    /// opt-out, whatever the test left behind.
+    struct AllowExternalGuard(Option<String>);
+    impl Drop for AllowExternalGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var(ALLOW_EXTERNAL_HRM_ENV, v),
+                None => std::env::remove_var(ALLOW_EXTERNAL_HRM_ENV),
+            }
+        }
+    }
+
+    #[test]
+    fn hrm_path_outside_an_explicit_data_dir_resolves_inside_it() {
+        let r = resolve_hrm_path(
+            "/home/opc/.kannaka/kannaka.hrm",
+            Path::new("/scratch/copy"),
+            true,
+            false,
+        );
+        assert_eq!(r.path, "/scratch/copy/kannaka.hrm");
+        assert_eq!(
+            r.overridden_from.as_deref(),
+            Some("/home/opc/.kannaka/kannaka.hrm")
+        );
+        // Only the file name travels, not the original directory layout.
+        let r = resolve_hrm_path(
+            "/srv/deep/nested/custom.hrm",
+            Path::new("/scratch/copy"),
+            true,
+            false,
+        );
+        assert_eq!(r.path, "/scratch/copy/custom.hrm");
+        // `..` cannot smuggle a path out lexically.
+        let r = resolve_hrm_path(
+            "/scratch/copy/../live/kannaka.hrm",
+            Path::new("/scratch/copy"),
+            true,
+            false,
+        );
+        assert_eq!(r.path, "/scratch/copy/kannaka.hrm");
+        assert!(r.overridden_from.is_some());
+    }
+
+    #[test]
+    fn hrm_path_inside_the_data_dir_is_untouched() {
+        for p in [
+            "/scratch/copy/kannaka.hrm",
+            "/scratch/copy/nested/custom.hrm",
+            "/scratch/copy/./kannaka.hrm",
+        ] {
+            let r = resolve_hrm_path(p, Path::new("/scratch/copy"), true, false);
+            assert_eq!(
+                r,
+                HrmPathResolution {
+                    path: p.to_string(),
+                    overridden_from: None
+                },
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn hrm_path_without_kannaka_data_dir_is_unchanged() {
+        let r = resolve_hrm_path(
+            "/var/oled/kannaka/kannaka.hrm",
+            Path::new("/home/u/.kannaka"),
+            false,
+            false,
+        );
+        assert_eq!(r.path, "/var/oled/kannaka/kannaka.hrm");
+        assert!(r.overridden_from.is_none());
+        assert_eq!(resolve_hrm_path("", Path::new("/d"), true, false).path, "");
+    }
+
+    #[test]
+    fn relative_hrm_path_resolves_against_the_data_dir() {
+        for explicit in [true, false] {
+            let r = resolve_hrm_path("kannaka.hrm", Path::new("/d"), explicit, false);
+            assert_eq!(r.path, "/d/kannaka.hrm");
+            assert!(r.overridden_from.is_none());
+            let r = resolve_hrm_path("sub/custom.hrm", Path::new("/d"), explicit, false);
+            assert_eq!(r.path, "/d/sub/custom.hrm");
+        }
+    }
+
+    #[test]
+    fn allow_external_hrm_restores_the_configured_path() {
+        let r = resolve_hrm_path(
+            "/home/opc/.kannaka/kannaka.hrm",
+            Path::new("/scratch/copy"),
+            true,
+            true,
+        );
+        assert_eq!(r.path, "/home/opc/.kannaka/kannaka.hrm");
+        assert!(r.overridden_from.is_none());
+    }
+
+    /// The reported shape end to end: store A with an absolute hrm.path,
+    /// copied to B. With KANNAKA_DATA_DIR=B, load() must hand out B's .hrm;
+    /// reads see B's memories and writes land in B, never A.
+    #[test]
+    fn a_copied_store_reads_and_writes_the_copy_not_the_original() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ids = IdEnvGuard::take();
+        let _allow = AllowExternalGuard(std::env::var(ALLOW_EXTERNAL_HRM_ENV).ok());
+        std::env::remove_var(ALLOW_EXTERNAL_HRM_ENV);
+        std::env::remove_var("KANNAKA_AGENT_ID");
+
+        let a = temp_data_dir("1067-live");
+        let a_hrm = a.join("kannaka.hrm");
+        hrm_1067_store(&a_hrm, &["alpha harbor", "beta lighthouse"]);
+        std::fs::write(
+            a.join("config.toml"),
+            format!(
+                "[agent]\nid = \"t1067\"\n\n[hrm]\npath = {:?}\n",
+                a_hrm.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let b = temp_data_dir("1067-copy");
+        copy_flat_dir(&a, &b);
+        // The live store moves on after the copy was taken.
+        hrm_1067_store(&a_hrm, &["gamma pier", "delta foghorn"]);
+        assert_eq!(hrm_1067_count(&a_hrm), 4);
+
+        std::env::set_var("KANNAKA_DATA_DIR", &b);
+        let cfg = KannakaConfig::load();
+        let resolved = std::path::PathBuf::from(&cfg.hrm.path);
+        assert_eq!(
+            resolved,
+            b.join("kannaka.hrm"),
+            "hrm.path must resolve inside KANNAKA_DATA_DIR"
+        );
+        assert_eq!(
+            hrm_1067_count(&resolved),
+            2,
+            "reads must see the copy's memories, not the live store's"
+        );
+
+        let a_before = std::fs::read(&a_hrm).unwrap();
+        hrm_1067_store(&resolved, &["epsilon gate"]);
+        assert_eq!(
+            hrm_1067_count(&b.join("kannaka.hrm")),
+            3,
+            "the write must land in the copy"
+        );
+        assert_eq!(
+            hrm_1067_count(&a_hrm),
+            4,
+            "the live store must be untouched"
+        );
+        assert_eq!(
+            std::fs::read(&a_hrm).unwrap(),
+            a_before,
+            "the live .hrm bytes changed"
+        );
+
+        // Opt-out: the configured (live) path again, as before #1067.
+        std::env::set_var(ALLOW_EXTERNAL_HRM_ENV, "1");
+        let cfg = KannakaConfig::load();
+        assert_eq!(std::path::PathBuf::from(&cfg.hrm.path), a_hrm);
+
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// load_unmodified() backs `config set` and friends, which write the file
+    /// back: the resolution must not leak into config.toml.
+    #[test]
+    fn hrm_path_resolution_is_not_persisted() {
+        let _lock = ID_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ids = IdEnvGuard::take();
+        let _allow = AllowExternalGuard(std::env::var(ALLOW_EXTERNAL_HRM_ENV).ok());
+        std::env::remove_var(ALLOW_EXTERNAL_HRM_ENV);
+        let b = temp_data_dir("1067-unmod");
+        std::fs::write(
+            b.join("config.toml"),
+            "[agent]\nid = \"t1067\"\n\n[hrm]\npath = \"/elsewhere/kannaka.hrm\"\n",
+        )
+        .unwrap();
+        std::env::set_var("KANNAKA_DATA_DIR", &b);
+        assert_eq!(
+            KannakaConfig::load().hrm.path,
+            b.join("kannaka.hrm").to_string_lossy()
+        );
+        assert_eq!(
+            KannakaConfig::load_unmodified().hrm.path,
+            "/elsewhere/kannaka.hrm"
+        );
+        let _ = std::fs::remove_dir_all(&b);
+    }
 }
