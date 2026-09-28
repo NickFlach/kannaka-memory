@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.16.13] — 2026-09-28
+
+### Added — `kannaka mail`, read-only (ADR-0064 P0, #1060)
+
+`kannaka mail accounts | sync | status | thread | close` keeps references to mail rather than the mail itself. `sync` pulls headers and flags from each account's authority (IMAP over TLS, or JMAP for Stalwart) into `<data_dir>/mail/refs.jsonl`: one row per message, holding a body hash but not the body. `status` lists open loops, and `thread` and `close` act on them. Nothing is sent: sending is P2, and until then an agent sends through `tools/mail/agent-mail.py`. The feature is in the default build (`mail`). The pre-registered open-loop gate scored 96.1%.
+
+### Ops — the `serve` NATS user may publish the served-recall event (#1056)
+
+`config/nats-accounts.conf` now lets `serve` publish `KANNAKA.events.memory.*.recall`, and nothing else in the events tree. This is a config change, not part of the binary: each NATS server applies it by editing its live config and sending a HUP. O1 was reloaded on 2026-09-28, which is when kannaka-prime's recall events started landing.
+
 ### `KANNAKA_DATA_DIR` wins over an absolute `hrm.path` outside it (#1067)
 
 A store dir's `config.toml` carries an absolute `hrm.path` (e.g. `/home/opc/.kannaka/kannaka.hrm`).
