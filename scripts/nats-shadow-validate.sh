@@ -66,6 +66,10 @@ check "queen_agent DENIED stream create" deny  queen_agent '$JS.API.STREAM.CREAT
 check "queen_agent DENIED work queue"    deny  queen_agent "KANNAKA.work.research"
 check "serve publishes recall events"    allow serve       "KANNAKA.events.memory.kannaka-prime.recall"
 check "serve DENIED remember events"     deny  serve       "KANNAKA.events.memory.kannaka-prime.remember"
+check "radio publishes prime remember"   allow radio       "KANNAKA.events.memory.kannaka-prime.remember"
+check "radio DENIED other agent remember" deny radio       "KANNAKA.events.memory.Kannaka.remember"
+check "radio DENIED prime recall events" deny  radio       "KANNAKA.events.memory.kannaka-prime.recall"
+check "radio DENIED prime forget events" deny  radio       "KANNAKA.events.memory.kannaka-prime.forget"
 check "anon ALLOWED retained reads"      allow anon        '$JS.API.STREAM.MSG.GET.QUEEN_PHASES'
 
 echo "== result: $pass passed, $fail failed =="
