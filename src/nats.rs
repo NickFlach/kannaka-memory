@@ -1581,12 +1581,21 @@ impl StreamKind {
 pub enum EventPayload<'a> {
     /// A new memory was stored. Replay reconstructs the wavefront.
     /// Subject: `KANNAKA.events.memory.<agent_id>.remember`
+    ///
+    /// #1057: published from the shared write path for every persisted new
+    /// memory, not only `kannaka remember`. `content` is `None` at the `ids`
+    /// level (the default for every origin except the explicit CLI): the key
+    /// is then omitted from the payload, and `content_sha256` still lets a
+    /// reader match the event to text it already holds. `via` names the
+    /// write origin (`cli`, `agent`, `dream`, `absorb`, `sync`, `import`, …).
     MemoryRemember {
         agent_id: &'a str,
         memory_id: &'a uuid::Uuid,
-        content: &'a str,
+        content: Option<&'a str>,
+        content_sha256: &'a str,
         importance: f32,
         modality: &'a str,
+        via: &'a str,
     },
     /// A memory was deleted. Replay drops the matching memory_id.
     /// Subject: `KANNAKA.events.memory.<agent_id>.forget`
@@ -1675,13 +1684,18 @@ impl<'a> EventPayload<'a> {
         let mut obj = base.as_object().cloned().unwrap_or_default();
         match self {
             EventPayload::MemoryRemember {
-                agent_id, memory_id, content, importance, modality,
+                agent_id, memory_id, content, content_sha256, importance, modality, via,
             } => {
                 obj.insert("agent_id".into(), serde_json::json!(agent_id));
                 obj.insert("memory_id".into(), serde_json::json!(memory_id));
-                obj.insert("content".into(), serde_json::json!(content));
+                // Absent, not null, at the `ids` level (#1057).
+                if let Some(content) = content {
+                    obj.insert("content".into(), serde_json::json!(content));
+                }
+                obj.insert("content_sha256".into(), serde_json::json!(content_sha256));
                 obj.insert("importance".into(), serde_json::json!(importance));
                 obj.insert("modality".into(), serde_json::json!(modality));
+                obj.insert("via".into(), serde_json::json!(via));
             }
             EventPayload::MemoryForget { agent_id, memory_id } => {
                 obj.insert("agent_id".into(), serde_json::json!(agent_id));

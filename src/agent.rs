@@ -219,7 +219,10 @@ pub fn dispatch_tool(
             // reinforced rather than inserted, and on that path `importance` is
             // only a floor. Echoing the requested number back would claim an
             // effect it may not have had, so report the RESULTING amplitude.
-            match sys.remember_reporting(content, category, importance) {
+            let outcome = sys.with_write_origin(crate::remember_events::VIA_AGENT, |s| {
+                s.remember_reporting(content, category, importance)
+            });
+            match outcome {
                 Ok(o) => {
                     let msg = match o.kind {
                         crate::openclaw::RememberOutcomeKind::Inserted => format!(

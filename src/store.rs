@@ -265,6 +265,14 @@ pub trait MediumBackend: Send + Sync {
     /// Kept only for ResonanceEngine compat fallback and hallucination pipeline.
     fn insert(&mut self, memory: HyperMemory) -> Result<Uuid, StoreError>;
 
+    /// #1057: ids of the memories `insert`/`absorb` created since the last
+    /// call, draining the journal. `KannakaMemorySystem::save` publishes one
+    /// `MemoryRemember` per id after a successful flush. A backend without a
+    /// journal reports none, and so publishes nothing.
+    fn take_new_memory_ids(&mut self) -> Vec<Uuid> {
+        Vec::new()
+    }
+
     /// **DEPRECATED** -- Use `resonate_query()` instead.
     /// Raw similarity search with NO observation effects.
     /// Kept for dream consolidation neighbor-finding and paradox engine

@@ -47,6 +47,22 @@ pub struct KannakaConfig {
     pub swarm_trust: SwarmTrustConfig,
     #[serde(default = "EncoderConfig::default")]
     pub encoder: EncoderConfig,
+    #[serde(default)]
+    pub events: EventsConfig,
+}
+
+/// `[events]` — what the durable memory-event stream carries (#1057).
+///
+/// `remember = "off" | "ids" | "content"` sets the payload of
+/// `KANNAKA.events.memory.<agent>.remember`, which every write path publishes
+/// after a successful save. Empty (the default) means the per-origin default:
+/// `content` for an explicit `kannaka remember`, `ids` (id, agent, importance,
+/// modality, via, content_sha256 — no text) for every other origin. A set value
+/// applies to every origin. Env override: `KANNAKA_EVENTS_REMEMBER`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventsConfig {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remember: String,
 }
 
 /// Text-encoder selection for the HRM pipeline.
@@ -762,6 +778,7 @@ impl KannakaConfig {
         if let Ok(v) = std::env::var("KANNAKA_LLM_API_KEY") { self.llm.api_key = v; }
         if let Ok(v) = std::env::var("KANNAKA_LLM_BASE_URL") { self.llm.base_url = v; }
         if let Ok(v) = std::env::var("KANNAKA_NATS_URL") { self.swarm.nats_url = v; }
+        if let Ok(v) = std::env::var(crate::remember_events::RememberLevel::ENV) { self.events.remember = v; }
         if let Ok(v) = std::env::var("OLLAMA_URL") { self.llm.base_url = v; }
         // Constellation + GhostSignals endpoint overrides (#98). The
         // config module advertises env-var precedence for these and
@@ -3861,7 +3878,10 @@ fn init_seed_hrm(data_dir: &std::path::Path) -> Option<crate::openclaw::KannakaM
 
 /// Store a single seed memory with the given importance. Returns true on success.
 fn store_seed(sys: &mut crate::openclaw::KannakaMemorySystem, content: &str, importance: f64) -> bool {
-    match sys.remember_with_category(content, "seed", importance) {
+    let stored = sys.with_write_origin(crate::remember_events::VIA_SEED, |s| {
+        s.remember_with_category(content, "seed", importance)
+    });
+    match stored {
         Ok(_) => true,
         Err(e) => {
             eprintln!("  Warning: failed to store seed memory: {e}");

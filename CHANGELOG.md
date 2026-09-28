@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### Every write path publishes `MemoryRemember`; ids by default (#1057)
+
+`KANNAKA.events.memory.<agent>.remember` used to come from one place, the `kannaka remember`
+subcommand. Memories written by the agent loop, dreams, peer absorb, `swarm sync`, `import`,
+research ingest, chat and perception (`hear`/`watch`/`see`) never reached the stream.
+`Kannaka` held 1,693 memories while its last remember event dated from July, and `kannaka-prime`
+had never published one.
+
+Now the store journals every row that `insert`/`absorb` creates. `KannakaMemorySystem::save`
+publishes one event per new row, after the flush succeeds. Dreams tag the rows they leave behind by
+diffing ids before and after, so rows from wave-native dreaming are covered as well. Rules:
+
+- **Once per row.** The CLI no longer publishes its own copy.
+- **Only after a successful flush.** A failed write keeps its ids pending.
+- **No event** for a row that is gone by save time (for example a dream row that was pruned), an
+  ADR-0049 facet, a `__consolidation_summary_*` bookkeeping row, or a `KANNAKA_READONLY` store
+  (it never persists).
+- **Never fails the write.** NATS being down, or a failed publish, is logged and dropped. One
+  connection is opened lazily and reused, and a failed connect is not retried for 60 s.
+
+`[events] remember = "off" | "ids" | "content"` (`kannaka config set events.remember …`, env
+`KANNAKA_EVENTS_REMEMBER`) sets the payload:
+
+- `ids`: `memory_id`, `agent_id`, `importance`, `modality`, `via`, `content_sha256` and the envelope.
+  No text.
+- `content`: `ids` plus `content`.
+- `off`: nothing.
+
+When unset, **`kannaka remember` defaults to `content`** as before, so E-004 and other readers of the
+text lose nothing. **Every other origin defaults to `ids`**, because the memory lane is readable and
+forgeable by `anon` (ADR-0039). A configured value applies to every origin, the CLI included.
+`via` is one of `cli`, `agent`, `chat`, `dream`, `hallucinate`, `absorb`, `sync`, `import`,
+`research`, `perception`, `seed` or `api` (unlabelled library callers).
+
+Other changes:
+
+- `MemoryRemember` payloads gain `via` and `content_sha256`. `content` is absent, not null, at `ids`.
+- `importance` is now the stored amplitude, which a new absorb sets from the requested importance.
+- A reinforced repeat (`KANNAKA_REINFORCE_ON_REPEAT`) adds no row, so it publishes no remember event.
+- `remember --batch` still never publishes.
+- `import` of a large export announces every row as `via = "import"`. Use
+  `KANNAKA_EVENTS_REMEMBER=off` for a restore that should stay off the bus.
+
+Events flow only once a host runs this release and its daemons have restarted.
+
 ### `inbox send` tells the truth about delivery
 
 `kannaka inbox send <to> <verb>` published fire-and-forget to `KANNAKA.inbox.<to>` and printed the

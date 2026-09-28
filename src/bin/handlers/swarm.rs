@@ -1630,7 +1630,11 @@ pub(crate) fn handle_swarm_absorb(
                 Live => {
                     // Tag with provenance so we can identify swarm-origin memories later.
                     let category = format!("swarm:{source}");
-                    match sys.remember_reporting(content, &category, clean.amplitude as f64) {
+                    let absorb_result = sys.with_write_origin(
+                        kannaka_memory::remember_events::VIA_ABSORB,
+                        |s| s.remember_reporting(content, &category, clean.amplitude as f64),
+                    );
+                    match absorb_result {
                         Ok(o) if o.kind
                             == kannaka_memory::openclaw::RememberOutcomeKind::Reinforced =>
                         {
@@ -2103,7 +2107,11 @@ pub(crate) fn handle_swarm_autoabsorb(
             match decision {
                 Live => {
                     let category = format!("swarm:{source}");
-                    match sys.remember_reporting(content, &category, clean.amplitude as f64) {
+                    let absorb_result = sys.with_write_origin(
+                        kannaka_memory::remember_events::VIA_ABSORB,
+                        |s| s.remember_reporting(content, &category, clean.amplitude as f64),
+                    );
+                    match absorb_result {
                         Ok(o) if o.kind
                             == kannaka_memory::openclaw::RememberOutcomeKind::Reinforced =>
                         {

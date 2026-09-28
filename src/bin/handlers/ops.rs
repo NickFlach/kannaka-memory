@@ -124,7 +124,8 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     eprintln!("      constellation.radio_url, constellation.observatory_url,");
                     eprintln!("      hrm.path, hrm.wavefront_dim, updates.auto_check,");
                     eprintln!("      triage.enabled, triage.redundancy, triage.min_amplitude,");
-                    eprintln!("      triage.min_age_hours, triage.max_evict, triage.xi_trigger");
+                    eprintln!("      triage.min_age_hours, triage.max_evict, triage.xi_trigger,");
+                    eprintln!("      events.remember (off|ids|content|default)");
                     eprintln!();
                     eprintln!("Booleans accept: true/false, 1/0, yes/no, on/off (case-insensitive).");
                     process::exit(1);
@@ -250,6 +251,17 @@ pub(crate) fn handle_config(cfg: &KannakaConfig, args: &[String]) {
                     Ok(n) if (0.0..=1.0).contains(&n) => new_cfg.triage.xi_trigger = n,
                     _ => { eprintln!("triage.xi_trigger expects a float in [0,1] (0 disables auto-trigger), got: {value}"); process::exit(1); }
                 },
+                // #1057: remember-event payload level (off|ids|content|default).
+                "events.remember" => {
+                    match kannaka_memory::remember_events::RememberLevel::parse(value) {
+                        Ok(Some(level)) => new_cfg.events.remember = level.as_str().to_string(),
+                        Ok(None) => new_cfg.events.remember.clear(),
+                        Err(e) => {
+                            eprintln!("{e}");
+                            process::exit(1);
+                        }
+                    }
+                }
                 other => {
                     eprintln!("Unknown config key: {other}");
                     process::exit(1);
@@ -461,6 +473,10 @@ pub(crate) fn import_memories_from_file(
 
     let existing_ids: std::collections::HashSet<uuid::Uuid> = sys.engine.store.all_memories()
         .unwrap_or_default().iter().map(|m| m.id).collect();
+    // #1057: the save at the end announces every imported row as
+    // `via = "import"` (ids by default). A large restore that should stay
+    // off the bus: KANNAKA_EVENTS_REMEMBER=off.
+    sys.set_write_origin(kannaka_memory::remember_events::VIA_IMPORT);
 
     let mut imported = 0u32;
     let mut skipped = 0u32;

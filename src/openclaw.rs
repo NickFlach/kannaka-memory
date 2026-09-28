@@ -418,6 +418,26 @@ pub struct KannakaMemorySystem {
     /// The novelty signal from the most recent `recall` (None when disabled or
     /// before any recall).
     last_novelty: Option<crate::novelty::Novelty>,
+
+    /// #1057 — remember events. See `crate::remember_events` for the levels
+    /// and the per-origin default. Configured level (`None` = per-origin
+    /// default); seeded from `KANNAKA_EVENTS_REMEMBER`, and the bin sets it
+    /// from `[events] remember`.
+    remember_level: Option<crate::remember_events::RememberLevel>,
+    /// The origin stamped on writes that have not been tagged yet (`via`).
+    write_origin: &'static str,
+    /// Agent id for the event subject. Falls back to `KANNAKA_AGENT_ID`;
+    /// with neither, nothing is published.
+    agent_id: Option<String>,
+    /// New memories awaiting a successful save, with their origin.
+    pending_remember: Vec<(Uuid, &'static str)>,
+    /// Replacement sink (tests, embedders). `None` publishes to NATS.
+    remember_sink: Option<Box<dyn crate::remember_events::RememberEventSink>>,
+    /// The default sink, opened on first use and reused.
+    #[cfg(feature = "nats")]
+    nats_sink: Option<crate::remember_events::NatsRememberSink>,
+    /// Rows that existed when the running dream began; `Some` only mid-dream.
+    dream_ids_before: Option<std::collections::HashSet<Uuid>>,
 }
 
 /// ADR-0031 triage policy parameters (Phase 1–3).
@@ -542,6 +562,14 @@ impl KannakaMemorySystem {
                 None
             },
             last_novelty: None,
+            remember_level: crate::remember_events::RememberLevel::from_env(),
+            write_origin: crate::remember_events::VIA_API,
+            agent_id: None,
+            pending_remember: Vec::new(),
+            remember_sink: None,
+            #[cfg(feature = "nats")]
+            nats_sink: None,
+            dream_ids_before: None,
         })
     }
 
@@ -550,6 +578,181 @@ impl KannakaMemorySystem {
     /// unset, publish helpers fall back to env-only resolution. Fixes km#77.
     pub fn set_nats_url(&mut self, url: String) {
         self.nats_url = Some(url);
+        // A connection opened against the old URL is the wrong one now.
+        #[cfg(feature = "nats")]
+        {
+            self.nats_sink = None;
+        }
+    }
+
+    // -- #1057: remember events ----------------------------------------------
+
+    /// Agent id used in `KANNAKA.events.memory.<agent>.remember`.
+    pub fn set_agent_id(&mut self, id: String) {
+        self.agent_id = Some(id);
+    }
+
+    /// Payload level for remember events; `None` = the per-origin default
+    /// (`content` for the CLI, `ids` for everything else).
+    pub fn set_remember_level(&mut self, level: Option<crate::remember_events::RememberLevel>) {
+        self.remember_level = level;
+    }
+
+    /// Origin stamped on this system's writes from now on (`via`).
+    pub fn set_write_origin(&mut self, via: &'static str) {
+        self.write_origin = via;
+    }
+
+    /// Run `f` with `via` as the write origin, then restore the previous one.
+    /// Writes `f` made are tagged `via` even if they are saved later.
+    pub fn with_write_origin<R>(&mut self, via: &'static str, f: impl FnOnce(&mut Self) -> R) -> R {
+        let prev = std::mem::replace(&mut self.write_origin, via);
+        let out = f(self);
+        self.collect_new_writes(via);
+        self.write_origin = prev;
+        out
+    }
+
+    /// Replace where remember events go (tests, embedders).
+    pub fn set_remember_sink(&mut self, sink: Box<dyn crate::remember_events::RememberEventSink>) {
+        self.remember_sink = Some(sink);
+    }
+
+    /// The NATS connection remember events use, opened on first call. A caller
+    /// that also publishes (the CLI's `KANNAKA.memory.new`) reuses it instead
+    /// of dialling a second time. `None` while NATS is unreachable.
+    #[cfg(feature = "nats")]
+    pub fn event_transport(&mut self) -> Option<std::sync::Arc<crate::nats::SwarmTransport>> {
+        if self.nats_sink.is_none() {
+            self.nats_sink = Some(crate::remember_events::NatsRememberSink::new(
+                self.resolved_nats_url(),
+            ));
+        }
+        self.nats_sink.as_mut().and_then(|s| s.transport())
+    }
+
+    /// New memories that have not been published yet, with their origin.
+    pub fn pending_remember_events(&self) -> &[(Uuid, &'static str)] {
+        &self.pending_remember
+    }
+
+    /// Start of a dream: tag any earlier unsaved writes with their own origin,
+    /// and remember which rows exist so the dream's own can be told apart.
+    /// Until `end_dream_writes`, `save` publishes nothing: the dream saves
+    /// mid-cycle (auto-triage), and announcing then would label dream rows
+    /// with the caller's origin and publish them a second time at the end.
+    fn begin_dream_writes(&mut self) {
+        self.collect_new_writes(self.write_origin);
+        let ids = self
+            .engine
+            .store
+            .all_memories()
+            .map(|ms| ms.into_iter().map(|m| m.id).collect())
+            .unwrap_or_default();
+        self.dream_ids_before = Some(ids);
+    }
+
+    /// End of a dream: every row present now that was not before is a dream
+    /// write. A diff rather than the journal alone, because wave-native
+    /// dreaming can mint rows without going through `insert`/`absorb`. Rows
+    /// the dream created and removed again are absent from both sets, so a
+    /// transient row is never announced.
+    fn end_dream_writes(&mut self) {
+        let Some(before) = self.dream_ids_before.take() else { return };
+        // The journal's entries are a subset of the diff (or were deleted).
+        let _ = self.engine.store.take_new_memory_ids();
+        let created: Vec<Uuid> = self
+            .engine
+            .store
+            .all_memories()
+            .map(|ms| ms.into_iter().map(|m| m.id).filter(|id| !before.contains(id)).collect())
+            .unwrap_or_default();
+        for id in created {
+            if !self.pending_remember.iter().any(|(p, _)| *p == id) {
+                self.pending_remember.push((id, crate::remember_events::VIA_DREAM));
+            }
+        }
+    }
+
+    /// Move the store's write journal into `pending_remember`, tagged `via`.
+    fn collect_new_writes(&mut self, via: &'static str) {
+        for id in self.engine.store.take_new_memory_ids() {
+            if !self.pending_remember.iter().any(|(p, _)| *p == id) {
+                self.pending_remember.push((id, via));
+            }
+        }
+    }
+
+    /// Publish one `MemoryRemember` per pending memory. Called only after a
+    /// successful flush, so an event never announces a write that failed.
+    ///
+    /// Best-effort in the strict sense: no agent id, no NATS, or a failed
+    /// publish is logged and dropped; it never fails the write. A pending id
+    /// no longer in the store (a dream row pruned before the save) or an
+    /// ADR-0049 facet or a `__consolidation_summary_*` bookkeeping row is
+    /// skipped.
+    fn publish_pending_remembers(&mut self) {
+        if self.pending_remember.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_remember);
+        #[cfg(feature = "nats")]
+        {
+            use crate::remember_events::{build_remember_event, RememberLevel};
+            let agent_id = self
+                .agent_id
+                .clone()
+                .or_else(|| std::env::var("KANNAKA_AGENT_ID").ok())
+                .unwrap_or_default();
+            if agent_id.is_empty() {
+                return;
+            }
+            let facets = self.engine.store.facet_row_ids();
+            let mut events = Vec::with_capacity(pending.len());
+            for (id, via) in pending {
+                let level = RememberLevel::resolve(self.remember_level, via);
+                if level == RememberLevel::Off || facets.contains(&id) {
+                    continue;
+                }
+                let Ok(Some(mem)) = self.engine.store.get(&id) else { continue };
+                // Consolidation's layer-summary rows are bookkeeping, not
+                // memories; the dream stages skip them by the same prefix.
+                if mem.content.starts_with("__consolidation") {
+                    continue;
+                }
+                let modality = mem.modality.to_string();
+                if let Some(ev) = build_remember_event(
+                    level, &agent_id, &id, &mem.content, mem.amplitude, &modality, via,
+                ) {
+                    events.push(ev);
+                }
+            }
+            if events.is_empty() {
+                return;
+            }
+            let url = self.resolved_nats_url();
+            let sink: &mut dyn crate::remember_events::RememberEventSink =
+                match self.remember_sink.as_mut() {
+                    Some(s) => s.as_mut(),
+                    None => self
+                        .nats_sink
+                        .get_or_insert_with(|| crate::remember_events::NatsRememberSink::new(url)),
+                };
+            let total = events.len();
+            let mut failed = 0usize;
+            let mut last_err = String::new();
+            for (subject, payload) in &events {
+                if let Err(e) = sink.publish(subject, payload) {
+                    failed += 1;
+                    last_err = e;
+                }
+            }
+            if failed > 0 {
+                eprintln!("[events] {failed}/{total} remember event(s) not published: {last_err}");
+            }
+        }
+        #[cfg(not(feature = "nats"))]
+        drop(pending);
     }
 
     /// Resolve the NATS URL for best-effort publishes. Prefers the URL
@@ -1810,6 +2013,9 @@ impl KannakaMemorySystem {
         // "the dream", not just the annealing phase.
         let started = std::time::Instant::now();
         let before = self.bridge.assess(&self.engine);
+        // #1057: which rows existed before, so the rows the dream leaves
+        // behind are announced as `via = "dream"`.
+        self.begin_dream_writes();
 
         // ADR-0031 Phase 2b: snapshot short-term amplitudes before the dream so
         // we can promote the ones the dream consolidation strengthens (they
@@ -1819,8 +2025,13 @@ impl KannakaMemorySystem {
 
         // Phase 1: Wave-native dream (eigenstructure annealing on holographic medium)
         let chiral_eta = self.dream_state.engine.chiral_perturbation;
-        let wave_report = self.engine.store.dream_native(3, Some(1.0), chiral_eta)
-            .map_err(SystemError::Store)?;
+        let wave_report = match self.engine.store.dream_native(3, Some(1.0), chiral_eta) {
+            Ok(r) => r,
+            Err(e) => {
+                self.end_dream_writes();
+                return Err(SystemError::Store(e));
+            }
+        };
 
         eprintln!("[dream] Wave-native dream complete: {} cycles, {} dissolved, {} strengthened, {} hallucinated",
             wave_report.cycles_completed, wave_report.wavefronts_dissolved,
@@ -1965,6 +2176,7 @@ impl KannakaMemorySystem {
 
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
+        self.end_dream_writes();
         if self.auto_save {
             self.save()?;
         }
@@ -2017,15 +2229,22 @@ impl KannakaMemorySystem {
     pub fn dream_lite(&mut self) -> Result<DreamReport, SystemError> {
         let started = std::time::Instant::now();
         let before = self.bridge.assess(&self.engine);
+        self.begin_dream_writes();
 
-        let report = self.engine.store.dream_native(1, Some(0.5), 0.0)
-            .map_err(SystemError::Store)?;
+        let report = match self.engine.store.dream_native(1, Some(0.5), 0.0) {
+            Ok(r) => r,
+            Err(e) => {
+                self.end_dream_writes();
+                return Err(SystemError::Store(e));
+            }
+        };
 
         let after = self.bridge.assess(&self.engine);
         self.mark_dreamed();
 
         let emerged = after.consciousness_level.ordinal() > before.consciousness_level.ordinal();
 
+        self.end_dream_writes();
         if self.auto_save {
             self.save()?;
         }
@@ -2344,6 +2563,13 @@ impl KannakaMemorySystem {
         if flushed > 0 {
             eprintln!("[hrm] Flushed {flushed} memories to medium");
         }
+        // #1057: the write is durable now, so announce it. A failed flush
+        // returned above and keeps its ids pending for the next save. Inside
+        // a dream the announcement waits for the dream's own end.
+        if self.dream_ids_before.is_none() {
+            self.collect_new_writes(self.write_origin);
+            self.publish_pending_remembers();
+        }
         Ok(())
     }
 
@@ -2471,6 +2697,7 @@ impl KannakaMemorySystem {
         // Absorb through the HRM-native path (low importance for hallucinations)
         let id = self.engine.store.absorb(content, 0.3, Some(&category))
             .map_err(SystemError::Store)?;
+        self.collect_new_writes(crate::remember_events::VIA_HALLUCINATE);
 
         // Collect valid parent IDs before taking mutable borrow
         let found_parents: Vec<String> = parent_ids.iter()
@@ -2657,6 +2884,7 @@ impl KannakaMemorySystem {
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.6, Some("experience"))
             .map_err(SystemError::Store)?;
+        self.collect_new_writes(crate::remember_events::VIA_PERCEPTION);
 
         if self.auto_save {
             self.save()?;
@@ -2743,6 +2971,7 @@ impl KannakaMemorySystem {
             .store
             .absorb(&content, 0.6, Some("experience"))
             .map_err(SystemError::Store)?;
+        self.collect_new_writes(crate::remember_events::VIA_PERCEPTION);
 
         // Tag the wavefront Visual before the save below, so the modality is
         // persisted with the memory rather than needing a second write.
@@ -2799,6 +3028,7 @@ impl KannakaMemorySystem {
         // Absorb through HRM-native path
         let id = self.engine.store.absorb(&content, 0.7, Some("experience"))
             .map_err(SystemError::Store)?;
+        self.collect_new_writes(crate::remember_events::VIA_PERCEPTION);
         
         if self.auto_save {
             self.save()?;
@@ -5089,5 +5319,253 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── #1057: every write path publishes MemoryRemember ─────────────────
+
+    #[cfg(feature = "nats")]
+    mod remember_events_1057 {
+        use super::*;
+        use crate::remember_events::{self as re, RememberEventSink, RememberLevel};
+        use std::sync::{Arc, Mutex};
+
+        type Captured = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
+        struct Capture(Captured);
+        impl RememberEventSink for Capture {
+            fn publish(&mut self, subject: &str, payload: &serde_json::Value) -> Result<(), String> {
+                self.0.lock().unwrap().push((subject.to_string(), payload.clone()));
+                Ok(())
+            }
+        }
+
+        struct Failing(Arc<Mutex<usize>>);
+        impl RememberEventSink for Failing {
+            fn publish(&mut self, _: &str, _: &serde_json::Value) -> Result<(), String> {
+                *self.0.lock().unwrap() += 1;
+                Err("broker down".into())
+            }
+        }
+
+        fn system(name: &str) -> (KannakaMemorySystem, PathBuf, Captured) {
+            let dir = temp_dir(name);
+            let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+            sys.set_agent_id("agent-under-test".into());
+            // Independent of whatever KANNAKA_EVENTS_REMEMBER the test env has.
+            sys.set_remember_level(None);
+            let cap: Captured = Arc::default();
+            sys.set_remember_sink(Box::new(Capture(cap.clone())));
+            (sys, dir, cap)
+        }
+
+        fn events(cap: &Captured) -> Vec<serde_json::Value> {
+            cap.lock().unwrap().iter().map(|(_, p)| p.clone()).collect()
+        }
+
+        #[test]
+        fn a_plain_remember_publishes_one_ids_event() {
+            let (mut sys, dir, cap) = system("re_plain");
+            let id = sys.remember("the heron stands in the shallows").unwrap();
+            let got = cap.lock().unwrap().clone();
+            assert_eq!(got.len(), 1, "exactly one event per new memory: {got:?}");
+            let (subject, p) = &got[0];
+            assert_eq!(subject, "KANNAKA.events.memory.agent-under-test.remember");
+            assert_eq!(p["memory_id"], id.to_string());
+            assert_eq!(p["via"], re::VIA_API);
+            assert!(p.get("content").is_none(), "non-CLI default is ids: {p}");
+            assert_eq!(p["content_sha256"], re::content_sha256("the heron stands in the shallows"));
+            // A later save with nothing new publishes nothing.
+            sys.save().unwrap();
+            assert_eq!(cap.lock().unwrap().len(), 1);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn each_origin_sets_via() {
+            let (mut sys, dir, cap) = system("re_via");
+            sys.with_write_origin(re::VIA_AGENT, |s| s.remember("agent wrote this")).unwrap();
+            sys.with_write_origin(re::VIA_CHAT, |s| s.remember("chat wrote this")).unwrap();
+            sys.with_write_origin(re::VIA_ABSORB, |s| {
+                s.remember_reporting("peer exemplar", "swarm:peer", 0.4)
+            })
+            .unwrap();
+            sys.with_write_origin(re::VIA_SEED, |s| s.remember_with_category("seed", "seed", 0.5))
+                .unwrap();
+            // Raw store insert (swarm sync / import): journaled by the store,
+            // announced by the next save.
+            let mem = crate::memory::HyperMemory::new(
+                sys.engine.store.all_memories().unwrap()[0].vector.clone(),
+                "synced from a peer".into(),
+            );
+            let synced = sys.with_write_origin(re::VIA_SYNC, |s| s.engine.store.insert(mem)).unwrap();
+            sys.set_write_origin(re::VIA_IMPORT);
+            let imported = crate::memory::HyperMemory::new(
+                sys.engine.store.all_memories().unwrap()[0].vector.clone(),
+                "imported row".into(),
+            );
+            let imported_id = sys.engine.store.insert(imported).unwrap();
+            sys.save().unwrap();
+            let h = sys.hallucinate("a dreamt bridge", &[]).unwrap();
+
+            let evs = events(&cap);
+            let via_of = |id: &Uuid| {
+                evs.iter()
+                    .find(|p| p["memory_id"] == id.to_string())
+                    .map(|p| p["via"].as_str().unwrap().to_string())
+            };
+            let vias: Vec<&str> = evs.iter().map(|p| p["via"].as_str().unwrap()).collect();
+            for want in [re::VIA_AGENT, re::VIA_CHAT, re::VIA_ABSORB, re::VIA_SEED] {
+                assert!(vias.contains(&want), "missing via={want} in {vias:?}");
+            }
+            assert_eq!(via_of(&synced).as_deref(), Some(re::VIA_SYNC));
+            assert_eq!(via_of(&imported_id).as_deref(), Some(re::VIA_IMPORT));
+            assert_eq!(via_of(&h).as_deref(), Some(re::VIA_HALLUCINATE));
+            assert_eq!(evs.len(), 7, "one event per new memory: {vias:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// The `kannaka remember` flow: auto-save off, stamp modality, one
+        /// explicit save. One event, with content (CLI default) and the stamped
+        /// modality — the CLI no longer publishes its own copy.
+        #[test]
+        fn cli_flow_publishes_once_with_content_and_stamped_modality() {
+            let (mut sys, dir, cap) = system("re_cli");
+            sys.set_write_origin(re::VIA_CLI);
+            sys.set_auto_save(false);
+            let id = sys.remember_with_importance("ship the release on friday", 0.8).unwrap();
+            assert!(cap.lock().unwrap().is_empty(), "nothing before the save");
+            if let Some(hrm) = sys
+                .engine
+                .store
+                .as_any_mut()
+                .downcast_mut::<crate::hrm_store::HrmStore>()
+            {
+                hrm.set_modality(&id, crate::medium::types::Modality::Audio);
+            }
+            sys.save().unwrap();
+            sys.save().unwrap();
+            let evs = events(&cap);
+            assert_eq!(evs.len(), 1, "no double publish: {evs:?}");
+            assert_eq!(evs[0]["via"], "cli");
+            assert_eq!(evs[0]["content"], "ship the release on friday");
+            assert_eq!(evs[0]["modality"], "audio");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn configured_levels_apply_to_every_origin() {
+            let (mut sys, dir, cap) = system("re_levels");
+            sys.set_remember_level(Some(RememberLevel::Content));
+            sys.remember("with content").unwrap();
+            assert_eq!(events(&cap)[0]["content"], "with content");
+
+            sys.set_remember_level(Some(RememberLevel::Off));
+            sys.set_write_origin(re::VIA_CLI);
+            sys.remember("silenced").unwrap();
+            assert_eq!(events(&cap).len(), 1, "off is off, CLI included");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_failing_sink_never_fails_the_write() {
+            let dir = temp_dir("re_failing");
+            let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+            sys.set_agent_id("a".into());
+            sys.set_remember_level(None);
+            let tries = Arc::new(Mutex::new(0usize));
+            sys.set_remember_sink(Box::new(Failing(tries.clone())));
+            let id = sys.remember("still stored").unwrap();
+            assert_eq!(*tries.lock().unwrap(), 1);
+            assert!(sys.engine.store.get(&id).unwrap().is_some());
+            // And it is on disk: a fresh system loads it.
+            drop(sys);
+            let again = KannakaMemorySystem::init(dir.clone()).unwrap();
+            assert!(again.engine.store.get(&id).unwrap().is_some());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// The real sink against a port nothing listens on: the connect is
+        /// refused, the write succeeds, and the retry window stops a second dial.
+        #[test]
+        fn nats_down_does_not_fail_the_write() {
+            let dir = temp_dir("re_nats_down");
+            let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+            sys.set_agent_id("a".into());
+            sys.set_remember_level(None);
+            sys.set_nats_url("nats://127.0.0.1:1".into());
+            let started = std::time::Instant::now();
+            let a = sys.remember("first while down").unwrap();
+            let b = sys.remember("second while down").unwrap();
+            assert!(sys.engine.store.get(&a).unwrap().is_some());
+            assert!(sys.engine.store.get(&b).unwrap().is_some());
+            assert!(sys.event_transport().is_none());
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn no_agent_id_publishes_nothing() {
+            let dir = temp_dir("re_noagent");
+            let mut sys = KannakaMemorySystem::init(dir.clone()).unwrap();
+            sys.set_agent_id(String::new());
+            let cap: Captured = Arc::default();
+            sys.set_remember_sink(Box::new(Capture(cap.clone())));
+            sys.remember("anonymous").unwrap();
+            assert!(cap.lock().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn readonly_store_publishes_nothing() {
+            let (mut sys, dir, cap) = system("re_readonly");
+            if let Some(hrm) = sys
+                .engine
+                .store
+                .as_any_mut()
+                .downcast_mut::<crate::hrm_store::HrmStore>()
+            {
+                hrm.set_readonly(true);
+            }
+            sys.remember("never persisted").unwrap();
+            assert!(cap.lock().unwrap().is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A dream announces the rows it leaves behind as `via = "dream"`,
+        /// once each, every one resolving to a stored memory — and the
+        /// pre-dream writes keep their own origin. Prints the per-dream count
+        /// so the volume is visible in test output.
+        #[test]
+        fn dream_rows_are_announced_once_as_dream() {
+            let (mut sys, dir, cap) = system("re_dream");
+            for i in 0..40 {
+                sys.remember(&format!("the tide pool holds creature number {} of cluster {}", i, i % 4))
+                    .unwrap();
+            }
+            let before = events(&cap).len();
+            assert_eq!(before, 40);
+            let count_before = sys.engine.store.count();
+            sys.dream().unwrap();
+            sys.dream_lite().unwrap();
+            let evs = events(&cap);
+            let dream_evs: Vec<&serde_json::Value> = evs[before..].iter().collect();
+            eprintln!(
+                "[#1057] 40 memories, deep+lite dream: {} remember event(s) (store {} -> {})",
+                dream_evs.len(),
+                count_before,
+                sys.engine.store.count()
+            );
+            let mut seen = std::collections::HashSet::new();
+            for p in &dream_evs {
+                assert_eq!(p["via"], re::VIA_DREAM, "{p}");
+                assert!(p.get("content").is_none(), "dream default is ids");
+                let id: Uuid = p["memory_id"].as_str().unwrap().parse().unwrap();
+                assert!(seen.insert(id), "published twice: {id}");
+                let mem = sys.engine.store.get(&id).unwrap().expect("transient row announced");
+                assert!(!mem.content.starts_with("__consolidation"), "bookkeeping row announced");
+            }
+            assert!(evs[..before].iter().all(|p| p["via"] == re::VIA_API));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
