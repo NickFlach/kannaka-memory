@@ -259,7 +259,16 @@ pub enum NatsError {
     Serialize(String),
     Disconnected(String),
     KvNotFound(String),
+    /// A memory event this process already knows the broker refuses (#1071).
+    /// The refusal was printed once when it was learned, and this repeat was
+    /// not sent. Callers that log publish failures should skip this variant,
+    /// or the one loud line becomes a line per event.
+    DeniedAgain(String),
 }
+
+/// How a [`NatsError::DeniedAgain`] ends when rendered. For callers that only
+/// hold the error as a string (the remember sink's `Result<(), String>`).
+pub const DENIED_AGAIN_SUFFIX: &str = "(reported once)";
 
 impl std::fmt::Display for NatsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -270,6 +279,10 @@ impl std::fmt::Display for NatsError {
             Self::Serialize(msg) => write!(f, "NATS serialize: {msg}"),
             Self::Disconnected(msg) => write!(f, "NATS disconnected: {msg}"),
             Self::KvNotFound(key) => write!(f, "NATS KV key not found: {key}"),
+            Self::DeniedAgain(subject) => write!(
+                f,
+                "NATS publish to \"{subject}\" not sent: the broker refused it earlier in this process {DENIED_AGAIN_SUFFIX}"
+            ),
         }
     }
 }
@@ -505,6 +518,48 @@ fn names_denied_stream_create(msg: &str) -> bool {
 /// process, this must become per-identity rather than per-process.
 static PROCESS_STREAM_CREATE_DENIED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// The broker's verdict on one memory-event subject, learned once (#1071).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventVerdict {
+    Accepted,
+    Denied,
+}
+
+/// Verdicts keyed by (explicit identity, subject). Like
+/// `PROCESS_STREAM_CREATE_DENIED`, the broker judges the identity, not the
+/// socket, so one answer covers every transport in the process. The key carries
+/// the explicit user because the hive bridge connects as a different principal
+/// from the ambient swarm identity in the same process.
+static EVENT_VERDICTS: std::sync::OnceLock<Mutex<HashMap<String, EventVerdict>>> =
+    std::sync::OnceLock::new();
+
+fn event_verdict_key(explicit: Option<&(String, String)>, subject: &str) -> String {
+    let user = explicit.map(|(u, _)| u.as_str()).unwrap_or("");
+    format!("{user}\u{0}{subject}")
+}
+
+fn event_verdict(key: &str) -> Option<EventVerdict> {
+    let map = EVENT_VERDICTS.get_or_init(|| Mutex::new(HashMap::new()));
+    map.lock().unwrap_or_else(|p| p.into_inner()).get(key).copied()
+}
+
+/// Record a verdict unless one is already held. Returns true when this call
+/// recorded it, so two threads racing on a first publish print one line.
+fn record_event_verdict(key: &str, verdict: EventVerdict) -> bool {
+    let map = EVENT_VERDICTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|p| p.into_inner());
+    if map.contains_key(key) {
+        return false;
+    }
+    map.insert(key.to_string(), verdict);
+    true
+}
+
+/// Whether a subject carries memory events, the ones #1071 confirms.
+fn is_memory_event_subject(subject: &str) -> bool {
+    subject.starts_with("KANNAKA.events.memory.")
+}
 
 /// Record the broker's refusal for the whole process (#969).
 fn note_stream_create_denied() {
@@ -2374,6 +2429,67 @@ impl SwarmTransport {
         conn.confirm("publish", subject)
     }
 
+    /// Publish a memory event, learning the broker's verdict once per
+    /// (identity, subject) per process (#1071).
+    ///
+    /// Memory events failed silently twice: `serve` lacked the recall grant
+    /// for about two weeks (#1056), and O1's `radio` user had no remember
+    /// grant at all. The broker refuses a PUB with an async `-ERR` after
+    /// `publish_raw` has already returned `Ok`, so a denial looked exactly
+    /// like "nothing happened".
+    ///
+    /// The first event on a subject goes out on a short-lived probe connection
+    /// with the same credentials, followed by a PING. The probe never carries a
+    /// subscription, so confirming there cannot consume a request meant for a
+    /// subscriber. That matters because `swarm serve` publishes its recall
+    /// event on the transport that delivers `KANNAKA.recall.<agent>`, where
+    /// [`Self::publish_raw_confirmed`] is unsafe.
+    ///
+    /// - Accepted: every later event on the subject takes plain `publish_raw`.
+    ///   An allowed identity pays one extra handshake per subject per process.
+    /// - Denied: one `[nats]` line naming the subject, the error returned once,
+    ///   and [`NatsError::DeniedAgain`] for every later event, which is not
+    ///   sent. Not sending matters: each refused PUB leaves an async `-ERR` on
+    ///   the shared socket, where a later confirmed publish could read it as a
+    ///   refusal of its own subject. The verdict holds for the life of the
+    ///   process, like `PROCESS_STREAM_CREATE_DENIED`; restart after fixing
+    ///   the ACL.
+    /// - Probe could not connect: fall back to `publish_raw`, which buffers on
+    ///   disconnect, and ask again on the next event.
+    pub fn publish_memory_event(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+        let key = event_verdict_key(self.explicit_creds.as_ref(), subject);
+        match event_verdict(&key) {
+            Some(EventVerdict::Accepted) => return self.publish_raw(subject, payload),
+            Some(EventVerdict::Denied) => {
+                return Err(NatsError::DeniedAgain(subject.to_string()))
+            }
+            None => {}
+        }
+        let mut probe = match handshake(&self.url, self.explicit_creds.as_ref()) {
+            Ok(conn) => conn,
+            Err(_) => return self.publish_raw(subject, payload),
+        };
+        write_pub(&mut probe, subject, payload)?;
+        match probe.confirm("publish", subject) {
+            Ok(()) => {
+                record_event_verdict(&key, EventVerdict::Accepted);
+                Ok(())
+            }
+            Err(NatsError::Protocol(m)) if is_permissions_error(&m) => {
+                if record_event_verdict(&key, EventVerdict::Denied) {
+                    eprintln!(
+                        "[nats] memory events denied: {m}. This process will not publish \"{subject}\" \
+                         again; grant it publish in the broker ACL and restart."
+                    );
+                }
+                Err(NatsError::Protocol(m))
+            }
+            // The PUB may already have landed, so do not resend it on the
+            // shared transport. No verdict: ask again next time.
+            Err(e) => Err(e),
+        }
+    }
+
     /// Replace a dead `Conn` with a freshly-handshaked one, in place and
     /// through interior mutability — the counterpart to `reconnect()` for
     /// callers that hold `&self`. Rate-limited to one dial per
@@ -2732,7 +2848,11 @@ impl SwarmTransport {
         let payload = event.payload_json();
         let bytes = serde_json::to_vec(&payload)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        self.publish_raw(&subject, &bytes)
+        if is_memory_event_subject(&subject) {
+            self.publish_memory_event(&subject, &bytes)
+        } else {
+            self.publish_raw(&subject, &bytes)
+        }
     }
 
     /// Read the presence records of peers that are actually live right now.
@@ -5719,5 +5839,245 @@ mod tests {
 
         // Plain publish on the same probing connection still works.
         p.publish("KANNAKA.inbox.audit", b"{}").unwrap();
+    }
+}
+
+/// #1071: memory events learn the broker's verdict once per (identity,
+/// subject), on a probe connection that never carries a subscription.
+///
+/// Each test uses its own agent id, because verdicts are process-global and the
+/// test binary is one process.
+#[cfg(test)]
+mod memory_event_confirm_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// What the fake broker does when a PUB arrives.
+    #[derive(Clone, Copy)]
+    enum OnPub {
+        /// Accept everything.
+        Accept,
+        /// Refuse memory-event PUBs with a Permissions Violation, sent ahead
+        /// of the PONG for the client's next PING, as nats-server orders it.
+        DenyEvents,
+        /// Accept, but first deliver a request on connection 0's subscription,
+        /// so it arrives between the event PUB and the confirm PONG.
+        InjectRequestOnMain,
+    }
+
+    struct Broker {
+        url: String,
+        /// Connections accepted so far.
+        conns: Arc<AtomicUsize>,
+        /// Every PUB as (connection index, subject).
+        pubs: Arc<Mutex<Vec<(usize, String)>>>,
+    }
+
+    fn broker(on_pub: OnPub) -> Broker {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let url = format!("nats://{}", listener.local_addr().unwrap());
+        let conns = Arc::new(AtomicUsize::new(0));
+        let pubs: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        // Connection 0's socket and its most recent SUB sid, for injection.
+        let main: Arc<Mutex<Option<(TcpStream, String)>>> = Arc::new(Mutex::new(None));
+        let (c, p) = (conns.clone(), pubs.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { return };
+                let idx = c.fetch_add(1, Ordering::SeqCst);
+                let (p, main) = (p.clone(), main.clone());
+                std::thread::spawn(move || {
+                    let _ = sock.write_all(
+                        b"INFO {\"server_id\":\"fake\",\"proto\":1,\"max_payload\":1048576}\r\n",
+                    );
+                    let mut reader = BufReader::new(sock.try_clone().expect("clone"));
+                    let mut pending_err: Option<String> = None;
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let l = line.trim_end();
+                        if l.starts_with("PING") {
+                            if let Some(e) = pending_err.take() {
+                                let _ = sock.write_all(e.as_bytes());
+                            }
+                            let _ = sock.write_all(b"PONG\r\n");
+                        } else if let Some(rest) = l.strip_prefix("SUB ") {
+                            let sid = rest.split_whitespace().last().unwrap_or("1").to_string();
+                            if idx == 0 {
+                                *main.lock().unwrap() =
+                                    Some((sock.try_clone().expect("clone"), sid));
+                            }
+                        } else if let Some(rest) = l.strip_prefix("PUB ") {
+                            let subject = rest.split_whitespace().next().unwrap_or("").to_string();
+                            let mut body = String::new();
+                            let _ = reader.read_line(&mut body);
+                            p.lock().unwrap().push((idx, subject.clone()));
+                            let event = subject.starts_with("KANNAKA.events.memory.");
+                            match on_pub {
+                                OnPub::Accept => {}
+                                OnPub::DenyEvents if event => {
+                                    pending_err = Some(format!(
+                                        "-ERR 'Permissions Violation for Publish to \"{subject}\"'\r\n"
+                                    ));
+                                }
+                                OnPub::DenyEvents => {}
+                                OnPub::InjectRequestOnMain if event => {
+                                    if let Some((m, sid)) = main.lock().unwrap().as_mut() {
+                                        let msg = format!(
+                                            "MSG KANNAKA.recall.t1071 {sid} _INBOX.req.1 7\r\nrequest\r\n"
+                                        );
+                                        let _ = m.write_all(msg.as_bytes());
+                                        let _ = m.flush();
+                                    }
+                                    // Let the injected MSG land before our PONG.
+                                    std::thread::sleep(Duration::from_millis(50));
+                                }
+                                OnPub::InjectRequestOnMain => {}
+                            }
+                        }
+                        let _ = sock.flush();
+                    }
+                });
+            }
+        });
+        Broker { url, conns, pubs }
+    }
+
+    fn recall(agent: &str) -> EventPayload<'_> {
+        EventPayload::MemoryRecall {
+            agent_id: agent,
+            memory_ids: &[],
+            similarities: &[],
+            top_k: 8,
+            query_sha256: "ab",
+            via: "test",
+        }
+    }
+
+    /// Wait for the broker thread to record `n` PUBs on `subject`; the
+    /// client's write returns before the broker has read it. Counting only
+    /// `subject` matters: `connect` sends JetStream PUBs of its own.
+    fn wait_for_pubs(b: &Broker, subject: &str, n: usize) -> Vec<(usize, String)> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = b.pubs.lock().unwrap().clone();
+            let on_subject = seen.iter().filter(|(_, s)| s == subject).count();
+            if on_subject >= n || Instant::now() > deadline {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_denied_event_errors_once_then_is_not_sent_again() {
+        let b = broker(OnPub::DenyEvents);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let subject = "KANNAKA.events.memory.t1071-deny.recall";
+
+        let first = t.publish_event(recall("t1071-deny")).expect_err("first must report the denial");
+        assert!(
+            matches!(&first, NatsError::Protocol(m) if m.contains(subject) && is_permissions_error(m)),
+            "first error must name the subject and the violation: {first}"
+        );
+
+        let conns_after_first = b.conns.load(Ordering::SeqCst);
+        assert_eq!(conns_after_first, 2, "main connection plus one probe");
+
+        for _ in 0..3 {
+            let again = t.publish_event(recall("t1071-deny")).expect_err("repeat must still be an error");
+            assert!(matches!(again, NatsError::DeniedAgain(ref s) if s == subject), "got {again}");
+            assert!(again.to_string().ends_with(DENIED_AGAIN_SUFFIX));
+        }
+        assert_eq!(
+            b.conns.load(Ordering::SeqCst),
+            conns_after_first,
+            "a known denial must not open more probes"
+        );
+        let pubs = wait_for_pubs(&b, subject, 1);
+        assert_eq!(
+            pubs.iter().filter(|(_, s)| s == subject).count(),
+            1,
+            "only the probe's PUB may reach the wire: {pubs:?}"
+        );
+
+        // Other subjects on the same transport are untouched by the verdict.
+        t.publish("KANNAKA.work.t1071", b"{}").expect("unrelated publish");
+    }
+
+    #[test]
+    fn an_accepted_event_takes_the_plain_path_afterwards() {
+        let b = broker(OnPub::Accept);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let subject = "KANNAKA.events.memory.t1071-allow.recall";
+
+        t.publish_event(recall("t1071-allow")).expect("accepted");
+        t.publish_event(recall("t1071-allow")).expect("accepted");
+        t.publish_event(recall("t1071-allow")).expect("accepted");
+
+        assert_eq!(b.conns.load(Ordering::SeqCst), 2, "one probe, ever, for this subject");
+        let pubs = wait_for_pubs(&b, subject, 3);
+        let conns: Vec<usize> = pubs.iter().filter(|(_, s)| s == subject).map(|(c, _)| *c).collect();
+        assert_eq!(conns, vec![1, 0, 0], "probe first, then the main connection: {pubs:?}");
+    }
+
+    /// The acceptance test from #1071: a request that arrives between the event
+    /// PUB and the confirm PONG must still reach the subscriber. `swarm serve`
+    /// publishes its recall event on the transport whose subscription delivers
+    /// requests.
+    #[test]
+    fn a_request_arriving_mid_confirm_reaches_the_subscriber() {
+        let b = broker(OnPub::InjectRequestOnMain);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let mut sub = t.subscribe("KANNAKA.recall.t1071").expect("subscribe");
+        sub.set_timeout(Some(Duration::from_secs(3))).unwrap();
+
+        t.publish_event(recall("t1071-race")).expect("event accepted");
+
+        let got = sub.next_message().expect("the request must not be consumed by the confirm");
+        assert_eq!(got.subject, "KANNAKA.recall.t1071");
+        assert_eq!(got.payload, b"request");
+    }
+
+    /// Control for the test above: confirming on the SUBSCRIBED connection,
+    /// which is what a naive fix would do, loses the request. Without this the
+    /// test above could pass for a reason unrelated to the probe connection.
+    #[test]
+    fn control_confirming_on_the_subscribed_connection_loses_the_request() {
+        let b = broker(OnPub::InjectRequestOnMain);
+        let t = SwarmTransport::connect(&b.url).expect("handshake");
+        let mut sub = t.subscribe("KANNAKA.recall.t1071").expect("subscribe");
+        sub.set_timeout(Some(Duration::from_millis(500))).unwrap();
+
+        t.publish_raw_confirmed("KANNAKA.events.memory.t1071-control.recall", b"{}")
+            .expect("accepted");
+
+        assert!(
+            sub.next_message().is_none(),
+            "control failed: confirm on the subscribed socket did not eat the request, \
+             so the mid-confirm test proves nothing"
+        );
+    }
+
+    #[test]
+    fn verdicts_are_per_identity() {
+        let a = event_verdict_key(Some(&("hive".into(), "x".into())), "KANNAKA.events.memory.p.remember");
+        let b = event_verdict_key(None, "KANNAKA.events.memory.p.remember");
+        assert_ne!(a, b);
+        assert!(record_event_verdict(&a, EventVerdict::Denied));
+        assert!(!record_event_verdict(&a, EventVerdict::Accepted), "first verdict stands");
+        assert_eq!(event_verdict(&a), Some(EventVerdict::Denied));
+        assert_eq!(event_verdict(&b), None, "another identity has not been judged");
+    }
+
+    #[test]
+    fn only_memory_events_are_gated() {
+        assert!(is_memory_event_subject("KANNAKA.events.memory.prime.remember"));
+        assert!(is_memory_event_subject("KANNAKA.events.memory.prime.forget"));
+        assert!(!is_memory_event_subject("KANNAKA.events.substrate.absorb"));
+        assert!(!is_memory_event_subject("KANNAKA.snapshots.prime.full"));
     }
 }

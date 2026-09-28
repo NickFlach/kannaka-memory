@@ -227,7 +227,7 @@ impl RememberEventSink for NatsRememberSink {
             .ok_or_else(|| format!("NATS unavailable at {}", self.url))?;
         let bytes = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
         transport
-            .publish(subject, &bytes)
+            .publish_memory_event(subject, &bytes)
             .map_err(|e| e.to_string())
     }
 }
