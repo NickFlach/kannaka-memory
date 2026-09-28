@@ -743,6 +743,11 @@ impl KannakaMemorySystem {
             let mut last_err = String::new();
             for (subject, payload) in &events {
                 if let Err(e) = sink.publish(subject, payload) {
+                    // Already reported once by the transport (#1071); a line
+                    // per write would bury the one that matters.
+                    if e.ends_with(crate::nats::DENIED_AGAIN_SUFFIX) {
+                        continue;
+                    }
                     failed += 1;
                     last_err = e;
                 }

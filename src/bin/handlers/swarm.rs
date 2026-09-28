@@ -594,7 +594,10 @@ pub(crate) fn handle_swarm_serve(
                                         via: "daemon",
                                     },
                                 ) {
-                                    eprintln!("[events] Warning: recall event publish failed: {e}");
+                                    // DeniedAgain was already reported once (#1071).
+                                    if !matches!(e, kannaka_memory::nats::NatsError::DeniedAgain(_)) {
+                                        eprintln!("[events] Warning: recall event publish failed: {e}");
+                                    }
                                 }
                             }
                         }
