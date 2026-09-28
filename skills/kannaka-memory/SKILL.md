@@ -70,7 +70,10 @@ Flags:
   substrate so kannaka-prime can fold it into the 96-class collective HRM.
 
 Side effects: publishes `KANNAKA.memory.new` + `KANNAKA.events.memory.<agent>.remember`
-(durable JetStream event for replay).
+(durable JetStream event for replay). Since #1057 every write path (agent loop, dreams,
+absorb, sync, import, …) publishes the remember event too, tagged `via`. Payload level:
+`[events] remember = off|ids|content` (env `KANNAKA_EVENTS_REMEMBER`). Unset: the CLI
+sends `content`, and every other origin sends `ids` (no text, plus `content_sha256`).
 
 ### recall — resonance query
 

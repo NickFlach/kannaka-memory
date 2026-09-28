@@ -116,7 +116,10 @@ pub(crate) fn handle_chat(
                     };
                     ("slash", t)
                 }
-                "remember" if !rest.is_empty() => match sys.remember(rest) {
+                "remember" if !rest.is_empty() => match sys.with_write_origin(
+                    kannaka_memory::remember_events::VIA_CHAT,
+                    |s| s.remember(rest),
+                ) {
                     Ok(id) => ("slash", format!("[absorbed {id}]")),
                     Err(e) => ("error", format!("remember error: {e}")),
                 },

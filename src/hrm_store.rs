@@ -454,6 +454,11 @@ pub struct HrmStore {
     /// can share one HRM with the sole writer (swarm join) without the
     /// last-writer-wins clobbering that silently drops absorbed memories.
     readonly: bool,
+    /// #1057: ids of memories `insert`/`absorb` created since the last
+    /// `take_new_memory_ids`. The system drains it after a successful save and
+    /// publishes one `MemoryRemember` per id still present — the one place
+    /// every write path passes through.
+    new_ids: Vec<Uuid>,
 }
 
 impl HrmStore {
@@ -520,6 +525,7 @@ impl HrmStore {
             dirty: false,
             retrieval_dirty: false,
             readonly: Self::env_readonly(),
+            new_ids: Vec::new(),
         }
     }
 
@@ -599,6 +605,7 @@ impl HrmStore {
                     dirty: false,
                     retrieval_dirty: false,
                     readonly: Self::env_readonly(),
+                    new_ids: Vec::new(),
                 };
                 // Populate flat medium view for backward compat (observe, coherence matrix, etc.)
                 store.sync_medium_from_chiral();
@@ -633,6 +640,7 @@ impl HrmStore {
                     dirty: false,
                     retrieval_dirty: false,
                     readonly: Self::env_readonly(),
+                    new_ids: Vec::new(),
                 };
                 // #1008: the flat path needs the same clamp as the chiral one.
                 store.clamp_persisted_energy();
@@ -2898,8 +2906,20 @@ impl MediumBackend for HrmStore {
         // Add to cache
         self.memory_cache.insert(id, memory);
         self.mark_dirty();
+        self.new_ids.push(id);
 
         Ok(id)
+    }
+
+    fn take_new_memory_ids(&mut self) -> Vec<Uuid> {
+        let ids = std::mem::take(&mut self.new_ids);
+        // A read-only store never persists (`save_medium` is a no-op), so its
+        // writes are not memories anyone else will ever see. Announcing them
+        // would put ids on the bus that resolve to nothing.
+        if self.readonly {
+            return Vec::new();
+        }
+        ids
     }
 
     fn hrm_path(&self) -> Option<&std::path::Path> {
@@ -3139,6 +3159,9 @@ impl MediumBackend for HrmStore {
                 self.rebuild_cache().ok();
             }
             self.mark_dirty();
+            // The parent only: ADR-0049 facets are internal atoms, not
+            // statements anyone wrote (#1057).
+            self.new_ids.push(id);
             Ok(id)
         } else {
             let id = self.medium.store(content, importance, &self.pipeline)
@@ -3147,6 +3170,7 @@ impl MediumBackend for HrmStore {
                 self.rebuild_cache().ok();
             }
             self.mark_dirty();
+            self.new_ids.push(id);
             Ok(id)
         }
     }

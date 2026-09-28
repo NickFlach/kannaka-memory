@@ -1862,6 +1862,14 @@ fn main() {
         0,
         &cfg.swarm.nats_url,
     ));
+    // #1057: remember events from the shared write path carry this node's
+    // agent id and honour `[events] remember` (env KANNAKA_EVENTS_REMEMBER,
+    // already folded into cfg). Unset = per-origin default.
+    sys.set_agent_id(cfg.agent.id.clone());
+    match kannaka_memory::remember_events::RememberLevel::parse(&cfg.events.remember) {
+        Ok(level) => sys.set_remember_level(level),
+        Err(e) => eprintln!("[events] {e}; using the per-origin default"),
+    }
 
     // ADR-0031 Phase 3: install the dream-cycle auto-triage policy from config
     // (opt-in via `config set triage.enabled true`). When enabled with a
@@ -1886,6 +1894,7 @@ fn main() {
                 process::exit(1);
             }
             warn_if_readonly("remember");
+            sys.set_write_origin(kannaka_memory::remember_events::VIA_CLI);
             // `remember --batch FILE`: NDJSON, one object per line —
             // {"content": "...", "importance": 0.5, "category": "note",
             //  "observed": "2023-05-10T09:00:00Z", "effective": "...", "expires": "..."}.
@@ -1912,6 +1921,9 @@ fn main() {
                 // One save at the end, not two per item (see set_auto_save),
                 // and one cache rebuild at the end, not one per item (bulk mode).
                 sys.set_auto_save(false);
+                // "Never publishes to NATS" (above) covers the #1057 remember
+                // events too, whatever `[events] remember` says.
+                sys.set_remember_level(Some(kannaka_memory::remember_events::RememberLevel::Off));
                 kannaka_memory::hrm_store::HrmStore::begin_bulk();
                 for (lineno, line) in text.lines().enumerate() {
                     let line = line.trim();
@@ -2087,6 +2099,12 @@ fn main() {
             // Importance applies with or without --category. Pre-fix,
             // `kannaka remember "x" --importance 0.9` without --category
             // silently dropped the importance on the floor.
+            //
+            // #1057: no save inside remember. The explicit save below runs
+            // after the modality/temporal stamps, and that save is what
+            // publishes the remember event — so the event carries the
+            // modality this command set, and exactly one event is sent.
+            sys.set_auto_save(false);
             let result = if let Some(cat) = category {
                 sys.remember_with_category(&text, &cat, importance.unwrap_or(0.5))
             } else {
@@ -2122,9 +2140,10 @@ fn main() {
                     // Best-effort: publish new memory to NATS for swarm sync.
                     // Honors --nats-url > KANNAKA_NATS_URL (folded into cfg
                     // at load) > config.toml — pre-fix the flag was ignored
-                    // on this path.
-                    let nats_url = resolve_nats_url(&args[command_start..], 0, &cfg.swarm.nats_url);
-                    if let Some(transport) = try_nats_connect(&nats_url) {
+                    // on this path. The URL is the one `set_nats_url` gave the
+                    // system above; #1057 reuses the connection the save's
+                    // remember event already opened rather than dialling twice.
+                    if let Some(transport) = sys.event_transport() {
                         if let Ok(Some(mem)) = sys.engine.store.get(&id) {
                             let agent_id = &cfg.agent.id;
                             // Sender's authoritative counts at publish time —
@@ -2174,25 +2193,10 @@ fn main() {
                                 );
                             }
 
-                            // ADR-0028 Phase 1 — also publish to the durable
-                            // event-sourced stream so the memory survives any
-                            // future HRM corruption / format change / nuke.
-                            // Best-effort: if JetStream isn't set up (no
-                            // `events init` run yet) the publish still goes
-                            // to the subject — it just won't persist. Once
-                            // streams exist, every remember lands durably.
-                            let modality_str = modality.to_string();
-                            if let Err(e) = transport.publish_event(
-                                kannaka_memory::nats::EventPayload::MemoryRemember {
-                                    agent_id,
-                                    memory_id: &id,
-                                    content: &text,
-                                    importance: importance.unwrap_or(0.5) as f32,
-                                    modality: &modality_str,
-                                },
-                            ) {
-                                eprintln!("[events] Warning: event publish failed: {e}");
-                            }
+                            // ADR-0028 Phase 1's `MemoryRemember` is no longer
+                            // published here: `sys.save()` above published it
+                            // from the shared write path (#1057), once, with
+                            // `via = "cli"` and content by default.
 
                             // ADR-0027 Phase 1: optional substrate-absorb
                             // event. Wave-signature-only — class_index +
@@ -2819,7 +2823,11 @@ fn main() {
                         continue;
                     }
                     let content = w.to_memory_content();
-                    match sys.remember_with_category(&content, "research", w.ingest_importance()) {
+                    let ingest_result = sys.with_write_origin(
+                        kannaka_memory::remember_events::VIA_RESEARCH,
+                        |s| s.remember_with_category(&content, "research", w.ingest_importance()),
+                    );
+                    match ingest_result {
                         Ok(id) => {
                             if let Some(hrm) =
                                 sys.engine
@@ -5649,7 +5657,10 @@ fn main() {
                                                                 if admit_import {
                                                                     // Bound as a local so the mutable borrow of `sys`
                                                                     // ends here and `sys.save()` can run in the arm below.
-                                                                    let insert_result = sys.engine.store.insert(mem);
+                                                                    let insert_result = sys.with_write_origin(
+                                                                        kannaka_memory::remember_events::VIA_SYNC,
+                                                                        |s| s.engine.store.insert(mem),
+                                                                    );
                                                                     match insert_result {
                                                                         Ok(_) => {
                                                                             // #8: commit the pending promotion ONLY after the

@@ -11,6 +11,8 @@ pub(crate) mod fs_util;
 pub mod bridge;
 pub mod observe;
 pub mod openclaw;
+/// #1057: `MemoryRemember` from the shared write path — levels, origins, sink.
+pub mod remember_events;
 pub mod codebook;
 /// ADR-0049 facet decomposition — pure, deterministic compound→atomic split.
 pub mod facet;
