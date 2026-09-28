@@ -1815,7 +1815,9 @@ fn main() {
         process::exit(1);
     }
 
-    // Resolve data directory: KANNAKA_DATA_DIR env > config.hrm.path parent > ~/.kannaka
+    // Resolve data directory: config.hrm.path parent > KANNAKA_DATA_DIR env > ~/.kannaka.
+    // `load()` already pulled an hrm.path that escapes an explicit
+    // KANNAKA_DATA_DIR back inside it (#1067), so this parent is that dir.
     let dir = if !cfg.hrm.path.is_empty() {
         let hrm = PathBuf::from(&cfg.hrm.path);
         hrm.parent()

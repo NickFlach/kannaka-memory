@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### `KANNAKA_DATA_DIR` wins over an absolute `hrm.path` outside it (#1067)
+
+A store dir's `config.toml` carries an absolute `hrm.path` (e.g. `/home/opc/.kannaka/kannaka.hrm`).
+Copy the dir, point `KANNAKA_DATA_DIR` at the copy, and kannaka opened the **original** `.hrm`:
+backups, forensic copies and experiment exports read the live store, and writes could land there too.
+
+Now, when `KANNAKA_DATA_DIR` is set and `hrm.path` is absolute and not inside it, the store resolves to
+`<KANNAKA_DATA_DIR>/<file name of hrm.path>`, with one stderr notice naming both paths. "Inside" is
+checked lexically and after canonicalizing both directories, so a symlinked data dir still counts as
+inside. A data dir holding a symlink to an `.hrm` elsewhere is still honoured. A relative `hrm.path`
+now resolves against the data dir for every consumer, not only the store open. Before, the CLI's
+store directory took the path's bare parent, which is `""` for `kannaka.hrm`.
+
+- **No `KANNAKA_DATA_DIR`:** behaviour unchanged.
+- **Opt-out:** `KANNAKA_ALLOW_EXTERNAL_HRM=1` restores the configured path, for a deployment that
+  deliberately keeps its `.hrm` outside an explicit data dir.
+- **In memory only:** the resolution applies in `KannakaConfig::load()` and is never written back.
+  `config set` and init keep writing what the file says.
+- **`kannaka init` still writes an absolute `hrm.path`.** Older binaries mis-resolve a relative one,
+  and `kannaka-grid`'s skywave deploy asserts the absolute form. With this fix, a copy is already
+  portable under `KANNAKA_DATA_DIR`.
+
+kannaka-wave#15's symlink scratch dir is no longer needed once this is released.
+
 ### Every write path publishes `MemoryRemember`; ids by default (#1057)
 
 `KANNAKA.events.memory.<agent>.remember` used to come from one place, the `kannaka remember`
