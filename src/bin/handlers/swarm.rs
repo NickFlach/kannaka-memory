@@ -251,6 +251,16 @@ pub(crate) fn handle_swarm_serve(
     // Per-requester rate limit — the actual abuse control. On by default; the
     // numbers are printed so the knob is discoverable from the log alone.
     let mut rate_limit = kannaka_memory::serve_guard::ServeRateLimiter::from_env();
+    // KANNAKA_ASK_LOG: opt-in record of what each served ask showed the model.
+    // Built once here; `None` costs nothing on the ask path.
+    let ask_log = kannaka_memory::ask_log::AskLog::from_env();
+    if let Some(log) = &ask_log {
+        eprintln!(
+            "[swarm serve] ask log: {} ({}; holds memory text, stays local)",
+            log.path().display(),
+            kannaka_memory::ask_log::ENV
+        );
+    }
     if llm_ok {
         eprintln!(
             "[swarm serve] rate limit: {}/requester/hour, {}/hour total (KANNAKA_SERVE_ASKS_PER_HOUR, KANNAKA_SERVE_ASKS_PER_HOUR_TOTAL)",
@@ -475,8 +485,16 @@ pub(crate) fn handle_swarm_serve(
             match sub.next_event() {
                 SubEvent::Msg(msg) => {
                     _handle_serve_msg(
-                        sys, cfg, &transport, &msg, /*is_broadcast*/ false, threshold, &agent_id,
-                        &nats_url, &mut rate_limit,
+                        sys,
+                        cfg,
+                        &transport,
+                        &msg,
+                        /*is_broadcast*/ false,
+                        threshold,
+                        &agent_id,
+                        &nats_url,
+                        &mut rate_limit,
+                        ask_log.as_ref(),
                     );
                 }
                 SubEvent::Timeout => {}
@@ -501,6 +519,7 @@ pub(crate) fn handle_swarm_serve(
                         &agent_id,
                         &nats_url,
                         &mut rate_limit,
+                        ask_log.as_ref(),
                     );
                 }
                 SubEvent::Timeout => {}
@@ -791,6 +810,7 @@ fn _handle_serve_msg(
     serve_agent_id: &str,
     nats_url: &str,
     rate_limit: &mut kannaka_memory::serve_guard::ServeRateLimiter,
+    ask_log: Option<&kannaka_memory::ask_log::AskLog>,
 ) {
     let reply_to = match &msg.reply_to {
         Some(r) => r.clone(),
@@ -1000,6 +1020,7 @@ fn _handle_serve_msg(
     // not be able to exhaust the node's hour on everybody else's behalf.
     rate_limit.commit_global(now_secs);
 
+    let started = std::time::Instant::now();
     let result = match mode {
         kannaka_memory::agent::RemoteAskMode::Attention => {
             kannaka_memory::agent::ask_attention(sys, cfg, text)
@@ -1018,7 +1039,7 @@ fn _handle_serve_msg(
     // --agent-id override when given), not unconditionally cfg.agent.id.
     // `mode_used` is additive: an old client ignores it, a new one uses its
     // presence to tell a mode-aware peer from a pre-#746 one.
-    let reply = match result {
+    let reply = match &result {
         Ok(r) => serde_json::json!({
             "from": serve_agent_id,
             "text": r.text,
@@ -1045,13 +1066,78 @@ fn _handle_serve_msg(
         Err(e) => Err(e),
     };
     // Fall back to the original transport if the fresh connect failed.
-    if reply_result.is_err() {
-        if let Err(e2) = transport.reply(&reply_to, reply_payload.as_bytes()) {
-            eprintln!("[swarm serve] reply failed (fresh + fallback): {e2}");
-            return;
-        }
+    let reply_ok = match reply_result {
+        Ok(()) => true,
+        Err(_) => match transport.reply(&reply_to, reply_payload.as_bytes()) {
+            Ok(()) => true,
+            Err(e2) => {
+                eprintln!("[swarm serve] reply failed (fresh + fallback): {e2}");
+                false
+            }
+        },
+    };
+    if reply_ok {
+        eprintln!("[swarm serve] replied on {reply_to}");
     }
-    eprintln!("[swarm serve] replied on {reply_to}");
+
+    // KANNAKA_ASK_LOG: record what the model was shown and what it said, with
+    // the reply outcome. Runs after the reply so it never delays the caller,
+    // and only when the log is on — `None` leaves the path above as it was.
+    if let Some(log) = ask_log {
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let (answer_text, answer_sha256, error, context) = match &result {
+            Ok(r) => (
+                Some(r.text.clone()),
+                Some(kannaka_memory::remember_events::content_sha256(&r.text)),
+                None,
+                kannaka_memory::ask_log::context_from(&r.context),
+            ),
+            Err(e) => (None, None, Some(format!("{e}")), Vec::new()),
+        };
+        // Config-only, no network: the same resolution the ask itself used.
+        let client = kannaka_memory::agent::client_from_config(cfg).ok();
+        // Mirrors the wrappers dispatched above: attention / no_recall take the
+        // chat cap, the full scan takes the client default.
+        let max_tokens = match mode {
+            kannaka_memory::agent::RemoteAskMode::Attention
+            | kannaka_memory::agent::RemoteAskMode::NoRecall => {
+                kannaka_memory::agent::CHAT_MAX_TOKENS
+            }
+            kannaka_memory::agent::RemoteAskMode::FullRecall => {
+                kannaka_memory::agent::DEFAULT_MAX_TOKENS
+            }
+        };
+        let channel = if is_broadcast {
+            "ask.broadcast".to_string()
+        } else {
+            format!("ask.{serve_agent_id}")
+        };
+        log.append(&kannaka_memory::ask_log::AskLogEntry {
+            ts_ms: kannaka_memory::ask_log::now_ms(),
+            agent_id: serve_agent_id.to_string(),
+            channel,
+            from_declared: Some(from.to_string()),
+            reply_inbox: Some(reply_to.clone()),
+            requester_key: Some(requester.clone()),
+            mode_used: mode.mode_used_name().to_string(),
+            query_sha256: kannaka_memory::remember_events::content_sha256(text),
+            query_text: Some(text.to_string()),
+            context,
+            provider: client
+                .as_ref()
+                .map(|c| c.provider().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            model: client.as_ref().map(|c| c.model().to_string()),
+            model_digest: None,
+            temperature: None,
+            max_tokens,
+            answer_text,
+            answer_sha256,
+            error,
+            latency_ms,
+            reply_ok,
+        });
+    }
 }
 
 #[cfg(not(feature = "nats"))]

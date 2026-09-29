@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added — `KANNAKA_ASK_LOG`: what the model was shown, one JSON line per ask (ADR-0065 item 1)
+
+Set `KANNAKA_ASK_LOG=<path>` and `kannaka swarm serve` and `kannaka ask` append one JSON line per
+answered ask: the question, every memory folded into the prompt (id, content hash, similarity,
+strength, text), the provider and model this node resolved, the `max_tokens` cap, the answer or
+the error, latency, and whether the reply reached the caller. Unset, nothing is built and the ask
+path is unchanged.
+
+This is work item 1 of the self-improving dogfood loop,
+[ADR-0065](docs/adr/ADR-0065-self-improving-dogfood-loop.md) (#1083): the grader described there
+reads this file, and it needs the memories the prompt actually carried rather than a recall re-run
+later against a medium that has moved on.
+
+- **The file holds memory text verbatim.** It is created `0600` on unix and nothing publishes it;
+  keep it under the data dir.
+- **`temperature` and `model_digest` are always `null`.** The clients send no temperature and are
+  not told which weights they reached, so the log says so rather than guessing.
+- **`from_declared`, `reply_inbox` and `requester_key` are copied from the envelope**, not
+  verified — NATS attaches no publisher identity to a message.
+- A reply that fails on both transports is still logged, with `reply_ok: false`.
+- `TurnResult` gains `context: Vec<RecallResult>` (the surfaced memories, in prompt order) and
+  `LlmClient` gains `provider()` / `model()`. Callers constructing `TurnResult` by hand set the
+  new field.
+
 ## [0.16.13] — 2026-09-28
 
 ### Added — `kannaka mail`, read-only (ADR-0064 P0, #1060)
@@ -2052,7 +2076,7 @@ Comms-hardening release: full-pass bug hunt over the NATS transport, the CLI
 arg surface, and the serve daemons.
 
 ### Added
-- **`kannaka ask` now pulses the constellation** — successful local asks
+- **`kannaka ask` now pulses the constellation** — successful local asks Work item 1 of ADR-0065 (#1083).
   publish a best-effort `KANNAKA.activity.<agent_id>` event
   (`{agent_id, display_name, kind:"ask", preview, ts}`) after the answer is
   printed, so asks show up in `swarm tail` and the statusline PULSE marquee.

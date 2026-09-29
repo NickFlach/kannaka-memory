@@ -13,6 +13,8 @@ pub mod observe;
 pub mod openclaw;
 /// #1057: `MemoryRemember` from the shared write path — levels, origins, sink.
 pub mod remember_events;
+/// Opt-in `KANNAKA_ASK_LOG`: one JSON line per answered ask, context + answer.
+pub mod ask_log;
 pub mod codebook;
 /// ADR-0049 facet decomposition — pure, deterministic compound→atomic split.
 pub mod facet;
