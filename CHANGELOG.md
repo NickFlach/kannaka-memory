@@ -2,29 +2,22 @@
 
 ## [Unreleased]
 
-### Added — `KANNAKA_ASK_LOG`: what the model was shown, one JSON line per ask (ADR-0065 item 1)
+### Memory events are confirmed once per subject, on a probe connection; a denied subject is loud (#1072, closes #1071)
 
-Set `KANNAKA_ASK_LOG=<path>` and `kannaka swarm serve` and `kannaka ask` append one JSON line per
-answered ask: the question, every memory folded into the prompt (id, content hash, similarity,
-strength, text), the provider and model this node resolved, the `max_tokens` cap, the answer or
-the error, latency, and whether the reply reached the caller. Unset, nothing is built and the ask
-path is unchanged.
+`KANNAKA.events.memory.<agent>.{remember,recall,forget}` used to go out unconfirmed: a NATS ACL denial arrived as an async `-ERR` after `publish_event` had already returned `Ok`, so the write or recall succeeded and the event silently never existed. That happened twice, for two weeks each (`serve` and `recall` events, #1056; the radio's `remember` events, #1074). Now the first event on each subject goes out on a short-lived probe connection with the same credentials and is confirmed there, so no `MSG` meant for a subscriber can be consumed by the confirm; an accepted subject takes the fast path afterwards, a denied one prints one `[nats] memory events denied …` line naming the subject and is not retried until restart, and an unanswered probe backs off for `REVIVE_INTERVAL` without recording a verdict.
 
-This is work item 1 of the self-improving dogfood loop,
-[ADR-0065](docs/adr/ADR-0065-self-improving-dogfood-loop.md) (#1083): the grader described there
-reads this file, and it needs the memories the prompt actually carried rather than a recall re-run
-later against a medium that has moved on.
+### `recall --remote` connects for request/reply only, without the JetStream probes (#1081, closes #1080)
 
-- **The file holds memory text verbatim.** It is created `0600` on unix and nothing publishes it;
-  keep it under the data dir.
-- **`temperature` and `model_digest` are always `null`.** The clients send no temperature and are
-  not told which weights they reached, so the log says so rather than guessing.
-- **`from_declared`, `reply_inbox` and `requester_key` are copied from the envelope**, not
-  verified — NATS attaches no publisher identity to a message.
-- A reply that fails on both transports is still logged, with `reply_ok: false`.
-- `TurnResult` gains `context: Vec<RecallResult>` (the surfaced memories, in prompt order) and
-  `LlmClient` gains `provider()` / `model()`. Callers constructing `TurnResult` by hand set the
-  new field.
+`connect()` probes `$JS.API.STREAM.CREATE` and `MSG.GET` for every authenticated identity. A seat denied both gets no reply to either, so each probe waited out `JS_API_TIMEOUT`. `recall --remote` is plain request/reply on `KANNAKA.recall.<id>` and learns nothing from them, so it now uses `SwarmTransport::connect_request_only`. Measured on O1 under the scoped `observatory` user, five alternating runs each, same query: median 9.256 s → 1.042 s per recall, and the two Publish Violations per call in the hub journal → zero. `swarm brief --peers` keeps the full connect (it reads presence through JetStream).
+
+### `KANNAKA_ASK_LOG`: one JSON line per served ask, with the context the model was shown (#1084, ADR-0065 item 1)
+
+Opt-in and off by default. Set `KANNAKA_ASK_LOG=<path>` and `kannaka swarm serve` (and `kannaka ask`) append one JSON line per answered ask: the question, every memory folded into the prompt (id, content hash, similarity, strength, text), the provider and model this node resolved, the `max_tokens` cap, the answer or the error, latency, and whether the reply reached the caller. The file is created `0600` and holds memory text verbatim, so it belongs under the data dir; nothing publishes it. `temperature` and `model_digest` are always `null` (the clients send no temperature and are not told which weights they reached), `from_declared`/`reply_inbox`/`requester_key` are copied from the envelope unverified, an LLM-error row carries `context: []`, and the CLI path logs only asks that produced an answer. Unset, nothing is built and the ask path is unchanged. This is work item 1 of the self-improving dogfood loop, [ADR-0065](docs/adr/ADR-0065-self-improving-dogfood-loop.md) (#1083): the grader there reads this file rather than re-running a recall against a medium that has moved on. `TurnResult` gains `context: Vec<RecallResult>` and `LlmClient` gains `provider()` / `model()`.
+
+### Ops — NATS users for the observatory and the radio, and the mail-deny on every scoped user (#1074, #1079, #1082)
+
+`config/nats-accounts.conf`, applied on O1 by editing the live config and reloading, so not part of the binary: `radio` may publish `KANNAKA.events.memory.kannaka-prime.remember` (its `hear` writes, ids-only, #1074); a new `observatory` user may publish `KANNAKA.recall.kannaka-prime` and inboxes only (#1079, for kannaka-observatory#146); and every scoped user carries the deny of `KANNAKA.events.nostr.>` and `KANNAKA.events.hive.>` on publish and subscribe, matching the hub (#1082).
+
 
 ## [0.16.13] — 2026-09-28
 
