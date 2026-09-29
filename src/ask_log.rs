@@ -22,7 +22,9 @@
 //! are always `null`: the clients in `crate::agent` send no temperature and
 //! learn nothing about the weights they hit, so writing anything else would be
 //! a guess dressed as a measurement. `provider` and `model` are what this
-//! node's own `[llm]` resolves to, not what the request asked for.
+//! node's own `[llm]` resolves to, not what the request asked for. `arm` is
+//! `null` unless `swarm serve` was started with `KANNAKA_SERVE_PROMPT_ARM`
+//! set, so a row from an unlabelled run cannot be mistaken for a study arm.
 //!
 //! **What is caller-declared.** `from_declared`, `reply_inbox` and
 //! `requester_key` are copied from the request envelope. NATS attaches no
@@ -156,6 +158,10 @@ pub struct AskLogEntry {
     pub requester_key: Option<String>,
     /// The recall mode that actually ran, in `mode_used` vocabulary.
     pub mode_used: String,
+    /// The prompt arm `swarm serve` ran under (`KANNAKA_SERVE_PROMPT_ARM`, by
+    /// its value name). `None` when the variable was unset, and always `None`
+    /// on the CLI path, which has no such switch.
+    pub arm: Option<String>,
     /// Hex SHA-256 of the question.
     pub query_sha256: String,
     /// The question. `None` when a caller chose to keep it out of the file.
@@ -216,6 +222,7 @@ mod tests {
             reply_inbox: Some("_INBOX.abc".to_string()),
             requester_key: Some("peer".to_string()),
             mode_used: "attention".to_string(),
+            arm: None,
             query_sha256: content_sha256("why?"),
             query_text: Some("why?".to_string()),
             context: Vec::new(),
@@ -272,6 +279,7 @@ mod tests {
         assert!(first["error"].is_null());
         assert!(first["temperature"].is_null());
         assert!(first["model_digest"].is_null());
+        assert!(first["arm"].is_null(), "unset arm must serialize as null, not be omitted");
         assert_eq!(first["max_tokens"], 512);
         assert_eq!(first["reply_ok"], true);
         for key in [

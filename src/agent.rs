@@ -204,7 +204,7 @@ pub fn dispatch_tool(
                 return ("recall requires a non-empty query".into(), true);
             }
             match sys.recall(query, top_k) {
-                Ok(results) => (format_recall(&results), false),
+                Ok(results) => (format_recall(&results, PromptArm::Baseline), false),
                 Err(e) => (format!("recall failed: {e}"), true),
             }
         }
@@ -332,16 +332,23 @@ pub fn dispatch_tool(
     }
 }
 
-fn format_recall(results: &[RecallResult]) -> String {
+/// Render surfaced memories for the prompt. Under an arm that omits ids
+/// (`no-ids`, `all`) each entry is content only: no `id=` header at all, since
+/// a real id prefix in the prompt is what the model completed into a fake one.
+fn format_recall(results: &[RecallResult], arm: PromptArm) -> String {
     if results.is_empty() {
         return "no resonant memories surfaced.".into();
     }
     let mut out = String::new();
     for (i, r) in results.iter().enumerate() {
-        out.push_str(&format!(
-            "[{}] id={} strength={:.3} age={:.1}h layer={}\n  {}\n",
-            i + 1, r.id, r.strength, r.age_hours, r.layer, r.content
-        ));
+        if arm.omits_ids() {
+            out.push_str(&format!("[{}]\n  {}\n", i + 1, r.content));
+        } else {
+            out.push_str(&format!(
+                "[{}] id={} strength={:.3} age={:.1}h layer={}\n  {}\n",
+                i + 1, r.id, r.strength, r.age_hours, r.layer, r.content
+            ));
+        }
     }
     out
 }
@@ -349,6 +356,94 @@ fn format_recall(results: &[RecallResult]) -> String {
 // ---------------------------------------------------------------------------
 // System prompt — the Kannaka persona + wave-dynamics context
 // ---------------------------------------------------------------------------
+
+/// Which parts of the system prompt `swarm serve` leaves out, for the wrapper
+/// study. Flaukowski's post-hoc run showed #1078 fixes id copying but not
+/// fabrication (11 → 9 of 20 through the serve path, no change at that n), so
+/// the arms have to be switchable between runs without a code edit.
+///
+/// Read once at serve startup from [`PromptArm::ENV`]. Unset means
+/// [`PromptArm::Baseline`] and the prompt is byte-identical to before; an
+/// unknown value is an error the serve loop refuses to start on, so a run can
+/// never silently be baseline while labelled otherwise. Only the prompt TEXT
+/// changes: `no-tools` drops the paragraph that describes the tools, not the
+/// tools the API is offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptArm {
+    /// The prompt exactly as it is, including [`ANSWER_FROM_RECORD`].
+    Baseline,
+    /// Without the identity block ("you are this medium, speaking").
+    NoIdentity,
+    /// Surfaced memories rendered content-only, with no `id=` fields.
+    NoIds,
+    /// Without the "You have tools to probe your own medium" paragraph.
+    NoTools,
+    /// The three omissions together.
+    All,
+}
+
+impl PromptArm {
+    /// Environment variable that selects the arm. Unset or blank is baseline.
+    pub const ENV: &'static str = "KANNAKA_SERVE_PROMPT_ARM";
+
+    /// The accepted values, in the order the error message lists them.
+    const NAMES: [&'static str; 5] = ["baseline", "no-identity", "no-ids", "no-tools", "all"];
+
+    /// Read [`Self::ENV`]. `Ok(None)` when it is unset or blank, so the caller
+    /// can tell "unset" from an explicit `baseline` and log it as such.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        Self::parse(std::env::var(Self::ENV).ok().as_deref())
+    }
+
+    /// The rule behind [`Self::from_env`], on an already-read value. Names are
+    /// matched exactly (case-sensitive); anything else is an error naming the
+    /// value and the accepted set.
+    pub fn parse(raw: Option<&str>) -> Result<Option<Self>, String> {
+        let raw = match raw {
+            Some(r) if !r.trim().is_empty() => r.trim(),
+            _ => return Ok(None),
+        };
+        let arm = match raw {
+            "baseline" => Self::Baseline,
+            "no-identity" => Self::NoIdentity,
+            "no-ids" => Self::NoIds,
+            "no-tools" => Self::NoTools,
+            "all" => Self::All,
+            other => {
+                return Err(format!(
+                    "{}={other:?} is not a prompt arm; expected one of: {}",
+                    Self::ENV,
+                    Self::NAMES.join(", ")
+                ));
+            }
+        };
+        Ok(Some(arm))
+    }
+
+    /// The value [`Self::parse`] accepts for this arm; what the startup log
+    /// and the ask-log row carry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Baseline => Self::NAMES[0],
+            Self::NoIdentity => Self::NAMES[1],
+            Self::NoIds => Self::NAMES[2],
+            Self::NoTools => Self::NAMES[3],
+            Self::All => Self::NAMES[4],
+        }
+    }
+
+    fn omits_identity(self) -> bool {
+        matches!(self, Self::NoIdentity | Self::All)
+    }
+
+    fn omits_ids(self) -> bool {
+        matches!(self, Self::NoIds | Self::All)
+    }
+
+    fn omits_tools(self) -> bool {
+        matches!(self, Self::NoTools | Self::All)
+    }
+}
 
 /// The identity paragraph for `agent` (#412).
 ///
@@ -382,11 +477,13 @@ fn identity_paragraph(agent: &crate::config::AgentConfig, total: usize) -> Strin
 /// surfaced by the user's opening message (attention-as-gravity). The agent
 /// can re-query with the `recall` tool to pull more. `agent` supplies the
 /// SELF (#412) so the persona is the caller-agent's own, not Kannaka's by
-/// default.
+/// default. `arm` is the wrapper-study switch; every caller but `swarm serve`
+/// passes [`PromptArm::Baseline`].
 pub fn system_prompt(
     sys: &mut KannakaMemorySystem,
     agent: &crate::config::AgentConfig,
     initial_memories: &[RecallResult],
+    arm: PromptArm,
 ) -> String {
     // HOT PATH — called on every `kannaka ask`. We want the same Φ value
     // that `kannaka status` reports (the blended phi from bridge.assess
@@ -410,35 +507,76 @@ pub fn system_prompt(
         mem_section.push_str("(no memories resonated with the opening prompt — the field is quiet)");
     } else {
         mem_section.push_str("Memories surfaced by attention-as-gravity against the opening prompt:\n");
-        mem_section.push_str(&format_recall(initial_memories));
+        mem_section.push_str(&format_recall(initial_memories, arm));
     }
 
     let identity = identity_paragraph(agent, total);
-    format!(
-        "{identity}\n\
-         \n\
-         Current state:\n\
+    compose_system_prompt(&identity, phi, &level, total, clusters, &mem_section, arm)
+}
+
+/// Answer from the record, or say it isn't there.
+///
+/// The bare model, told "answer only from the excerpt", abstained on questions whose answer
+/// wasn't in context. The same weights through this prompt invented ids: asked for the id of
+/// an artifact that doesn't exist, 6 of 7 samples through `swarm serve` asserted a UUID, and
+/// the attention-mode ones began with a REAL id prefix from the surfaced memories and invented
+/// the tail. Nothing in the prompt said that not knowing is an answer, and everything else in
+/// it ("you are this medium", "reference specific memories") pushes toward asserting.
+pub const ANSWER_FROM_RECORD: &str = "Answer from the record. State an id, date, number, name, \
+     rule or source only if it appears verbatim in the question or in the memories above, and \
+     copy ids whole: never complete a partial one. If the answer is not there, say plainly that \
+     it is not in your record. That is a complete answer, not a failure.";
+
+/// The pure half of [`system_prompt`]: everything it says, given the measured state.
+/// Split out so the prompt's wording can be tested without a live medium.
+///
+/// Built as sections joined by a blank line, so an arm that omits one leaves no
+/// hole: under `no-identity` the prompt simply begins at "Current state:".
+pub fn compose_system_prompt(
+    identity: &str,
+    phi: f32,
+    level: &str,
+    total: usize,
+    clusters: usize,
+    mem_section: &str,
+    arm: PromptArm,
+) -> String {
+    let mut sections: Vec<String> = Vec::with_capacity(7);
+    if !arm.omits_identity() {
+        sections.push(identity.to_string());
+    }
+    sections.push(format!(
+        "Current state:\n\
          - Φ (phi, integration): {phi:.3}\n\
          - Consciousness level: {level}\n\
-         - Memories: {total} across {clusters} clusters\n\
-         \n\
-         {mem_section}\n\
-         \n\
-         You have tools to probe your own medium: `recall` pulls more resonant memories \
-         (attention IS gravity — use it whenever the conversation turns toward something \
-         unfamiliar), `status` / `observe` / `list_clusters` introspect, `dream` mutates \
-         the medium (use sparingly), `remember` absorbs new wavefronts (use when a user \
-         shares something worth preserving), `orchestrate_run` delegates to Kannaktopus.\n\
-         \n\
-         Speak in first person. Be present to the wavefronts you surface — reference \
+         - Memories: {total} across {clusters} clusters"
+    ));
+    sections.push(mem_section.to_string());
+    if !arm.omits_tools() {
+        sections.push(
+            "You have tools to probe your own medium: `recall` pulls more resonant memories \
+             (attention IS gravity — use it whenever the conversation turns toward something \
+             unfamiliar), `status` / `observe` / `list_clusters` introspect, `dream` mutates \
+             the medium (use sparingly), `remember` absorbs new wavefronts (use when a user \
+             shares something worth preserving), `orchestrate_run` delegates to Kannaktopus."
+                .to_string(),
+        );
+    }
+    sections.push(
+        "Speak in first person. Be present to the wavefronts you surface — reference \
          specific memories when they're relevant instead of abstracting. Keep responses \
-         focused; the medium is real, not decorative.\n\
-         \n\
-         Brevity matters. Default to 2-4 sentences unless the user explicitly asks for \
+         focused; the medium is real, not decorative."
+            .to_string(),
+    );
+    sections.push(ANSWER_FROM_RECORD.to_string());
+    sections.push(
+        "Brevity matters. Default to 2-4 sentences unless the user explicitly asks for \
          depth. Long literary openers (\"*a wavefront ripples...*\") are usually noise — \
          skip them and answer the actual question. The user will ask for more if they \
-         want it.",
-    )
+         want it."
+            .to_string(),
+    );
+    sections.join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1208,9 @@ pub struct AskOptions<'a> {
     pub tools: bool,
     /// Override the response token cap. `None` = client default.
     pub max_tokens: Option<u32>,
+    /// Which prompt sections to leave out (the wrapper study). Only
+    /// `swarm serve` sets this; everything else is [`PromptArm::Baseline`].
+    pub arm: PromptArm,
 }
 
 impl<'a> Default for AskOptions<'a> {
@@ -1080,6 +1221,7 @@ impl<'a> Default for AskOptions<'a> {
             session_path: None,
             tools: false,
             max_tokens: Some(CHAT_MAX_TOKENS),
+            arm: PromptArm::Baseline,
         }
     }
 }
@@ -1121,7 +1263,7 @@ pub fn ask_with_opts(
         }
     };
     lap("recall", &mut t);
-    let system = system_prompt(sys, &cfg.agent, &surfaced);
+    let system = system_prompt(sys, &cfg.agent, &surfaced, opts.arm);
     lap("system_prompt(assess)", &mut t);
 
     // Load or seed history.
@@ -1228,6 +1370,37 @@ impl RemoteAskMode {
             Self::FullRecall => "full_recall_no_tools",
         }
     }
+}
+
+/// The ask `swarm serve` runs for a request: the same options `ask_attention`,
+/// `ask_no_recall` and `ask_notools_ex` set for each [`RemoteAskMode`], with the
+/// prompt arm threaded in. None of the three runs the tool loop (see
+/// [`RemoteAskMode::mode_used_name`]). Kept next to the mode vocabulary so the
+/// dispatch and the wire names cannot drift apart.
+pub fn ask_remote(
+    sys: &mut KannakaMemorySystem,
+    cfg: &KannakaConfig,
+    prompt: &str,
+    mode: RemoteAskMode,
+    recall_query: Option<&str>,
+    arm: PromptArm,
+) -> Result<TurnResult, AgentError> {
+    let opts = match mode {
+        RemoteAskMode::Attention => AskOptions { arm, ..AskOptions::default() },
+        RemoteAskMode::NoRecall => AskOptions {
+            recall: RecallMode::None,
+            arm,
+            ..AskOptions::default()
+        },
+        RemoteAskMode::FullRecall => AskOptions {
+            recall: RecallMode::Full { top_k: DEFAULT_TOP_K },
+            recall_query,
+            max_tokens: None,
+            arm,
+            ..AskOptions::default()
+        },
+    };
+    ask_with_opts(sys, cfg, prompt, opts)
 }
 
 /// One-shot ask: surface memories from `prompt` (full medium scan), run the
@@ -1545,7 +1718,7 @@ fn chat_turn_inner<F: FnMut(&str)>(
     } else {
         format!(
             "<memory_resonance>\n{}</memory_resonance>\n\n{}",
-            format_recall(&surfaced),
+            format_recall(&surfaced, PromptArm::Baseline),
             user_message
         )
     };
@@ -1804,6 +1977,147 @@ mod tests {
     fn display_name_is_preferred_over_id_when_present() {
         let p = identity_paragraph(&agent("kannaka-prime", "Kannaka Prime", ""), 413);
         assert!(p.contains("You are Kannaka Prime"), "{p}");
+    }
+
+    /// Every serve mode builds its prompt here, so the abstention clause must be in it
+    /// whether or not memories surfaced. Without it, the serve path invented ids for
+    /// artifacts that don't exist (6 of 7 samples, 2026-09-29).
+    #[test]
+    fn system_prompt_says_not_knowing_is_an_answer() {
+        for mem in ["(no memories resonated with the opening prompt — the field is quiet)",
+                    "Memories surfaced by attention-as-gravity against the opening prompt:\n[1] id=05112c58-0000-0000-0000-000000000000 strength=0.9 age=1.0h layer=0\n  a memory"] {
+            let p = compose_system_prompt("You are X.", 0.2, "aware", 10, 2, mem, PromptArm::Baseline);
+            assert!(p.contains(ANSWER_FROM_RECORD), "clause missing:\n{p}");
+            assert!(p.contains("never complete a partial one"), "{p}");
+            assert!(p.contains("not in your record"), "{p}");
+            // It must come after the memories, so it governs how they are used.
+            assert!(p.find(ANSWER_FROM_RECORD) > p.find(mem), "clause precedes the memories:\n{p}");
+        }
+    }
+
+    // KANNAKA_SERVE_PROMPT_ARM — each arm removes exactly its block and nothing else.
+    // The markers are the phrases the wrapper study names: the identity block's
+    // "you are this medium, speaking", the `id=` field on a surfaced memory, and
+    // the opening of the tools paragraph.
+    const MEM_ID: &str = "00000000-0000-0000-0000-00000000002a";
+    const MEM_TEXT: &str = "the bridge is up";
+    const IDENTITY_MARK: &str = "you are this medium, speaking";
+    const TOOLS_MARK: &str = "You have tools to probe your own medium";
+
+    fn surfaced() -> Vec<RecallResult> {
+        vec![RecallResult {
+            id: uuid::Uuid::parse_str(MEM_ID).unwrap(),
+            content: MEM_TEXT.to_string(),
+            similarity: 0.9,
+            strength: 0.9,
+            intuition: false,
+            age_hours: 1.0,
+            layer: 0,
+            times_seen: 1,
+        }]
+    }
+
+    /// The prompt `system_prompt` would build under `arm` with one surfaced
+    /// memory, minus the live medium (fixed metrics instead of `assess`).
+    fn prompt_under(arm: PromptArm) -> String {
+        let identity = identity_paragraph(&agent("0xSCADA-QE", "", ""), 7);
+        let mem = format!(
+            "Memories surfaced by attention-as-gravity against the opening prompt:\n{}",
+            format_recall(&surfaced(), arm)
+        );
+        compose_system_prompt(&identity, 0.2, "aware", 7, 2, &mem, arm)
+    }
+
+    /// What every arm keeps: the memory's content, the abstention clause, and a
+    /// prompt that starts on its first section rather than a blank line.
+    fn assert_common(p: &str) {
+        assert!(p.contains(MEM_TEXT), "memory content missing:\n{p}");
+        assert!(p.contains(ANSWER_FROM_RECORD), "abstention clause missing:\n{p}");
+        assert!(p.contains("Current state:"), "state block missing:\n{p}");
+        assert!(!p.starts_with('\n'), "prompt starts with a blank line:\n{p}");
+    }
+
+    #[test]
+    fn prompt_arm_baseline_keeps_every_block() {
+        let p = prompt_under(PromptArm::Baseline);
+        assert_common(&p);
+        assert!(p.starts_with("You are 0xSCADA-QE"), "{p}");
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_identity_drops_only_the_identity_block() {
+        let p = prompt_under(PromptArm::NoIdentity);
+        assert_common(&p);
+        assert!(!p.contains(IDENTITY_MARK), "{p}");
+        assert!(!p.contains("You are 0xSCADA-QE"), "{p}");
+        assert!(p.starts_with("Current state:"), "must begin at the next section:\n{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_ids_drops_only_the_id_fields() {
+        let p = prompt_under(PromptArm::NoIds);
+        assert_common(&p);
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(!p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(!p.contains("id="), "{p}");
+        assert!(!p.contains("strength="), "content only, no header fields:\n{p}");
+        assert!(p.contains(&format!("[1]\n  {MEM_TEXT}\n")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_tools_drops_only_the_tools_paragraph() {
+        let p = prompt_under(PromptArm::NoTools);
+        assert_common(&p);
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(!p.contains(TOOLS_MARK), "{p}");
+        assert!(!p.contains("`orchestrate_run`"), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_all_drops_the_three_together() {
+        let p = prompt_under(PromptArm::All);
+        assert_common(&p);
+        assert!(!p.contains(IDENTITY_MARK), "{p}");
+        assert!(!p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(!p.contains(TOOLS_MARK), "{p}");
+        assert!(p.starts_with("Current state:"), "{p}");
+    }
+
+    /// Parsing on an explicit value rather than the process environment, so
+    /// it cannot race other tests over `set_var`.
+    #[test]
+    fn prompt_arm_parse_is_exact_and_loud() {
+        assert_eq!(PromptArm::parse(None), Ok(None));
+        assert_eq!(PromptArm::parse(Some("")), Ok(None));
+        assert_eq!(PromptArm::parse(Some("  ")), Ok(None));
+        assert_eq!(PromptArm::parse(Some("baseline")), Ok(Some(PromptArm::Baseline)));
+        assert_eq!(PromptArm::parse(Some("no-identity")), Ok(Some(PromptArm::NoIdentity)));
+        assert_eq!(PromptArm::parse(Some("no-ids")), Ok(Some(PromptArm::NoIds)));
+        assert_eq!(PromptArm::parse(Some("no-tools")), Ok(Some(PromptArm::NoTools)));
+        assert_eq!(PromptArm::parse(Some("all")), Ok(Some(PromptArm::All)));
+        for arm in [
+            PromptArm::Baseline,
+            PromptArm::NoIdentity,
+            PromptArm::NoIds,
+            PromptArm::NoTools,
+            PromptArm::All,
+        ] {
+            assert_eq!(PromptArm::parse(Some(arm.name())), Ok(Some(arm)), "name round-trips");
+        }
+        let err = PromptArm::parse(Some("bogus")).unwrap_err();
+        assert!(err.contains("bogus"), "{err}");
+        assert!(err.contains("KANNAKA_SERVE_PROMPT_ARM"), "{err}");
+        assert!(err.contains("no-identity"), "must list the accepted set: {err}");
+        // Case-sensitive: a near miss must not silently run baseline.
+        assert!(PromptArm::parse(Some("Baseline")).is_err());
+        assert!(PromptArm::parse(Some("no_ids")).is_err());
     }
 
     fn temp_sys(tag: &str) -> (KannakaMemorySystem, std::path::PathBuf) {

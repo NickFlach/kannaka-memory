@@ -152,6 +152,18 @@ pub(crate) fn handle_swarm_serve(
             }
         }
     }
+    // KANNAKA_SERVE_PROMPT_ARM: which prompt sections this run leaves out (the
+    // wrapper study). Read ONCE, before anything connects, and an unknown value
+    // refuses to start: a run that silently fell back to baseline would be
+    // mislabelled in every row it logged. `None` is unset — baseline, and the
+    // ask-log row says `null` so unset and explicit `baseline` stay distinct.
+    let prompt_arm = match kannaka_memory::agent::PromptArm::from_env() {
+        Ok(arm) => arm,
+        Err(e) => {
+            eprintln!("[swarm serve] {e}");
+            process::exit(1);
+        }
+    };
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
     let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
         Ok(t) => t,
@@ -170,6 +182,14 @@ pub(crate) fn handle_swarm_serve(
     let llm_ok = kannaka_memory::agent::llm_available(cfg);
 
     eprintln!("[swarm serve] agent_id={agent_id}");
+    match prompt_arm {
+        Some(arm) => eprintln!("[swarm serve] prompt arm: {}", arm.name()),
+        None => eprintln!(
+            "[swarm serve] prompt arm: {} ({} unset)",
+            kannaka_memory::agent::PromptArm::Baseline.name(),
+            kannaka_memory::agent::PromptArm::ENV
+        ),
+    }
     if llm_ok {
         eprintln!(
             "[swarm serve] subscribing to {directed} and KANNAKA.ask.broadcast"
@@ -495,6 +515,7 @@ pub(crate) fn handle_swarm_serve(
                         &nats_url,
                         &mut rate_limit,
                         ask_log.as_ref(),
+                        prompt_arm,
                     );
                 }
                 SubEvent::Timeout => {}
@@ -520,6 +541,7 @@ pub(crate) fn handle_swarm_serve(
                         &nats_url,
                         &mut rate_limit,
                         ask_log.as_ref(),
+                        prompt_arm,
                     );
                 }
                 SubEvent::Timeout => {}
@@ -811,6 +833,7 @@ fn _handle_serve_msg(
     nats_url: &str,
     rate_limit: &mut kannaka_memory::serve_guard::ServeRateLimiter,
     ask_log: Option<&kannaka_memory::ask_log::AskLog>,
+    prompt_arm: Option<kannaka_memory::agent::PromptArm>,
 ) {
     let reply_to = match &msg.reply_to {
         Some(r) => r.clone(),
@@ -1021,17 +1044,17 @@ fn _handle_serve_msg(
     rate_limit.commit_global(now_secs);
 
     let started = std::time::Instant::now();
-    let result = match mode {
-        kannaka_memory::agent::RemoteAskMode::Attention => {
-            kannaka_memory::agent::ask_attention(sys, cfg, text)
-        }
-        kannaka_memory::agent::RemoteAskMode::NoRecall => {
-            kannaka_memory::agent::ask_no_recall(sys, cfg, text)
-        }
-        kannaka_memory::agent::RemoteAskMode::FullRecall => {
-            kannaka_memory::agent::ask_notools_ex(sys, cfg, text, recall_q)
-        }
-    };
+    // `ask_remote` runs the wrapper each mode names (attention / no_recall /
+    // full scan without tools) with this run's prompt arm threaded into the
+    // system prompt; unset is baseline.
+    let result = kannaka_memory::agent::ask_remote(
+        sys,
+        cfg,
+        text,
+        mode,
+        recall_q,
+        prompt_arm.unwrap_or(kannaka_memory::agent::PromptArm::Baseline),
+    );
     // The hop budget covers the ANSWER, not the reply write-back: past this
     // point nothing can hire another node on this ask's behalf.
     kannaka_memory::serve_guard::set_serving_hops(None);
@@ -1120,6 +1143,7 @@ fn _handle_serve_msg(
             reply_inbox: Some(reply_to.clone()),
             requester_key: Some(requester.clone()),
             mode_used: mode.mode_used_name().to_string(),
+            arm: prompt_arm.map(|a| a.name().to_string()),
             query_sha256: kannaka_memory::remember_events::content_sha256(text),
             query_text: Some(text.to_string()),
             context,

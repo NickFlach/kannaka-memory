@@ -492,6 +492,8 @@ fn cli_ask_log_entry(
         reply_inbox: None,
         requester_key: None,
         mode_used: mode_used.to_string(),
+        // The arm is a `swarm serve` switch; the CLI always runs the baseline prompt.
+        arm: None,
         query_sha256: content_sha256(prompt),
         query_text: Some(prompt.to_string()),
         context: kannaka_memory::ask_log::context_from(&result.context),
