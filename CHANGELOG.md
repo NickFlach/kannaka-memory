@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### `KANNAKA_SERVE_PROMPT_ARM`: switchable prompt arms for the wrapper study (#TBD)
+### `KANNAKA_SERVE_PROMPT_ARM`: switchable prompt arms for the wrapper study (#1089)
 
 `kannaka swarm serve` reads `KANNAKA_SERVE_PROMPT_ARM` once at startup and builds every served
 prompt under that arm: `baseline` is the prompt as it stands (including #1078's answer-from-record
