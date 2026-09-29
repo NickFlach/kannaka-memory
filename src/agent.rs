@@ -815,6 +815,24 @@ pub enum LlmClient {
 }
 
 impl LlmClient {
+    /// Which backend this client talks to, in `[llm] provider` vocabulary.
+    pub fn provider(&self) -> &'static str {
+        match self {
+            LlmClient::Anthropic(_) => "anthropic",
+            LlmClient::Ollama(_) => "ollama",
+            LlmClient::OpenAI(_) => "openai",
+        }
+    }
+
+    /// The model name requests are sent with (after config defaults applied).
+    pub fn model(&self) -> &str {
+        match self {
+            LlmClient::Anthropic(c) => &c.model,
+            LlmClient::Ollama(c) => &c.model,
+            LlmClient::OpenAI(c) => &c.model,
+        }
+    }
+
     pub fn send(
         &self,
         system: &str,
@@ -985,6 +1003,11 @@ pub struct TurnResult {
     /// Full message trail produced by this turn (assistant + any user tool_result messages).
     /// Push these onto your history to preserve context for the next turn.
     pub new_messages: Vec<Message>,
+    /// The memories that were folded into the prompt for this turn, in prompt
+    /// order. Empty under `RecallMode::None` and on paths that surface nothing.
+    /// Carried out so a caller (`KANNAKA_ASK_LOG`) can record what the model
+    /// was shown; the prompt itself is built from the same vector.
+    pub context: Vec<RecallResult>,
 }
 
 pub struct ToolCallRecord {
@@ -1109,7 +1132,7 @@ pub fn ask_with_opts(
     history.push(Message::user_text(prompt));
 
     // Run the LLM turn — tool loop or single round-trip.
-    let result = if opts.tools {
+    let mut result = if opts.tools {
         run_tool_loop(sys, &client, &system, &mut history)?
     } else {
         let response = match opts.max_tokens {
@@ -1131,9 +1154,13 @@ pub fn ask_with_opts(
             text,
             tool_calls: Vec::new(),
             new_messages: vec![assistant],
+            context: Vec::new(),
         }
     };
     lap("llm_turn", &mut t);
+    // Hand the surfaced memories back to the caller now that the prompt no
+    // longer borrows them. Both branches above start with an empty vector.
+    result.context = surfaced;
 
     if let Some(path) = opts.session_path {
         let _ = save_session(path, &history);
@@ -1543,6 +1570,7 @@ fn chat_turn_inner<F: FnMut(&str)>(
         text,
         tool_calls: Vec::new(),
         new_messages: vec![Message::assistant(blocks)],
+        context: surfaced,
     })
 }
 
@@ -1578,7 +1606,14 @@ fn run_tool_loop(
                 _ => None,
             }).collect::<Vec<_>>().join("\n");
             let new_messages = history[trail_start..].to_vec();
-            return Ok(TurnResult { text, tool_calls, new_messages });
+            // Recall happens before the loop; the caller that surfaced the
+            // memories (`ask_with_opts`) fills `context` in afterwards.
+            return Ok(TurnResult {
+                text,
+                tool_calls,
+                new_messages,
+                context: Vec::new(),
+            });
         }
 
         // Execute each tool call and send results back in one user message.

@@ -370,6 +370,19 @@ pub(crate) fn handle_ask(
             no_tools, remote_timeout_secs, quiet_tools, mode);
     }
 
+    // For KANNAKA_ASK_LOG: the mode name the served path would report, and the
+    // max_tokens cap each branch below runs with.
+    let (mode_used, max_tokens) = if no_recall {
+        ("no_recall", kannaka_memory::agent::CHAT_MAX_TOKENS)
+    } else if full_recall && no_tools {
+        ("full_recall_no_tools", kannaka_memory::agent::DEFAULT_MAX_TOKENS)
+    } else if full_recall {
+        ("full_recall", kannaka_memory::agent::DEFAULT_MAX_TOKENS)
+    } else {
+        ("attention", kannaka_memory::agent::CHAT_MAX_TOKENS)
+    };
+    let started = std::time::Instant::now();
+
     let result = if no_recall {
         // No memory context — fastest possible round-trip.
         kannaka_memory::agent::ask_no_recall(sys, cfg, &prompt)
@@ -432,6 +445,18 @@ pub(crate) fn handle_ask(
                 process::exit(2);
             }
             println!("{}", result.text);
+            // KANNAKA_ASK_LOG: opt-in record of the context and the answer.
+            // Unset, `from_env` is `None` and nothing below runs.
+            if let Some(log) = kannaka_memory::ask_log::AskLog::from_env() {
+                log.append(&cli_ask_log_entry(
+                    cfg,
+                    &prompt,
+                    &result,
+                    mode_used,
+                    max_tokens,
+                    started.elapsed(),
+                ));
+            }
             // Best-effort pulse so local asks show up in the swarm-tail /
             // statusline activity feed. Runs AFTER the answer is printed
             // so the user never waits on NATS; failures never affect the
@@ -442,6 +467,47 @@ pub(crate) fn handle_ask(
             eprintln!("agent error: {e}");
             process::exit(1);
         }
+    }
+}
+
+/// One `KANNAKA_ASK_LOG` row for a local `kannaka ask` answer. There is no
+/// envelope on this path, so the only identity recorded is this node's own,
+/// and `reply_ok` is true because the answer was just printed.
+fn cli_ask_log_entry(
+    cfg: &KannakaConfig,
+    prompt: &str,
+    result: &kannaka_memory::agent::TurnResult,
+    mode_used: &str,
+    max_tokens: u32,
+    latency: std::time::Duration,
+) -> kannaka_memory::ask_log::AskLogEntry {
+    use kannaka_memory::remember_events::content_sha256;
+    // Config-only, no network: the same resolution the ask itself used.
+    let client = kannaka_memory::agent::client_from_config(cfg).ok();
+    kannaka_memory::ask_log::AskLogEntry {
+        ts_ms: kannaka_memory::ask_log::now_ms(),
+        agent_id: cfg.agent.id.clone(),
+        channel: "cli".to_string(),
+        from_declared: Some(cfg.agent.id.clone()),
+        reply_inbox: None,
+        requester_key: None,
+        mode_used: mode_used.to_string(),
+        query_sha256: content_sha256(prompt),
+        query_text: Some(prompt.to_string()),
+        context: kannaka_memory::ask_log::context_from(&result.context),
+        provider: client
+            .as_ref()
+            .map(|c| c.provider().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        model: client.as_ref().map(|c| c.model().to_string()),
+        model_digest: None,
+        temperature: None,
+        max_tokens,
+        answer_text: Some(result.text.clone()),
+        answer_sha256: Some(content_sha256(&result.text)),
+        error: None,
+        latency_ms: latency.as_millis() as u64,
+        reply_ok: true,
     }
 }
 
