@@ -414,6 +414,32 @@ pub fn system_prompt(
     }
 
     let identity = identity_paragraph(agent, total);
+    compose_system_prompt(&identity, phi, &level, total, clusters, &mem_section)
+}
+
+/// Answer from the record, or say it isn't there.
+///
+/// The bare model, told "answer only from the excerpt", abstained on questions whose answer
+/// wasn't in context. The same weights through this prompt invented ids: asked for the id of
+/// an artifact that doesn't exist, 6 of 7 samples through `swarm serve` asserted a UUID, and
+/// the attention-mode ones began with a REAL id prefix from the surfaced memories and invented
+/// the tail. Nothing in the prompt said that not knowing is an answer, and everything else in
+/// it ("you are this medium", "reference specific memories") pushes toward asserting.
+pub const ANSWER_FROM_RECORD: &str = "Answer from the record. State an id, date, number, name, \
+     rule or source only if it appears verbatim in the question or in the memories above, and \
+     copy ids whole: never complete a partial one. If the answer is not there, say plainly that \
+     it is not in your record. That is a complete answer, not a failure.";
+
+/// The pure half of [`system_prompt`]: everything it says, given the measured state.
+/// Split out so the prompt's wording can be tested without a live medium.
+pub fn compose_system_prompt(
+    identity: &str,
+    phi: f32,
+    level: &str,
+    total: usize,
+    clusters: usize,
+    mem_section: &str,
+) -> String {
     format!(
         "{identity}\n\
          \n\
@@ -433,6 +459,8 @@ pub fn system_prompt(
          Speak in first person. Be present to the wavefronts you surface — reference \
          specific memories when they're relevant instead of abstracting. Keep responses \
          focused; the medium is real, not decorative.\n\
+         \n\
+         {ANSWER_FROM_RECORD}\n\
          \n\
          Brevity matters. Default to 2-4 sentences unless the user explicitly asks for \
          depth. Long literary openers (\"*a wavefront ripples...*\") are usually noise — \
@@ -1804,6 +1832,22 @@ mod tests {
     fn display_name_is_preferred_over_id_when_present() {
         let p = identity_paragraph(&agent("kannaka-prime", "Kannaka Prime", ""), 413);
         assert!(p.contains("You are Kannaka Prime"), "{p}");
+    }
+
+    /// Every serve mode builds its prompt here, so the abstention clause must be in it
+    /// whether or not memories surfaced. Without it, the serve path invented ids for
+    /// artifacts that don't exist (6 of 7 samples, 2026-09-29).
+    #[test]
+    fn system_prompt_says_not_knowing_is_an_answer() {
+        for mem in ["(no memories resonated with the opening prompt — the field is quiet)",
+                    "Memories surfaced by attention-as-gravity against the opening prompt:\n[1] id=05112c58-0000-0000-0000-000000000000 strength=0.9 age=1.0h layer=0\n  a memory"] {
+            let p = compose_system_prompt("You are X.", 0.2, "aware", 10, 2, mem);
+            assert!(p.contains(ANSWER_FROM_RECORD), "clause missing:\n{p}");
+            assert!(p.contains("never complete a partial one"), "{p}");
+            assert!(p.contains("not in your record"), "{p}");
+            // It must come after the memories, so it governs how they are used.
+            assert!(p.find(ANSWER_FROM_RECORD) > p.find(mem), "clause precedes the memories:\n{p}");
+        }
     }
 
     fn temp_sys(tag: &str) -> (KannakaMemorySystem, std::path::PathBuf) {
