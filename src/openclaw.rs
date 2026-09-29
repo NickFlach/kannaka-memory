@@ -5498,13 +5498,24 @@ mod tests {
             sys.set_agent_id("a".into());
             sys.set_remember_level(None);
             sys.set_nats_url("nats://127.0.0.1:1".into());
-            let started = std::time::Instant::now();
             let a = sys.remember("first while down").unwrap();
+            // The property is that the SECOND write does not pay a connect
+            // timeout: the first dial was refused and the retry window must
+            // stop another. So time that call alone (#1085): bounding the whole
+            // test, first write included, measured store work under load and
+            // tripped on a loaded aarch64 box (87 concurrent tests) while the
+            // test passed alone. 10 s is two DEFAULT_IO_TIMEOUTs, the cost a
+            // second dial would show.
+            let second = std::time::Instant::now();
             let b = sys.remember("second while down").unwrap();
+            let second_took = second.elapsed();
             assert!(sys.engine.store.get(&a).unwrap().is_some());
             assert!(sys.engine.store.get(&b).unwrap().is_some());
             assert!(sys.event_transport().is_none());
-            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            assert!(
+                second_took < std::time::Duration::from_secs(10),
+                "second write took {second_took:?}: the retry window did not stop a dial"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
 

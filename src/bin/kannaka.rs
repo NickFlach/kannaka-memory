@@ -772,7 +772,7 @@ fn usage_lines() -> &'static [&'static str] {
         "",
         "Memory:",
         "  remember \"text\"            Store a memory",
-        "  recall \"query\"             Recall memories (--top-k N)",
+        "  recall \"query\"             Recall memories (--top-k N; --remote asks a daemon, prints a JSON array)",
         "  search \"query\"             Literal text search (--limit N, --json)",
         "  forget <id>               Remove a memory",
         "  triage [--apply]          Prune redundant short-term memories (Ξ-preserving; dry-run default)",
@@ -1231,7 +1231,7 @@ fn is_builtin_subcommand(verb: &str) -> bool {
 #[cfg(feature = "nats")]
 fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
     use std::time::Duration;
-    const USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]";
+    const USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]\n  --remote asks a serving daemon (KANNAKA.recall.<ID>); stdout is the results as a JSON array, so no --json flag exists or is needed";
     let mut top_k = 5usize;
     let mut remote = false;
     let mut agent_id_override: Option<String> = None;
@@ -2274,7 +2274,7 @@ fn main() {
             }
         }
         "recall" => {
-            const RECALL_USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--at RFC3339] [--envelope] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]";
+            const RECALL_USAGE: &str = "Usage: kannaka recall <query> [--top-k N] [--at RFC3339] [--envelope] [--collective] [--remote] [--agent-id ID] [--timeout SECS] [--nats-url URL]\n  --remote asks a serving daemon (KANNAKA.recall.<ID>); stdout is the results as a JSON array, so no --json flag exists or is needed";
             if args.len() < command_start + 2 {
                 eprintln!("{RECALL_USAGE}");
                 process::exit(1);
