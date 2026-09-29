@@ -26,7 +26,7 @@ sed -e "s#0.0.0.0:4222#127.0.0.1:$PORT#" "$CONF_SRC" \
 for v in NATS_PASSWORD NATS_ANON_PASS NATS_WRITER_PASS NATS_SERVE_PASS \
          NATS_RADIO_PASS NATS_PRESENCE_PASS NATS_RESPONDER_PASS NATS_EYE_PASS \
          NATS_KANNAKTOPUS_PASS NATS_UIBRIDGE_PASS NATS_QUEEN_AGENT_PASS \
-         NATS_ATTENTION_PASS NATS_BEACON_PASS NATS_KAX_BRIDGE_PASS; do export "$v=$PASS"; done
+         NATS_ATTENTION_PASS NATS_BEACON_PASS NATS_KAX_BRIDGE_PASS NATS_OBSERVATORY_PASS; do export "$v=$PASS"; done
 
 echo "== config syntax check =="
 nats-server -t -c "$CONF" || { echo "SYNTAX FAIL"; exit 1; }
@@ -67,6 +67,11 @@ check "queen_agent DENIED work queue"    deny  queen_agent "KANNAKA.work.researc
 check "serve publishes recall events"    allow serve       "KANNAKA.events.memory.kannaka-prime.recall"
 check "serve DENIED remember events"     deny  serve       "KANNAKA.events.memory.kannaka-prime.remember"
 check "radio publishes prime remember"   allow radio       "KANNAKA.events.memory.kannaka-prime.remember"
+check "observatory recalls prime"        allow observatory "KANNAKA.recall.kannaka-prime"
+check "observatory DENIED other recall"  deny  observatory "KANNAKA.recall.Kannaka"
+check "observatory DENIED memory publish" deny observatory "KANNAKA.memory.new"
+check "observatory DENIED events"        deny  observatory "KANNAKA.events.memory.kannaka-prime.remember"
+check "observatory DENIED ask"           deny  observatory "KANNAKA.ask.kannaka-prime"
 check "radio DENIED other agent remember" deny radio       "KANNAKA.events.memory.Kannaka.remember"
 check "radio DENIED prime recall events" deny  radio       "KANNAKA.events.memory.kannaka-prime.recall"
 check "radio DENIED prime forget events" deny  radio       "KANNAKA.events.memory.kannaka-prime.forget"
