@@ -31,10 +31,6 @@
 //!
 //! Writes are best-effort. A failure is reported once to stderr and never
 //! again, and it never fails the ask.
-//!
-//! Work item 1 of ADR-0065 (`docs/adr/ADR-0065-self-improving-dogfood-loop.md`,
-//! kannaka-memory#1083): the dogfood loop needs a record of what each served
-//! ask showed the model and what it answered, so a grader can score it.
 
 use std::fs::OpenOptions;
 use std::io::Write;
