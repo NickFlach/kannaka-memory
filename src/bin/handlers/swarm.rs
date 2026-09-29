@@ -338,10 +338,16 @@ pub(crate) fn handle_swarm_serve(
         let _ = s.set_timeout(Some(Duration::from_millis(250)));
     }
 
-    // Daemon-served recall (KANNAKA.recall.<agent_id>): the observatory, OBC
-    // pulses, and the radio DJ can recall against this agent's warm in-memory
-    // HRM instead of paying a 21 MB load + full xi-rerank per CLI call on the
-    // 1-vCPU box. Uses the attention-beam prefilter + recall_with_beam
+    // Daemon-served recall (KANNAKA.recall.<agent_id>): a caller can recall
+    // against this agent's warm in-memory HRM instead of paying a 21 MB load +
+    // full xi-rerank per CLI call on the 1-vCPU box. Only callers that send a
+    // request here reach it: `kannaka recall --remote`, `swarm brief --peers`,
+    // the radio's OBC responder and the command-center MCP recall tool. As of
+    // 2026-09-29 the observatory panel and the radio DJ still run the local
+    // CLI (no daemon, no recall event), and the OBC citizens use
+    // KANNAKA.substrate.recall instead. Each served recall publishes a
+    // `.recall` event (kannaka-wave E-007 counts them), so this list is who the
+    // census sees. Uses the attention-beam prefilter + recall_with_beam
     // (O(beam), sub-second) — the same path the substrate responder uses. swarm
     // serve runs read-only (enforced above), so the observation mutation never
     // persists.
