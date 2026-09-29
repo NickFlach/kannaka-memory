@@ -92,3 +92,4 @@ unused.
 | [0062](ADR-0062-mail-membrane.md) | The mail membrane — the constellation receives its own mail, relays what it sends, and is never a relay for anyone else | Proposed | 2026-09-15 |
 | [0063](ADR-0063-referential-memory.md) | Referential memory — a fact that has an authority must not be held as a wave | Proposed | 2026-09-15 |
 | [0064](ADR-0064-native-mail.md) | Native mail — the mailbox is the record, memory holds the meaning | Proposed | 2026-09-25 |
+| [0065](ADR-0065-self-improving-dogfood-loop.md) | The dogfood loop — improvement compounds only if use is graded and the ruler is frozen | Proposed | 2026-09-29 |
