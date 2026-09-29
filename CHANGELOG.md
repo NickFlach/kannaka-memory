@@ -2076,7 +2076,7 @@ Comms-hardening release: full-pass bug hunt over the NATS transport, the CLI
 arg surface, and the serve daemons.
 
 ### Added
-- **`kannaka ask` now pulses the constellation** — successful local asks Work item 1 of ADR-0065 (#1083).
+- **`kannaka ask` now pulses the constellation** — successful local asks
   publish a best-effort `KANNAKA.activity.<agent_id>` event
   (`{agent_id, display_name, kind:"ask", preview, ts}`) after the answer is
   printed, so asks show up in `swarm tail` and the statusline PULSE marquee.

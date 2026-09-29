@@ -30,7 +30,13 @@
 //! the caller *claimed* to be, which is all the serve loop ever knew.
 //!
 //! Writes are best-effort. A failure is reported once to stderr and never
-//! again, and it never fails the ask.
+//! again, and it never fails the ask. The parent directory is created on the
+//! first append.
+//!
+//! Two asymmetries a reader of the file should know: a row whose `error` is set
+//! by an LLM failure carries `context: []`, because the serve loop gives up
+//! before the recall runs; and `kannaka ask` (the CLI path) logs only asks that
+//! produced an answer, since a failed CLI ask exits before the hook.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -97,6 +103,13 @@ impl AskLog {
     fn try_append(&self, entry: &AskLogEntry) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(entry)?;
         line.push(b'\n');
+        // The operator names the file; the directory may not exist yet on a
+        // fresh data dir, and a missing parent must not cost the first row.
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let mut opts = OpenOptions::new();
         opts.create(true).append(true);
         #[cfg(unix)]
