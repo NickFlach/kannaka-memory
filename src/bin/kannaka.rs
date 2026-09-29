@@ -1277,7 +1277,9 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
     }
     let query = query_parts.join(" ");
     let nats_url = resolve_nats_url(args, 0, &cfg.swarm.nats_url);
-    let transport = match kannaka_memory::nats::SwarmTransport::connect(&nats_url) {
+    // Request/reply only: skip the JetStream probes, which a narrow seat pays
+    // for with two 3 s timeouts per call (#1080).
+    let transport = match kannaka_memory::nats::SwarmTransport::connect_request_only(&nats_url) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("recall (networked): NATS connect failed: {e}");

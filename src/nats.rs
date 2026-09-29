@@ -1894,6 +1894,37 @@ impl SwarmTransport {
         Ok(transport)
     }
 
+    /// Connect for plain request/reply only: the handshake, and none of the
+    /// JetStream probes that [`Self::connect`] runs.
+    ///
+    /// `connect` issues `$JS.API.STREAM.CREATE` and then `MSG.GET` for any
+    /// authenticated identity, to learn whether retained reads work. A seat
+    /// that is denied both gets no reply to either (a permission denial is
+    /// an async -ERR), so each probe waits out `JS_API_TIMEOUT`: two broker
+    /// violations and about 6 s added to a call that needs neither. Measured
+    /// on the observatory's `recall --remote` under the scoped `observatory`
+    /// user, 2026-09-29 (#1080): about 9.5 s per recall, almost none of it
+    /// the daemon.
+    ///
+    /// For a command that only does `request_one` on a `KANNAKA.recall.<id>`
+    /// subject there is nothing to learn, so this skips the probes and
+    /// reports no JetStream. Anything that reads retained state (presence,
+    /// phases, events) must keep using `connect`.
+    pub fn connect_request_only(url: &str) -> Result<Self, NatsError> {
+        let conn = handshake(url, None)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            url: url.to_string(),
+            explicit_creds: None,
+            next_sid: AtomicU64::new(1),
+            jetstream_ok: false,
+            jetstream_writable: false,
+            connected: Arc::new(Mutex::new(true)),
+            publish_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            last_revive: Arc::new(Mutex::new(None)),
+        })
+    }
+
     /// Connect to the default NATS URL.
     pub fn connect_default() -> Result<Self, NatsError> {
         Self::connect(DEFAULT_NATS_URL)
