@@ -76,6 +76,10 @@ check "radio DENIED other agent remember" deny radio       "KANNAKA.events.memor
 check "radio DENIED prime recall events" deny  radio       "KANNAKA.events.memory.kannaka-prime.recall"
 check "radio DENIED prime forget events" deny  radio       "KANNAKA.events.memory.kannaka-prime.forget"
 check "anon ALLOWED retained reads"      allow anon        '$JS.API.STREAM.MSG.GET.QUEEN_PHASES'
+check "responder DENIED nostr publish"   deny  responder   "KANNAKA.events.nostr.dm"
+check "radio DENIED hive publish"        deny  radio       "KANNAKA.events.hive.room"
+check "writer DENIED nostr publish"      deny  writer      "KANNAKA.events.nostr.dm"
+check "queen_agent DENIED hive publish"  deny  queen_agent "KANNAKA.events.hive.room"
 
 echo "== result: $pass passed, $fail failed =="
 [ "$fail" -eq 0 ] && echo "SHADOW VALIDATION PASSED" || { echo "SHADOW VALIDATION FAILED"; exit 1; }
