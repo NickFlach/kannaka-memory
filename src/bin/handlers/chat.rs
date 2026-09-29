@@ -27,7 +27,12 @@ pub(crate) fn handle_chat(
     use std::io::{BufRead, Write};
     let json_mode = args.iter().any(|a| a == "--json");
 
-    let system = kannaka_memory::agent::system_prompt(sys, &cfg.agent, &[]);
+    let system = kannaka_memory::agent::system_prompt(
+        sys,
+        &cfg.agent,
+        &[],
+        kannaka_memory::agent::PromptArm::Baseline,
+    );
     let mut history: Vec<kannaka_memory::agent::Message> = Vec::new();
 
     if !json_mode {

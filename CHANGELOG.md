@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### `KANNAKA_SERVE_PROMPT_ARM`: switchable prompt arms for the wrapper study (#TBD)
+
+`kannaka swarm serve` reads `KANNAKA_SERVE_PROMPT_ARM` once at startup and builds every served
+prompt under that arm: `baseline` is the prompt as it stands (including #1078's answer-from-record
+clause); `no-identity` omits the "you are this medium, speaking" identity block; `no-ids` renders
+the surfaced memories content-only, with no `id=` fields; `no-tools` omits the paragraph that
+describes the tools (the `recall` tool itself is still offered); `all` is the three omissions
+together. Unset is baseline and nothing changes for anyone who does not set it; an unknown value
+is refused at startup, naming the value and the accepted set, rather than silently running
+baseline. The arm is printed once in the startup log and recorded in each `KANNAKA_ASK_LOG` row as
+`arm` (`null` when the variable was unset, and always on the CLI path), so a run cannot be
+mislabelled after the fact. Purpose: Flaukowski's post-hoc run showed #1078 fixes id copying but
+not fabrication (11 → 9 of 20 through the serve path, no change at that n), so the study needs
+arms switchable between runs without code edits.
+
 ### Added — `KANNAKA_ASK_LOG`: what the model was shown, one JSON line per ask (ADR-0065 item 1)
 
 Set `KANNAKA_ASK_LOG=<path>` and `kannaka swarm serve` and `kannaka ask` append one JSON line per
