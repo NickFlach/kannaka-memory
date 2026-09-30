@@ -191,6 +191,17 @@ impl NatsRememberSink {
 
     /// The connection, opening it on first use. `None` while the server is
     /// unreachable; a failed attempt is not retried for [`CONNECT_RETRY`].
+    ///
+    /// Opened with `connect_events_only`, not `connect`: this sink, and the
+    /// callers that share its connection through
+    /// `KannakaMemorySystem::event_transport` (the CLI's `KANNAKA.memory.new`
+    /// and substrate absorb), only ever publish. `connect`'s JetStream probes
+    /// cost a JetStream-denied identity two `JS_API_TIMEOUT` waits, about
+    /// 6 s, and two broker Permissions Violations per CLI write (O1's `radio`
+    /// user, 2026-09-30). Nothing is lost by skipping them: the stream that
+    /// retains `KANNAKA.events.memory.>` is `KANNAKA_MEMORY_EVENTS`, created
+    /// by `kannaka events init`, and `connect` never created it anyway (its
+    /// `ensure_events_stream` makes `QUEEN_EVENTS`, on `QUEEN.event.>`).
     pub fn transport(&mut self) -> Option<std::sync::Arc<crate::nats::SwarmTransport>> {
         if let Some(t) = &self.transport {
             return Some(t.clone());
@@ -200,7 +211,7 @@ impl NatsRememberSink {
                 return None;
             }
         }
-        match crate::nats::SwarmTransport::connect(&self.url) {
+        match crate::nats::SwarmTransport::connect_events_only(&self.url) {
             Ok(t) => {
                 let t = std::sync::Arc::new(t);
                 self.transport = Some(t.clone());

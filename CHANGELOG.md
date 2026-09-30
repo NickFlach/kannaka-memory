@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### `kannaka remember` publishes its event on a handshake-only connection, without the JetStream probes (#TBD)
+
+`kannaka remember` stores the row, then `save()` publishes the `.remember` event through `NatsRememberSink`, which opened its connection with `connect()`. That runs the `$JS.API.STREAM.CREATE` and `MSG.GET` probes for every authenticated identity, and a seat denied both gets no reply to either, so each probe waited out `JS_API_TIMEOUT`: about 6 s of dead time and two Permissions Violations in the broker log per CLI write, after the row was stored and before its id was printed (O1's `radio` user, which files the radio's track memos through the CLI). The sink only publishes and never reads retained state, so it now uses the new `SwarmTransport::connect_events_only`, the sibling of #1081's `connect_request_only` (both delegate to one private handshake-only constructor). Nothing is lost: the stream that retains these events, `KANNAKA_MEMORY_EVENTS`, is created by `kannaka events init`, not by `connect()`, and #1072's per-subject confirm is unchanged because it handshakes its own probe from the same URL and credentials. Measured on debain2 with a JetStream-denied identity: table to be added by the reviewer before merge (no cargo on the authoring box).
+
 ## [0.16.14] — 2026-09-30
 
 ### `KANNAKA_SERVE_PROMPT_ARM`: switchable prompt arms for the wrapper study (#1089)
