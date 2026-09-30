@@ -368,6 +368,13 @@ fn format_recall(results: &[RecallResult], arm: PromptArm) -> String {
 /// never silently be baseline while labelled otherwise. Only the prompt TEXT
 /// changes: `no-tools` drops the paragraph that describes the tools, not the
 /// tools the API is offered.
+///
+/// Scope: the arm applies to asks served on `KANNAKA.recall.<id>` /
+/// `KANNAKA.ask.<id>` through `_handle_serve_msg` (`ask_remote`). The work
+/// queue (`swarm work` ask tasks, `_process_work_msg`) calls `ask_notools_ex`
+/// directly and always runs baseline, so a study must never sample through
+/// the work queue: its rows would say `arm: null` and be baseline regardless
+/// of the variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptArm {
     /// The prompt exactly as it is, including [`ANSWER_FROM_RECORD`].

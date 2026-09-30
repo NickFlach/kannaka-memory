@@ -2368,7 +2368,10 @@ impl AutoabsorbState {
 // the difference is the queue-group on the worker side.
 //
 // Supported task kinds:
-//   ask  — runs agent::ask_notools_ex on the worker's local HRM.
+//   ask  — runs agent::ask_notools_ex on the worker's local HRM. Always the
+//          baseline prompt: KANNAKA_SERVE_PROMPT_ARM (#1089) applies to the
+//          serve path only, so a wrapper-study run must not sample through
+//          the work queue.
 // Future: dream.deep, batch HRM analysis, TTS pool. Each kind gets its own
 // subject + queue group.
 
@@ -2636,6 +2639,8 @@ fn _process_work_msg(
             if text.is_empty() {
                 serde_json::json!({"from": cfg.agent.id, "error": "empty text"})
             } else {
+                // Baseline prompt regardless of KANNAKA_SERVE_PROMPT_ARM; the arm is
+                // a serve-path switch (see `PromptArm`).
                 match kannaka_memory::agent::ask_notools_ex(sys, cfg, text, None) {
                     Ok(r) => {
                         serde_json::json!({"from": cfg.agent.id, "task_id": task_id, "text": r.text})
