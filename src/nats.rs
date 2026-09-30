@@ -1911,6 +1911,35 @@ impl SwarmTransport {
     /// reports no JetStream. Anything that reads retained state (presence,
     /// phases, events) must keep using `connect`.
     pub fn connect_request_only(url: &str) -> Result<Self, NatsError> {
+        Self::connect_handshake_only(url)
+    }
+
+    /// Connect for publishing remember events only: the handshake, and none
+    /// of the JetStream probes that [`Self::connect`] runs. The sibling of
+    /// [`Self::connect_request_only`] (#1081), for the write side.
+    ///
+    /// `kannaka remember` writes the row, and `save()` then publishes the
+    /// `.remember` event through `NatsRememberSink`, whose connection was
+    /// opened with `connect`. That paid the same two probes as #1080 did:
+    /// `$JS.API.STREAM.CREATE`, then `MSG.GET`, each unanswered for an
+    /// identity denied both, each waiting out `JS_API_TIMEOUT`. So a
+    /// JetStream-denied identity paid about 6 s of dead time and two broker
+    /// "Permissions Violation" lines per CLI write, after the row was stored
+    /// and before its id was printed. Seen on O1's `radio` user, which runs
+    /// the radio's track memos through the CLI, 2026-09-30.
+    ///
+    /// The sink only publishes and never reads retained state, so the probes
+    /// answer a question nobody asks. `publish_memory_event`'s per-subject
+    /// verdict (#1072) is unaffected: it handshakes its own probe connection
+    /// from `self.url` and `explicit_creds`, neither of which this changes.
+    /// A caller that reads presence, phases or events must keep `connect`.
+    pub fn connect_events_only(url: &str) -> Result<Self, NatsError> {
+        Self::connect_handshake_only(url)
+    }
+
+    /// The handshake with no JetStream probes, reporting no JetStream. Shared
+    /// by the two public names above, which differ only in what they document.
+    fn connect_handshake_only(url: &str) -> Result<Self, NatsError> {
         let conn = handshake(url, None)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
