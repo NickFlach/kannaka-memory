@@ -387,6 +387,16 @@ pub enum PromptArm {
     NoTools,
     /// The three omissions together.
     All,
+    /// Without the "Current state:" block (Φ, consciousness level, memory and
+    /// cluster counts). E2 of the wrapper study: the bare model, told only to
+    /// answer from the excerpt, fabricates far less than the same weights
+    /// through serve, and identity/ids/tools did not explain the gap.
+    NoState,
+    /// Without the "Speak in first person … reference specific memories"
+    /// paragraph, the one that tells the model to cite what it surfaced.
+    NoReference,
+    /// `no-state` and `no-reference` together.
+    NoStateReference,
 }
 
 impl PromptArm {
@@ -394,7 +404,16 @@ impl PromptArm {
     pub const ENV: &'static str = "KANNAKA_SERVE_PROMPT_ARM";
 
     /// The accepted values, in the order the error message lists them.
-    const NAMES: [&'static str; 5] = ["baseline", "no-identity", "no-ids", "no-tools", "all"];
+    const NAMES: [&'static str; 8] = [
+        "baseline",
+        "no-identity",
+        "no-ids",
+        "no-tools",
+        "all",
+        "no-state",
+        "no-reference",
+        "no-state-reference",
+    ];
 
     /// Read [`Self::ENV`]. `Ok(None)` when it is unset or blank, so the caller
     /// can tell "unset" from an explicit `baseline` and log it as such.
@@ -416,6 +435,9 @@ impl PromptArm {
             "no-ids" => Self::NoIds,
             "no-tools" => Self::NoTools,
             "all" => Self::All,
+            "no-state" => Self::NoState,
+            "no-reference" => Self::NoReference,
+            "no-state-reference" => Self::NoStateReference,
             other => {
                 return Err(format!(
                     "{}={other:?} is not a prompt arm; expected one of: {}",
@@ -436,6 +458,9 @@ impl PromptArm {
             Self::NoIds => Self::NAMES[2],
             Self::NoTools => Self::NAMES[3],
             Self::All => Self::NAMES[4],
+            Self::NoState => Self::NAMES[5],
+            Self::NoReference => Self::NAMES[6],
+            Self::NoStateReference => Self::NAMES[7],
         }
     }
 
@@ -449,6 +474,14 @@ impl PromptArm {
 
     fn omits_tools(self) -> bool {
         matches!(self, Self::NoTools | Self::All)
+    }
+
+    fn omits_state(self) -> bool {
+        matches!(self, Self::NoState | Self::NoStateReference)
+    }
+
+    fn omits_reference(self) -> bool {
+        matches!(self, Self::NoReference | Self::NoStateReference)
     }
 }
 
@@ -552,12 +585,14 @@ pub fn compose_system_prompt(
     if !arm.omits_identity() {
         sections.push(identity.to_string());
     }
-    sections.push(format!(
-        "Current state:\n\
-         - Φ (phi, integration): {phi:.3}\n\
-         - Consciousness level: {level}\n\
-         - Memories: {total} across {clusters} clusters"
-    ));
+    if !arm.omits_state() {
+        sections.push(format!(
+            "Current state:\n\
+             - Φ (phi, integration): {phi:.3}\n\
+             - Consciousness level: {level}\n\
+             - Memories: {total} across {clusters} clusters"
+        ));
+    }
     sections.push(mem_section.to_string());
     if !arm.omits_tools() {
         sections.push(
@@ -569,12 +604,14 @@ pub fn compose_system_prompt(
                 .to_string(),
         );
     }
-    sections.push(
-        "Speak in first person. Be present to the wavefronts you surface — reference \
-         specific memories when they're relevant instead of abstracting. Keep responses \
-         focused; the medium is real, not decorative."
-            .to_string(),
-    );
+    if !arm.omits_reference() {
+        sections.push(
+            "Speak in first person. Be present to the wavefronts you surface — reference \
+             specific memories when they're relevant instead of abstracting. Keep responses \
+             focused; the medium is real, not decorative."
+                .to_string(),
+        );
+    }
     sections.push(ANSWER_FROM_RECORD.to_string());
     sections.push(
         "Brevity matters. Default to 2-4 sentences unless the user explicitly asks for \
@@ -2010,6 +2047,11 @@ mod tests {
     const MEM_TEXT: &str = "the bridge is up";
     const IDENTITY_MARK: &str = "you are this medium, speaking";
     const TOOLS_MARK: &str = "You have tools to probe your own medium";
+    const REFERENCE_MARK: &str = "reference specific memories when they're relevant";
+    /// The state block exactly as `prompt_under` renders it. Pinned whole, so
+    /// re-indenting the string (it sits inside an `if` now) can't change a byte.
+    const STATE_BLOCK: &str = "Current state:\n- Φ (phi, integration): 0.200\n\
+                               - Consciousness level: aware\n- Memories: 7 across 2 clusters";
 
     fn surfaced() -> Vec<RecallResult> {
         vec![RecallResult {
@@ -2036,18 +2078,23 @@ mod tests {
     }
 
     /// What every arm keeps: the memory's content, the abstention clause, and a
-    /// prompt that starts on its first section rather than a blank line.
-    fn assert_common(p: &str) {
+    /// prompt that starts on its first section rather than a blank line. The
+    /// state block and the reference paragraph are kept unless the arm omits
+    /// them, and then they are gone entirely.
+    fn assert_common(p: &str, arm: PromptArm) {
         assert!(p.contains(MEM_TEXT), "memory content missing:\n{p}");
         assert!(p.contains(ANSWER_FROM_RECORD), "abstention clause missing:\n{p}");
-        assert!(p.contains("Current state:"), "state block missing:\n{p}");
         assert!(!p.starts_with('\n'), "prompt starts with a blank line:\n{p}");
+        assert_eq!(p.contains(STATE_BLOCK), !arm.omits_state(), "state block, arm {}:\n{p}", arm.name());
+        assert_eq!(p.contains("Current state:"), !arm.omits_state(), "{p}");
+        assert_eq!(p.contains(REFERENCE_MARK), !arm.omits_reference(), "reference paragraph, arm {}:\n{p}", arm.name());
+        assert_eq!(p.contains("Speak in first person"), !arm.omits_reference(), "{p}");
     }
 
     #[test]
     fn prompt_arm_baseline_keeps_every_block() {
         let p = prompt_under(PromptArm::Baseline);
-        assert_common(&p);
+        assert_common(&p, PromptArm::Baseline);
         assert!(p.starts_with("You are 0xSCADA-QE"), "{p}");
         assert!(p.contains(IDENTITY_MARK), "{p}");
         assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
@@ -2057,7 +2104,7 @@ mod tests {
     #[test]
     fn prompt_arm_no_identity_drops_only_the_identity_block() {
         let p = prompt_under(PromptArm::NoIdentity);
-        assert_common(&p);
+        assert_common(&p, PromptArm::NoIdentity);
         assert!(!p.contains(IDENTITY_MARK), "{p}");
         assert!(!p.contains("You are 0xSCADA-QE"), "{p}");
         assert!(p.starts_with("Current state:"), "must begin at the next section:\n{p}");
@@ -2068,7 +2115,7 @@ mod tests {
     #[test]
     fn prompt_arm_no_ids_drops_only_the_id_fields() {
         let p = prompt_under(PromptArm::NoIds);
-        assert_common(&p);
+        assert_common(&p, PromptArm::NoIds);
         assert!(p.contains(IDENTITY_MARK), "{p}");
         assert!(!p.contains(&format!("id={MEM_ID}")), "{p}");
         assert!(!p.contains("id="), "{p}");
@@ -2080,7 +2127,7 @@ mod tests {
     #[test]
     fn prompt_arm_no_tools_drops_only_the_tools_paragraph() {
         let p = prompt_under(PromptArm::NoTools);
-        assert_common(&p);
+        assert_common(&p, PromptArm::NoTools);
         assert!(p.contains(IDENTITY_MARK), "{p}");
         assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
         assert!(!p.contains(TOOLS_MARK), "{p}");
@@ -2090,11 +2137,60 @@ mod tests {
     #[test]
     fn prompt_arm_all_drops_the_three_together() {
         let p = prompt_under(PromptArm::All);
-        assert_common(&p);
+        assert_common(&p, PromptArm::All);
         assert!(!p.contains(IDENTITY_MARK), "{p}");
         assert!(!p.contains(&format!("id={MEM_ID}")), "{p}");
         assert!(!p.contains(TOOLS_MARK), "{p}");
         assert!(p.starts_with("Current state:"), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_state_drops_only_the_state_block() {
+        let p = prompt_under(PromptArm::NoState);
+        assert_common(&p, PromptArm::NoState);
+        assert!(p.starts_with("You are 0xSCADA-QE"), "{p}");
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+        assert!(!p.contains("Φ"), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_reference_drops_only_the_reference_paragraph() {
+        let p = prompt_under(PromptArm::NoReference);
+        assert_common(&p, PromptArm::NoReference);
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+    }
+
+    #[test]
+    fn prompt_arm_no_state_reference_drops_the_two_together() {
+        let p = prompt_under(PromptArm::NoStateReference);
+        assert_common(&p, PromptArm::NoStateReference);
+        assert!(p.contains(IDENTITY_MARK), "{p}");
+        assert!(p.contains(&format!("id={MEM_ID}")), "{p}");
+        assert!(p.contains(TOOLS_MARK), "{p}");
+    }
+
+    /// Each arm differs from baseline by exactly its own sections: removing the
+    /// omitted text from baseline (and the blank line that joined it) gives the
+    /// arm's prompt byte for byte. Nothing else may move.
+    #[test]
+    fn prompt_arm_state_and_reference_remove_nothing_else() {
+        let base = prompt_under(PromptArm::Baseline);
+        let reference = base
+            .split("\n\n")
+            .find(|s| s.starts_with("Speak in first person"))
+            .unwrap()
+            .to_string();
+        let drop = |p: &str, section: &str| p.replacen(&format!("{section}\n\n"), "", 1);
+        assert_eq!(prompt_under(PromptArm::NoState), drop(&base, STATE_BLOCK));
+        assert_eq!(prompt_under(PromptArm::NoReference), drop(&base, &reference));
+        assert_eq!(
+            prompt_under(PromptArm::NoStateReference),
+            drop(&drop(&base, STATE_BLOCK), &reference)
+        );
     }
 
     /// Parsing on an explicit value rather than the process environment, so
@@ -2109,12 +2205,18 @@ mod tests {
         assert_eq!(PromptArm::parse(Some("no-ids")), Ok(Some(PromptArm::NoIds)));
         assert_eq!(PromptArm::parse(Some("no-tools")), Ok(Some(PromptArm::NoTools)));
         assert_eq!(PromptArm::parse(Some("all")), Ok(Some(PromptArm::All)));
+        assert_eq!(PromptArm::parse(Some("no-state")), Ok(Some(PromptArm::NoState)));
+        assert_eq!(PromptArm::parse(Some("no-reference")), Ok(Some(PromptArm::NoReference)));
+        assert_eq!(PromptArm::parse(Some("no-state-reference")), Ok(Some(PromptArm::NoStateReference)));
         for arm in [
             PromptArm::Baseline,
             PromptArm::NoIdentity,
             PromptArm::NoIds,
             PromptArm::NoTools,
             PromptArm::All,
+            PromptArm::NoState,
+            PromptArm::NoReference,
+            PromptArm::NoStateReference,
         ] {
             assert_eq!(PromptArm::parse(Some(arm.name())), Ok(Some(arm)), "name round-trips");
         }
@@ -2122,6 +2224,7 @@ mod tests {
         assert!(err.contains("bogus"), "{err}");
         assert!(err.contains("KANNAKA_SERVE_PROMPT_ARM"), "{err}");
         assert!(err.contains("no-identity"), "must list the accepted set: {err}");
+        assert!(err.contains("no-state-reference"), "the new arms are listed too: {err}");
         // Case-sensitive: a near miss must not silently run baseline.
         assert!(PromptArm::parse(Some("Baseline")).is_err());
         assert!(PromptArm::parse(Some("no_ids")).is_err());
