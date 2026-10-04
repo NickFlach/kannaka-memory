@@ -14,6 +14,8 @@ converts to GGUF + quantizes with llama.cpp so debain2's ollama can serve it
   python train_lora.py --base DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NM-DAU \
       --data ~/sft --out ~/run-27b --qlora --epochs 2 --r 32 \
       --chat-template-kwargs '{"enable_thinking": false}'   # VL-wrapped hybrid base: text-only, no <think>
+  python train_lora.py --base Qwen/Qwen3-8B --data ~/sft-c1 --out ~/run-L-s7 --qlora --r 32 --lr 5e-5 \
+      --init-adapter ~/kb2/runs/7b-v2/adapter --eval-every 40 --max-holdout-rise 0.10   # continue an adapter
 
 The base is not assumed anywhere: LoRA targets come from base_info.LORA_TARGET_REGEX
 (dense q/k/v/o and hybrid in_proj_qkv/in_proj_z/out_proj alike; vision and MTP tensors
@@ -22,13 +24,20 @@ never), AutoModelForCausalLM unwraps a vision-language checkpoint to its text mo
 the parameter count so the card can say what size it is (kannaka-memory #926).
 
 Metric: held-out loss / perplexity on the SAME lines every run (prep_sft's
-deterministic hold-out), before and after training. Generation samples for
-the voice A/B are written for a human/third-model judge; they are not the
-metric.
+deterministic hold-out), before and after training, and with --eval-every N
+also after every N optimizer steps. Generation samples for the voice A/B are
+written for a human/third-model judge; they are not the metric.
+
+--init-adapter continues an existing adapter (loaded trainable on the same base)
+instead of starting a fresh LoRA, and is refused unless the adapter's base, r,
+alpha, dropout and target modules equal the flags. --max-holdout-rise is the
+kannaka-loop-c1 stop rule (prereg section 4): a hold-out loss more than that
+fraction over its value before step 1 stops the run, which exits 4 with no adapter.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -47,6 +56,46 @@ def log(msg):
 
 def load_jsonl(p: Path):
     return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def adapter_mismatch(cfg: dict, base: str, r: int, alpha: int, dropout: float, targets) -> list[str]:
+    """Why the adapter whose adapter_config.json is `cfg` cannot be continued under these flags ([] if it can).
+
+    PEFT loads a saved adapter with ITS OWN r/alpha/targets whatever the flags say, so a mismatch would train
+    something other than what the command line and the manifest claim (kannaka-loop-c1 prereg, section 2.3)."""
+    bad = []
+    if cfg.get("base_model_name_or_path") != base:
+        bad.append(f"base {cfg.get('base_model_name_or_path')!r} != --base {base!r}")
+    if cfg.get("r") != r:
+        bad.append(f"r {cfg.get('r')} != --r {r}")
+    if cfg.get("lora_alpha") != alpha:
+        bad.append(f"lora_alpha {cfg.get('lora_alpha')} != --alpha {alpha}")
+    if cfg.get("lora_dropout") != dropout:
+        bad.append(f"lora_dropout {cfg.get('lora_dropout')} != --dropout {dropout}")
+    have = cfg.get("target_modules")
+    same = have == targets if isinstance(have, str) or isinstance(targets, str) else sorted(have or []) == sorted(targets)
+    if not same:
+        bad.append(f"target_modules {have!r} != {targets!r}")
+    return bad
+
+
+def diverged(before: float, loss: float, max_rise: float) -> bool:
+    """kannaka-loop-c1 stop rule (prereg section 4): the hold-out loss rose more than `max_rise` (0.10 = 10
+    percent) over its value before step 1. A non-finite loss has diverged too (NaN compares False)."""
+    return not math.isfinite(loss) or loss > before * (1.0 + max_rise)
+
+
+def to_dataset(rows, ct_kwargs: dict, completion_only: bool):
+    """trl >= 1.x takes chat-template kwargs PER EXAMPLE (a `chat_template_kwargs` column); the
+    SFTConfig field of the same name is gone and was silently filtered out, so a thinking-mode
+    base trained in its default (thinking) format. Measured in the 2026-09-25 CPU rehearsal."""
+    from datasets import Dataset
+    extra = {"chat_template_kwargs": ct_kwargs} if ct_kwargs else {}
+    if completion_only:
+        # trl's conversational prompt/completion format: the prompt is rendered with the
+        # generation prompt (incl. chat_template_kwargs), loss falls on the completion only
+        return Dataset.from_list([{"prompt": r["messages"][:-1], "completion": r["messages"][-1:], **extra} for r in rows])
+    return Dataset.from_list([{"messages": r["messages"], **extra} for r in rows])
 
 
 def main(argv=None) -> int:
@@ -84,13 +133,40 @@ def main(argv=None) -> int:
     ap.add_argument("--max-sane-ppl", type=float, default=2000.0,
                     help="abort before training if the untouched base scores worse than this on the hold-out: "
                          "the weights did not load (wrong class / prefix), and every metered minute after is waste")
+    ap.add_argument("--init-adapter", default=None,
+                    help="PEFT adapter dir to continue (loaded trainable on --base) instead of a fresh LoRA; refused "
+                         "unless its base, r, alpha, dropout and target modules equal the flags")
+    ap.add_argument("--eval-every", type=int, default=0,
+                    help="also measure the hold-out loss every N optimizer steps (0: before and after only)")
+    ap.add_argument("--max-holdout-rise", type=float, default=None,
+                    help="stop rule: a hold-out loss above BEFORE x (1 + this) stops the run, exit 4, no adapter "
+                         "(0.10 = kannaka-loop-c1). Checked at every --eval-every measurement and on AFTER")
     a = ap.parse_args(argv)
     ct_kwargs = json.loads(a.chat_template_kwargs) if a.chat_template_kwargs else {}
+    if a.target_modules and "," in a.target_modules:
+        targets = [t.strip() for t in a.target_modules.split(",") if t.strip()]
+    else:
+        targets = a.target_modules or LORA_TARGET_REGEX
+    init = None
+    if a.init_adapter:
+        cfg_path = Path(a.init_adapter) / "adapter_config.json"
+        if not cfg_path.is_file():
+            log(f"--init-adapter {a.init_adapter}: no adapter_config.json there. Refusing.")
+            return 5
+        bad = adapter_mismatch(json.loads(cfg_path.read_text(encoding="utf-8")), a.base, a.r, a.alpha or 2 * a.r,
+                               a.dropout, targets)
+        if bad:
+            log(f"--init-adapter {a.init_adapter} does not match the flags: {'; '.join(bad)}. Refusing: PEFT would "
+                "train the adapter's own config, not the one this run records.")
+            return 5
+        weights = next((p for p in (Path(a.init_adapter) / n for n in ("adapter_model.safetensors", "adapter_model.bin"))
+                        if p.is_file()), None)
+        init = {"path": str(a.init_adapter), "weights": weights.name if weights else None,
+                "sha256": hashlib.sha256(weights.read_bytes()).hexdigest() if weights else None}
 
     import torch
-    from datasets import Dataset
     from peft import LoraConfig, PeftModel, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, set_seed
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback, set_seed
     from trl import SFTConfig, SFTTrainer
 
     set_seed(a.seed)
@@ -119,33 +195,22 @@ def main(argv=None) -> int:
         from peft import prepare_model_for_kbit_training
         model = prepare_model_for_kbit_training(model)
     params_b = count_params(model.parameters()) / 1e9   # 4-bit weights counted unpacked
-    if a.target_modules and "," in a.target_modules:
-        targets = [t.strip() for t in a.target_modules.split(",") if t.strip()]
-    else:
-        targets = a.target_modules or LORA_TARGET_REGEX
     chosen = lora_targets(n for n, _ in model.named_modules()) if isinstance(targets, str) else list(targets)
     log(f"base params {params_b:.2f}B; model class {type(model).__name__}; lora targets {len(chosen)} modules "
         f"(leaves: {sorted({c.rsplit(chr(46), 1)[-1] for c in chosen})})")
     if not chosen:
         log("no LoRA target matched this base; pass --target-modules")
         return 2
-    lcfg = LoraConfig(r=a.r, lora_alpha=a.alpha or 2 * a.r, lora_dropout=a.dropout, bias="none",
-                      task_type="CAUSAL_LM", target_modules=targets)
-    model = get_peft_model(model, lcfg)
+    if init:
+        model = PeftModel.from_pretrained(model, a.init_adapter, is_trainable=True)
+        log(f"continuing adapter {a.init_adapter} ({init['weights']} sha256 {init['sha256']})")
+    else:
+        lcfg = LoraConfig(r=a.r, lora_alpha=a.alpha or 2 * a.r, lora_dropout=a.dropout, bias="none",
+                          task_type="CAUSAL_LM", target_modules=targets)
+        model = get_peft_model(model, lcfg)
     model.print_trainable_parameters()
 
-    def to_text(rows):
-        # trl >= 1.x takes chat-template kwargs PER EXAMPLE (a `chat_template_kwargs` column); the
-        # SFTConfig field of the same name is gone and was silently filtered out, so a thinking-mode
-        # base trained in its default (thinking) format. Measured in the 2026-09-25 CPU rehearsal.
-        extra = {"chat_template_kwargs": ct_kwargs} if ct_kwargs else {}
-        if a.completion_only:
-            # trl's conversational prompt/completion format: the prompt is rendered with the
-            # generation prompt (incl. chat_template_kwargs), loss falls on the completion only
-            return Dataset.from_list([{"prompt": r["messages"][:-1], "completion": r["messages"][-1:], **extra} for r in rows])
-        return Dataset.from_list([{"messages": r["messages"], **extra} for r in rows])
-
-    ds_train, ds_hold = to_text(train_rows), to_text(hold_rows)
+    ds_train = to_dataset(train_rows, ct_kwargs, a.completion_only)
 
     def heldout_loss(m) -> float:
         m.eval()
@@ -190,13 +255,39 @@ def main(argv=None) -> int:
     cfg = SFTConfig(**{k: v for k, v in want.items() if k in known})
     if dropped:
         log(f"SFTConfig: ignored unknown fields {dropped}")
-    trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds_train, processing_class=tok)
+    series, stopped = [], []
+
+    class HoldoutEvery(TrainerCallback):
+        """--eval-every: the hold-out loss after every N optimizer steps, and the stop rule on each value."""
+
+        def on_step_end(self, args, state, control, **kw):
+            if a.eval_every > 0 and state.global_step % a.eval_every == 0:
+                loss = heldout_loss(model)
+                series.append({"step": state.global_step, "loss": loss})
+                log(f"holdout loss step {state.global_step}={loss:.4f} (before {before:.4f})")
+                if a.max_holdout_rise is not None and diverged(before, loss, a.max_holdout_rise):
+                    stopped.append(state.global_step)
+                    control.should_training_stop = True
+            return control
+
+    trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds_train, processing_class=tok,
+                         callbacks=[HoldoutEvery()])
     t0 = time.time()
     trainer.train()
     log(f"trained in {time.time() - t0:.0f}s")
 
     after = heldout_loss(model)
     log(f"holdout loss AFTER={after:.4f} ppl={math.exp(after):.2f}  (before {before:.4f} / {math.exp(before):.2f})")
+    if a.max_holdout_rise is not None and (stopped or diverged(before, after, a.max_holdout_rise)):
+        at = f"step {stopped[0]}" if stopped else "AFTER"
+        log(f"DIVERGED at {at}: hold-out loss rose more than {a.max_holdout_rise:.0%} over BEFORE {before:.4f}. "
+            "No adapter saved; file the run as a failure.")
+        (out / "train.manifest.json").write_text(json.dumps({
+            "base": a.base, "init_adapter": init, "diverged": at, "max_holdout_rise": a.max_holdout_rise,
+            "eval_every": a.eval_every, "holdout_loss": {"before": before, "after": after},
+            "holdout_loss_series": series, "seed": a.seed, "lr": a.lr, "max_steps": a.max_steps,
+            "seconds": round(time.time() - t0)}, indent=1), encoding="utf-8")
+        return 4
 
     adapter = out / "adapter"
     model.save_pretrained(str(adapter))
@@ -223,6 +314,8 @@ def main(argv=None) -> int:
                 "train": len(train_rows), "holdout": len(hold_rows), "lora": {"r": a.r, "alpha": a.alpha or 2 * a.r},
                 "epochs": a.epochs, "max_steps": a.max_steps, "lr": a.lr, "qlora": a.qlora,
                 "holdout_loss": {"before": before, "after": after}, "holdout_ppl": {"before": math.exp(before), "after": math.exp(after)},
+                "holdout_loss_series": series, "eval_every": a.eval_every, "max_holdout_rise": a.max_holdout_rise,
+                "init_adapter": init, "seed": a.seed,
                 "seconds": round(time.time() - t0), "adapter": str(adapter), "cuda": cuda,
                 "device": torch.cuda.get_device_name(0) if cuda else "cpu"}
 
