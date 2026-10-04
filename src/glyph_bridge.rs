@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Golden ratio for frequency harmonics
+#[allow(clippy::approx_constant)] // literal kept on purpose: newer clippy flags it now that f64::consts::GOLDEN_RATIO exists
 pub const PHI: f64 = 1.618033988749895;
 
 /// Base frequency for musical mapping (432 Hz)

@@ -437,6 +437,7 @@ impl MediumBackend for TestMedium {
 const MIN_LINK_STRENGTH: f32 = 0.1;
 
 /// φ (golden ratio) for span scoring.
+#[allow(clippy::approx_constant)] // literal kept on purpose: newer clippy flags it now that f64::consts::GOLDEN_RATIO exists
 const PHI: f64 = 1.618033988749895;
 
 /// Score a temporal span based on proximity to golden ratio sequence values.
