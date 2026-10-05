@@ -1657,7 +1657,14 @@ impl StreamKind {
                 subjects: &["KANNAKA.snapshots.>"],
                 max_age_days: None,
                 max_msgs_per_subject: Some(168),
-                max_msg_size: Some(100 * 1024 * 1024),
+                // Manifests only: the gzipped body lives on disk (body_path) and a
+                // manifest is ~450 bytes. The old 100 MiB ceiling let two test
+                // messages of 2.8 MB and 14 MB (2026-05-17) sit in the stream, and
+                // the 14 MB one exceeds the client's 8 MiB read cap, so every
+                // `events list-snapshots` died on it until it was purged on
+                // 2026-10-05. ensure_js_stream UPDATEs a live stream to this spec,
+                // so the ceiling has to be here, not only on the broker.
+                max_msg_size: Some(1024 * 1024),
             },
         }
     }

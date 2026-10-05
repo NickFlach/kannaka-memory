@@ -233,6 +233,29 @@ pub(crate) fn handle_events_snapshot(_: &mut kannaka_memory::openclaw::KannakaMe
     process::exit(1);
 }
 
+/// How many manifests `events list-snapshots` prints, newest first.
+const SNAPSHOT_LIST_MAX: usize = 500;
+/// How far the walk may go to find them. The stream keeps at most 168
+/// manifests per agent, so this bounds a whole-stream walk with room to spare.
+const SNAPSHOT_WALK_LIMIT: usize = 20_000;
+
+/// Sort manifests newest-first by `ts` and keep the first `max`.
+///
+/// The stream walk returns messages in sequence order, OLDEST first. Capping
+/// the walk itself at 500 (as list-snapshots did until 2026-10-05) therefore
+/// returned the 500 oldest manifests of ~1,800, and then sorted those: the
+/// newest entry printed was from May while October's snapshots were invisible.
+/// Walk everything, then sort, then truncate.
+pub(crate) fn newest_manifests(mut manifests: Vec<serde_json::Value>, max: usize) -> Vec<serde_json::Value> {
+    manifests.sort_by(|a, b| {
+        let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        bt.cmp(at)
+    });
+    manifests.truncate(max);
+    manifests
+}
+
 /// ADR-0028 Phase 3 — `kannaka events list-snapshots [--agent ID]`.
 ///
 /// Pulls all snapshot manifests from KANNAKA_SNAPSHOTS and prints them
@@ -264,7 +287,7 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         Some(a) => format!("KANNAKA.snapshots.{a}.full"),
         None => "KANNAKA.snapshots.>".to_string(),
     };
-    let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject_filter, 500) {
+    let manifests = match transport.get_stream_messages("KANNAKA_SNAPSHOTS", &subject_filter, SNAPSHOT_WALK_LIMIT) {
         Ok(v) => v,
         Err(e) => { eprintln!("[list-snapshots] read failed: {e}"); process::exit(1); }
     };
@@ -276,13 +299,7 @@ pub(crate) fn handle_events_list_snapshots(cfg: &KannakaConfig, args: &[String])
         }
         return;
     }
-    // Sort by ts descending.
-    let mut sorted = manifests;
-    sorted.sort_by(|a, b| {
-        let at = a.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-        let bt = b.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-        bt.cmp(at)
-    });
+    let sorted = newest_manifests(manifests, SNAPSHOT_LIST_MAX);
     if json_mode {
         // Emit the raw manifest array — observatory + other downstream
         // consumers parse this directly. Wire-format is the JetStream
@@ -1236,5 +1253,40 @@ pub(crate) fn handle_events_gc(cfg: &KannakaConfig, args: &[String]) {
         );
     } else {
         eprintln!("[gc] done — removed {} file(s), reclaimed {:.1} MB", removed, reclaimed as f64 / 1.0e6);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_list_tests {
+    use super::newest_manifests;
+    use serde_json::json;
+
+    fn m(ts: &str) -> serde_json::Value { json!({ "ts": ts, "agent_id": "a" }) }
+
+    #[test]
+    fn keeps_the_newest_not_the_first_walked() {
+        // Walk order is oldest-first. 600 May manifests, then 3 from October.
+        let mut walked: Vec<_> = (0..600).map(|i| m(&format!("2026-05-17T06:{:02}:{:02}Z", i / 60, i % 60))).collect();
+        walked.push(m("2026-10-05T16:08:15Z"));
+        walked.push(m("2026-10-05T17:08:15Z"));
+        walked.push(m("2026-10-05T18:08:15Z"));
+        let out = newest_manifests(walked, 500);
+        assert_eq!(out.len(), 500);
+        assert_eq!(out[0]["ts"], "2026-10-05T18:08:15Z");
+        assert_eq!(out[1]["ts"], "2026-10-05T17:08:15Z");
+        assert_eq!(out[2]["ts"], "2026-10-05T16:08:15Z");
+    }
+
+    #[test]
+    fn fewer_than_max_are_all_kept_in_order() {
+        let out = newest_manifests(vec![m("2026-01-01T00:00:00Z"), m("2026-03-01T00:00:00Z")], 500);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["ts"], "2026-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn a_manifest_without_ts_sorts_last() {
+        let out = newest_manifests(vec![json!({"agent_id": "x"}), m("2026-03-01T00:00:00Z")], 500);
+        assert_eq!(out[0]["ts"], "2026-03-01T00:00:00Z");
     }
 }
