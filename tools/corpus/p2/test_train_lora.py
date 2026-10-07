@@ -221,5 +221,174 @@ def test_holdout_rise_rule_is_off_by_default(tiny, tmp_path):
     assert (tmp_path / "run" / "adapter" / "adapter_model.safetensors").exists()
 
 
+# Memory on a small card (c1 runs on an 8 GiB RTX 3050) ------------------------------------------------
+CUDA = pytest.mark.skipif(not __import__("torch").cuda.is_available(), reason="needs CUDA (CI is CPU-only)")
+# Same rows, both ways: TRL's full-logits loss ('nll') and the answer-only path ('chunked_nll') must agree to
+# this tolerance on the tiny fp32 model. Measured below as an absolute difference of the first-batch loss.
+LOSS_TOL = 1e-5
+
+
+@pytest.mark.parametrize("reserved,guard,stop", [(0, None, False), (10 * 2**30, None, False),
+                                                 (8 * 2**30, 8.0, False), (8 * 2**30 + 1, 8.0, True),
+                                                 (int(7.6 * 2**30) + 1, 7.6, True)])
+def test_vram_exceeded_is_strictly_over_the_guard_and_off_when_unset(reserved, guard, stop):
+    assert tl.vram_exceeded(reserved, guard) is stop
+
+
+import dataclasses as _dc  # noqa: E402
+import trl as _trl  # noqa: E402
+
+
+@_dc.dataclass
+class FullLogitsDefault(_trl.SFTConfig):
+    """A trl whose default loss is full logits ('nll'). Module level: the trainer pickles its args."""
+    loss_type: str | None = "nll"
+
+    def __post_init__(self):
+        lt = self.loss_type
+        super().__post_init__()
+        self.loss_type = lt or "nll"
+
+
+def test_answer_only_logits_pins_chunked_nll_even_where_trl_defaults_to_full_logits(tiny, tmp_path, monkeypatch):
+    # trl 1.14 already defaults to chunked_nll, so test against a trl whose default is 'nll': without the flag the
+    # run trains on full logits, with it on chunked_nll. (Against 1.14's default this test could not fail.)
+    monkeypatch.setattr(_trl, "SFTConfig", FullLogitsDefault)
+    assert _run(tiny, tmp_path / "plain", "--max-steps", "2") == 0
+    assert _manifest(tmp_path / "plain")["loss_type"] == "nll"
+    assert _run(tiny, tmp_path / "pinned", "--max-steps", "2", "--answer-only-logits") == 0
+    assert _manifest(tmp_path / "pinned")["loss_type"] == "chunked_nll"
+
+
+def test_answer_only_logits_is_refused_on_a_trl_without_loss_type(tiny, tmp_path, monkeypatch, capsys):
+    import dataclasses
+    import trl
+
+    @dataclasses.dataclass
+    class OldSFTConfig:          # a trl from before loss_type existed
+        output_dir: str = ""
+    monkeypatch.setattr(trl, "SFTConfig", OldSFTConfig)
+    assert _run(tiny, tmp_path / "run", "--max-steps", "2", "--answer-only-logits") == 7
+    assert "cannot skip lm_head" in capsys.readouterr().out
+    assert not (tmp_path / "run" / "adapter").exists()
+
+
+def test_same_rows_both_ways_full_logits_and_answer_only_give_the_same_loss(tiny, tmp_path):
+    """The loss the answer-only path trains on equals the full-logits loss on the same batch."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from trl import SFTConfig, SFTTrainer
+
+    base, data = tiny
+    tok = AutoTokenizer.from_pretrained(str(base))
+    rows = tl.load_jsonl(data / "train.jsonl")
+    ds = tl.to_dataset(rows, {}, completion_only=True)
+    losses = {}
+    for lt in ("nll", "chunked_nll"):
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_pretrained(str(base), dtype=torch.float32)
+        cfg = SFTConfig(output_dir=str(tmp_path / lt), loss_type=lt, per_device_train_batch_size=4, max_length=64,
+                        report_to=[], use_cpu=True, completion_only_loss=True)
+        tr = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok)
+        batch = next(iter(tr.get_train_dataloader()))
+        with torch.no_grad():
+            losses[lt] = tr.compute_loss(tr.model, dict(batch)).item()
+    assert abs(losses["nll"] - losses["chunked_nll"]) < LOSS_TOL, losses
+
+
+@pytest.mark.parametrize("peft", [False, True])
+def test_chunked_holdout_loss_equals_the_full_logits_metric(tiny, peft):
+    """--answer-only-logits computes the hold-out metric in chunks; it must be the same number as
+    model(input_ids, labels=ids).loss on the same rows (chunk 3 forces several chunks per row)."""
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    base, data = tiny
+    tok = AutoTokenizer.from_pretrained(str(base))
+    torch.manual_seed(0)
+    m = AutoModelForCausalLM.from_pretrained(str(base), dtype=torch.float32)
+    if peft:
+        m = get_peft_model(m, LoraConfig(r=4, lora_alpha=8, target_modules=LORA_TARGET_REGEX, init_lora_weights=False))
+    m.eval()
+    with torch.no_grad():
+        for r in tl.load_jsonl(data / "holdout.jsonl"):
+            ids = tok.apply_chat_template(r["messages"], tokenize=True, return_tensors="pt")
+            ids = ids if isinstance(ids, torch.Tensor) else ids["input_ids"]
+            full = m(input_ids=ids, labels=ids).loss.item()
+            assert abs(tl.chunked_lm_loss(m, ids, chunk=3).item() - full) < LOSS_TOL, full
+
+
+def test_answer_only_logits_holdout_matches_the_plain_run(tiny, tmp_path):
+    # the BEFORE hold-out loss is measured before any step, so the two runs must report the same number
+    assert _run(tiny, tmp_path / "plain", "--max-steps", "2") == 0
+    assert _run(tiny, tmp_path / "chunked", "--max-steps", "2", "--answer-only-logits") == 0
+    b0 = _manifest(tmp_path / "plain")["holdout_loss"]["before"]
+    b1 = _manifest(tmp_path / "chunked")["holdout_loss"]["before"]
+    assert abs(b0 - b1) < LOSS_TOL, (b0, b1)
+
+
+@CUDA
+def test_no_kbit_upcast_keeps_bf16_and_the_same_loss_within_tolerance(tiny, tmp_path, capsys):
+    """Same rows both ways under --qlora: with peft's fp32 upcast and without it. The embedding stays bf16, and
+    the BEFORE hold-out loss moves by less than 1 percent (bf16 vs fp32 rounding on the tiny model)."""
+    base, data = tiny
+    before = {}
+    for name, extra in (("upcast", []), ("bf16", ["--no-kbit-upcast"])):
+        rc = tl.main(["--base", str(base), "--data", str(data), "--out", str(tmp_path / name), "--max-len", "64",
+                      "--r", "4", "--batch", "2", "--grad-accum", "1", "--max-steps", "2", "--eval-samples", "0",
+                      "--max-sane-ppl", "1e9", "--qlora", *extra])
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        before[name] = _manifest(tmp_path / name)["holdout_loss"]["before"]
+        if extra:
+            assert "kept in torch.bfloat16" in out
+    assert abs(before["bf16"] - before["upcast"]) < 0.01 * before["upcast"], before
+
+
+def _guarded(tiny, out, guard="1.0"):
+    base, data = tiny
+    return tl.main(["--base", str(base), "--data", str(data), "--out", str(out), "--max-len", "64",
+                    "--r", "4", "--batch", "2", "--grad-accum", "1", "--max-steps", "3", "--eval-samples", "0",
+                    "--max-sane-ppl", "1e9",   # a random tiny base: the sanity gate is for real checkpoints
+                    "--vram-guard-gib", guard])
+
+
+def _fake_reserved(monkeypatch, over_after_calls):
+    """torch's reserved-memory reading: 0 for the first `over_after_calls` calls, then 2 GiB (over a 1 GiB
+    guard). main() reads it twice around BEFORE (the log line, then the check), so 0 calls means 'over from the
+    start' and 2 means 'over once training has begun'."""
+    import torch
+    calls = {"n": 0}
+
+    def fake():
+        calls["n"] += 1
+        return 0 if calls["n"] <= over_after_calls else 2 * 2**30
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", fake)
+
+
+@CUDA
+def test_vram_guard_over_before_training_stops_at_before(tiny, tmp_path, monkeypatch, capsys):
+    _fake_reserved(monkeypatch, 0)
+    assert _guarded(tiny, tmp_path / "run") == 6, capsys.readouterr().out
+    man = _manifest(tmp_path / "run")
+    assert man["vram_guard"]["at"] == "BEFORE" and man["vram_guard"]["gib"] == 1.0
+    assert not (tmp_path / "run" / "adapter").exists()
+
+
+@CUDA
+def test_vram_guard_over_during_training_stops_at_step_1(tiny, tmp_path, monkeypatch, capsys):
+    _fake_reserved(monkeypatch, 2)
+    assert _guarded(tiny, tmp_path / "run") == 6, capsys.readouterr().out
+    assert _manifest(tmp_path / "run")["vram_guard"]["at"] == "step 1"
+    assert not (tmp_path / "run" / "adapter").exists()
+
+
+@CUDA
+def test_vram_guard_under_the_limit_trains_and_saves(tiny, tmp_path):
+    assert _guarded(tiny, tmp_path / "run", guard="7.6") == 0
+    assert (tmp_path / "run" / "adapter" / "adapter_model.safetensors").exists()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
