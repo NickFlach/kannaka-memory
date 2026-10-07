@@ -404,6 +404,11 @@ def main(argv=None) -> int:
                         "generated": tok.decode(g[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)})
     (out / "samples.json").write_text(json.dumps(samples, indent=1, ensure_ascii=False), encoding="utf-8")
 
+    # Which computation produced every hold-out value in this manifest (BEFORE, AFTER and the series all go
+    # through heldout_loss, so they share one route): a reader comparing two manifests must not have to infer
+    # it from the flags.
+    route = ("chunked_nll: lm_head applied 128 positions at a time, answer tokens only (--answer-only-logits)"
+             if a.answer_only_logits else "full logits: model(input_ids, labels=input_ids).loss over every position")
     manifest = {"base": a.base, "params_b": round(params_b, 2), "model_class": type(model.base_model.model).__name__,
                 "lora_targets": sorted({c.rsplit(chr(46), 1)[-1] for c in chosen}), "chat_template_kwargs": ct_kwargs,
                 "trained_at": time.strftime("%Y-%m-%d"), "completion_only": a.completion_only,
@@ -412,6 +417,7 @@ def main(argv=None) -> int:
                 "epochs": a.epochs, "max_steps": a.max_steps, "lr": a.lr, "qlora": a.qlora,
                 "holdout_loss": {"before": before, "after": after}, "holdout_ppl": {"before": math.exp(before), "after": math.exp(after)},
                 "holdout_loss_series": series, "eval_every": a.eval_every, "max_holdout_rise": a.max_holdout_rise,
+                "holdout_route": {"before": route, "after": route, "series": route},
                 "init_adapter": init, "seed": a.seed,
                 "no_kbit_upcast": a.no_kbit_upcast, "loss_type": getattr(cfg, "loss_type", None), "optim": str(cfg.optim),
                 "vram_guard_gib": a.vram_guard_gib, "vram": vram(),
