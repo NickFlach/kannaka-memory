@@ -33,6 +33,13 @@ instead of starting a fresh LoRA, and is refused unless the adapter's base, r,
 alpha, dropout and target modules equal the flags. --max-holdout-rise is the
 kannaka-loop-c1 stop rule (prereg section 4): a hold-out loss more than that
 fraction over its value before step 1 stops the run, which exits 4 with no adapter.
+
+Memory on a small card (kannaka-loop-c1 runs on an 8 GiB RTX 3050), all opt-in:
+--no-kbit-upcast keeps the embedding and lm_head in bf16 instead of peft's fp32 upcast;
+--answer-only-logits pins trl's chunked_nll loss (lm_head only where the label counts) and
+refuses, exit 7, on a trl without it; --optim passes an optimizer such as paged_adamw_8bit;
+--vram-guard-gib stops the run, exit 6 with no adapter, once torch's reserved CUDA memory
+passes the guard (checked after the BEFORE hold-out and at every optimizer step).
 """
 from __future__ import annotations
 
@@ -83,6 +90,31 @@ def diverged(before: float, loss: float, max_rise: float) -> bool:
     """kannaka-loop-c1 stop rule (prereg section 4): the hold-out loss rose more than `max_rise` (0.10 = 10
     percent) over its value before step 1. A non-finite loss has diverged too (NaN compares False)."""
     return not math.isfinite(loss) or loss > before * (1.0 + max_rise)
+
+
+def vram_exceeded(reserved_bytes: int, guard_gib: float | None) -> bool:
+    """kannaka-loop-c1 memory rule: torch's reserved CUDA memory above the guard stops the run. Reserved,
+    not allocated: the caching allocator's reservation is what the driver must back, and on an 8 GiB card
+    under Windows it pages the excess into system RAM silently (measured 2026-10-06: peak pinned at the
+    card's 8,031 MiB, 33.7 s/step at an effective batch of 16 where E3's trainer ran ~17). Off when None."""
+    return guard_gib is not None and reserved_bytes > guard_gib * 2**30
+
+
+def chunked_lm_loss(model, ids, chunk: int = 128):
+    """The hold-out metric, model(input_ids=ids, labels=ids).loss (mean next-token CE over every position),
+    computed with lm_head applied `chunk` positions at a time instead of all at once. Same value; the
+    full-vocabulary logits of a 600-token row (~150k x 600, upcast for the loss) are what pushed an 8 GiB
+    card past its memory before training had begun (measured 2026-10-06: 8.03 GiB reserved at BEFORE)."""
+    import torch
+    import torch.nn.functional as F
+    inner = model.get_base_model() if hasattr(model, "get_base_model") else model
+    hidden = inner.get_decoder()(input_ids=ids).last_hidden_state[0, :-1]
+    target = ids[0, 1:]
+    head = inner.get_output_embeddings()
+    total = torch.zeros((), dtype=torch.float32, device=hidden.device)
+    for i in range(0, target.shape[0], chunk):
+        total += F.cross_entropy(head(hidden[i:i + chunk]).float(), target[i:i + chunk], reduction="sum")
+    return total / max(target.shape[0], 1)
 
 
 def to_dataset(rows, ct_kwargs: dict, completion_only: bool):
@@ -141,6 +173,20 @@ def main(argv=None) -> int:
     ap.add_argument("--max-holdout-rise", type=float, default=None,
                     help="stop rule: a hold-out loss above BEFORE x (1 + this) stops the run, exit 4, no adapter "
                          "(0.10 = kannaka-loop-c1). Checked at every --eval-every measurement and on AFTER")
+    ap.add_argument("--no-kbit-upcast", action="store_true",
+                    help="with --qlora, skip peft's prepare_model_for_kbit_training: it upcasts every non-quantized "
+                         "weight to fp32, which on Qwen3-8B is the 151k-row embedding and lm_head (~2.4 GB each). "
+                         "They stay bf16; gradient checkpointing and input grads are enabled directly instead")
+    ap.add_argument("--answer-only-logits", action="store_true",
+                    help="project through lm_head only at positions whose label counts (trl loss_type "
+                         "'chunked_nll'). Refused, exit 7, if this trl cannot do it, rather than silently "
+                         "materialising full-vocabulary logits")
+    ap.add_argument("--vram-guard-gib", type=float, default=None,
+                    help="stop rule: CUDA memory reserved by torch above this many GiB stops the run, exit 6, no "
+                         "adapter (7.6 = kannaka-loop-c1 on an 8 GiB card). Checked after the BEFORE hold-out and "
+                         "at every optimizer step")
+    ap.add_argument("--optim", default=None,
+                    help="transformers optimizer name passed to SFTConfig (e.g. paged_adamw_8bit); default: trl's")
     a = ap.parse_args(argv)
     ct_kwargs = json.loads(a.chat_template_kwargs) if a.chat_template_kwargs else {}
     if a.target_modules and "," in a.target_modules:
@@ -191,7 +237,14 @@ def main(argv=None) -> int:
     if cuda:
         kw["device_map"] = {"": 0}
     model = AutoModelForCausalLM.from_pretrained(a.base, **kw)
-    if a.qlora:
+    if a.qlora and a.no_kbit_upcast:
+        if cuda:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.enable_input_require_grads()
+        model.config.use_cache = False
+        log("--no-kbit-upcast: embeddings and lm_head kept in "
+            f"{model.get_input_embeddings().weight.dtype} (prepare_model_for_kbit_training skipped)")
+    elif a.qlora:
         from peft import prepare_model_for_kbit_training
         model = prepare_model_for_kbit_training(model)
     params_b = count_params(model.parameters()) / 1e9   # 4-bit weights counted unpacked
@@ -222,17 +275,40 @@ def main(argv=None) -> int:
                 if not isinstance(ids, torch.Tensor):
                     ids = ids["input_ids"]
                 ids = ids.to(m.device)
-                tot += m(input_ids=ids, labels=ids).loss.item()
+                tot += (chunked_lm_loss(m, ids) if a.answer_only_logits else m(input_ids=ids, labels=ids).loss).item()
                 n += 1
         m.train()
+        if cuda:
+            torch.cuda.empty_cache()   # the hold-out pass must not leave its reservation behind for training
         return tot / max(n, 1)
 
+    def vram() -> dict:
+        if not cuda:
+            return {}
+        return {"peak_reserved_gib": round(torch.cuda.max_memory_reserved() / 2**30, 3),
+                "peak_allocated_gib": round(torch.cuda.max_memory_allocated() / 2**30, 3)}
+
+    def vram_stop(where: str, extra: dict) -> int:
+        """--vram-guard-gib tripped: no adapter, a manifest that says where and how much, exit 6."""
+        v = vram()
+        log(f"VRAM GUARD at {where}: torch reserved {v['peak_reserved_gib']:.2f} GiB > --vram-guard-gib "
+            f"{a.vram_guard_gib}. On an 8 GiB card past this the driver pages into system RAM and the run "
+            "slows several-fold. No adapter saved; file the run as a failure.")
+        (out / "train.manifest.json").write_text(json.dumps({
+            "base": a.base, "init_adapter": init, "vram_guard": {"at": where, "gib": a.vram_guard_gib, **v},
+            "no_kbit_upcast": a.no_kbit_upcast, "answer_only_logits": a.answer_only_logits, "optim": a.optim,
+            "seed": a.seed, "lr": a.lr, "max_steps": a.max_steps, **extra}, indent=1), encoding="utf-8")
+        return 6
+
     before = heldout_loss(model)
-    log(f"holdout loss BEFORE={before:.4f} ppl={math.exp(before):.2f}")
+    log(f"holdout loss BEFORE={before:.4f} ppl={math.exp(before):.2f}" +
+        (f"; VRAM reserved {vram()['peak_reserved_gib']:.2f} GiB" if cuda else ""))
     if math.exp(before) > a.max_sane_ppl and not a.cpu_smoke:
         log(f"base perplexity {math.exp(before):.0f} exceeds --max-sane-ppl {a.max_sane_ppl:.0f}: the base did not load "
             "as a language model (check the class/prefix mapping for this checkpoint). Refusing to spend on it.")
         return 3
+    if cuda and vram_exceeded(torch.cuda.max_memory_reserved(), a.vram_guard_gib):
+        return vram_stop("BEFORE", {"holdout_loss": {"before": before}})
 
     # transformers/trl rename fields between releases (warmup_ratio -> warmup_steps,
     # max_seq_length -> max_length, ...). Build the kwargs and keep only the ones
@@ -249,13 +325,31 @@ def main(argv=None) -> int:
         report_to=[], seed=a.seed, dataloader_pin_memory=cuda, use_cpu=not cuda,
         chat_template_kwargs=ct_kwargs or None,
     )
+    if a.answer_only_logits:
+        if "loss_type" not in known:
+            log("--answer-only-logits: this trl's SFTConfig has no loss_type, so it cannot skip lm_head on ignored "
+                "positions. Refusing rather than training with full-vocabulary logits.")
+            return 7
+        want["loss_type"] = "chunked_nll"
+    if a.optim:
+        want["optim"] = a.optim
     if "warmup_steps" in known:
         want.pop("warmup_ratio", None)
     dropped = sorted(k for k in want if k not in known)
     cfg = SFTConfig(**{k: v for k, v in want.items() if k in known})
     if dropped:
         log(f"SFTConfig: ignored unknown fields {dropped}")
-    series, stopped = [], []
+    log(f"loss_type={getattr(cfg, 'loss_type', None)} optim={cfg.optim}")
+    series, stopped, vram_stopped = [], [], []
+
+    class VramGuard(TrainerCallback):
+        """--vram-guard-gib: torch's reserved CUDA memory, checked after every optimizer step."""
+
+        def on_step_end(self, args, state, control, **kw):
+            if cuda and vram_exceeded(torch.cuda.max_memory_reserved(), a.vram_guard_gib):
+                vram_stopped.append(state.global_step)
+                control.should_training_stop = True
+            return control
 
     class HoldoutEvery(TrainerCallback):
         """--eval-every: the hold-out loss after every N optimizer steps, and the stop rule on each value."""
@@ -271,10 +365,13 @@ def main(argv=None) -> int:
             return control
 
     trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds_train, processing_class=tok,
-                         callbacks=[HoldoutEvery()])
+                         callbacks=[VramGuard(), HoldoutEvery()])
     t0 = time.time()
     trainer.train()
-    log(f"trained in {time.time() - t0:.0f}s")
+    log(f"trained in {time.time() - t0:.0f}s" + (f"; VRAM {vram()}" if cuda else ""))
+    if vram_stopped:
+        return vram_stop(f"step {vram_stopped[0]}", {"holdout_loss": {"before": before},
+                                                     "holdout_loss_series": series, "seconds": round(time.time() - t0)})
 
     after = heldout_loss(model)
     log(f"holdout loss AFTER={after:.4f} ppl={math.exp(after):.2f}  (before {before:.4f} / {math.exp(before):.2f})")
@@ -307,6 +404,11 @@ def main(argv=None) -> int:
                         "generated": tok.decode(g[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)})
     (out / "samples.json").write_text(json.dumps(samples, indent=1, ensure_ascii=False), encoding="utf-8")
 
+    # Which computation produced every hold-out value in this manifest (BEFORE, AFTER and the series all go
+    # through heldout_loss, so they share one route): a reader comparing two manifests must not have to infer
+    # it from the flags.
+    route = ("chunked_nll: lm_head applied 128 positions at a time, answer tokens only (--answer-only-logits)"
+             if a.answer_only_logits else "full logits: model(input_ids, labels=input_ids).loss over every position")
     manifest = {"base": a.base, "params_b": round(params_b, 2), "model_class": type(model.base_model.model).__name__,
                 "lora_targets": sorted({c.rsplit(chr(46), 1)[-1] for c in chosen}), "chat_template_kwargs": ct_kwargs,
                 "trained_at": time.strftime("%Y-%m-%d"), "completion_only": a.completion_only,
@@ -315,7 +417,10 @@ def main(argv=None) -> int:
                 "epochs": a.epochs, "max_steps": a.max_steps, "lr": a.lr, "qlora": a.qlora,
                 "holdout_loss": {"before": before, "after": after}, "holdout_ppl": {"before": math.exp(before), "after": math.exp(after)},
                 "holdout_loss_series": series, "eval_every": a.eval_every, "max_holdout_rise": a.max_holdout_rise,
+                "holdout_route": {"before": route, "after": route, "series": route},
                 "init_adapter": init, "seed": a.seed,
+                "no_kbit_upcast": a.no_kbit_upcast, "loss_type": getattr(cfg, "loss_type", None), "optim": str(cfg.optim),
+                "vram_guard_gib": a.vram_guard_gib, "vram": vram(),
                 "seconds": round(time.time() - t0), "adapter": str(adapter), "cuda": cuda,
                 "device": torch.cuda.get_device_name(0) if cuda else "cpu"}
 
