@@ -2769,6 +2769,18 @@ pub(crate) fn handle_swarm_tail(cfg: &KannakaConfig, args: &[String]) {
             };
             let mut sub = match transport.subscribe(&subj) {
                 Ok(s) => s,
+                // #1101: an ACL refusal is the broker's final answer for this
+                // identity. Retrying it every five seconds with a fresh
+                // connection was the 2026-10-07 hub storm (one connection every
+                // ~5 s, ~590 refused lines per ten minutes, for hours). Drop the
+                // subject; the other subjects' threads keep tailing.
+                Err(e) if e.is_subscribe_refusal() => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[tail] {subj} refused by the broker for this identity; dropping this subject for the rest of the process (kannaka-memory#1101): {e}"
+                    );
+                    break;
+                }
                 Err(e) => {
                     let _ = writeln!(
                         std::io::stderr(),

@@ -264,6 +264,28 @@ pub enum NatsError {
     /// not sent. Callers that log publish failures should skip this variant,
     /// or the one loud line becomes a line per event.
     DeniedAgain(String),
+    /// A subscription this process already knows the broker refuses (#1101).
+    /// The refusal was printed once when it was learned; this SUB was not put
+    /// on the wire. A caller that retries subscriptions (a tail loop, a
+    /// reconnect) must treat it as final for the life of the process, not as
+    /// a transient failure to try again in five seconds — that retry, under a
+    /// scoped identity, was the 2026-10-07 hub storm.
+    SubscribeDeniedAgain(String),
+}
+
+impl NatsError {
+    /// True when the broker refused a SUBSCRIPTION on ACL grounds — either the
+    /// refusal just learned (`permissions_error("subscribe", …)`) or its
+    /// remembered repeat (`SubscribeDeniedAgain`). The one question a caller
+    /// with a retry loop has to ask: is this worth trying again? For these, no
+    /// (#1101).
+    pub fn is_subscribe_refusal(&self) -> bool {
+        match self {
+            Self::SubscribeDeniedAgain(_) => true,
+            Self::Protocol(msg) => msg.starts_with("subscribe denied by broker"),
+            _ => false,
+        }
+    }
 }
 
 /// How a [`NatsError::DeniedAgain`] ends when rendered. For callers that only
@@ -284,6 +306,10 @@ impl std::fmt::Display for NatsError {
             Self::DeniedAgain(subject) => write!(
                 f,
                 "NATS publish to \"{subject}\" not sent: the broker refused it earlier in this process {DENIED_AGAIN_SUFFIX}"
+            ),
+            Self::SubscribeDeniedAgain(subject) => write!(
+                f,
+                "NATS subscribe to \"{subject}\" not sent: the broker refused it earlier in this process {DENIED_AGAIN_SUFFIX}"
             ),
         }
     }
@@ -556,6 +582,58 @@ fn record_event_verdict(key: &str, verdict: EventVerdict) -> bool {
     }
     map.insert(key.to_string(), verdict);
     true
+}
+
+/// Subscriptions the broker has refused to THIS PROCESS, keyed like
+/// [`EVENT_VERDICTS`] by (explicit identity, subject) (#1101).
+///
+/// The subscription twin of [`PROCESS_STREAM_CREATE_DENIED`]. The broker judges
+/// the identity, not the socket: a subject refused on one connection is refused
+/// on every connection this process opens with the same credentials, so asking
+/// again — on reconnect, or from a tail loop that rebuilds its transport every
+/// five seconds — only buys another `Permissions Violation` line on the hub.
+/// On 2026-10-07 one desktop under a scoped identity produced ~590 of those per
+/// ten minutes for three hours, and the client logged exactly one line per
+/// process about any of it, so the machine causing the storm could not see it.
+///
+/// Deliberately not reset on reconnect, like the stream-create flag.
+static SUBSCRIBE_REFUSALS: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// Has the broker refused `subject` to this process under this identity?
+fn subscribe_refused_earlier(explicit: Option<&(String, String)>, subject: &str) -> bool {
+    let set = SUBSCRIBE_REFUSALS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    set.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(&event_verdict_key(explicit, subject))
+}
+
+/// Record a refused subscription. Returns true when this call recorded it, so
+/// the refusal is printed once per subject per process and never again.
+fn note_subscribe_refused(explicit: Option<&(String, String)>, subject: &str) -> bool {
+    let set = SUBSCRIBE_REFUSALS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    set.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(event_verdict_key(explicit, subject))
+}
+
+/// Learn a subscription refusal from the broker's own `-ERR` and say so once.
+/// `subject` is the subject the server named (or the one we asked for).
+fn learn_subscribe_refusal(explicit: Option<&(String, String)>, subject: &str, raw: &str) {
+    if note_subscribe_refused(explicit, subject) {
+        eprintln!(
+            "[nats] subscription to \"{}\" refused by the broker for this identity; this process will not ask for it again (kannaka-memory#1101; server said: {})",
+            crate::sanitize_display(subject),
+            crate::sanitize_display(raw)
+        );
+    }
+}
+
+#[cfg(test)]
+fn reset_subscribe_refusals_for_test() {
+    if let Some(set) = SUBSCRIBE_REFUSALS.get() {
+        set.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
 }
 
 /// When each key's last probe went without a verdict (could not connect, or
@@ -3498,16 +3576,23 @@ impl SwarmTransport {
         let mut conn = self.lock_conn()?;
         let first_sid = self.alloc_sid();
         let mut frame = Vec::new();
-        let _ = write!(frame, "SUB QUEEN.phase.* {first_sid}\r\n");
-        let _ = write!(frame, "SUB QUEEN.announce {}\r\n", self.alloc_sid());
-        if include_memories {
-            let _ = write!(frame, "SUB KANNAKA.memory.new {}\r\n", self.alloc_sid());
-            let _ = write!(frame, "SUB KANNAKA.dreams {}\r\n", self.alloc_sid());
-            // PART A anti-eclipse: heartbeat beacons ride the SAME auto-sync
-            // subscription so the corroboration gate's freshness advances from
-            // the one reader this connection already polls. Under the
-            // anon-allowed KANNAKA.events.> ACL (no server ACL change).
-            let _ = write!(frame, "SUB {} {}\r\n", crate::beacon::BEACON_SUBJECT, self.alloc_sid());
+        // #1101: a subject the broker refused earlier in this process is left
+        // out of the bundle (and reported as denied) rather than asked for
+        // again on every reconnect. `swarm join` rebuilds this subscription
+        // after each reconnect, so without the filter a scoped identity paid
+        // one refusal per subject per reconnect, forever.
+        let mut skipped_refused: Vec<String> = Vec::new();
+        let subjects = phases_bundle_subjects(include_memories);
+        let mut first = true;
+        for subject in subjects {
+            if subscribe_refused_earlier(self.explicit_creds.as_ref(), subject) {
+                skipped_refused.push(format!(
+                    "subscribe to \"{subject}\" not sent: the broker refused it earlier in this process {DENIED_AGAIN_SUFFIX}"
+                ));
+                continue;
+            }
+            let sid = if first { first = false; first_sid } else { self.alloc_sid() };
+            let _ = write!(frame, "SUB {subject} {sid}\r\n");
         }
         conn.write_frames(&frame)?;
         let stream_clone = conn.writer.try_clone()?;
@@ -3532,7 +3617,8 @@ impl SwarmTransport {
             ping_idle: SUB_PING_IDLE,
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
             pending: VecDeque::new(),
-            denied: Vec::new(),
+            denied: skipped_refused,
+            explicit_creds: self.explicit_creds.clone(),
         };
         // #562: COLLECT refusals rather than failing. Anon may read
         // QUEEN.phase.* but not KANNAKA.memory.new, and killing the whole
@@ -3541,6 +3627,12 @@ impl SwarmTransport {
         // advertised feature is off.
         sub.collect_denials(authenticated);
         Ok(sub)
+    }
+
+    /// The subjects `subscribe_phases_and_memories` bundles, in SUB order.
+    /// `QUEEN.phase.*` is always first: its sid is the subscription's `sid()`.
+    pub fn phases_bundle_subjects_for(include_memories: bool) -> Vec<&'static str> {
+        phases_bundle_subjects(include_memories)
     }
 
     /// Subscribe to phase updates. Returns a NatsSubscription that can be iterated.
@@ -3817,6 +3909,13 @@ impl SwarmTransport {
         subject: &str,
         queue_group: Option<&str>,
     ) -> Result<NatsSubscription, NatsError> {
+        // #1101: a subject the broker already refused to this process is not
+        // asked for again. Checked BEFORE the lock and the wire, so a tail
+        // loop or a reconnect that rebuilds its subscriptions costs the hub
+        // nothing for a subject it has already said no to.
+        if subscribe_refused_earlier(self.explicit_creds.as_ref(), subject) {
+            return Err(NatsError::SubscribeDeniedAgain(subject.to_string()));
+        }
         let mut conn = self.lock_conn()?;
         let sid = self.alloc_sid();
         match queue_group {
@@ -3846,6 +3945,7 @@ impl SwarmTransport {
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
             pending: VecDeque::new(),
             denied: Vec::new(),
+            explicit_creds: self.explicit_creds.clone(),
         };
         // #562: confirm the broker ACCEPTED the SUB before handing back a
         // subscription. Pre-fix a denied subject returned Ok and the caller
@@ -3856,9 +3956,29 @@ impl SwarmTransport {
         // separate BufReaders over the same socket, so a frame consumed by one
         // is invisible to the other. Reading here keeps any raced MSG inside
         // this subscription's own pending queue.
+        //
+        // #1101: a refusal is remembered for the process (and printed once by
+        // confirm_accepted), so the next subscribe to this subject returns
+        // `SubscribeDeniedAgain` without touching the wire.
         sub.confirm_accepted(authenticated)?;
         Ok(sub)
     }
+}
+
+/// The subjects the join/listen bundle subscribes to (see
+/// `subscribe_phases_and_memories`). `QUEEN.phase.*` first, always.
+fn phases_bundle_subjects(include_memories: bool) -> Vec<&'static str> {
+    let mut v = vec!["QUEEN.phase.*", "QUEEN.announce"];
+    if include_memories {
+        v.push("KANNAKA.memory.new");
+        v.push("KANNAKA.dreams");
+        // PART A anti-eclipse: heartbeat beacons ride the SAME auto-sync
+        // subscription so the corroboration gate's freshness advances from
+        // the one reader this connection already polls. Under the
+        // anon-allowed KANNAKA.events.> ACL (no server ACL change).
+        v.push(crate::beacon::BEACON_SUBJECT);
+    }
+    v
 }
 
 /// Subscription liveness (#500).
@@ -3949,6 +4069,10 @@ pub struct NatsSubscription {
     /// auto-sync. Denials are recorded here instead and the caller decides
     /// which advertised feature to declare unavailable.
     denied: Vec<String>,
+    /// The explicit identity the owning transport connected with, so a
+    /// refusal seen on this subscription's reader is remembered under the
+    /// same key `subscribe_with_queue` checks (#1101).
+    explicit_creds: Option<(String, String)>,
 }
 
 /// A received NATS message.
@@ -4084,6 +4208,10 @@ impl NatsSubscription {
                         } else {
                             self.subject.clone()
                         };
+                        // #1101: remember it for the process, say so once.
+                        if subject != "<multi-subject>" {
+                            learn_subscribe_refusal(self.explicit_creds.as_ref(), &subject, &m);
+                        }
                         return Err(permissions_error(
                             "subscribe",
                             &subject,
@@ -4150,6 +4278,16 @@ impl NatsSubscription {
                 }
                 Ok(ReadOutcome::Frame(Frame::ServerErr(m))) => {
                     self.mark_frame();
+                    // #1101: a subscription refusal that arrives after the
+                    // acceptance round-trip (a slow broker, or a subject of a
+                    // multi-subject bundle) is remembered for the process and
+                    // printed once, like one seen during confirmation.
+                    if is_permissions_error(&m) && m.contains("Subscription") {
+                        if let Some(subject) = subject_from_permissions_error(&m) {
+                            learn_subscribe_refusal(self.explicit_creds.as_ref(), &subject, &m);
+                            continue;
+                        }
+                    }
                     eprintln!("[nats] server error: {m}");
                     if is_auth_error(&m) {
                         return SubEvent::Closed;
@@ -4592,6 +4730,141 @@ mod tests {
 
         reset_stream_create_denied_for_test();
         assert!(should_issue_stream_create(false), "the test-only reset must restore the default");
+    }
+
+    /// #1101: a subscription the broker refused is remembered for the process,
+    /// per identity, and reported exactly once.
+    #[test]
+    fn a_refused_subscription_is_remembered_once_per_identity() {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_subscribe_refusals_for_test();
+        let subj = "KANNAKA.t1101.registry.>";
+        let scoped = Some(("flaukowski".to_string(), "pw".to_string()));
+
+        assert!(!subscribe_refused_earlier(None, subj), "control: a fresh process has refused nothing");
+        assert!(note_subscribe_refused(None, subj), "the first refusal is the one recorded");
+        assert!(!note_subscribe_refused(None, subj), "a repeat records nothing, so it prints nothing");
+        assert!(subscribe_refused_earlier(None, subj));
+        // The broker judges the identity: a refusal under one user says nothing
+        // about another user in the same process (the hive bridge case, #1071).
+        assert!(!subscribe_refused_earlier(scoped.as_ref(), subj));
+        assert!(!subscribe_refused_earlier(None, "KANNAKA.t1101.other"));
+        reset_subscribe_refusals_for_test();
+        assert!(!subscribe_refused_earlier(None, subj), "the test-only reset must restore the default");
+    }
+
+    /// #1101: the one question a retry loop asks of an error.
+    #[test]
+    fn is_subscribe_refusal_covers_the_fresh_refusal_and_its_repeat_and_nothing_else() {
+        let fresh = permissions_error(
+            "subscribe",
+            "KANNAKA.>",
+            "Permissions Violation for Subscription to \"KANNAKA.>\"",
+            true,
+        );
+        assert!(fresh.is_subscribe_refusal(), "{fresh}");
+        assert!(NatsError::SubscribeDeniedAgain("KANNAKA.>".into()).is_subscribe_refusal());
+        // A publish refusal, a connect failure and a plain protocol error are
+        // all worth retrying or reporting as what they are — not dropping.
+        assert!(!permissions_error("publish", "KANNAKA.>", "Permissions Violation for Publish to \"KANNAKA.>\"", true)
+            .is_subscribe_refusal());
+        assert!(!NatsError::Connect("refused".into()).is_subscribe_refusal());
+        assert!(!NatsError::Protocol("bad frame".into()).is_subscribe_refusal());
+        assert!(!NatsError::DeniedAgain("KANNAKA.>".into()).is_subscribe_refusal());
+    }
+
+    /// #1101: the join/listen bundle always SUBs `QUEEN.phase.*` first (its sid
+    /// is the subscription's), and the memory subjects only when asked.
+    #[test]
+    fn phases_bundle_subjects_are_fixed_and_phase_first() {
+        assert_eq!(phases_bundle_subjects(false), vec!["QUEEN.phase.*", "QUEEN.announce"]);
+        let full = phases_bundle_subjects(true);
+        assert_eq!(full[0], "QUEEN.phase.*");
+        assert!(full.contains(&"KANNAKA.memory.new") && full.contains(&"KANNAKA.dreams"));
+        assert!(full.contains(&crate::beacon::BEACON_SUBJECT));
+    }
+
+    /// #1101, on the wire: a broker refuses a subject once; the second subscribe
+    /// to the same subject never reaches the wire, a different subject still
+    /// does, and the caller can tell the refusal from a transient failure.
+    #[test]
+    fn a_refused_subscribe_is_not_put_on_the_wire_again_in_this_process() {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_subscribe_refusals_for_test();
+        const REFUSED: &str = "KANNAKA.t1101.wire.>";
+        const ALLOWED: &str = "KANNAKA.t1101.wire.allowed";
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let subs_seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&subs_seen);
+        let broker = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let _ = sock.write_all(b"INFO {\"server_id\":\"fake\",\"proto\":1,\"max_payload\":1048576}\r\n");
+            let _ = sock.flush();
+            let mut reader = BufReader::new(sock.try_clone().expect("clone"));
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                if line.starts_with("SUB ") {
+                    let subject = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                    seen.lock().unwrap().push(subject.clone());
+                    if subject == REFUSED {
+                        let _ = sock.write_all(
+                            format!("-ERR 'Permissions Violation for Subscription to \"{subject}\"'\r\n").as_bytes(),
+                        );
+                        let _ = sock.flush();
+                    }
+                } else if line.starts_with("PING") {
+                    let _ = sock.write_all(b"PONG\r\n");
+                    let _ = sock.flush();
+                }
+            }
+        });
+        let transport = SwarmTransport::connect(&format!("nats://{addr}")).expect("handshake");
+
+        // Control: an allowed subject subscribes, or the refusals below prove nothing.
+        let ok = transport.subscribe(ALLOWED);
+        assert!(
+            ok.is_ok(),
+            "control failed: an allowed subject was refused: {}",
+            ok.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
+        );
+        drop(ok);
+
+        // First ask: refused by the broker, reported as a refusal.
+        let first = transport.subscribe(REFUSED).err().expect("the broker refused this subject");
+        assert!(first.is_subscribe_refusal(), "a fresh refusal must read as one: {first}");
+        assert!(matches!(first, NatsError::Protocol(_)), "the first refusal carries the broker's words");
+        let subs_after_first = subs_seen.lock().unwrap().iter().filter(|s| *s == REFUSED).count();
+        assert_eq!(subs_after_first, 1, "the first SUB did reach the wire");
+
+        // Second ask, same process: refused locally, nothing on the wire.
+        let again = transport.subscribe(REFUSED).err().expect("remembered refusal");
+        assert!(matches!(again, NatsError::SubscribeDeniedAgain(ref s) if s == REFUSED), "got {again}");
+        assert!(again.is_subscribe_refusal());
+        let subs_after_second = subs_seen.lock().unwrap().iter().filter(|s| *s == REFUSED).count();
+        assert_eq!(subs_after_second, 1, "the second SUB must NOT reach the wire (the storm was this line)");
+
+        // Other subjects are unaffected: the refusal is per subject, not per connection.
+        let other = transport.subscribe("KANNAKA.t1101.wire.other");
+        assert!(
+            other.is_ok(),
+            "an unrelated subject must still subscribe: {}",
+            other.as_ref().err().map(|e| e.to_string()).unwrap_or_default()
+        );
+
+        // The bundle skips the remembered subject too — proven on the pure
+        // helper, since the bundle's subjects are fixed by the protocol.
+        assert!(subscribe_refused_earlier(None, REFUSED));
+        reset_subscribe_refusals_for_test();
+        drop(transport);
+        drop(broker);
     }
     /// #969: the refusal is reported as what it is, and only once.
     ///
@@ -5599,6 +5872,7 @@ mod tests {
             liveness_timeout: Duration::from_secs(30), // far away — no death here
             pending: VecDeque::new(),
             denied: Vec::new(),
+            explicit_creds: None,
         };
         // Poll well past ping_idle. Each next_event blocks ~20ms, so ~40 polls
         // is ~0.8s of wall time — comfortably past 30ms even under load — and
@@ -5635,6 +5909,7 @@ mod tests {
             liveness_timeout: Duration::from_millis(200),
             pending: VecDeque::new(),
             denied: Vec::new(),
+            explicit_creds: None,
         };
         let start = Instant::now();
         let mut saw_closed = false;
@@ -5669,6 +5944,7 @@ mod tests {
             liveness_timeout: Duration::from_secs(30), // cannot race the writer
             pending: VecDeque::new(),
             denied: Vec::new(),
+            explicit_creds: None,
         };
         let writer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(80));
@@ -5709,6 +5985,7 @@ mod tests {
             liveness_timeout: SUB_LIVENESS_TIMEOUT,
             pending: VecDeque::new(),
             denied: Vec::new(),
+            explicit_creds: None,
         };
         sub.set_timeout(None).unwrap();
         assert_eq!(sub.reader.get_ref().read_timeout().unwrap(), Some(SUB_POLL_MAX));
