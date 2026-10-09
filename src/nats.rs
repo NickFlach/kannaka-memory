@@ -832,6 +832,143 @@ fn reset_disk_seed_for_test() {
     if let Some(set) = DISK_SEEDED_KEYS.get() {
         set.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
+    if let Some(set) = PUBLISH_DENIED.get() {
+        set.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+    if let Some(set) = PUBLISH_DISK_CONSULTED.get() {
+        set.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+}
+
+/// Tests that point [`TEST_REFUSALS_FILE`] somewhere hold this, so two of them
+/// running in parallel never read each other's file.
+#[cfg(test)]
+static REFUSALS_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+// ---------------------------------------------------------------------------
+// Refused confirmed publishes, written down the same way (#1106).
+//
+// `kannaka remember` is a fresh process per call and always offers the new
+// memory to `KANNAKA.memory.new` through `publish_raw_confirmed`. On O1 the
+// radio calls it once per track under the `radio` user, whose ACL grants the
+// canonical remember event but not the memory-sync subject, so the hub logged
+// a refusal per track (283 on 2026-10-09) and each one carried the whole
+// memory, 10,000 floats, to be thrown away. Within a process the refusal was
+// already learned once; across processes nothing carried it.
+//
+// The same file now holds `publish.<identity@broker>.<subject>`: written only
+// when the broker actually refused that subject to that identity, believed
+// for a day, ignored under KANNAKA_NATS_RETRY_REFUSED=1, and a missing or
+// corrupt file means "ask the broker". A skipped publish returns
+// `DeniedAgain`, which callers already treat as "reported once".
+// ---------------------------------------------------------------------------
+
+/// The recorded refusal time of `subject` for `key`, if younger than `ttl`.
+fn publish_refused_on_disk(
+    path: &std::path::Path,
+    key: &str,
+    subject: &str,
+    now: u64,
+    ttl: Duration,
+) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let at = v.get("publish")?.get(key)?.get(subject)?.get("at")?.as_u64()?;
+    (now.saturating_sub(at) < ttl.as_secs()).then_some(at)
+}
+
+/// Write a publish refusal down. Read-modify-write so the stream-create
+/// entries and other subjects survive; best effort, never fatal.
+fn persist_publish_refusal(path: &std::path::Path, key: &str, subject: &str, now: u64) {
+    let mut v: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    if !v["publish"].is_object() {
+        v["publish"] = serde_json::json!({});
+    }
+    if !v["publish"][key].is_object() {
+        v["publish"][key] = serde_json::json!({});
+    }
+    v["publish"][key][subject] = serde_json::json!({
+        "at": now,
+        "ttl_secs": STREAM_CREATE_REFUSAL_TTL.as_secs(),
+        "issue": "kannaka-memory#1106",
+    });
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+/// `identity@broker|subject` pairs this process will not offer again: learned
+/// from the broker in this process, or read from the file once.
+static PUBLISH_DENIED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+/// Pairs whose file entry this process has already consulted.
+static PUBLISH_DISK_CONSULTED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn publish_pair(key: &str, subject: &str) -> String {
+    format!("{key}|{subject}")
+}
+
+/// True when this publish must not go on the wire: refused earlier in this
+/// process, or refused to this identity on this broker within the TTL by an
+/// earlier process (said once, when first read from the file).
+fn publish_known_refused(url: &str, explicit: Option<&(String, String)>, subject: &str) -> bool {
+    let key = refusal_key(url, explicit);
+    let pair = publish_pair(&key, subject);
+    let denied = PUBLISH_DENIED.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    if denied.lock().unwrap_or_else(|p| p.into_inner()).contains(&pair) {
+        return true;
+    }
+    {
+        let consulted = PUBLISH_DISK_CONSULTED.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+        if !consulted.lock().unwrap_or_else(|p| p.into_inner()).insert(pair.clone()) {
+            return false;
+        }
+    }
+    if std::env::var(RETRY_REFUSED_ENV).map(|v| v == "1").unwrap_or(false) {
+        return false;
+    }
+    let now = unix_now();
+    let Some(at) = publish_refused_on_disk(&refusals_file(), &key, subject, now, STREAM_CREATE_REFUSAL_TTL) else {
+        return false;
+    };
+    let ago_h = now.saturating_sub(at) / 3600;
+    let left_h = STREAM_CREATE_REFUSAL_TTL
+        .as_secs()
+        .saturating_sub(now.saturating_sub(at))
+        .div_ceil(3600);
+    eprintln!(
+        "[nats] publish to \"{}\" was refused to {} {ago_h}h ago; not offering it to that broker again for ~{left_h}h ({RETRY_REFUSED_ENV}=1 asks now; kannaka-memory#1106)",
+        crate::sanitize_display(subject),
+        crate::sanitize_display(&key)
+    );
+    denied.lock().unwrap_or_else(|p| p.into_inner()).insert(pair);
+    true
+}
+
+/// The broker just refused `subject` to this identity: hold it for this
+/// process and write it down for the next.
+fn remember_publish_refusal(url: &str, explicit: Option<&(String, String)>, subject: &str) {
+    let key = refusal_key(url, explicit);
+    PUBLISH_DENIED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(publish_pair(&key, subject));
+    persist_publish_refusal(&refusals_file(), &key, subject, unix_now());
+}
+
+/// True for the error `confirm("publish", …)` returns when the broker refused
+/// the subject on ACL grounds (see [`permissions_error`]).
+fn is_publish_refusal(e: &NatsError) -> bool {
+    matches!(e, NatsError::Protocol(m) if m.starts_with("publish denied by broker"))
 }
 
 /// Read side of [`note_stream_create_denied`].
@@ -2772,10 +2909,23 @@ impl SwarmTransport {
     ///    memory.new publish) run on publish-only transports. `reply()`
     ///    deliberately stays on plain `publish_raw` because `swarm serve`
     ///    calls it on a transport that IS subscribed.
+    ///
+    /// A refusal is also written down (#1106): the next process with the same
+    /// identity on the same broker does not put the publish on the wire for a
+    /// day, and gets [`NatsError::DeniedAgain`] instead.
     fn publish_raw_confirmed(&self, subject: &str, payload: &[u8]) -> Result<(), NatsError> {
+        if publish_known_refused(&self.url, self.explicit_creds.as_ref(), subject) {
+            return Err(NatsError::DeniedAgain(subject.to_string()));
+        }
         self.publish_raw(subject, payload)?;
         let mut conn = self.lock_conn()?;
-        conn.confirm("publish", subject)
+        let r = conn.confirm("publish", subject);
+        if let Err(e) = &r {
+            if is_publish_refusal(e) {
+                remember_publish_refusal(&self.url, self.explicit_creds.as_ref(), subject);
+            }
+        }
+        r
     }
 
     /// Publish a memory event, learning the broker's verdict once per
@@ -5063,14 +5213,137 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #1106: publish refusals share the file without disturbing the
+    /// stream-create entries, per identity, per broker, per subject.
+    #[test]
+    fn a_written_down_publish_refusal_is_per_subject_and_keeps_the_stream_create_entry() {
+        let dir = std::env::temp_dir().join(format!("km-1106-file-{}-{}", std::process::id(), unix_now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(REFUSALS_FILE_NAME);
+        let ttl = STREAM_CREATE_REFUSAL_TTL;
+        let key = "radio@170.9.238.136:4222";
+        persist_stream_create_refusal(&path, key, 500);
+        assert!(publish_refused_on_disk(&path, key, "KANNAKA.memory.new", 1_000, ttl).is_none(), "nothing written, nothing refused");
+        persist_publish_refusal(&path, key, "KANNAKA.memory.new", 1_000);
+        assert_eq!(publish_refused_on_disk(&path, key, "KANNAKA.memory.new", 1_000 + 3_600, ttl), Some(1_000));
+        assert!(publish_refused_on_disk(&path, key, "KANNAKA.dreams", 1_000, ttl).is_none(), "another subject is not judged by this one");
+        assert!(publish_refused_on_disk(&path, "serve@170.9.238.136:4222", "KANNAKA.memory.new", 1_000, ttl).is_none(), "another identity is not");
+        assert!(publish_refused_on_disk(&path, key, "KANNAKA.memory.new", 1_000 + ttl.as_secs(), ttl).is_none(), "at the TTL it is forgotten");
+        assert_eq!(stream_create_refused_on_disk(&path, key, 1_000, ttl), Some(500), "the stream-create entry survives the publish write");
+        persist_publish_refusal(&path, key, "KANNAKA.dreams", 2_000);
+        assert_eq!(publish_refused_on_disk(&path, key, "KANNAKA.memory.new", 2_000, ttl), Some(1_000), "a second subject keeps the first");
+        persist_stream_create_refusal(&path, key, 3_000);
+        assert_eq!(publish_refused_on_disk(&path, key, "KANNAKA.dreams", 3_000, ttl), Some(2_000), "and a stream-create write keeps both");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1106, on the wire: `kannaka remember` under a user that may not publish
+    /// `KANNAKA.memory.new` offers it once; the next process does not; another
+    /// subject and another identity still ask; the env override asks again.
+    #[test]
+    fn a_refused_memory_sync_publish_is_not_put_on_the_wire_by_the_next_process() {
+        let _guard = REFUSALS_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_disk_seed_for_test();
+        let dir = std::env::temp_dir().join(format!("km-1106-wire-{}-{}", std::process::id(), unix_now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        *TEST_REFUSALS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.join(REFUSALS_FILE_NAME));
+
+        // A broker that refuses KANNAKA.memory.new (and $JS.API.*) with the real
+        // -ERR, accepts everything else, and counts the memory.new PUBs it sees.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let pubs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&pubs);
+        std::thread::spawn(move || {
+            for _ in 0..6 {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let _ = sock.write_all(b"INFO {\"server_id\":\"fake\",\"proto\":1,\"max_payload\":1048576,\"auth_required\":true}\r\n");
+                let _ = sock.flush();
+                let seen = Arc::clone(&seen);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(sock.try_clone().expect("clone"));
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line.starts_with("PUB ") {
+                            let subject = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                            let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let mut payload = vec![0u8; n + 2];
+                            let _ = reader.read_exact(&mut payload);
+                            if subject == "KANNAKA.memory.new" || subject == "KANNAKA.dreams" {
+                                seen.lock().unwrap().push(subject.clone());
+                            }
+                            if subject == "KANNAKA.memory.new" || subject.starts_with("$JS.API.") {
+                                let _ = sock.write_all(format!("-ERR 'Permissions Violation for Publish to \"{subject}\"'\r\n").as_bytes());
+                                let _ = sock.flush();
+                            }
+                        } else if line.starts_with("PING") {
+                            let _ = sock.write_all(b"PONG\r\n");
+                            let _ = sock.flush();
+                        }
+                    }
+                });
+            }
+        });
+        let url = format!("nats://{addr}");
+        let radio = Some(("radio".to_string(), "pw".to_string()));
+        let mem_new = || pubs.lock().unwrap().iter().filter(|s| *s == "KANNAKA.memory.new").count();
+        let dreams = || pubs.lock().unwrap().iter().filter(|s| *s == "KANNAKA.dreams").count();
+
+        // Process 1: offered, refused, written down; a second offer in the same
+        // process is not sent either.
+        let t1 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        let e = t1.publish_raw_confirmed("KANNAKA.memory.new", b"{}").expect_err("the broker refuses it");
+        assert!(is_publish_refusal(&e), "the first refusal is the broker's own: {e}");
+        assert_eq!(mem_new(), 1);
+        assert!(matches!(t1.publish_raw_confirmed("KANNAKA.memory.new", b"{}"), Err(NatsError::DeniedAgain(_))));
+        assert_eq!(mem_new(), 1, "not sent twice in one process");
+        let key = refusal_key(&url, radio.as_ref());
+        assert!(publish_refused_on_disk(&refusals_file(), &key, "KANNAKA.memory.new", unix_now(), STREAM_CREATE_REFUSAL_TTL).is_some(), "on disk for the next process");
+        drop(t1);
+
+        // Process 2 (same identity, process state reset, file kept): not on the
+        // wire; an allowed subject on the same connection still goes out.
+        reset_disk_seed_for_test();
+        let t2 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        assert!(matches!(t2.publish_raw_confirmed("KANNAKA.memory.new", b"{}"), Err(NatsError::DeniedAgain(_))));
+        assert_eq!(mem_new(), 1, "the next process must NOT put memory.new on the wire (the 283 a day were this)");
+        t2.publish_raw_confirmed("KANNAKA.dreams", b"{}").expect("an allowed subject is unaffected");
+        assert_eq!(dreams(), 1);
+        drop(t2);
+
+        // Process 3, a different identity: the broker judges it.
+        reset_disk_seed_for_test();
+        let t3 = SwarmTransport::connect_with_creds(&url, Some(("serve".to_string(), "pw".to_string()))).expect("handshake");
+        assert!(t3.publish_raw_confirmed("KANNAKA.memory.new", b"{}").is_err());
+        assert_eq!(mem_new(), 2, "another identity is asked, not judged by radio's entry");
+        drop(t3);
+
+        // Process 4, radio again with the override: asks.
+        reset_disk_seed_for_test();
+        std::env::set_var(RETRY_REFUSED_ENV, "1");
+        let t4 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        let r4 = t4.publish_raw_confirmed("KANNAKA.memory.new", b"{}");
+        std::env::remove_var(RETRY_REFUSED_ENV);
+        assert!(r4.is_err());
+        assert_eq!(mem_new(), 3, "KANNAKA_NATS_RETRY_REFUSED=1 offers it again");
+        drop(t4);
+
+        *TEST_REFUSALS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        reset_disk_seed_for_test();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #1104, on the wire: the first process is refused and writes it down; the
     /// next process (the in-process flag reset, the file kept) never puts the
     /// create on the wire; a different identity still asks; the env override
     /// asks again.
     #[test]
     fn a_refused_stream_create_is_not_put_on_the_wire_by_the_next_process() {
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = REFUSALS_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stream_create_denied_for_test();
         reset_disk_seed_for_test();
         let dir = std::env::temp_dir().join(format!("km-1104-wire-{}-{}", std::process::id(), unix_now()));

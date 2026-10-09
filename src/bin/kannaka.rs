@@ -2190,7 +2190,12 @@ fn main() {
                                 cluster_count,
                                 prov_sig.as_ref(),
                             ) {
-                                eprintln!("[nats] Warning: failed to publish memory sync: {e}");
+                                // DeniedAgain was already said once (#1071 in
+                                // process, #1106 from the refusals file); the
+                                // memory itself is stored either way.
+                                if !matches!(e, kannaka_memory::nats::NatsError::DeniedAgain(_)) {
+                                    eprintln!("[nats] Warning: failed to publish memory sync: {e}");
+                                }
                             } else {
                                 eprintln!(
                                     "[nats] Published memory {id} to swarm (mems={total_mems} clusters={cluster_count})"
