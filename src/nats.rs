@@ -671,6 +671,169 @@ fn note_stream_create_denied() {
     PROCESS_STREAM_CREATE_DENIED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+// ---------------------------------------------------------------------------
+// #1104: a refused `$JS.API.STREAM.CREATE` is remembered ACROSS processes.
+//
+// The in-process flag above stops a refused identity from asking twice in one
+// process. It cannot stop the next process: every `kannaka` CLI call the
+// radio's crons make, every service restart, every `swarm serve` reload is a
+// new process, and each one pays the create again — one Publish Violation on
+// the broker and up to JS_API_TIMEOUT of dead stall per start. Measured on
+// oracle1's violations log on 2026-10-08: about 500 lines a day from the
+// `radio`, `serve` and `cheeks` users, every one of them this subject; and
+// once #1102 had silenced the subscribe side, Flaukowski's seat on 0.16.15
+// showed only these in its launch window.
+//
+// So the refusal is written down: keyed by the identity the broker judged
+// (the user name) and the broker it came from (host:port), with the time, in
+// `<data dir>/nats-refusals.json`. The next process reads the file before
+// putting a create on the wire and seeds the in-process flag from it, saying
+// so once. An entry lasts STREAM_CREATE_REFUSAL_TTL (a day), so an ACL widened
+// later is tried again tomorrow, or now with KANNAKA_NATS_RETRY_REFUSED=1.
+//
+// Nothing here predicts the broker. Only a refusal the broker actually sent
+// is ever written, and the file is that verdict, remembered. A broker that is
+// unreachable, a file that cannot be read or written, a corrupt file: each is
+// ignored and the create goes on the wire as before.
+// ---------------------------------------------------------------------------
+
+/// How long a written-down refusal is believed before the create is tried
+/// again.
+const STREAM_CREATE_REFUSAL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Set to `1` to ignore the written-down refusal and ask the broker now.
+const RETRY_REFUSED_ENV: &str = "KANNAKA_NATS_RETRY_REFUSED";
+const REFUSALS_FILE_NAME: &str = "nats-refusals.json";
+
+#[cfg(test)]
+static TEST_REFUSALS_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+fn refusals_file() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(p) = TEST_REFUSALS_FILE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return p;
+    }
+    crate::acp::data_dir().join(REFUSALS_FILE_NAME)
+}
+
+/// `host:port` of a NATS URL, without scheme, credentials or path: the broker
+/// the refusal came from, as a key.
+fn url_host(url: &str) -> String {
+    let s = url.trim();
+    let s = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let s = s.rsplit_once('@').map(|(_, r)| r).unwrap_or(s);
+    let s = s.split(['/', '?']).next().unwrap_or(s);
+    s.to_string()
+}
+
+/// The identity the broker judged (the explicit user, else the ambient
+/// `NATS_USER`, else anonymous) and the broker it judged on.
+fn refusal_key(url: &str, explicit: Option<&(String, String)>) -> String {
+    let user = match explicit {
+        Some((u, _)) => u.clone(),
+        None => std::env::var("NATS_USER").unwrap_or_default(),
+    };
+    let user = if user.is_empty() { "anonymous" } else { user.as_str() };
+    format!("{user}@{}", url_host(url))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The recorded refusal time for `key`, if the file holds one younger than
+/// `ttl`. A missing, unreadable or corrupt file is "no refusal recorded".
+fn stream_create_refused_on_disk(
+    path: &std::path::Path,
+    key: &str,
+    now: u64,
+    ttl: Duration,
+) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let at = v.get("stream_create")?.get(key)?.get("at")?.as_u64()?;
+    (now.saturating_sub(at) < ttl.as_secs()).then_some(at)
+}
+
+/// Write the refusal down. Read-modify-write so other keys survive; best
+/// effort, never fatal: a refusal the file cannot hold is still held by the
+/// process flag, as before.
+fn persist_stream_create_refusal(path: &std::path::Path, key: &str, now: u64) {
+    let mut v: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    v["stream_create"][key] = serde_json::json!({
+        "at": now,
+        "subject": "$JS.API.STREAM.CREATE",
+        "ttl_secs": STREAM_CREATE_REFUSAL_TTL.as_secs(),
+        "issue": "kannaka-memory#1104",
+    });
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+/// The broker just refused this identity on this connection: write it down
+/// for the next process.
+fn remember_stream_create_refusal(url: &str, explicit: Option<&(String, String)>) {
+    persist_stream_create_refusal(&refusals_file(), &refusal_key(url, explicit), unix_now());
+}
+
+/// Keys this process has already consulted the file for, so the line below is
+/// printed once per identity and the file is read once per identity.
+static DISK_SEEDED_KEYS: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// Before the first create for this identity in this process: if the file
+/// holds a fresh refusal for it, seed the in-process flag from it and say so.
+/// Returns true when the flag was seeded from disk by this call.
+fn seed_stream_create_denial_from_disk(url: &str, explicit: Option<&(String, String)>) -> bool {
+    let key = refusal_key(url, explicit);
+    {
+        let set = DISK_SEEDED_KEYS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+        if !set.lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone()) {
+            return false;
+        }
+    }
+    if std::env::var(RETRY_REFUSED_ENV).map(|v| v == "1").unwrap_or(false) {
+        return false;
+    }
+    let now = unix_now();
+    let Some(at) = stream_create_refused_on_disk(&refusals_file(), &key, now, STREAM_CREATE_REFUSAL_TTL)
+    else {
+        return false;
+    };
+    let ago_h = now.saturating_sub(at) / 3600;
+    let left_h = STREAM_CREATE_REFUSAL_TTL
+        .as_secs()
+        .saturating_sub(now.saturating_sub(at))
+        .div_ceil(3600);
+    eprintln!(
+        "[nats] $JS.API.STREAM.CREATE was refused to {} {ago_h}h ago; not asking that broker again for ~{left_h}h ({RETRY_REFUSED_ENV}=1 asks now; kannaka-memory#1104)",
+        crate::sanitize_display(&key)
+    );
+    note_stream_create_denied();
+    true
+}
+
+#[cfg(test)]
+fn reset_disk_seed_for_test() {
+    if let Some(set) = DISK_SEEDED_KEYS.get() {
+        set.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+}
+
 /// Read side of [`note_stream_create_denied`].
 fn stream_create_denied_in_process() -> bool {
     PROCESS_STREAM_CREATE_DENIED.load(std::sync::atomic::Ordering::Relaxed)
@@ -2308,6 +2471,8 @@ impl SwarmTransport {
                             conn.stream_create_denied = true;
                             // ...and for every OTHER connection this process opens.
                             note_stream_create_denied();
+                            // ...and for the NEXT process under this identity (#1104).
+                            remember_stream_create_refusal(&self.url, self.explicit_creds.as_ref());
                         }
                         ServerErrReport::ServerError => eprintln!("[nats] server error: {m}"),
                     }
@@ -2485,6 +2650,9 @@ impl SwarmTransport {
         config: serde_json::Value,
     ) -> Result<(), NatsError> {
         let payload = config.to_string();
+        // #1104: a refusal an earlier process wrote down for this identity on
+        // this broker seeds the process flag now, before anything is sent.
+        seed_stream_create_denial_from_disk(&self.url, self.explicit_creds.as_ref());
         let mut conn = self.lock_conn()?;
 
         // #969: never re-issue a create this broker has already refused on
@@ -4866,6 +5034,132 @@ mod tests {
         drop(transport);
         drop(broker);
     }
+    /// #1104, pure: the refusal file round-trips, expires, keys by identity and
+    /// broker, and never panics on junk.
+    #[test]
+    fn a_written_down_refusal_is_read_back_until_it_expires() {
+        let dir = std::env::temp_dir().join(format!("km-1104-{}-{}", std::process::id(), unix_now()));
+        let path = dir.join(REFUSALS_FILE_NAME);
+        let key = refusal_key("nats://user:pw@170.9.238.136:4222/x", Some(&("radio".to_string(), "pw".to_string())));
+        assert_eq!(key, "radio@170.9.238.136:4222", "the key is the judged user and the broker, never the password");
+        assert_eq!(url_host("nats://localhost"), "localhost");
+        assert_eq!(url_host("127.0.0.1:4222"), "127.0.0.1:4222");
+        assert_eq!(url_host("tls://a:b@h:1?x=1"), "h:1");
+        assert!(stream_create_refused_on_disk(&path, &key, 1_000, STREAM_CREATE_REFUSAL_TTL).is_none(), "no file, no refusal");
+        persist_stream_create_refusal(&path, &key, 1_000);
+        assert_eq!(stream_create_refused_on_disk(&path, &key, 1_000 + 3_600, STREAM_CREATE_REFUSAL_TTL), Some(1_000), "an hour later it holds");
+        assert!(stream_create_refused_on_disk(&path, &key, 1_000 + STREAM_CREATE_REFUSAL_TTL.as_secs(), STREAM_CREATE_REFUSAL_TTL).is_none(), "at the TTL it is forgotten");
+        assert!(stream_create_refused_on_disk(&path, "serve@170.9.238.136:4222", 1_000, STREAM_CREATE_REFUSAL_TTL).is_none(), "another identity is not judged by this one");
+        assert!(stream_create_refused_on_disk(&path, "radio@other:4222", 1_000, STREAM_CREATE_REFUSAL_TTL).is_none(), "another broker is not judged by this one");
+        // A second key joins the file; the first survives the read-modify-write.
+        persist_stream_create_refusal(&path, "serve@170.9.238.136:4222", 2_000);
+        assert_eq!(stream_create_refused_on_disk(&path, &key, 2_000, STREAM_CREATE_REFUSAL_TTL), Some(1_000));
+        assert_eq!(stream_create_refused_on_disk(&path, "serve@170.9.238.136:4222", 2_000, STREAM_CREATE_REFUSAL_TTL), Some(2_000));
+        // Junk in the file is "nothing recorded", and writing over it works.
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(stream_create_refused_on_disk(&path, &key, 1_000, STREAM_CREATE_REFUSAL_TTL).is_none());
+        persist_stream_create_refusal(&path, &key, 3_000);
+        assert_eq!(stream_create_refused_on_disk(&path, &key, 3_000, STREAM_CREATE_REFUSAL_TTL), Some(3_000));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1104, on the wire: the first process is refused and writes it down; the
+    /// next process (the in-process flag reset, the file kept) never puts the
+    /// create on the wire; a different identity still asks; the env override
+    /// asks again.
+    #[test]
+    fn a_refused_stream_create_is_not_put_on_the_wire_by_the_next_process() {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_stream_create_denied_for_test();
+        reset_disk_seed_for_test();
+        let dir = std::env::temp_dir().join(format!("km-1104-wire-{}-{}", std::process::id(), unix_now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        *TEST_REFUSALS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.join(REFUSALS_FILE_NAME));
+
+        // A broker that refuses every JetStream API publish with the real -ERR
+        // and counts the STREAM.CREATE lines it sees.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let creates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&creates);
+        let broker = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let _ = sock.write_all(b"INFO {\"server_id\":\"fake\",\"proto\":1,\"max_payload\":1048576,\"auth_required\":true}\r\n");
+                let _ = sock.flush();
+                let seen = Arc::clone(&seen);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(sock.try_clone().expect("clone"));
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line.starts_with("PUB ") {
+                            let subject = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                            let n: usize = line.split_whitespace().nth(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let mut payload = vec![0u8; n + 2];
+                            let _ = reader.read_exact(&mut payload);
+                            if subject.starts_with("$JS.API.STREAM.CREATE.") {
+                                seen.lock().unwrap().push(subject.clone());
+                            }
+                            if subject.starts_with("$JS.API.") {
+                                let _ = sock.write_all(format!("-ERR 'Permissions Violation for Publish to \"{subject}\"'\r\n").as_bytes());
+                                let _ = sock.flush();
+                            }
+                        } else if line.starts_with("PING") {
+                            let _ = sock.write_all(b"PONG\r\n");
+                            let _ = sock.flush();
+                        }
+                    }
+                });
+            }
+        });
+        let url = format!("nats://{addr}");
+        let radio = Some(("radio".to_string(), "pw".to_string()));
+        let count = || creates.lock().unwrap().len();
+
+        // Process 1: refused on the wire, written down.
+        let t1 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        assert!(!t1.jetstream_writable, "a refused identity is not a writer");
+        assert_eq!(count(), 1, "the first process pays exactly one create (the process flag stops the second stream)");
+        let key = refusal_key(&url, radio.as_ref());
+        assert!(stream_create_refused_on_disk(&refusals_file(), &key, unix_now(), STREAM_CREATE_REFUSAL_TTL).is_some(), "the refusal is on disk for the next process");
+        drop(t1);
+
+        // Process 2 (same identity, flag reset, file kept): nothing on the wire.
+        reset_stream_create_denied_for_test();
+        reset_disk_seed_for_test();
+        let t2 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        assert_eq!(count(), 1, "the next process must NOT put the create on the wire (the ~500 lines a day were this)");
+        assert!(!t2.jetstream_writable);
+        drop(t2);
+
+        // Process 3, a different identity: the file says nothing about it, so it asks.
+        reset_stream_create_denied_for_test();
+        reset_disk_seed_for_test();
+        let t3 = SwarmTransport::connect_with_creds(&url, Some(("serve".to_string(), "pw".to_string()))).expect("handshake");
+        assert_eq!(count(), 2, "another identity is judged by the broker, not by radio's file entry");
+        drop(t3);
+
+        // Process 4, same identity as 1 but told to retry: asks again.
+        reset_stream_create_denied_for_test();
+        reset_disk_seed_for_test();
+        std::env::set_var(RETRY_REFUSED_ENV, "1");
+        let t4 = SwarmTransport::connect_with_creds(&url, radio.clone()).expect("handshake");
+        std::env::remove_var(RETRY_REFUSED_ENV);
+        assert_eq!(count(), 3, "KANNAKA_NATS_RETRY_REFUSED=1 puts the create back on the wire");
+        drop(t4);
+
+        *TEST_REFUSALS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        reset_stream_create_denied_for_test();
+        reset_disk_seed_for_test();
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(broker);
+    }
+
     /// #969: the refusal is reported as what it is, and only once.
     ///
     /// The broker declining `$JS.API.STREAM.CREATE` to a reader identity is an
