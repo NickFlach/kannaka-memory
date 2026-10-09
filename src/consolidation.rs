@@ -545,8 +545,10 @@ impl ConsolidationEngine {
         let mut seen = HashSet::new();
 
         for &id in working_set {
-            let (vec_a, phase_a) = match engine.store.get(&id).ok().flatten() {
-                Some(m) => (m.vector.clone(), m.phase),
+            // Everything this loop needs about `id`, read once (#883): the
+            // inner loop used to fetch `id` twice more per neighbor.
+            let (vec_a, phase_a, freq_a, low_amp_a) = match engine.store.get(&id).ok().flatten() {
+                Some(m) => (m.vector.clone(), m.phase, m.frequency, m.amplitude < 0.3),
                 None => continue,
             };
 
@@ -573,28 +575,18 @@ impl ConsolidationEngine {
                     continue;
                 }
 
-                let (phase_b, freq_b) = match engine.store.get(&neighbor_id).ok().flatten() {
-                    Some(m) => (m.phase, m.frequency),
+                let (phase_b, freq_b, low_amp_b) = match engine.store.get(&neighbor_id).ok().flatten() {
+                    Some(m) => (m.phase, m.frequency, m.amplitude < 0.3),
                     None => continue,
                 };
 
                 // Frequency-band gating: memories with very different natural frequencies
                 // cannot constructively interfere — classify as destructive.
-                let freq_a = match engine.store.get(&id).ok().flatten() {
-                    Some(m) => m.frequency,
-                    None => 0.0,
-                };
                 let freq_ratio = if freq_a > freq_b { freq_a / freq_b.max(1e-6) } else { freq_b / freq_a.max(1e-6) };
                 // Frequency-band gating with amplitude check: only apply to low-amplitude
                 // memories to avoid destroying legitimate high-amplitude signals in different
                 // frequency bands (e.g., emotion memories at freq=1.5).
-                let low_amp = match engine.store.get(&id).ok().flatten() {
-                    Some(m) => m.amplitude < 0.3,
-                    None => false,
-                } || match engine.store.get(&neighbor_id).ok().flatten() {
-                    Some(m) => m.amplitude < 0.3,
-                    None => false,
-                };
+                let low_amp = low_amp_a || low_amp_b;
                 let frequency_mismatch = freq_ratio > 3.0 && low_amp;
 
                 let phase_diff = (phase_a - phase_b).abs();
