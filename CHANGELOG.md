@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### A refused `$JS.API.STREAM.CREATE` is remembered across processes, in the data dir, for a day (#1104)
+
+#969 and #996 stopped a refused identity from re-issuing the stream create inside one process. They could not stop the next process, and on oracle1 most clients are next processes: every `kannaka` CLI call the radio's crons make, every service restart, every `swarm serve` reload paid the create again, one Publish Violation on the broker and up to `JS_API_TIMEOUT` of dead stall per start. Measured on the hub's violations log on 2026-10-08: about 500 lines a day from the `radio`, `serve` and `cheeks` users, all this subject, and once #1102 had silenced the subscribe side Flaukowski's seat on 0.16.15 showed only these in its launch window. Now the refusal the broker sends is written to `<data dir>/nats-refusals.json`, keyed by the judged user and the broker's host:port with the time; the next process reads it before the first create, seeds the in-process flag from it, and says so once (`[nats] $JS.API.STREAM.CREATE was refused to radio@170.9.238.136:4222 3h ago; not asking that broker again for ~21h`). An entry lasts 24 hours, so a widened ACL is tried again tomorrow, or now with `KANNAKA_NATS_RETRY_REFUSED=1`. Nothing predicts the broker: only a refusal it actually sent is written, and an unreadable or corrupt file means the create goes on the wire as before. Proven against a fake broker that refuses every JetStream API publish and counts the creates: process one pays one, process two (flag reset, file kept) pays none, a different identity pays its own, and the override pays again. For KSHB this is what lets R2 (refusals per minute on the hub) read 0 for a scoped identity that never changed its ACL.
+
 ## [0.16.15] — 2026-10-08
 
 ### A refused subscription is remembered for the process and never re-asked; `swarm tail` drops a refused subject instead of retrying it every five seconds (#1101, PR #1102)
