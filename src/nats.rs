@@ -1457,15 +1457,24 @@ struct Conn {
 
 impl Conn {
     fn set_read_timeout(&self, t: Option<Duration>) -> Result<(), NatsError> {
-        // writer/reader are clones of the same socket; the timeout is a
-        // property of the shared socket, so setting it once is enough.
-        self.writer.set_read_timeout(t).map_err(NatsError::Io)
+        // writer and reader are `try_clone()`s of one socket, but the timeout
+        // does NOT carry between them on Windows: there `try_clone` duplicates
+        // the handle and SO_RCVTIMEO stays per handle. Setting it on the
+        // writer alone left every read on the reader at the 5 s connect
+        // default, so `request_one` with a longer deadline gave up at ~5 s
+        // (#1076, measured on Windows 11; Linux shares the option and never
+        // showed it). Set it on both; the reader is the one that reads.
+        self.writer.set_read_timeout(t).map_err(NatsError::Io)?;
+        self.reader.get_ref().set_read_timeout(t).map_err(NatsError::Io)
     }
 
-    /// Current read timeout, falling back to the connection default if the
-    /// getter fails.
+    /// Current read timeout of the handle that reads, falling back to the
+    /// connection default if the getter fails.
     fn read_timeout(&self) -> Option<Duration> {
-        self.writer.read_timeout().unwrap_or(Some(DEFAULT_IO_TIMEOUT))
+        self.reader
+            .get_ref()
+            .read_timeout()
+            .unwrap_or(Some(DEFAULT_IO_TIMEOUT))
     }
 
     fn pong(&mut self) -> Result<(), NatsError> {
@@ -6419,6 +6428,36 @@ mod tests {
             ReadOutcome::Closed => {}
             _ => panic!("expected Closed on EOF"),
         }
+    }
+
+    /// #1076: a timeout set through `Conn::set_read_timeout` must govern reads
+    /// on `conn.reader`, which wraps a `try_clone()` of the writer. The
+    /// connection starts with a short default (as `handshake` sets
+    /// DEFAULT_IO_TIMEOUT), the caller widens it, and a read on the reader
+    /// with nothing arriving must block for the widened time, not the default.
+    #[test]
+    fn a_widened_read_timeout_reaches_the_cloned_reader() {
+        let (client, _server) = loopback_pair();
+        client.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+        let reader = BufReader::new(client.try_clone().unwrap());
+        let mut conn = Conn {
+            writer: client,
+            reader,
+            dead: false,
+            authenticated: false,
+            stream_create_denied: false,
+        };
+        conn.set_read_timeout(Some(Duration::from_millis(1200))).unwrap();
+        let t0 = Instant::now();
+        let mut buf = [0u8; 1];
+        let r = std::io::Read::read(&mut conn.reader, &mut buf);
+        let waited = t0.elapsed();
+        assert!(r.is_err(), "nothing was sent, so the read must time out");
+        assert!(
+            waited >= Duration::from_millis(900),
+            "the reader gave up after {waited:?}: it is still on the 150 ms default, not the 1200 ms the caller set"
+        );
+        assert_eq!(conn.read_timeout(), Some(Duration::from_millis(1200)));
     }
 
     #[test]
