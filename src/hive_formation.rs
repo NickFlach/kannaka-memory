@@ -127,15 +127,16 @@ pub fn form_hives(
                 .map(|(d, _)| d.to_string());
             // cohesion = mean score over intra-group qualifying edges.
             let group: std::collections::HashSet<usize> = idxs.iter().copied().collect();
-            let intra: Vec<f32> = edges
+            // One pass, no temporary Vec (#879). Summed in the same order as
+            // before, so the f32 result is bit-identical.
+            let (sum, n) = edges
                 .iter()
                 .filter(|(i, j, _)| group.contains(i) && group.contains(j))
-                .map(|(_, _, s)| *s)
-                .collect();
-            let cohesion = if intra.is_empty() {
+                .fold((0.0f32, 0usize), |(sum, n), (_, _, s)| (sum + *s, n + 1));
+            let cohesion = if n == 0 {
                 1.0 // singleton hive
             } else {
-                intra.iter().sum::<f32>() / intra.len() as f32
+                sum / n as f32
             };
             Hive {
                 members,
