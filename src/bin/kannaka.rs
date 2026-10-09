@@ -1298,19 +1298,16 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
         req.to_string().as_bytes(),
         Duration::from_secs(timeout_secs),
     ) {
-        Ok(reply) => {
-            let parsed: serde_json::Value =
-                serde_json::from_slice(&reply).unwrap_or(serde_json::Value::Null);
-            if is_remote {
-                let results = parsed
-                    .get("results")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([]));
-                println!("{results}");
-            } else {
-                println!("{parsed}");
+        Ok(reply) => match networked_recall_output(&reply, is_remote) {
+            Ok(out) => println!("{out}"),
+            Err(why) => {
+                // #1077: a reply that is not the expected shape is an error,
+                // not an empty result list printed with exit 0.
+                eprintln!("recall ({}): reply on {subject} was not usable: {why}",
+                    if is_remote { "remote" } else { "collective" });
+                process::exit(3);
             }
-        }
+        },
         Err(e) => {
             eprintln!(
                 "recall ({}): no reply within {timeout_secs}s ({e})",
@@ -1318,6 +1315,76 @@ fn handle_networked_recall(cfg: &KannakaConfig, args: &[String]) {
             );
             process::exit(2);
         }
+    }
+}
+
+/// What `recall --remote` / `recall --collective` prints for a reply (#1077).
+///
+/// Remote: the reply must be a JSON object with a `results` array, and that
+/// array is printed (an empty one is a real "nothing found"). Collective: the
+/// reply must be JSON, printed as is. Anything else is an `Err` naming what
+/// was wrong, so a broken responder no longer reads as an empty recall.
+fn networked_recall_output(reply: &[u8], is_remote: bool) -> Result<String, String> {
+    let parsed: serde_json::Value = serde_json::from_slice(reply).map_err(|e| {
+        let head = String::from_utf8_lossy(&reply[..reply.len().min(120)]).into_owned();
+        format!("not JSON ({e}); first bytes: {}", kannaka_memory::sanitize_display(&head))
+    })?;
+    if !is_remote {
+        return Ok(parsed.to_string());
+    }
+    match parsed.get("results") {
+        Some(r @ serde_json::Value::Array(_)) => Ok(r.to_string()),
+        Some(other) => Err(format!("`results` is not an array (got {})", json_kind(other))),
+        None => {
+            let detail = parsed
+                .get("error")
+                .and_then(|e| e.as_str())
+                .map(|e| format!("; responder said: {}", kannaka_memory::sanitize_display(e)))
+                .unwrap_or_default();
+            Err(format!("no `results` field in a {}{detail}", json_kind(&parsed)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod networked_recall_output_tests {
+    use super::networked_recall_output as out;
+
+    #[test]
+    fn a_remote_reply_with_results_prints_them_and_an_empty_list_is_real() {
+        assert_eq!(out(br#"{"results":[{"id":"a"}]}"#, true).unwrap(), r#"[{"id":"a"}]"#);
+        assert_eq!(out(br#"{"results":[]}"#, true).unwrap(), "[]", "an empty result list is a real answer");
+    }
+
+    #[test]
+    fn a_broken_remote_reply_is_an_error_not_an_empty_list() {
+        // #1077: each of these used to print `[]` and exit 0.
+        let e = out(b"<html>502</html>", true).unwrap_err();
+        assert!(e.starts_with("not JSON"), "{e}");
+        assert!(e.contains("<html>502"), "the first bytes are shown: {e}");
+        let e = out(br#"{"error":"recall disabled"}"#, true).unwrap_err();
+        assert!(e.contains("no `results`") && e.contains("recall disabled"), "{e}");
+        let e = out(br#"{"results":"oops"}"#, true).unwrap_err();
+        assert!(e.contains("not an array") && e.contains("string"), "{e}");
+        assert!(out(b"null", true).is_err());
+        assert!(out(b"[]", true).is_err(), "a bare array is not the remote shape");
+    }
+
+    #[test]
+    fn a_collective_reply_is_printed_as_json_and_junk_is_refused() {
+        assert_eq!(out(br#"{"answer":1}"#, false).unwrap(), r#"{"answer":1}"#);
+        assert!(out(b"not json", false).is_err());
+    }
+}
+
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
     }
 }
 
