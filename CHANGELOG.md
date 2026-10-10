@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### `--help` never runs a command; QUEEN_EVENTS stores the events it is named for
+
+- A passthrough subcommand swallowed `--help` after its first token and the handler ran the command: `kannaka swarm join --help` joined the swarm, `kannaka events restore --help` restored. `cli::parse` now prints that subcommand's help and stops when `--help` or `-h` appears anywhere in its arguments (a bare `help` is still text).
+- `kannaka-recompute-encoding --help` re-encoded the default store (every `--` argument except `--dry-run` was ignored) and `-h` was taken as the data directory. It now prints usage for `--help`/`-h` and exits 2 on any unknown flag or extra positional, before touching a store.
+- `announce_event` publishes on lowercase `queen.event.<type>` (#88), but the `QUEEN_EVENTS` stream captured only uppercase `QUEEN.event.>`, so it stored none of them. It captures both; an existing stream is updated by `ensure_js_stream` the next time a writer identity connects with this build.
 ### Windows: a NATS request waits as long as it was told to, not 5 s (#1076)
 
 `Conn::set_read_timeout` set the timeout on the writer only, on the assumption that the reader, a `try_clone()` of the same socket, shares it. On Windows it does not: `try_clone` duplicates the handle and `SO_RCVTIMEO` stays per handle, so every read kept the 5 s connect default. `request_one` with `--remote-timeout 120` gave up at about 5 s, and so did every other caller that widens the timeout (request_many, JetStream API calls, subscribe confirmations). Linux shares the option between the two handles, which is why CI never saw it. The timeout is now set on both handles, and `read_timeout()` reports the reader's. Confirmed on Windows 11 before the fix: a test that widens the timeout from 150 ms to 1,200 ms saw the read give up at 151 ms; with the fix it waits the full 1.2 s.
