@@ -66,14 +66,51 @@ fn embedder_reachable(url: &str) -> bool {
         .is_ok()
 }
 
+const USAGE: &str = "Usage: kannaka-recompute-encoding [data-dir] [--dry-run]\n\
+Re-encodes every text memory in <data-dir>/kannaka.hrm (default: KANNAKA_DATA_DIR, else ~/.kannaka).\n\
+SNAPSHOT the HRM first and run with --dry-run to see the count. Never run on a substrate HRM.";
+
+/// What the command line asks for. `--help`/`-h` and any unknown flag are
+/// resolved here, before anything touches a store: through 0.16.15 every
+/// argument except `--dry-run` that started with `--` was ignored, so
+/// `kannaka-recompute-encoding --help` re-encoded the default store, and `-h`
+/// was taken as the data directory.
+#[derive(Debug, PartialEq)]
+enum Invocation {
+    Help,
+    BadFlag(String),
+    Run { dry_run: bool, data_dir: Option<PathBuf> },
+}
+
+fn parse_invocation(args: &[String]) -> Invocation {
+    let mut dry_run = false;
+    let mut data_dir = None;
+    for a in args.iter().skip(1) {
+        match a.as_str() {
+            "--help" | "-h" => return Invocation::Help,
+            "--dry-run" => dry_run = true,
+            f if f.starts_with('-') => return Invocation::BadFlag(f.to_string()),
+            d if data_dir.is_none() => data_dir = Some(PathBuf::from(d)),
+            extra => return Invocation::BadFlag(extra.to_string()),
+        }
+    }
+    Invocation::Run { dry_run, data_dir }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    let data_dir = args
-        .iter()
-        .skip(1)
-        .find(|a| !a.starts_with("--"))
-        .map(PathBuf::from)
+    let (dry_run, data_dir_arg) = match parse_invocation(&args) {
+        Invocation::Help => {
+            println!("{USAGE}");
+            return;
+        }
+        Invocation::BadFlag(f) => {
+            eprintln!("kannaka-recompute-encoding: unexpected argument {f:?}\n{USAGE}");
+            std::process::exit(2);
+        }
+        Invocation::Run { dry_run, data_dir } => (dry_run, data_dir),
+    };
+    let data_dir = data_dir_arg
         .or_else(|| std::env::var("KANNAKA_DATA_DIR").ok().map(PathBuf::from))
         .unwrap_or_else(|| {
             let home = std::env::var("USERPROFILE")
@@ -134,5 +171,48 @@ fn main() {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::{parse_invocation, Invocation};
+    use std::path::PathBuf;
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        std::iter::once("kannaka-recompute-encoding")
+            .chain(rest.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn help_never_reaches_the_store() {
+        // Through 0.16.15 `--help` was skipped as an unknown flag and the
+        // default store was re-encoded.
+        assert_eq!(parse_invocation(&argv(&["--help"])), Invocation::Help);
+        assert_eq!(parse_invocation(&argv(&["-h"])), Invocation::Help);
+        assert_eq!(parse_invocation(&argv(&["/data", "--help"])), Invocation::Help);
+        assert_eq!(parse_invocation(&argv(&["--dry-run", "-h"])), Invocation::Help);
+    }
+
+    #[test]
+    fn unknown_flags_and_extra_positionals_are_refused() {
+        assert_eq!(parse_invocation(&argv(&["--force"])), Invocation::BadFlag("--force".into()));
+        assert_eq!(parse_invocation(&argv(&["-x"])), Invocation::BadFlag("-x".into()));
+        assert_eq!(parse_invocation(&argv(&["/a", "/b"])), Invocation::BadFlag("/b".into()));
+    }
+
+    #[test]
+    fn the_documented_forms_still_run() {
+        assert_eq!(parse_invocation(&argv(&[])), Invocation::Run { dry_run: false, data_dir: None });
+        assert_eq!(
+            parse_invocation(&argv(&["/data", "--dry-run"])),
+            Invocation::Run { dry_run: true, data_dir: Some(PathBuf::from("/data")) }
+        );
+        assert_eq!(
+            parse_invocation(&argv(&["--dry-run", "/data"])),
+            Invocation::Run { dry_run: true, data_dir: Some(PathBuf::from("/data")) }
+        );
     }
 }

@@ -650,6 +650,21 @@ pub fn parse(argv: &[String]) -> Dispatch {
     let builtins: std::collections::HashSet<&str> =
         app.get_subcommands().map(|sc| sc.get_name()).collect();
     if builtins.contains(name) {
+        // A passthrough subcommand's trailing positional swallows every token
+        // after its first, `--help` included, and the legacy handler then RAN
+        // the command: `kannaka swarm join --help` joined the swarm, `kannaka
+        // dream --help` dreamed. Help anywhere in a passthrough's args prints
+        // that subcommand's help and stops here.
+        let rest: Vec<String> = sub_matches
+            .try_get_many::<String>("args")
+            .ok()
+            .flatten()
+            .map(|vals| vals.cloned().collect())
+            .unwrap_or_default();
+        if asks_for_help(&rest) {
+            print_subcommand_help(name);
+            return Dispatch::Handled;
+        }
         return Dispatch::Builtin;
     }
 
@@ -663,6 +678,26 @@ pub fn parse(argv: &[String]) -> Dispatch {
         .map(|vals| vals.map(|s| s.to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
     resolve_plugin(name, plugin_args)
+}
+
+/// True when a passthrough subcommand's arguments ask for help. Only the
+/// flag forms count: a bare `help` can be memory text or a query.
+pub fn asks_for_help(rest: &[String]) -> bool {
+    rest.iter().any(|a| a == "--help" || a == "-h")
+}
+
+/// Print the long help of built-in subcommand `name` to stdout.
+fn print_subcommand_help(name: &str) {
+    let mut app = build_cli();
+    match app.find_subcommand_mut(name) {
+        Some(sc) => {
+            let _ = sc.print_long_help();
+            println!();
+        }
+        None => {
+            let _ = app.print_long_help();
+        }
+    }
 }
 
 /// Resolve `verb` to an absolute binary path via either KNOWN_ALIASES
@@ -999,5 +1034,45 @@ pub fn exec_plugin(binary: PathBuf, args: Vec<String>) -> ! {
                 std::process::exit(126);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod help_dispatch_tests {
+    use super::*;
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        std::iter::once("kannaka").chain(rest.iter().copied()).map(String::from).collect()
+    }
+
+    #[test]
+    fn help_after_a_sub_verb_is_handled_not_dispatched() {
+        // Through 0.16.15 these returned Dispatch::Builtin and the handler ran
+        // the command (`swarm join --help` joined the swarm).
+        // (`dream --help`, with help as the FIRST token, never reached the
+        // handler: clap prints help and exits the process itself, so it cannot
+        // be exercised in a test. Only help after a first token was swallowed.)
+        for a in [
+            &["swarm", "join", "--help"][..],
+            &["swarm", "serve", "-h"],
+            &["dream", "--mode", "--help"],
+            &["events", "restore", "--help"],
+            &["remember", "some text", "--help"],
+        ] {
+            assert!(matches!(parse(&argv(a)), Dispatch::Handled), "{a:?} must print help, not run");
+        }
+    }
+
+    #[test]
+    fn a_bare_help_word_is_still_content() {
+        assert!(!asks_for_help(&["help".to_string()]));
+        assert!(asks_for_help(&["x".to_string(), "--help".to_string()]));
+        assert!(asks_for_help(&["-h".to_string()]));
+    }
+
+    #[test]
+    fn ordinary_passthrough_invocations_still_dispatch() {
+        assert!(matches!(parse(&argv(&["swarm", "status"])), Dispatch::Builtin));
+        assert!(matches!(parse(&argv(&["remember", "help me remember"])), Dispatch::Builtin));
     }
 }
