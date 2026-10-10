@@ -198,6 +198,31 @@ pub const DEFAULT_NATS_URL: &str = "nats://swarm.ninja-portal.com:4222";
 const STREAM_NAME: &str = "QUEEN_PHASES";
 const EVENTS_STREAM_NAME: &str = "QUEEN_EVENTS";
 
+/// The QUEEN_EVENTS stream spec.
+///
+/// `announce_event` publishes on lowercase `queen.event.<type>` (#88: the
+/// radio subscribes lowercase, and NATS subjects are case-sensitive), but the
+/// stream captured only uppercase `QUEEN.event.>`, so it stored none of them.
+/// It captures both now. On an existing stream `ensure_js_stream` sends a
+/// `STREAM.UPDATE` with this spec, so the hub's stream picks up the lowercase
+/// subject the next time a writer identity connects with this build.
+/// The subject `announce_event` publishes `event_type` on.
+fn event_subject(event_type: &str) -> String {
+    format!("queen.event.{event_type}")
+}
+
+fn events_stream_config() -> serde_json::Value {
+    serde_json::json!({
+        "name": EVENTS_STREAM_NAME,
+        "subjects": ["queen.event.>", "QUEEN.event.>"],
+        "retention": "limits",
+        "max_msgs": 10000,
+        "storage": "file",
+        "discard": "old",
+        "num_replicas": 1
+    })
+}
+
 /// Maximum number of messages to buffer during disconnect.
 const PUBLISH_BUFFER_LIMIT: usize = 100;
 
@@ -2746,18 +2771,7 @@ impl SwarmTransport {
 
     /// Ensure the QUEEN_EVENTS JetStream stream exists.
     fn ensure_events_stream(&self) -> Result<(), NatsError> {
-        self.ensure_js_stream(
-            EVENTS_STREAM_NAME,
-            serde_json::json!({
-                "name": EVENTS_STREAM_NAME,
-                "subjects": ["QUEEN.event.>"],
-                "retention": "limits",
-                "max_msgs": 10000,
-                "storage": "file",
-                "discard": "old",
-                "num_replicas": 1
-            }),
-        )
+        self.ensure_js_stream(EVENTS_STREAM_NAME, events_stream_config())
     }
 
     /// Whether this connection supplied credentials.
@@ -3748,7 +3762,7 @@ impl SwarmTransport {
         add_envelope(&mut flat);
         let bytes = serde_json::to_vec(&flat)
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let subject = format!("queen.event.{event_type}");
+        let subject = event_subject(event_type);
         self.publish_raw(&subject, &bytes)
     }
 
@@ -5193,6 +5207,39 @@ mod tests {
         drop(transport);
         drop(broker);
     }
+    /// NATS subject match for a stream filter: `*` is one token, `>` the rest.
+    fn nats_subject_matches(filter: &str, subject: &str) -> bool {
+        let (f, s): (Vec<&str>, Vec<&str>) = (filter.split('.').collect(), subject.split('.').collect());
+        for (i, tok) in f.iter().enumerate() {
+            match *tok {
+                ">" => return s.len() > i,
+                "*" if i < s.len() => continue,
+                t if i < s.len() && s[i] == t => continue,
+                _ => return false,
+            }
+        }
+        f.len() == s.len()
+    }
+
+    /// The QUEEN_EVENTS stream must capture the subjects `announce_event`
+    /// actually publishes on. Through 0.16.15 it captured only uppercase
+    /// `QUEEN.event.>` while events went to lowercase `queen.event.*`, so the
+    /// stream stored nothing.
+    #[test]
+    fn the_events_stream_captures_what_announce_event_publishes() {
+        assert!(nats_subject_matches("a.>", "a.b.c") && !nats_subject_matches("A.>", "a.b"));
+        let cfg = events_stream_config();
+        let subjects: Vec<&str> = cfg["subjects"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        for t in ["join", "leave", "dream.start", "dream.end", "memory.shared"] {
+            let subject = event_subject(t);
+            assert!(
+                subjects.iter().any(|f| nats_subject_matches(f, &subject)),
+                "{subject} is published but no QUEEN_EVENTS subject captures it: {subjects:?}"
+            );
+        }
+        assert!(subjects.contains(&"QUEEN.event.>"), "older publishers on the uppercase subject stay captured");
+    }
+
     /// #1104, pure: the refusal file round-trips, expires, keys by identity and
     /// broker, and never panics on junk.
     #[test]
